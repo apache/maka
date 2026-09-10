@@ -100,3 +100,46 @@ test('resource services preserve the current Session and cancellation context', 
   ]);
   await root.fiber.dispose();
 });
+
+test('Web custom cancellation cannot replace Host invocation cancellation', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const web = new PluginWebService(root, agents);
+  const hostAbort = new AbortController();
+  const pluginAbort = new AbortController();
+  const signals: AbortSignal[] = [];
+  web.bindRuntime({
+    search: async (input) => {
+      if (input.abortSignal) signals.push(input.abortSignal);
+      return { ok: true, provider: 'tavily', results: [] };
+    },
+    fetch: async (input) => {
+      if (input.abortSignal) signals.push(input.abortSignal);
+      return 'body';
+    },
+  });
+  const context: MakaToolContext = {
+    sessionId: 'session-a',
+    turnId: 'turn-a',
+    cwd: '/workspace',
+    toolCallId: 'call-a',
+    abortSignal: hostAbort.signal,
+    emitOutput: () => undefined,
+  };
+
+  await agents.withInvocation(context, async () => {
+    await web.search('maka', { signal: pluginAbort.signal });
+    await web.fetch('https://example.com', { signal: pluginAbort.signal });
+  });
+  assert.deepEqual(
+    signals.map((signal) => signal.aborted),
+    [false, false],
+  );
+  hostAbort.abort(new Error('Host stopped'));
+  assert.deepEqual(
+    signals.map((signal) => signal.aborted),
+    [true, true],
+  );
+  assert.equal(pluginAbort.signal.aborted, false);
+  await root.fiber.dispose();
+});

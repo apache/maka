@@ -131,6 +131,53 @@ test('Agent access fails closed without an invocation and handles retain their a
   await root.fiber.dispose();
 });
 
+test('Agent custom cancellation preserves the originating invocation cancellation', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const descriptor = { id: 'child', sessionId: 'child', root: false };
+  const signals: AbortSignal[] = [];
+  agents.bindRuntime({
+    create: async (options) => {
+      if (options.signal) signals.push(options.signal);
+      return descriptor;
+    },
+    resume: async (options) => {
+      if (options.signal) signals.push(options.signal);
+      return descriptor;
+    },
+    get: async () => descriptor,
+    list: async () => [descriptor],
+    roots: async () => [],
+    followup: async () => undefined,
+    steer: async () => undefined,
+    inject: async () => undefined,
+    cancel: async () => undefined,
+    whenIdle: async (_id, signal) => {
+      if (signal) signals.push(signal);
+    },
+    snapshot: async () => undefined,
+    inbox: async () => undefined,
+    result: async () => undefined,
+    artifacts: async () => undefined,
+    transcript: async () => undefined,
+    dispose: async () => undefined,
+  });
+  const hostAbort = new AbortController();
+  const pluginAbort = new AbortController();
+  const invocation = { ...toolContext('session-a'), abortSignal: hostAbort.signal };
+
+  await agents.withInvocation(invocation, async () => {
+    const created = await agents.create({ signal: pluginAbort.signal });
+    await agents.resume({ sessionId: 'child', signal: pluginAbort.signal });
+    await created.whenIdle(pluginAbort.signal);
+  });
+  hostAbort.abort(new Error('Host stopped'));
+  assert.equal(signals.length, 3);
+  assert.ok(signals.every((signal) => signal.aborted));
+  assert.equal(pluginAbort.signal.aborted, false);
+  await root.fiber.dispose();
+});
+
 function toolContext(sessionId: string): MakaToolContext {
   return {
     sessionId,

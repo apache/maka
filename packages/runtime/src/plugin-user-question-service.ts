@@ -21,6 +21,7 @@ import type { InteractionFormInput, InteractionFormResult } from '@maka/core/int
 import type { UserQuestion, UserQuestionResult } from '@maka/core/user-question';
 import { Service, type Context } from './plugin-kernel.js';
 import type { PluginAgentService } from './plugin-agent-service.js';
+import { pluginInvocationSignal } from './plugin-invocation-signal.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -50,6 +51,8 @@ export class PluginUserQuestionService extends Service {
     const invocation = this.agents.requireInvocation();
     const request = invocation.toolContext?.requestUserForm;
     if (!request) throw new Error('Structured user forms are unavailable on this Agent surface');
-    return request(form, { cancellationSignal: options.signal ?? invocation.abortSignal });
+    return request(form, {
+      cancellationSignal: pluginInvocationSignal(invocation.abortSignal, options.signal),
+    });
   }
 }

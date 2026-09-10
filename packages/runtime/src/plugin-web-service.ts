@@ -25,6 +25,7 @@ import {
 } from '@maka/core/web-search';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentService } from './plugin-agent-service.js';
+import { pluginInvocationSignal } from './plugin-invocation-signal.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -77,7 +78,7 @@ export class PluginWebService extends Service {
       query: normalized,
       limit: normalizeWebSearchLimit(options.limit ?? WEB_SEARCH_DEFAULT_LIMIT),
       sessionId: invocation.sessionId,
-      abortSignal: options.signal ?? invocation.abortSignal,
+      abortSignal: pluginInvocationSignal(invocation.abortSignal, options.signal),
     });
   }
 
@@ -89,7 +90,7 @@ export class PluginWebService extends Service {
     return this.runtime().fetch({
       url: parsed.toString(),
       sessionId: invocation.sessionId,
-      abortSignal: options.signal ?? invocation.abortSignal,
+      abortSignal: pluginInvocationSignal(invocation.abortSignal, options.signal),
     });
   }
 

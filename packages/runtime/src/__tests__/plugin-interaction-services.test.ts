@@ -102,3 +102,36 @@ test('interaction services reject calls outside an Agent invocation', async () =
   );
   await root.fiber.dispose();
 });
+
+test('form custom cancellation preserves Host invocation cancellation', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const questions = new PluginUserQuestionService(root, agents);
+  const hostAbort = new AbortController();
+  const pluginAbort = new AbortController();
+  let observed: AbortSignal | undefined;
+  const context: MakaToolContext = {
+    sessionId: 'session-a',
+    turnId: 'turn-a',
+    cwd: '/workspace',
+    toolCallId: 'call-a',
+    abortSignal: hostAbort.signal,
+    emitOutput: () => undefined,
+    requestUserForm: async (_form, options) => {
+      observed = options?.cancellationSignal;
+      return { action: 'cancel', values: {} };
+    },
+  };
+
+  await agents.withInvocation(context, () =>
+    questions.requestForm(
+      { message: 'Choose', requester: { name: 'fixture' }, fields: [] },
+      { signal: pluginAbort.signal },
+    ),
+  );
+  assert.equal(observed?.aborted, false);
+  hostAbort.abort(new Error('Host stopped'));
+  assert.equal(observed?.aborted, true);
+  assert.equal(pluginAbort.signal.aborted, false);
+  await root.fiber.dispose();
+});

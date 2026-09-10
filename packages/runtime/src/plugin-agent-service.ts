@@ -22,6 +22,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { AgentProfile } from './agent-catalog.js';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
+import { pluginInvocationSignal } from './plugin-invocation-signal.js';
 import type { MakaToolContext } from './tool-runtime.js';
 
 declare module './plugin-kernel.js' {
@@ -179,12 +180,24 @@ export class PluginAgentService extends Service {
 
   async create(options: PluginAgentCreateOptions = {}): Promise<PluginAgent> {
     const invocation = this.requireInvocation();
-    return this.handle(await this.runtime().create(options, invocation), invocation);
+    return this.handle(
+      await this.runtime().create(
+        { ...options, signal: pluginInvocationSignal(invocation.abortSignal, options.signal) },
+        invocation,
+      ),
+      invocation,
+    );
   }
 
   async resume(options: PluginAgentResumeOptions): Promise<PluginAgent> {
     const invocation = this.requireInvocation();
-    return this.handle(await this.runtime().resume(options, invocation), invocation);
+    return this.handle(
+      await this.runtime().resume(
+        { ...options, signal: pluginInvocationSignal(invocation.abortSignal, options.signal) },
+        invocation,
+      ),
+      invocation,
+    );
   }
 
   async get(id: string): Promise<PluginAgent | undefined> {
@@ -230,7 +243,9 @@ export class PluginAgentService extends Service {
       inject: (message: unknown) => service.runtime().inject(id, message, invocation),
       cancel: () => service.runtime().cancel(id, invocation),
       whenIdle: (signal?: AbortSignal) =>
-        service.runtime().whenIdle(id, signal ?? invocation.abortSignal, invocation),
+        service
+          .runtime()
+          .whenIdle(id, pluginInvocationSignal(invocation.abortSignal, signal), invocation),
       snapshot: () => service.runtime().snapshot(id, invocation),
       inbox: () => service.runtime().inbox(id, invocation),
       result: () => service.runtime().result(id, invocation),

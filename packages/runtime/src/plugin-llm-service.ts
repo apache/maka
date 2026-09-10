@@ -19,6 +19,15 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import { pluginInvocationSignal } from './plugin-invocation-signal.js';
+import {
+  MakaPluginRuntimeError,
+  pluginIdentity,
+  registerPluginContribution,
+  type MakaContributionIdentity,
+  type MakaPluginRootId,
+} from './plugin-runtime.js';
+import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -56,10 +65,16 @@ export interface PluginLlmAdapter {
   ): Promise<PluginLlmGenerateResult>;
 }
 
+interface RegisteredAdapter extends MakaContributionIdentity {
+  readonly adapter: PluginLlmAdapter;
+  readonly token: symbol;
+  retired: boolean;
+}
+
 /** Metered Host model calls plus an ordered plugin adapter seam. */
 export class PluginLlmService extends Service {
   private llmRuntime?: PluginLlmRuntime;
-  private readonly adapters: Array<{ adapter: PluginLlmAdapter; owner: Context }> = [];
+  private readonly adapters = new PluginScopeRegistry<RegisteredAdapter>();
 
   constructor(
     ctx: Context,
@@ -87,46 +102,43 @@ export class PluginLlmService extends Service {
     if (typeof adapter.supports !== 'function' || typeof adapter.generate !== 'function') {
       throw new TypeError(`LLM adapter implementation is invalid: ${adapter.id}`);
     }
-    if (
-      this.adapters.some(
-        (entry) =>
-          entry.adapter.id === adapter.id && entry.owner.maka?.rootId === this.ctx.maka?.rootId,
-      )
-    ) {
-      throw new Error(`LLM adapter is already registered in this scope: ${adapter.id}`);
-    }
-    const entry = { adapter, owner: this.ctx };
-    this.adapters.push(entry);
-    return this.ctx.effect(
-      () => () => {
-        const index = this.adapters.indexOf(entry);
-        if (index >= 0) this.adapters.splice(index, 1);
-      },
-      `llm.adapter:${adapter.id}`,
-    );
+    const identity = pluginIdentity(this.ctx);
+    return registerPluginContribution(this.ctx, `llm.adapter:${adapter.id}`, () => {
+      const rootId = identity.scopeId as MakaPluginRootId;
+      const existing = this.adapters.get(rootId, adapter.id);
+      if (existing && existing.entryId !== identity.entryId) {
+        throw new MakaPluginRuntimeError(
+          'activation_failed',
+          `LLM adapter is already registered in this scope: ${adapter.id}`,
+        );
+      }
+      const entry: RegisteredAdapter = {
+        ...identity,
+        adapter,
+        token: Symbol(adapter.id),
+        retired: false,
+      };
+      return this.adapters.publish(rootId, adapter.id, entry);
+    });
   }
 
   generate(
     input: PluginLlmGenerateInput & { readonly model?: string },
   ): Promise<PluginLlmGenerateResult> {
     const invocation = this.agents.requireInvocation();
-    const visibleAdapters = new Map<string, PluginLlmAdapter>();
-    for (const entry of this.adapters) {
-      if (entry.owner.maka?.rootId === 'profile')
-        visibleAdapters.set(entry.adapter.id, entry.adapter);
-    }
-    for (const entry of this.adapters) {
-      if (entry.owner.maka?.rootId === `session:${invocation.sessionId}`) {
-        visibleAdapters.set(entry.adapter.id, entry.adapter);
-      }
-    }
+    const effectiveInput = Object.freeze({
+      ...input,
+      signal: pluginInvocationSignal(invocation.abortSignal, input.signal),
+    });
+    const visibleAdapters = this.adapters.visible(invocation.sessionId);
     const adapter = input.model
       ? [...visibleAdapters.values()]
+          .map((entry) => entry.adapter)
           .filter((candidate) => candidate.supports(input.model!))
           .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0))[0]
       : undefined;
-    if (adapter) return adapter.generate(input, invocation);
+    if (adapter) return adapter.generate(effectiveInput, invocation);
     if (!this.llmRuntime) throw new Error('Plugin LLM Runtime is unavailable');
-    return this.llmRuntime.generate(input, invocation);
+    return this.llmRuntime.generate(effectiveInput, invocation);
   }
 }
