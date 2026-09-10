@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { observeReactPerformanceMeasures } from './react-performance-measures';
 import { createRoot } from 'react-dom/client';
 import { syncUiLocaleDocument } from '@maka/ui';
 import { App } from './app';
@@ -30,6 +31,11 @@ import {
 
 const ONBOARDING_SNAPSHOT_RETRY_DELAY_MS = 150;
 const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
+
+if (import.meta.env.DEV) {
+  const stopObserving = observeReactPerformanceMeasures();
+  import.meta.hot?.dispose(stopObserving);
+}
 
 syncUiLocaleDocument(readSystemUiLocale());
 applyCachedThemeBeforeMount();
