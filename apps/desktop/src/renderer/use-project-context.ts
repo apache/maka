@@ -42,13 +42,6 @@ type RefBox<T> = { current: T };
 type ToastApi = {
   success(title: string, description?: string): void;
   error(title: string, description?: string): void;
-  confirm(input: {
-    title: string;
-    description?: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    destructive?: boolean;
-  }): Promise<boolean>;
 };
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {

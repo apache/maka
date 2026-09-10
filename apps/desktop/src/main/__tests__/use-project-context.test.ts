@@ -85,7 +85,7 @@ test('discards a pending Project projection after the default Host changes', asy
       uiLocale: 'en',
       rendererMountedRef: { current: true },
       onProjectSelected: () => {},
-      toastApi: { success: () => {}, error: () => {}, confirm: async () => true },
+      toastApi: { success: () => {}, error: () => {} },
     });
     projects = context.projects;
     selectedProjectId = context.selectedProjectId;
