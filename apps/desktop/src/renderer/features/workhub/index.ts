@@ -19,12 +19,8 @@
 
 export * from './model/anchor-rail.js';
 export {
-  applyWorkHubDelegationFeedback,
   workHubLinkedWork,
-  type WorkHubDelegationFeedback,
   type WorkHubDelegationReference,
-  type WorkHubDelegationState,
-  type WorkHubLinkedWork,
 } from './model/linked-work.js';
 export { projectWorkHubDelegationState, workHubTurnResultPreview } from './model/delegation-feedback.js';
 export { WorkHubNavigationRail } from './ui/workhub-navigation-rail.js';
