@@ -26,7 +26,6 @@
     "src/renderer/astryx-theme-mode.ts",
     "src/renderer/astryx-theme/maka.js",
     "src/renderer/astryx-theme/makaTheme.ts",
-    "src/renderer/astryx-theme/type-scale.ts",
     "src/renderer/attachment-preflight.ts",
     "src/renderer/bootstrap-selection-lease.ts",
     "src/renderer/browser-storage.ts",
@@ -51,7 +50,6 @@
     "src/renderer/derive-turn-lineage-badges.ts",
     "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/desktop-slash-command.ts",
-    "src/renderer/desktop-transcript-range-store.ts",
     "src/renderer/error-boundary.tsx",
     "src/renderer/follow-up-submit-routing.ts",
     "src/renderer/interrupted-resume.ts",
@@ -245,13 +243,6 @@
     "src/renderer/use-turn-action-registry.ts",
     "src/renderer/use-work-board.ts",
     "src/renderer/work-board-panel.tsx",
-    "src/renderer/workhub-controller.ts",
-    "src/renderer/workhub-coordination-host-scope.ts",
-    "src/renderer/workhub-coordination-lifecycle.ts",
-    "src/renderer/workhub-coordination-port.ts",
-    "src/renderer/workhub-send-lease.ts",
-    "src/renderer/workhub-session-port.ts",
-    "src/renderer/workhub-surface.tsx",
     "src/renderer/workspace-readiness-recovery.ts"
   ],
   "legacyGrowthDirectories": [
@@ -498,8 +489,8 @@
           "../shared/runtime-host-identity.js": 1,
           "./app-shell-copy": 1,
           "./browser-storage": 1,
-          "./desktop-transcript-range-store.js": 1,
           "./locales/conversation-copy.js": 1,
+          "./platform/desktop/desktop-transcript-range-store.js": 1,
           "./session-event-health": 1,
           "./shell-run-update-state.js": 1,
           "./theme": 1,
@@ -719,18 +710,15 @@
         "nonTriviaTokens": 1395
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 77,
+        "importDeclarations": 70,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
-          "window.maka.connections.subscribeEvents": 1,
           "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
           "window.maka.diagnostics.copyReport": 1,
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.runtimeHostProfiles.subscribeChanges": 1,
-          "window.maka.sessions": 1,
           "window.maka.sessions.abandonPlanProposal": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.getPlanState": 1,
@@ -743,11 +731,7 @@
           "window.maka.sessions.subscribeActiveInteractions": 1,
           "window.maka.sessions.updateQueueEntry": 1,
           "window.maka.settings.getClient": 1,
-          "window.maka.settings.subscribeClientChanged": 1,
-          "window.maka.transcripts": 2,
-          "window.maka.workHub.act": 1,
-          "window.maka.workHub.candidates": 1,
-          "window.maka.workHub.resolveCoordinationSession": 1
+          "window.maka.settings.subscribeClientChanged": 1
         },
         "environmentCapabilities": {
           "document.querySelector": 1,
@@ -770,13 +754,13 @@
           "useAppShellTurnPresentation": 1,
           "useCommandPalette": 1,
           "useComposerAttachments": 1,
-          "useEffect": 8,
+          "useEffect": 7,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 20,
+          "useRef": 16,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -791,7 +775,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 6,
-          "useState": 16,
+          "useState": 14,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -838,6 +822,7 @@
           "./features/session-settings": 1,
           "./features/task-entry": 1,
           "./features/workbar": 1,
+          "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
           "./keyboard-help": 1,
           "./live-content-seed": 1,
@@ -876,15 +861,8 @@
           "./use-system-ui-locale": 1,
           "./use-task-submission-readiness": 1,
           "./use-turn-action-registry": 1,
-          "./workhub-controller.js": 1,
-          "./workhub-coordination-host-scope.js": 1,
-          "./workhub-coordination-lifecycle.js": 1,
-          "./workhub-coordination-port.js": 1,
-          "./workhub-session-port.js": 1,
-          "./workhub-surface.js": 1,
           "./workspace-readiness-recovery": 1,
           "@astryxdesign/core/AppShell": 1,
-          "@astryxdesign/core/Button": 1,
           "@maka/core/onboarding-milestone": 1,
           "@maka/core/session": 1,
           "@maka/core/session-revisions": 1,
@@ -893,8 +871,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 116,
-        "nonTriviaTokens": 14318
+        "importSpecifiers": 108,
+        "nonTriviaTokens": 13697
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1076,15 +1054,6 @@
         }
       },
       "src/renderer/agent-graph-refresh.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/astryx-theme/type-scale.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -1382,23 +1351,6 @@
           "./side-chat-command.js": 1,
           "@maka/core/graph-command": 1,
           "@maka/core/swarm-command": 1
-        }
-      },
-      "src/renderer/desktop-transcript-range-store.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../shared/desktop-session-projection.js": 1,
-          "../shared/runtime-host-identity.js": 1,
-          "@maka/core/persisted-value": 1,
-          "@maka/core/session": 1
         }
       },
       "src/renderer/error-boundary.tsx": {
@@ -2269,7 +2221,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./desktop-transcript-range-store.js": 1
+          "./platform/desktop/desktop-transcript-range-store.js": 1
         }
       },
       "src/renderer/session-read-state.ts": {
@@ -4117,13 +4069,7 @@
         },
         "environmentCapabilities": {
           "document.createElement": 1,
-          "document.documentElement": 9,
-          "document.documentElement.classList.contains": 1,
-          "document.documentElement.classList.toggle": 1,
-          "document.documentElement.removeAttribute": 1,
-          "document.documentElement.setAttribute": 1,
-          "document.documentElement.style.colorScheme": 1,
-          "document.documentElement.style.fontSize": 1,
+          "document.documentElement": 3,
           "document.querySelector": 1,
           "window.matchMedia": 1
         },
@@ -4132,8 +4078,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./astryx-theme/type-scale.js": 1,
           "./browser-storage": 1,
+          "./platform/desktop/document-appearance.js": 1,
           "./titlebar-dim-color.js": 1,
           "@maka/core/settings": 1
         }
@@ -4580,106 +4526,6 @@
           "react": 1
         }
       },
-      "src/renderer/workhub-controller.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/operation-diagnostics.js": 1,
-          "./features/workhub/index.js": 1
-        }
-      },
-      "src/renderer/workhub-coordination-host-scope.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../shared/runtime-host-identity.js": 1
-        }
-      },
-      "src/renderer/workhub-coordination-lifecycle.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../shared/runtime-host-identity.js": 1
-        }
-      },
-      "src/renderer/workhub-coordination-port.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./desktop-transcript-range-store.js": 1,
-          "./workhub-controller.js": 1,
-          "@maka/core/session": 1
-        }
-      },
-      "src/renderer/workhub-send-lease.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "document": 1,
-          "window": 1,
-          "window.localStorage": 1
-        },
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/workhub-session-port.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../shared/runtime-host-identity.js": 1,
-          "./desktop-transcript-range-store.js": 1,
-          "./workhub-controller.js": 1,
-          "@maka/core/session": 1
-        }
-      },
-      "src/renderer/workhub-surface.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 3,
-          "useState": 8
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/operation-diagnostics.js": 1,
-          "./features/workhub/index.js": 1,
-          "./locales/workhub-copy.js": 2,
-          "./workhub-coordination-port.js": 1,
-          "./workhub-send-lease.js": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Button": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/workspace-readiness-recovery.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4778,9 +4624,9 @@
       "unresolvedDependencies": 0,
       "actionFactories": [],
       "dependencyPaths": {
-        "./app-shell": 1,
         "./astryx-theme-mode": 1,
         "./astryx-theme/maka": 1,
+        "./composition/legacy-desktop-region": 1,
         "@astryxdesign/core/theme": 1,
         "react": 1
       },
@@ -4810,7 +4656,7 @@
         "react-dom/client": 1
       },
       "importSpecifiers": 7,
-      "nonTriviaTokens": 268
+      "nonTriviaTokens": 260
     }
   },
   "rootDebtClosure": {

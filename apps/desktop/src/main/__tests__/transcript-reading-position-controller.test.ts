@@ -24,7 +24,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopTranscriptHandle, DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
-import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/desktop-transcript-range-store.js';
+import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import {
   createAppShellSessionUiStateController,
   TranscriptReadingPositionController,

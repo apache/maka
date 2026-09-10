@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
 import type { TUI } from '@earendil-works/pi-tui';
 import {
   clampRowsWithEllipsis,
@@ -27,11 +27,99 @@ import {
   UserQuestionOverlay,
 } from '../pi-tui-pickers.js';
 import { ansi, stripAnsi } from '../tui-ansi.js';
+import { FakeTerminal } from './tui-terminal-mock.js';
+import { encodeExpectedRows } from './tui-render-expectations.js';
 
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
 const COLOR_ENABLED = ansi.reverse('').length > 0;
+
+test('Other preserves its wrapped draft and cursor position across focus changes', () => {
+  const WIDTH = 40;
+  const ARROW_UP = '\x1b[A';
+  const ARROW_DOWN = '\x1b[B';
+  const ARROW_LEFT = '\x1b[D';
+  const ENTER = '\r';
+
+  const submittedAnswers: string[] = [];
+  const tui = new TuiMainScreen(new FakeTerminal(WIDTH));
+  const question = new UserQuestionOverlay(tui, {
+    title: 'Pick one',
+    rightLabel: '1 / 1',
+    hint: '↑↓ move · type to answer',
+    placeholder: 'Other: type answer',
+    options: [{ label: 'Preset' }],
+    onSelectOption: () => undefined,
+    onSubmitText: (value) => submittedAnswers.push(value),
+    onSkip: () => undefined,
+  });
+
+  const assertQuestionBody = (expectedScene: string) => {
+    // Keep all choices and input rows; omit the title, hint, blank row and divider.
+    const actualRows = question.render(WIDTH).slice(3, -1);
+    assert.deepEqual(actualRows, encodeExpectedRows(expectedScene, WIDTH));
+  };
+
+  // Refocus with the cursor at the end of a wrapped answer.
+  const draft =
+    'Please use the custom provider and keep the current model settings for this workspace';
+  question.handleInput(draft);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
+
+  question.handleInput(ARROW_UP);
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
+  question.handleInput(ARROW_DOWN);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
+
+  // Refocus with the cursor over an existing character.
+  question.handleInput(ARROW_LEFT);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
+  question.handleInput(ARROW_UP);
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
+  question.handleInput(ARROW_DOWN);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
+  question.handleInput(ENTER);
+  assertQuestionBody(`
+  Preset
+→ <cursor>
+`);
+  assert.deepEqual(submittedAnswers, [draft]);
+});
 
 test('long options wrap within the row width instead of truncating (#4610)', () => {
   const option = {

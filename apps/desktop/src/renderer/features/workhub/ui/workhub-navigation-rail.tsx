@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useContext, useState, type CSSProperties } from 'react';
+import { useContext, useRef, useState, type CSSProperties } from 'react';
 import type { WorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, dotForStatus, presentSessionStatus } from '@maka/ui';
@@ -40,6 +40,7 @@ export function WorkHubNavigationRail(props: {
   readonly onOpenSession: (sessionId: string) => void;
 }) {
   const highlight = useContext(WorkHubHighlightContext);
+  const drag = useRef<{ pointerId: number; startX: number; scrollLeft: number; list: HTMLElement; moved: boolean } | undefined>(undefined);
   const [filter, setFilter] = useState<WorkHubWorkFilter>('all');
   const anchors = deriveWorkHubAnchors({
     sessions: props.sessions,
@@ -69,7 +70,41 @@ export function WorkHubNavigationRail(props: {
           />
         ))}
       </div>
-      <nav aria-label={props.copy.workNavigation}>
+      <nav
+        aria-label={props.copy.workNavigation}
+        onPointerDownCapture={(event) => {
+          drag.current = undefined;
+          const list = event.currentTarget.querySelector<HTMLElement>('.workhub-anchors');
+          if (event.button !== 0 || event.pointerType !== 'mouse' || !list?.contains(event.target as Node) || list.scrollWidth <= list.clientWidth) return;
+          drag.current = { pointerId: event.pointerId, startX: event.clientX, scrollLeft: list.scrollLeft, list, moved: false };
+        }}
+        onPointerMoveCapture={(event) => {
+          const gesture = drag.current;
+          if (!gesture || event.pointerId !== gesture.pointerId || !(event.buttons & 1)) return;
+          const distance = event.clientX - gesture.startX;
+          if (!gesture.moved && Math.abs(distance) < 5) return;
+          if (!gesture.moved) {
+            gesture.moved = true;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.dataset.dragging = 'true';
+          }
+          event.preventDefault();
+          gesture.list.scrollLeft = gesture.scrollLeft - distance;
+        }}
+        onPointerUpCapture={(event) => { delete event.currentTarget.dataset.dragging; }}
+        onPointerCancel={(event) => {
+          drag.current = undefined;
+          delete event.currentTarget.dataset.dragging;
+        }}
+        onLostPointerCapture={(event) => { delete event.currentTarget.dataset.dragging; }}
+        onClickCapture={(event) => {
+          if (drag.current?.moved) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          drag.current = undefined;
+        }}
+      >
         {anchors.length > 0 ? (
           <List className="workhub-anchors" density="compact" hasDividers>
             {anchors.map((anchor) => {
