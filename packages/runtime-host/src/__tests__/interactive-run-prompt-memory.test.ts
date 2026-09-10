@@ -35,13 +35,11 @@ test('interactive composer shares prompt text without sharing turn metadata or e
     import { randomUUID } from 'node:crypto';
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
-    import { setFlagsFromString, writeHeapSnapshot } from 'node:v8';
+    import { writeHeapSnapshot } from 'node:v8';
     import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
     const { createInteractiveRunComposer } = await import(process.argv[1]);
     const { HostSkillCatalogCoordinator } = await import(process.argv[2]);
     const { SkillCatalogRepository } = await import(process.argv[3]);
-    // Memory markers follow the base prompt, beyond V8's default 1024-char names.
-    setFlagsFromString('--heap-snapshot-string-limit=100000');
     const root = await mkdtemp(join(tmpdir(), 'maka-run-prompt-memory-'));
     const project = join(root, 'project'), home = join(root, 'home'), data = join(root, 'data');
     await Promise.all([project, home, data].map(path => mkdir(path)));
@@ -63,19 +61,22 @@ test('interactive composer shares prompt text without sharing turn metadata or e
         memory: { readPromptProjection: read }, ...extra,
       });
     };
-    async function countTexts(marker) {
+    async function countTexts() {
       await collect();
       const path = writeHeapSnapshot(join(root, 'prompt.heapsnapshot'));
       const heap = JSON.parse(await readFile(path, 'utf8'));
       await rm(path);
       const fields = heap.snapshot.meta.node_fields, width = fields.length;
       const name = fields.indexOf('name'), type = fields.indexOf('type');
+      const bytes = fields.indexOf('self_size');
       const types = heap.snapshot.meta.node_types[type];
       let count = 0;
       for (let i = 0; i < heap.nodes.length; i += width) {
         const value = heap.strings[heap.nodes[i + name]];
+        // Only this phase creates long main-session text. Electron can keep
+        // snapshot names truncated even when V8's runtime string limit changes.
         if (types[heap.nodes[i + type]] === 'string' &&
-          value.startsWith('You are Maka, an AI agent') && value.includes(marker)) count++;
+          value.startsWith('You are Maka, an AI agent') && heap.nodes[i + bytes] > 22000) count++;
       }
       return count;
     }
@@ -109,10 +110,10 @@ test('interactive composer shares prompt text without sharing turn metadata or e
       const currentRevision = previous.sourceRevisions[0].revision;
       first.sourceRevisions[0].revision = 'caller-owned mutation';
       assert.equal(previous.sourceRevisions[0].revision, currentRevision);
-      assert.equal(await countTexts(marker), changed ? 32 : 1, 'only equal text shares');
+      assert.equal(await countTexts(), changed ? 32 : 1, 'only equal text shares');
       assert.equal(live(refs), 32); assert.equal(live(revisions), 32);
       first = null; previous = null; owner = null;
-      assert.equal(await countTexts(marker), 0, 'released composer text collects');
+      assert.equal(await countTexts(), 0, 'released composer text collects');
       assert.equal(live(refs), 0); assert.equal(live(revisions), 0);
     }
     try {
@@ -160,17 +161,17 @@ test('interactive composer shares prompt text without sharing turn metadata or e
         });
         let pending = candidate.resolveSystemPrompt(ctx('evicted'));
         if (!late) {
-          await pending; assert.equal(await countTexts(marker), 1, 'owned positive control');
+          await pending; assert.equal(await countTexts(), 1, 'owned positive control');
           pending = null;
         }
         await Promise.allSettled(Array.from({ length: 101 }, (_, i) =>
           candidate.resolveSystemPrompt(ctx('failure-' + i))));
         if (late) {
           gate.resolve({ body: marker + '汉'.repeat(11000) });
-          await pending; assert.equal(await countTexts(marker), 1, 'held late result positive');
+          await pending; assert.equal(await countTexts(), 1, 'held late result positive');
           pending = null; gate = null;
         }
-        assert.equal(await countTexts(marker), 0, 'eviction releases text; late=' + late);
+        assert.equal(await countTexts(), 0, 'eviction releases text; late=' + late);
         await assert.rejects(candidate.resolveSystemPrompt(ctx('evicted')), /eviction fixture/);
       }
       const child = create(async () => { throw Error('child read Memory'); }, undefined, false,
