@@ -900,48 +900,64 @@ export async function importSessionBundleState(
   const bundleDatabasePath = resolveInside(bundleStateRoot, OPERATIONAL_STATE_DATABASE_NAME);
   await assertRegularFile(bundleDatabasePath, OPERATIONAL_STATE_DATABASE_NAME);
 
-  return withOfflineContextSnapshot(input.stateRoot, (contextLocked) =>
-    withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
-      const sessionIds = readBundleSessionIds(bundleDatabasePath);
-      if (sessionIds.length === 0) {
-        throw new SessionBundleImportError('invalid_root', 'Bundle carries no Session');
-      }
+  // The authority is decided by what is being written, not by what the target
+  // already has. A bundle carrying context needs it even for a fresh workspace
+  // with no context store yet -- which is exactly the case that would otherwise
+  // run unprotected, and the common one.
+  const bundleCarriesContext = await pathExists(
+    resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_DATABASE_NAME),
+  );
 
-      // The export refuses to migrate its source because it only reads. An
-      // import is a write the user asked for, and the target is often a
-      // workspace with no database yet -- moving to a new machine is the whole
-      // point -- so this opens the ordinary way and lets it be initialised.
-      let lease: OperationalStateDatabaseLease;
-      try {
-        lease = acquireOperationalStateDatabase(stateRoot);
-      } catch (error) {
-        // A target this build cannot open is a schema verdict, not an IO one;
-        // everything else the operational store raises is the environment.
-        if (error instanceof OperationalStateMigrationBlockedError) {
-          throw new SessionBundleImportError(
-            'schema_unsupported',
-            'Workspace schema cannot be opened by this build',
-            { cause: error },
-          );
+  return withOfflineContextSnapshot(
+    input.stateRoot,
+    (contextLocked) =>
+      withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+        const sessionIds = readBundleSessionIds(bundleDatabasePath);
+        if (sessionIds.length === 0) {
+          throw new SessionBundleImportError('invalid_root', 'Bundle carries no Session');
         }
-        throw error;
-      }
-      try {
-        assertBundleSchemaMatches(lease.database, bundleDatabasePath);
-        assertImportableInto(lease.database, sessionIds);
-        const artifactFiles = await copyBundleArtifacts(bundleStateRoot, stateRoot);
-        const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
-        const contextRefs = await mergeBundleContext(
-          bundleStateRoot,
-          stateRoot,
-          contextLocked,
-          sessionIds,
-        );
-        return { sessionIds: inserted, artifactFiles, contextRefs };
-      } finally {
-        lease.close();
-      }
-    }),
+
+        // The export refuses to migrate its source because it only reads. An
+        // import is a write the user asked for, and the target is often a
+        // workspace with no database yet -- moving to a new machine is the whole
+        // point -- so this opens the ordinary way and lets it be initialised.
+        let lease: OperationalStateDatabaseLease;
+        try {
+          lease = acquireOperationalStateDatabase(stateRoot);
+        } catch (error) {
+          // A target this build cannot open is a schema verdict, not an IO one;
+          // everything else the operational store raises is the environment.
+          if (error instanceof OperationalStateMigrationBlockedError) {
+            throw new SessionBundleImportError(
+              'schema_unsupported',
+              'Workspace schema cannot be opened by this build',
+              { cause: error },
+            );
+          }
+          throw error;
+        }
+        try {
+          assertBundleSchemaMatches(lease.database, bundleDatabasePath);
+          assertImportableInto(lease.database, sessionIds);
+          // Everything the Session will reference lands first; the Session rows
+          // are the last thing written. A failure before that leaves artifacts
+          // and context nothing points at, which the store reclaims, rather than
+          // a Session already visible whose bytes never arrived -- and which a
+          // retry could not fix, because the ids are now taken.
+          const artifactFiles = await copyBundleArtifacts(bundleStateRoot, stateRoot);
+          const contextRefs = await mergeBundleContext(
+            bundleStateRoot,
+            stateRoot,
+            contextLocked,
+            sessionIds,
+          );
+          const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
+          return { sessionIds: inserted, artifactFiles, contextRefs };
+        } finally {
+          lease.close();
+        }
+      }),
+    { requireAuthority: bundleCarriesContext },
   );
 }
 
@@ -998,6 +1014,22 @@ function readSchemaRegistry(database: DatabaseSync): Record<string, number> {
 function readUserVersionPragma(database: DatabaseSync): number {
   const row = (database.prepare('PRAGMA user_version').get() ?? {}) as Record<string, unknown>;
   return Number(Object.values(row)[0] ?? -1);
+}
+
+/** The same question the export asks before deleting a table wholesale. */
+function describesASession(target: DatabaseSync, table: string): boolean {
+  if (PORTABLE_DERIVED_TABLES.has(table)) return true;
+  const columns = new Set(
+    (
+      target.prepare(`PRAGMA bundle.table_info(${quoteIdentifier(table)})`).all() as Array<{
+        name?: unknown;
+      }>
+    )
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string'),
+  );
+  if (columns.has(SESSION_ROW_OWNER_COLUMN)) return true;
+  return SESSION_LINK_COLUMNS.some((column) => columns.has(column));
 }
 
 function readBundleSessionIds(bundleDatabasePath: string): string[] {
@@ -1129,6 +1161,13 @@ function mergeAttachedBundle(target: DatabaseSync): string[] {
         ) {
           continue;
         }
+        // Mirror the export's own classification instead of trusting that it
+        // ran: a table with no Session column and no referential rule describes
+        // the WORKSPACE, and the target has its own. The export empties those,
+        // so in practice this inserts nothing -- but an import that depends on
+        // the other side having tidied up is one bundle away from writing a
+        // workspace singleton into somebody else's workspace.
+        if (!describesASession(target, name)) continue;
         const quoted = quoteIdentifier(name);
         target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
       }
@@ -1179,23 +1218,13 @@ async function mergeBundleContext(
     );
   }
 
-  const bundleValues = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
-  if (await pathExists(bundleValues)) {
-    const targetValues = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
-    for (const entry of await readdir(bundleValues, { withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      const destination = resolveInside(targetValues, entry.name);
-      await mkdir(dirname(destination), { recursive: true });
-      // Managed files are named by content, so an existing one is the same one.
-      await copyFile(
-        resolveInside(bundleValues, entry.name),
-        destination,
-        constants.COPYFILE_EXCL,
-      ).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      });
-    }
-  }
+  // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
+  // only immediate children saw one directory, skipped it, and reported a
+  // successful import whose referenced bytes were all absent.
+  await copyContextValueTree(
+    resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
+    resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
+  );
 
   const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await pathExists(targetContext))) {
@@ -1212,6 +1241,21 @@ async function mergeBundleContext(
           'INSERT OR IGNORE INTO main.context_blobs SELECT * FROM bundle.context_blobs',
         );
         database.exec('INSERT INTO main.context_refs SELECT * FROM bundle.context_refs');
+        // The context store maintains its usage tables explicitly -- no trigger
+        // does it. Inserting blobs and refs without them leaves quotas and the
+        // cleanup consistency checks reading numbers that describe a store that
+        // no longer exists. Recomputed from what is actually there, which is
+        // the same thing the export does when it filters.
+        database.exec(`
+          DELETE FROM context_session_usage;
+          INSERT INTO context_session_usage
+            SELECT r.session_id, count(*), sum(b.size_bytes)
+            FROM context_refs r JOIN context_blobs b USING(blob_id) GROUP BY r.session_id;
+          UPDATE context_store_usage SET
+            blob_count = (SELECT count(*) FROM context_blobs),
+            physical_bytes = (SELECT coalesce(sum(size_bytes), 0) FROM context_blobs)
+          WHERE singleton = 1;
+        `);
         database.exec('COMMIT');
       } catch (error) {
         try {
@@ -1226,6 +1270,34 @@ async function mergeBundleContext(
     database.close();
   }
   return countContextRefs(targetContext, sessionIds);
+}
+
+/**
+ * Copy a managed-payload tree, structure and all.
+ *
+ * Content-addressed names mean an existing file is the same file, so an
+ * already-present payload is left alone rather than treated as a conflict.
+ */
+async function copyContextValueTree(source: string, destination: string): Promise<void> {
+  if (!(await pathExists(source))) return;
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const from = resolveInside(source, entry.name);
+    const to = resolveInside(destination, entry.name);
+    if (entry.isDirectory()) {
+      await copyContextValueTree(from, to);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new SessionBundleImportError(
+        'io_failed',
+        `Bundle context payload is not a regular file: ${entry.name}`,
+      );
+    }
+    await mkdir(dirname(to), { recursive: true });
+    await copyFile(from, to, constants.COPYFILE_EXCL).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    });
+  }
 }
 
 function countContextRefs(databasePath: string, sessionIds: readonly string[]): number {

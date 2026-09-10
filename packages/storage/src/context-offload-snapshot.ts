@@ -47,8 +47,24 @@ import { SQLITE_SESSION_MESSAGE_CHUNK_MARKER } from './sqlite-session-metadata-s
 export async function withOfflineContextSnapshot<T>(
   root: string,
   operation: (contextLocked: boolean) => Promise<T>,
+  options: {
+    /**
+     * Take the authority even when the root has no context database yet.
+     *
+     * A reader only needs it when there is something to read, but a writer
+     * that is about to CREATE the context store needs it too -- otherwise the
+     * one case where it matters most, a fresh workspace, is the one case that
+     * runs unprotected.
+     */
+    requireAuthority?: boolean;
+  } = {},
 ): Promise<T> {
-  if (!(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))) return operation(false);
+  if (
+    options.requireAuthority !== true &&
+    !(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))
+  ) {
+    return operation(false);
+  }
   const capability = await discoverMarkedStorageRoot({ path: root });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner)

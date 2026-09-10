@@ -417,3 +417,181 @@ test('refuses a bundle written against a different schema', async () => {
     await rm(target.root, { recursive: true, force: true });
   }
 });
+
+/** Give a workspace a context store holding one managed-file payload. */
+async function seedContext(
+  workspaceRoot: string,
+  sessionId: string,
+  bytes: string,
+): Promise<{ relativePath: string; blobId: Buffer }> {
+  // The offline context authority only works on a marked Storage Root, so a
+  // workspace holding context has to be one.
+  const { resolveStorageRoot } = await import('@maka/storage/root-authority');
+  await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const { createHash } = await import('node:crypto');
+  const digest = createHash('sha256').update(bytes).digest();
+  const hex = digest.toString('hex');
+  // The layout the context store uses: a payload is addressed by its content.
+  const relativePath = `sha256/${hex.slice(0, 2)}/${hex}`;
+  const values = join(workspaceRoot, 'context-offload-values');
+  await mkdir(join(values, 'sha256', hex.slice(0, 2)), { recursive: true });
+  await writeFile(join(values, relativePath), bytes);
+
+  const db = new DatabaseSync(join(workspaceRoot, 'context-offload.sqlite'));
+  try {
+    db.exec(`
+      PRAGMA user_version = 3;
+      CREATE TABLE context_blobs (
+        blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
+        storage_kind TEXT NOT NULL CHECK(storage_kind IN ('inline', 'managed_file')),
+        payload BLOB NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0)
+      );
+      CREATE TABLE context_refs (
+        ref_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        owner_kind TEXT NOT NULL,
+        blob_id BLOB NOT NULL REFERENCES context_blobs(blob_id)
+      );
+      CREATE TABLE context_gc_candidates (blob_id BLOB PRIMARY KEY, unreferenced_at INTEGER NOT NULL);
+      CREATE TABLE context_file_deletions (locator BLOB PRIMARY KEY, size_bytes INTEGER NOT NULL, enqueued_at INTEGER NOT NULL);
+      CREATE TABLE context_session_usage (session_id TEXT PRIMARY KEY, ref_count INTEGER NOT NULL, logical_bytes INTEGER NOT NULL);
+      CREATE TABLE context_store_usage (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), blob_count INTEGER NOT NULL, physical_bytes INTEGER NOT NULL);
+      INSERT INTO context_store_usage VALUES (1, 0, 0);
+    `);
+    db.prepare("INSERT INTO context_blobs VALUES (?, 'managed_file', ?, ?)").run(
+      digest,
+      Buffer.from(relativePath, 'utf8'),
+      bytes.length,
+    );
+    db.prepare("INSERT INTO context_refs VALUES (?, ?, 'message', ?)").run(
+      `ref-${sessionId}`,
+      sessionId,
+      digest,
+    );
+    db.exec(`
+      INSERT INTO context_session_usage
+        SELECT r.session_id, count(*), sum(b.size_bytes)
+        FROM context_refs r JOIN context_blobs b USING(blob_id) GROUP BY r.session_id;
+      UPDATE context_store_usage SET blob_count = 1, physical_bytes = ${bytes.length} WHERE singleton = 1;
+    `);
+  } finally {
+    db.close();
+  }
+  return { relativePath, blobId: digest };
+}
+
+function readContextUsage(workspaceRoot: string): {
+  blobCount: number;
+  physicalBytes: number;
+  sessionRows: number;
+} {
+  const db = new DatabaseSync(join(workspaceRoot, 'context-offload.sqlite'), { readOnly: true });
+  try {
+    const store = db.prepare('SELECT blob_count, physical_bytes FROM context_store_usage').get() as
+      | { blob_count?: unknown; physical_bytes?: unknown }
+      | undefined;
+    const sessions = db.prepare('SELECT COUNT(*) AS count FROM context_session_usage').get() as {
+      count?: unknown;
+    };
+    return {
+      blobCount: Number(store?.blob_count ?? -1),
+      physicalBytes: Number(store?.physical_bytes ?? -1),
+      sessionRows: Number(sessions.count ?? -1),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+test('carries managed context payloads and keeps usage accounting true', async () => {
+  const source = await makeWorkspace('maka-import-context-source');
+  const target = await makeWorkspace('maka-import-context-target');
+  try {
+    // Build the bundle's state tree directly. The merge is what these findings
+    // are about, and going through pack/hydrate to reach it only adds the
+    // Storage Root machinery to the fixture.
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const payload = 'IMG';
+    const seeded = await seedContext(source.workspaceRoot, sessionId, payload);
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+
+    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+    const merged = await importSessionBundleState({
+      stateRoot: target.workspaceRoot,
+      bundleStateRoot: source.workspaceRoot,
+    });
+    assert.equal(merged.contextRefs, 1);
+
+    // Read the payload rather than count the reference: a reference whose bytes
+    // never arrived counts exactly the same. Managed payloads live at
+    // `sha256/<prefix>/<hash>`, so a copy that visited only immediate children
+    // saw one directory, skipped it, and reported success.
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(
+      await readFile(
+        join(target.workspaceRoot, 'context-offload-values', seeded.relativePath),
+        'utf8',
+      ),
+      payload,
+    );
+
+    // These numbers drive quotas and the cleanup consistency checks, and no
+    // trigger maintains them, so a stale count is not a display problem.
+    const usage = readContextUsage(target.workspaceRoot);
+    assert.equal(usage.blobCount, 2);
+    assert.equal(usage.physicalBytes, 5);
+    assert.equal(usage.sessionRows, 2);
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('publishes nothing when the context merge fails, so a retry is still possible', async () => {
+  const source = await makeWorkspace('maka-import-retry-source');
+  const target = await makeWorkspace('maka-import-retry-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+    // Collide the reference ids so the context merge fails partway. Any context
+    // failure would do; this one needs no injection point in the code.
+    const collide = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      collide.prepare('UPDATE context_refs SET ref_id = ?').run(`ref-${sessionId}`);
+    } finally {
+      collide.close();
+    }
+
+    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+    await assert.rejects(() =>
+      importSessionBundleState({
+        stateRoot: target.workspaceRoot,
+        bundleStateRoot: source.workspaceRoot,
+      }),
+    );
+
+    // The Session rows are the last thing written, so a failure reaching them
+    // leaves nothing published. Had they gone first, the ids would now be taken
+    // and the retry would report `session_exists` forever.
+    const after = openDatabase(target.workspaceRoot, true);
+    try {
+      const present = after
+        .prepare('SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = ?')
+        .get(sessionId) as { count?: unknown };
+      assert.equal(Number(present.count), 0);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
