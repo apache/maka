@@ -24,6 +24,7 @@ import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { z } from 'zod';
 import { decodeHostedExecutionStartInput } from '../protocol/index.js';
 import {
+  bindWorkHubRoutingDecisionPrompt,
   hostedExecutionRunProfile,
   projectHostedExecutionTools,
 } from '../server/hosted-execution-tool-profile.js';
@@ -205,4 +206,16 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
   assert.match(prompt, /only when the user explicitly asks to create new work/u);
   assert.match(prompt, /never implies create_new/u);
   assert.match(prompt, /ordinary request to continue work is routing, not a linked resume/u);
+});
+
+test('WorkHub routing prompt binds the exact recalled candidate without granting authority', () => {
+  const prompt = bindWorkHubRoutingDecisionPrompt('base', {
+    kind: 'routing',
+    disposition: 'delegate_existing',
+    candidateSetId: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    candidateRef: 'whc_candidate_a',
+  });
+  assert.match(prompt, /candidateSetId sha256:0123456789abcdef/u);
+  assert.match(prompt, /candidateRef whc_candidate_a/u);
+  assert.match(prompt, /grants no authority/u);
 });

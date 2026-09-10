@@ -62,6 +62,42 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('Host WorkHub Coordination coordinator', () => {
+  test('rejects a model action that disagrees with the Turn-bound routing decision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-bind-'));
+    const store = createSessionStore(root);
+    try {
+      const workhub = coordinator(root, store, undefined, undefined, {
+        startWorkHubCoordinationMessage: async () => ({
+          ok: false,
+          error: { code: 'operation_unavailable', message: 'not used' },
+        }),
+        isSessionExecutionIdle: () => true,
+        readActiveWorkHubRoutingRequest: async () => ({
+          content: { text: 'Tell me how routing works' },
+          decision: { kind: 'routing', disposition: 'answer_here' },
+        }),
+      });
+      const outcome = await workhub.handlers['workhub.coordination.actFromTurn'](
+        {
+          turnId: 'active-turn',
+          actionId: 'unexpected-action',
+          proposal: { disposition: 'create_new', title: 'Unexpected' },
+        },
+        CONTEXT,
+      );
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub action does not match the routing decision bound to this Turn',
+        },
+      });
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('model actions use only the active Turn user text and attachments, including stop authority', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-active-authority-'));
     const store = createSessionStore(root);
@@ -92,8 +128,8 @@ describe('Host WorkHub Coordination coordinator', () => {
         undefined,
         {
           ...executions,
-          readActiveWorkHubRequest: async (turnId) =>
-            turnId === 'active-turn' ? canonical : undefined,
+          readActiveWorkHubRoutingRequest: async (turnId) =>
+            turnId === 'active-turn' ? { content: canonical } : undefined,
         },
         admission,
         {
@@ -2112,7 +2148,7 @@ describe('Host WorkHub Coordination coordinator', () => {
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRequest'
+  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRoutingRequest'
 >;
 
 /**
@@ -2125,7 +2161,7 @@ function coordinationExecutions(admission: SessionAdmissionGate) {
   const starts: Parameters<RootTurnCoordinator['startWorkHubCoordinationMessage']>[0][] = [];
   const prepared: MessageContent[] = [];
   const executions: CoordinationExecutions = {
-    readActiveWorkHubRequest: async () => undefined,
+    readActiveWorkHubRoutingRequest: async () => undefined,
     startWorkHubCoordinationMessage: async (request) => {
       starts.push(request);
       return admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
@@ -2155,7 +2191,7 @@ function coordinator(
   requestDrain: () => void = () => undefined,
   resolveCreateTarget: (() => Promise<CoordinationCreateTarget>) | undefined = undefined,
   executions: CoordinationExecutions = {
-    readActiveWorkHubRequest: async () => undefined,
+    readActiveWorkHubRoutingRequest: async () => undefined,
     startWorkHubCoordinationMessage: async () => ({
       ok: false,
       error: {
@@ -2192,14 +2228,19 @@ function coordinator(
         message: 'Not configured in this fixture',
       },
     }),
+    routingModel: {
+      decide: async () => ({ kind: 'routing', disposition: 'answer_here' }),
+    },
     stateRoot: root,
     stores: store,
     admission,
     continuity: { refreshCanonical: async () => undefined },
     executions: {
       ...executions,
-      readActiveWorkHubRequest: async (turnId) =>
-        activeRequests.get(turnId) ?? executions.readActiveWorkHubRequest(turnId),
+      readActiveWorkHubRoutingRequest: async (turnId) => {
+        const content = activeRequests.get(turnId);
+        return content ? { content } : executions.readActiveWorkHubRoutingRequest(turnId);
+      },
     },
     sessionActions: {
       readDelegationRetirement: async () => 'not_retired',

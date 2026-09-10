@@ -42,6 +42,16 @@ for (const actionId of [undefined, 'stable-action']) {
           inputDigest,
           capabilityBinding: `sha256:${'b'.repeat(64)}`,
           ...(actionId ? { operation: 'action' as const, actionId } : {}),
+          ...(!actionId
+            ? {
+                routingDecision: {
+                  kind: 'routing' as const,
+                  disposition: 'delegate_existing' as const,
+                  candidateSetId: `sha256:${'b'.repeat(64)}`,
+                  candidateRef: 'whc_candidate_a',
+                },
+              }
+            : {}),
         },
         previousRootTurnId: null,
         normalizedInput: { text: 'What should happen next?' },

@@ -3841,6 +3841,14 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           turnId,
           archivedMessage: 'Archived',
           execution: { kind: 'workhub_coordination', inputDigest: `sha256:${'d'.repeat(64)}` },
+          ...(toolProfile === 'workhub-coordination-v2'
+            ? {
+                prepareRoutingDecision: async () => ({
+                  kind: 'routing' as const,
+                  disposition: 'answer_here' as const,
+                }),
+              }
+            : {}),
           prepareFreshContent: async () => ({ kind: 'ready', content }),
         },
         operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
@@ -3850,6 +3858,12 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       assert.deepEqual(
         await fixture.coordinator.readActiveWorkHubRequest(turnId),
         toolProfile === 'workhub-coordination-v2' ? content : undefined,
+      );
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRoutingRequest(turnId),
+        toolProfile === 'workhub-coordination-v2'
+          ? { content, decision: { kind: 'routing', disposition: 'answer_here' } }
+          : undefined,
       );
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
       const submitted = await submit('workhub-steering');

@@ -151,6 +151,7 @@ import {
   createHostMemoryExtractionModel,
   createHostPluginModel,
   createHostSessionEffectModel,
+  createHostWorkHubRoutingModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
@@ -175,7 +176,10 @@ import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
 import { SessionTurnAccessRequestCoordinator } from './session-turn-access-request-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
-import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
+import {
+  bindWorkHubRoutingDecisionPrompt,
+  hostedExecutionRunProfile,
+} from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -966,6 +970,19 @@ export async function createExecutionRuntimeHostComposition(
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,
+        resolveProfileSystemPrompt: async (promptContext, basePrompt) => {
+          if (promptContext.sessionId !== WORKHUB_COORDINATION_SESSION_ID) return basePrompt;
+          const admission = await stores.agentRunStore.readRootTurnAdmission(
+            promptContext.sessionId,
+            promptContext.turnId,
+          );
+          return bindWorkHubRoutingDecisionPrompt(
+            basePrompt,
+            admission?.execution.kind === 'workhub_coordination'
+              ? admission.execution.routingDecision
+              : undefined,
+          );
+        },
       }),
       ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
         ? {}
@@ -1846,6 +1863,12 @@ export async function createExecutionRuntimeHostComposition(
         : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
+      routingModel: createHostWorkHubRoutingModel({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(

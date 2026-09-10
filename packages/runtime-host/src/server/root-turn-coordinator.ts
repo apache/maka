@@ -18,6 +18,7 @@
  */
 
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
+import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { BackendStopMode } from '@maka/core/backend-types';
@@ -229,6 +230,7 @@ export type RootMessageStartRequest =
   | (RootMessageStartRequestBase & {
       readonly execution: Extract<RootMessageExecution, { kind: 'workhub_coordination' }>;
       readonly operation?: (turnId: string) => Promise<WorkHubActionReceipt>;
+      readonly prepareRoutingDecision?: (header: SessionHeader) => Promise<WorkHubRoutingDecision>;
       readonly turnOrchestration?: undefined;
       prepareFreshContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
     });
@@ -1858,7 +1860,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   /** Accepts a model action against the exact live WorkHub root and its durable user input. */
-  readActiveWorkHubRequest(turnId: string): Promise<MessageContent | undefined> {
+  async readActiveWorkHubRequest(turnId: string): Promise<MessageContent | undefined> {
+    return (await this.readActiveWorkHubRoutingRequest(turnId))?.content;
+  }
+
+  /** Reads both user authority and the advisory routing decision of the exact live WorkHub Turn. */
+  readActiveWorkHubRoutingRequest(
+    turnId: string,
+  ): Promise<
+    { readonly content: MessageContent; readonly decision?: WorkHubRoutingDecision } | undefined
+  > {
     const sessionId = WORKHUB_COORDINATION_SESSION_ID;
     return this.sessionAdmission.run(sessionId, async () => {
       const active = this.#executions.get(sessionId);
@@ -1874,7 +1885,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         header.toolProfile !== 'workhub-coordination-v2'
       )
         return undefined;
-      return requireHostedExecutionMessageContent(admission);
+      return {
+        content: requireHostedExecutionMessageContent(admission),
+        ...(admission.execution.routingDecision
+          ? { decision: admission.execution.routingDecision }
+          : {}),
+      };
     });
   }
 
@@ -2030,6 +2046,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             operationUnavailable('WorkHub Desktop capability binding is unavailable'),
           );
         }
+        const freshExecution =
+          request.execution.kind === 'workhub_coordination' &&
+          'prepareRoutingDecision' in request &&
+          request.prepareRoutingDecision
+            ? {
+                ...request.execution,
+                ...(capabilityBinding ? { capabilityBinding } : {}),
+                routingDecision: await request.prepareRoutingDecision(header),
+              }
+            : {
+                ...request.execution,
+                ...(capabilityBinding ? { capabilityBinding } : {}),
+              };
         if (!this.beginRootAdmission(reservation)) {
           return completedStart(sessionBusy('Root Turn reservation is no longer current'));
         }
@@ -2047,7 +2076,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           // generated admission identity.
           proposedUserMessageId:
             request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
-          execution: { ...request.execution, ...(capabilityBinding ? { capabilityBinding } : {}) },
+          execution: freshExecution,
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
@@ -3348,13 +3377,31 @@ function rootExecutionMatches(
   incoming: RootExecutionDescriptor,
 ): boolean {
   if (stored.kind === 'workhub_coordination' && incoming.kind === 'workhub_coordination') {
-    const { capabilityBinding: _storedBinding, ...storedRequest } = stored;
-    const { capabilityBinding: _incomingBinding, actionId, ...incomingRequest } = incoming;
-    // Compatibility permits the action identity absent from older admissions.
-    return isDeepStrictEqual(storedRequest, {
-      ...incomingRequest,
-      ...(stored.actionId === undefined ? {} : { actionId }),
-    });
+    const {
+      capabilityBinding: _storedBinding,
+      routingDecision: _storedDecision,
+      ...storedIdentity
+    } = stored;
+    const {
+      capabilityBinding: _incomingBinding,
+      routingDecision: _incomingDecision,
+      actionId,
+      ...incomingIdentity
+    } = incoming;
+    if (incoming.routingDecision === undefined) {
+      return isDeepStrictEqual(storedIdentity, {
+        ...incomingIdentity,
+        ...(stored.actionId === undefined ? {} : { actionId }),
+      });
+    }
+    return isDeepStrictEqual(
+      { ...storedIdentity, routingDecision: stored.routingDecision },
+      {
+        ...incomingIdentity,
+        ...(actionId === undefined ? {} : { actionId }),
+        routingDecision: incoming.routingDecision,
+      },
+    );
   }
   return isDeepStrictEqual(stored, incoming);
 }

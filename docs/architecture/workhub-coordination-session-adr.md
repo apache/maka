@@ -25,9 +25,9 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
-The one-Session ownership decision remains in force. The deterministic routing
-experiments described below are historical: the current coordination model uses
-active-Turn task actions and restricted Desktop capabilities. See the
+The one-Session ownership decision remains in force. Production routing now uses
+split model Intent and Recall followed by deterministic Policy, while execution
+still uses active-Turn task actions and restricted Desktop capabilities. See the
 [current domain language](../workhub-domain-language.md) for the implemented flow.
 
 ## Context
@@ -122,13 +122,22 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
-The current production path performs intent analysis and Coordination policy through
-the Coordination model's active-Turn task actions. Bounded candidate discovery is
-the Session Resolver input to that decision; the transient proposal interface keeps
-routing dispositions separate from linked operations. `answer_here` and `clarify`
-remain transcript outcomes; only the side-effecting routing subset crosses the Host
-proposal boundary. Historical R2.4/R3 experiment configurations remain evaluation
-evidence, not a second production policy or a renderer-owned language authority.
+The production Host first calls a tool-free Intent model using the Coordination
+Session's saved connection, model, and thinking setting. Only `execute` and ordinary
+`continue` invoke a second tool-free Recall call. Recall sees at most 32 candidates
+containing a request-scoped opaque reference, bounded Session/workspace names,
+state, and recency bucket; it does not receive stable Session identity, paths, file
+contents, tools, or capabilities. Intent sees the current request and at most eight
+bounded user/assistant messages, but no candidates.
+
+The deterministic Coordination Policy maps those assessments to one disposition or
+linked operation. Invalid model output, provider failure, unavailable candidates,
+empty recall, and ambiguity all fail closed to `clarify`; none implies `create_new`.
+The result is stored on the root-Turn admission and reused by recovery. The main
+Coordination model receives that bound result in its Turn prompt. A side-effecting
+proposal that changes its operation, candidate set, or candidate reference is
+rejected before the existing Action Gate. `answer_here` and `clarify` remain normal
+transcript outcomes.
 
 Model changes to Intent and Session Recall are compared in a side-effect-free
 evaluation module before any production default changes. Every arm receives the
@@ -137,8 +146,8 @@ sees no candidates; Recall sees only bounded summaries with request-scoped opaqu
 references. All arms use the same deterministic Coordination policy, never invoke
 WorkHub tools, and report Intent accuracy, recall-kind accuracy, Recall@K, MRR,
 outcome accuracy, unsafe binds, implicit creation, unnecessary clarification,
-latency, token usage, and cost separately. The production Coordination model and
-Host-owned Action Gate remain unchanged by running an evaluation.
+latency, token usage, and cost separately. Evaluation imports the same pure Policy
+used in production but cannot admit a Turn or cross the Host-owned Action Gate.
 
 Intent output contains no target. Session Resolver output contains only bounded
 opaque candidate references; it cannot return creation or a disposition. Linked
