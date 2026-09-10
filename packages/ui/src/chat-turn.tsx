@@ -251,8 +251,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         </HStack>
       ) : null}
       {/* A structured-only message (#4804) may carry only quotes/attachments;
-          an empty text must not render an empty bubble on those paths, but the
-          metadata (timestamp, copy, edit entry) still belongs to the message. */}
+          an empty text must not render an empty bubble on those paths. */}
       {props.text.trim().length > 0 ? (
         <ChatMessageBubble
           className="maka-chat-message-bubble maka-chat-message-bubble-user"
@@ -266,9 +265,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             </ChatTokenizedText>
           )}
         </ChatMessageBubble>
-      ) : (
-        userMetadata
-      )}
+      ) : null}
     </>
   );
 });
