@@ -31,6 +31,80 @@ import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../.
 import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import type { AttachmentRef } from '@maka/core/events';
+
+test('WorkHub upload references round-trip through idle answers, both queue modes and attachment reads', async (t) => {
+  const owner = {
+    hostId: 'upload-host', targetEpoch: 'upload-epoch', profileId: 'local',
+    profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready',
+  };
+  const nativeSessionId = 'maka_workhub_coordination';
+  const sessionId = desktopSessionKey({ hostId: owner.hostId, sessionId: nativeSessionId });
+  const uploaded: AttachmentRef = {
+    kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 5,
+    ref: { kind: 'session_file', sessionId: nativeSessionId, relativePath: 'brief.txt' },
+  };
+  const sent: Array<{ channel: string; attachments: AttachmentRef[] }> = [];
+  let bridge!: MakaBridge;
+  const bundle = await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron'],
+  });
+  const require = createRequire(import.meta.url);
+  runInNewContext(bundle.outputFiles[0]!.text, {
+    require: (id: string) => id === 'electron' ? {
+      contextBridge: { exposeInMainWorld(name: string, value: MakaBridge) { if (name === 'maka') bridge = value; } },
+      ipcRenderer: {
+        on() {}, off() {}, send() {},
+        async invoke(channel: string, ...args: unknown[]) {
+          if (channel === 'runtime-host:activeIdentity') return owner;
+          if (channel === 'runtime-host:identities') return [owner];
+          assert.equal((args[0] as typeof owner).hostId, owner.hostId);
+          if (channel === 'workhub:prepareAttachments') {
+            assert.deepEqual(structuredClone(args[1]), [{ name: 'brief.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }]);
+            return [uploaded];
+          }
+          if (channel === 'workhub:answer') {
+            const input = args[1] as { attachments: AttachmentRef[]; turnId: string };
+            sent.push({ channel, attachments: input.attachments });
+            return { kind: 'admitted', turnId: input.turnId };
+          }
+          assert.equal(args[1], nativeSessionId);
+          if (channel === 'sessions:submitMessage') {
+            const command = args[3] as { retainedAttachments: AttachmentRef[] };
+            sent.push({ channel, attachments: command.retainedAttachments });
+            return { ok: true, disposition: args[2] === 'current_turn' ? 'steering' : 'followup', attachments: [uploaded] };
+          }
+          if (channel === 'attachments:readBytes') return { ok: true, base64: 'aGVsbG8=' };
+          throw new Error(`Unexpected channel: ${channel}`);
+        },
+      },
+    } : require(id),
+    process: { env: {} }, Buffer, console, setTimeout, clearTimeout, TextEncoder, TextDecoder,
+    Uint8Array, btoa, crypto: globalThis.crypto,
+  });
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const services = createDesktopWorkHubServices(bridge);
+  const attachments = await services.prepareAttachments(sessionId, [
+    { file: new File(['hello'], 'brief.txt', { type: 'text/plain' }) },
+  ]);
+  assert.equal(attachments[0]!.ref.kind, 'session_file');
+  assert.equal(attachments[0]!.ref.kind === 'session_file' && attachments[0]!.ref.sessionId, sessionId);
+  assert.equal((await services.answer(sessionId, { turnId: 'idle-answer', text: 'read this', attachments })).kind, 'admitted');
+  for (const placement of ['next_turn', 'current_turn'] as const) {
+    assert.equal(await services.enqueueMessage(sessionId, `message-${placement}`, 'read this', attachments, placement), 'admitted');
+  }
+  assert.deepEqual(structuredClone(sent.map(({ attachments }) => attachments)), [[uploaded], [uploaded], [uploaded]]);
+  assert.equal((await services.readAttachmentBytes(sessionId, 'brief.txt')).ok, true);
+  const foreign = [{ ...uploaded, ref: { ...uploaded.ref, kind: 'session_file' as const, sessionId: desktopSessionKey({ hostId: 'foreign-host', sessionId: nativeSessionId }), relativePath: 'brief.txt' } }];
+  await assert.rejects(services.answer(sessionId, { turnId: 'foreign', text: 'read this', attachments: foreign }), /another Host or Session/);
+  await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
+});
 
 // Keep the real preload's navigation defaults and filtering in this consumer
 // regression; the IPC stub models the observer's authoritative reset reply.

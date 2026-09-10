@@ -101,10 +101,15 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 137 as const;
-// 137: Message admission accepts an empty-text Message that carries a quote or
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 141 as const;
+// 141: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
 // admission, so the pair must refuse each other at the handshake.
+// 140: Plugin Platform queries expose scoped Command contribution projections.
+// Epoch-139 peers reject the added query view and result shape.
+// 139: WorkHub recovery preserves the Host-authenticated Desktop capability binding.
+// 138: Removes the unused steering display anchor from canonical MessageContent.
+// 137: Reserved by the former display anchor contract.
 // 136: WorkHub transient proposals distinguish routing dispositions from linked
 // operations. Older peers expect replace/stop_work/resume_work dispositions.
 // 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.

@@ -24,6 +24,7 @@ import {
   type MakaCompositionEntryInspection,
 } from '@maka/runtime/plugin-runtime';
 import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
+import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
 import type {
   OperationOutcome,
   PluginPackageExportInput,
@@ -79,6 +80,12 @@ export class HostPluginPlatformCoordinator {
           return {
             ok: true,
             result: boundedPage('tools', this.platform.inspectTools(input.rootId), input),
+          };
+        }
+        if (input.view === 'commands') {
+          return {
+            ok: true,
+            result: boundedPage('commands', this.platform.inspectCommands(input.rootId), input),
           };
         }
         if (input.view === 'failures') {
@@ -185,12 +192,17 @@ function boundedPage(
   input: PluginPlatformQueryInput,
 ): Extract<PluginPlatformQueryResult, { readonly view: 'tools' }>;
 function boundedPage(
+  view: 'commands',
+  values: readonly PluginCommandInspection[],
+  input: PluginPlatformQueryInput,
+): Extract<PluginPlatformQueryResult, { readonly view: 'commands' }>;
+function boundedPage(
   view: 'failures',
   values: readonly PluginPlatformFailureProjection[],
   input: PluginPlatformQueryInput,
 ): Extract<PluginPlatformQueryResult, { readonly view: 'failures' }>;
 function boundedPage<T>(
-  view: 'packages' | 'entries' | 'tools' | 'failures',
+  view: 'packages' | 'entries' | 'tools' | 'commands' | 'failures',
   values: readonly T[],
   input: PluginPlatformQueryInput,
 ): PluginPlatformQueryResult {
@@ -230,7 +242,7 @@ function boundedPage<T>(
 
 interface PageCursor {
   readonly version: 1;
-  readonly view: 'packages' | 'entries' | 'tools' | 'failures';
+  readonly view: 'packages' | 'entries' | 'tools' | 'commands' | 'failures';
   readonly rootId?: string;
   readonly digest: string;
   readonly offset: number;

@@ -50,8 +50,11 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
   let updateSessions: (() => void) | undefined;
   const publish = () => updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true });
   return {
+    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
+    updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
+    enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
@@ -71,7 +74,7 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
     },
     observe: () => () => {},
     openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
-    stop: async () => {},
+    stop: async () => [],
   };
 }
 function Surface({ failFirst = false, history = false }: { failFirst?: boolean; history?: boolean }) {

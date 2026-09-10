@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
 import {
@@ -1958,3 +1959,25 @@ function session(cwd = "/workspace", id = 'session-1'): SessionCatalogProjection
 function sideConversationSession(id = 'session-1'): SessionCatalogProjection {
   return { ...session('/workspace', id), labels: [SIDE_CONVERSATION_SESSION_LABEL] };
 }
+
+
+test('steers WorkHub through Host admission even though the ordinary Session catalog omits it', async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc({
+    client: executionClient({
+      getSession: async () => null,
+      submitMessage: async (input) => {
+        submits.push(input);
+        return { disposition: 'steering', queueRevision: 1, skillInvocation: { loaded: [], failed: [], receipts: [] } };
+      },
+    }),
+    observer: unusedObserver(), attachmentApprovals: createAttachmentApprovalRegistry(),
+    emitSessionsChanged() {}, stat: async () => ({ size: 0 }), resizeImage: async (bytes) => bytes, beforeStop() {},
+  }, ipc);
+  const result = await ipc.invoke('sessions:submitMessage', WORKHUB_COORDINATION_SESSION_ID, 'current_turn', {
+    messageId: 'workhub-steering', text: 'Change direction immediately',
+  });
+  assert.deepEqual(submits, [{ sessionId: WORKHUB_COORDINATION_SESSION_ID, messageId: 'workhub-steering', placement: 'current_turn', content: { text: 'Change direction immediately', inlineReferences: [] } }]);
+  assert.equal((result as { disposition: string }).disposition, 'steering');
+});

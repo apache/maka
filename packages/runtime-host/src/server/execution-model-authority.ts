@@ -128,6 +128,45 @@ export interface HostSessionEffectModel {
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
 
+export interface HostPluginModel {
+  generate(input: {
+    readonly sessionId: string;
+    readonly prompt: string;
+    readonly system?: string;
+    readonly maxOutputTokens?: number;
+    readonly abortSignal: AbortSignal;
+  }): Promise<{ readonly text: string; readonly modelId: string; readonly finishReason?: string }>;
+}
+
+/** Canonical credential, transport, retry, pricing and telemetry path for plugin model calls. */
+export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPluginModel {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return Object.freeze({
+    generate: async ({
+      sessionId,
+      prompt,
+      system,
+      maxOutputTokens,
+      abortSignal,
+    }: Parameters<HostPluginModel['generate']>[0]) => {
+      const header = await input.readSessionHeader(sessionId);
+      return runHostAuxiliaryModelCall(authority, {
+        transportContextId: sessionId,
+        telemetrySessionId: sessionId,
+        header,
+        callKind: 'main',
+        callId: `plugin_${authority.newId()}`,
+        abortSignal,
+        buildRequest: () => ({
+          prompt,
+          ...(system ? { system } : {}),
+          maxOutputTokens: maxOutputTokens ?? 2_048,
+        }),
+      });
+    },
+  });
+}
+
 export type HostDailyReviewModelResult =
   | { readonly ok: true; readonly text: string; readonly modelKey: string }
   | {
@@ -408,7 +447,7 @@ interface HostAuxiliaryModelCallInput {
     SessionHeader,
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
   >;
-  readonly callKind: Exclude<ModelCallKind, 'main'>;
+  readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
   readonly buildRequest: (target: ResolvedExecutionTarget) => AuxiliaryModelRequest;

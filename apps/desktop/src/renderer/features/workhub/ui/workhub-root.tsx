@@ -75,8 +75,9 @@ export function WorkHubRoot() {
   const revealMark = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
   const hasPresented = useRef(false);
-  const pendingComposerFocus = useRef(false);
+  const progressHeader = useRef<HTMLElement>(null);
   const surface = useRef<HTMLElement>(null);
+  const [editingProgressRequest, setEditingProgressRequest] = useState<number>();
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
   const conversationExpanded = expandedOverride ?? hasConversation;
@@ -86,34 +87,66 @@ export function WorkHubRoot() {
   const [control, setControl] = useState<WorkHubControlSnapshot>();
   const [presentation, setPresentation] = useState<WorkHubPresentationSnapshot>();
   const progress = presentation?.progressRequest !== undefined;
-  const floating = !progress && presentation?.placement === 'floating';
-  const showConversation = !floating || conversationExpanded;
+  const editingProgress = progress && editingProgressRequest === presentation.progressRequest;
+  const floating = presentation?.placement === 'floating';
+  const showConversation = !progress && (!floating || conversationExpanded);
   useLayoutEffect(() => {
-    if (!progress && pendingComposerFocus.current) {
-      pendingComposerFocus.current = false;
-      composer.current?.focus();
-    }
-  }, [progress]);
+    const element = surface.current;
+    const unsubscribe = services.presentation.onViewportInset((inset) => {
+      element?.style.setProperty('--workhub-viewport-inset', `${inset}px`);
+    });
+    return () => {
+      unsubscribe();
+      element?.style.removeProperty('--workhub-viewport-inset');
+    };
+  }, [services]);
+  const dockMotion = useRef<{ floating: boolean; progress: boolean; expanded: boolean; padding: Keyframe; animation?: Animation }>(undefined);
+  useLayoutEffect(() => {
+    const dock = composerSurface.current?.parentElement?.parentElement;
+    if (!dock) return;
+    const readPadding = (): Keyframe => {
+      const style = getComputedStyle(dock);
+      return { paddingInlineStart: style.paddingInlineStart, paddingInlineEnd: style.paddingInlineEnd, paddingBottom: style.paddingBottom };
+    };
+    const previous = dockMotion.current;
+    const from = previous?.animation?.playState === 'running' ? readPadding() : previous?.padding;
+    previous?.animation?.cancel();
+    const padding = readPadding();
+    // Animate only a live expand/collapse. Summoning a parked renderer must
+    // paint its final gutter immediately; interrupted motion resumes in place.
+    const animation = floating && previous?.floating && !progress && !previous.progress && previous.expanded !== showConversation && from && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? dock.animate([from, padding], { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      : undefined;
+    dockMotion.current = { floating, progress, expanded: showConversation, padding, animation };
+  }, [floating, progress, showConversation]);
+  useEffect(() => () => dockMotion.current?.animation?.cancel(), []);
+  const editProgress = () => {
+    if (progress) setEditingProgressRequest(presentation.progressRequest);
+  };
   const compactHeight = () => Math.ceil(composerSurface.current?.getBoundingClientRect().height ?? 96);
-  useEffect(() => {
-    if (!composerSurface.current || progress) return;
+  useLayoutEffect(() => {
+    if (!composerSurface.current) return;
     const resize = () => {
       surface.current?.style.setProperty('--workhub-composer-height', `${compactHeight()}px`);
+      if (progress) {
+        const height = Math.ceil(progressHeader.current?.getBoundingClientRect().height ?? 80) + compactHeight() + 2;
+        void services.presentation.resizeProgress(presentation.progressRequest!, height).catch(controller.report);
+        return;
+      }
       void services.presentation.setConversationLayout({ expanded: conversationExpanded, compactHeight: compactHeight() }).catch(controller.report);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(composerSurface.current);
+    if (progressHeader.current) observer.observe(progressHeader.current);
     resize();
     return () => observer.disconnect();
-  }, [services, floating, conversationExpanded, progress]);
-  const toggleConversation = async () => {
+  }, [services, floating, conversationExpanded, presentation?.progressRequest, editingProgress]);
+  const toggleConversation = () => {
     if (conversationExpanded) {
       cancelReveal(revealMark.current, history.current);
       setExpandedLayoutHeight(surface.current?.querySelector('.maka-chat-layout')?.getBoundingClientRect().height ?? 0);
       setConversationExpanded(false);
     } else {
-      revealWordmark(revealMark.current, history.current);
-      await services.presentation.setConversationLayout({ expanded: true, compactHeight: compactHeight() });
       setConversationExpanded(true);
     }
     composer.current?.focus();
@@ -122,6 +155,7 @@ export function WorkHubRoot() {
     let active = true;
     const acceptPresentation = (next: WorkHubPresentationSnapshot) => {
       if (!active) return;
+      if (next.progressRequest !== undefined) hasPresented.current = true;
       if (next.progressRequest !== undefined || next.placement !== 'floating' || !next.floatingVisible) {
         cancelReveal(revealMark.current, history.current);
         for (const animation of composerSurface.current?.getAnimations() ?? []) animation.cancel();
@@ -144,8 +178,7 @@ export function WorkHubRoot() {
     void services.control.getSnapshot().then(acceptControl).catch(controller.report);
     const focus = services.presentation.onFocusComposer((expand) => {
       if (expand) setConversationExpanded(true);
-      if (surface.current?.inert) pendingComposerFocus.current = true;
-      else composer.current?.focus();
+      composer.current?.focus();
       // A warm summon must not fade the last painted frame back out.
       if (hasPresented.current) return;
       hasPresented.current = true;
@@ -178,13 +211,16 @@ export function WorkHubRoot() {
   };
   return (
     <WorkHubHighlightProvider>
-    {progress && <WorkHubProgressCard request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={busy} />}
-    <section ref={surface} inert={progress} aria-hidden={progress} data-progress-parked={progress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
-      {floating && conversationExpanded && <div className="workHubWindowControls">
+    <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+      {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={busy} onOpen={() => {
+        setConversationExpanded(true);
+        call(services.presentation.showConversation(presentation.progressRequest));
+      }} />}
+      {!progress && floating && conversationExpanded && <div className="workHubWindowControls">
         <IconButton className="workHubCloseButton" type="button" size="sm" variant="ghost" icon={<X size={12} />} label={t.hide} onClick={() => call(services.presentation.hide())} />
         <div className="workHubWindowActions">
           <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={14}><path d="m8 11-4-4m0 4V7h4" /></PictureInPicture2>} label={t.dock} onClick={() => call(services.presentation.dock())} />
-          <IconButton type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: conversationExpanded ? '0deg' : '180deg' }} />} label={conversationExpanded ? t.collapseConversation : t.expandConversation} aria-expanded={conversationExpanded} onClick={() => call(toggleConversation())} />
+          <IconButton type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: conversationExpanded ? '0deg' : '180deg' }} />} label={conversationExpanded ? t.collapseConversation : t.expandConversation} aria-expanded={conversationExpanded} onClick={toggleConversation} />
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
@@ -193,7 +229,7 @@ export function WorkHubRoot() {
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
         onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
-          <div className="workHubComposerSurface" ref={composerSurface}>
+          <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
               <div className="workHubLiveError" role="alert">
                 {controller.error ?? t.controlFailed}
@@ -203,13 +239,28 @@ export function WorkHubRoot() {
               </div>
             )}
             <WorkHubComposer
-              placeholder={t.welcome}
+              pendingMessages={controller.transientMessages}
+              queuedMessages={controller.messageQueue.entries}
+              queuedMessageRevision={controller.messageQueue.revision}
+              onUpdateQueuedEntry={controller.updateQueuedEntry}
+              onDeleteQueuedEntry={controller.deleteQueuedEntry}
+              onPromoteQueuedEntry={controller.promoteQueuedEntry}
+              onReorderQueuedEntries={controller.reorderQueuedEntries}
+              placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
               sessionId={controller.sessionId}
               streaming={busy}
-              sendBlocked={!controller.sessionId || busy || !session?.model}
+              sendBlocked={!controller.sessionId || controller.sending || !session?.model}
+              allowAttachmentImportWhileStreaming
               stopPending={controller.stopPending}
-              onSend={(text, attachments) => { setConversationExpanded(true); return controller.send(text, attachments); }}
+              onSend={async (text, attachments, followUpMode) => {
+                const accepted = await controller.send(text, attachments, followUpMode);
+                if (accepted) {
+                  setConversationExpanded(true);
+                  if (progress) call(services.presentation.showConversation(presentation.progressRequest));
+                }
+                return accepted;
+              }}
               onStop={controller.stop}
               activeSession={session}
               activeModel={session?.model}
@@ -217,7 +268,7 @@ export function WorkHubRoot() {
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
               modelPickerPresentation={showConversation ? 'menu' : 'wheel'}
-              maxInputRows={showConversation ? undefined : 6}
+              maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
@@ -227,8 +278,8 @@ export function WorkHubRoot() {
                 </div>
               }
             />
-            {floating && !conversationExpanded && (
-              <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={() => call(toggleConversation())} />
+            {!progress && floating && !conversationExpanded && (
+              <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={toggleConversation} />
             )}
           </div>
         }
