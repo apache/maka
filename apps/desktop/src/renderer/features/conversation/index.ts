@@ -45,6 +45,7 @@ export * from './model/session-ui-state.js';
 export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';

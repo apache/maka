@@ -592,8 +592,7 @@
         "importDeclarations": 2,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "requestAnimationFrame": 1,
-          "window.setTimeout": 2
+          "window.setTimeout": 1
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -603,12 +602,13 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "./features/conversation/index.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2808
+        "nonTriviaTokens": 2755
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,

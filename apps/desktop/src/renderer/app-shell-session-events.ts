@@ -34,6 +34,7 @@ import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';
 
 type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -115,23 +116,7 @@ export function createAppShellSessionEventHandlers(options: {
     toastApi,
     notifyRunEnded,
   } = options;
-  const scheduleFrame = options.scheduleFrame ?? (
-    typeof requestAnimationFrame === 'function'
-      ? (callback: () => void) => {
-          let pending = true;
-          const run = () => {
-            if (!pending) return;
-            pending = false;
-            // Hidden windows can suspend frames while the timeout keeps flushing.
-            cancelAnimationFrame(frameId);
-            window.clearTimeout(timeoutId);
-            callback();
-          };
-          const frameId = requestAnimationFrame(run);
-          const timeoutId = window.setTimeout(run, 100);
-        }
-      : undefined
-  );
+  const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
   function applyProjectionEvents(
