@@ -37,9 +37,21 @@ export const MERMAID_RENDER_CACHE_MAX_CHARS = 4 * 1024 * 1024;
 export const MIN_MERMAID_ZOOM = 0.5;
 export const MAX_MERMAID_ZOOM = 3;
 export const MERMAID_ZOOM_STEP = 0.25;
-/** 导出剪贴板 PNG 的像素比：2× 在清晰度与 clipboard.write 体积之间取平衡。 */
+/** Export clipboard PNG pixel ratio: 2x balances sharpness against clipboard.write size. */
 export const MERMAID_EXPORT_PIXEL_RATIO = 2;
-/** useClipboardCopyFeedback 的 attempt key，区分于其他文本复制入口。 */
+/**
+ * Export canvas edge cap, in pixels. Chromium's own limit is 65535 (kMaxSkiaDim); 32767 is
+ * Firefox's edge limit and leaves a 2x margin under Chromium's, at the cost of downscaling
+ * wider diagrams.
+ */
+export const MERMAID_EXPORT_MAX_EDGE_PX = 32_767;
+/**
+ * Export canvas area cap: 64 megapixels, at worst 256MB of RGBA. Chromium's limit is
+ * 32768 * 8192 = 268435456 CSS px (kMaxCanvasArea); stay 4x under it to keep the bitmap
+ * desktop-sized.
+ */
+export const MERMAID_EXPORT_MAX_PIXELS = 64 * 1024 * 1024;
+/** useClipboardCopyFeedback attempt key, distinct from the other text-copy entry points. */
 const MERMAID_IMAGE_COPY_KEY = 'mermaid-image';
 const MIN_MERMAID_VIEWPORT_HEIGHT = 112;
 const MAX_MERMAID_VIEWPORT_HEIGHT = 480;
@@ -339,9 +351,10 @@ function clampMermaidZoom(value: number): number {
 }
 
 /**
- * 纯函数：给 SVG 根节点注入显式像素尺寸并编码为 data URL。
- * 剥掉根节点的 width/height/style（mermaid 默认输出 width="100%" + max-width），
- * 否则 Image 解码时百分比尺寸会退化为默认视口，导出画布比例失真。
+ * Pure function: inject explicit pixel dimensions into the SVG root and encode it as a data URL.
+ * Strips width/height/style from the root tag (mermaid emits width="100%" + max-width by
+ * default); otherwise the percentage sizing degrades to the default viewport when the Image
+ * decodes and the export canvas ratio is distorted.
  */
 export function mermaidSvgToDataUrl(svg: string, width: number, height: number): string {
   const rootTag = /<svg\b[^>]*>/i.exec(svg)?.[0] ?? '';
@@ -352,8 +365,25 @@ export function mermaidSvgToDataUrl(svg: string, width: number, height: number):
 }
 
 /**
- * 把渲染好的 Mermaid SVG 字符串栅格化为 PNG Blob（仅浏览器环境）。
- * 输入是 state 里的净化 SVG 字符串而非 DOM，不受 pan/zoom 交互态影响。
+ * Pure function: the export canvas scale relative to the SVG's natural size.
+ * Diagrams live in viewBox coordinates (tens of thousands of pixels); scaling that by 2x with no
+ * cap crosses Chromium's canvas limits (32768 * 8192 CSS px area, 65535 per side). There the 2D
+ * context is lost and toBlob yields null, so the copy fails; just under the limit it instead
+ * allocates the RGBA bitmap (up to 1GB at 2^28 px). So clamp against both an edge and an area
+ * budget; elongated diagrams may drop below 1x and still produce a complete, usable image.
+ */
+export function mermaidExportScale(width: number, height: number): number {
+  return Math.min(
+    MERMAID_EXPORT_PIXEL_RATIO,
+    MERMAID_EXPORT_MAX_EDGE_PX / Math.max(width, height),
+    Math.sqrt(MERMAID_EXPORT_MAX_PIXELS / (width * height)),
+  );
+}
+
+/**
+ * Rasterizes a rendered Mermaid SVG string into a PNG Blob (browser only).
+ * Takes the sanitized SVG string from state rather than from the DOM, so pan/zoom interaction
+ * state does not affect it.
  */
 async function mermaidSvgToPngBlob(
   svg: string,
@@ -361,12 +391,20 @@ async function mermaidSvgToPngBlob(
   height: number,
   background: string,
 ): Promise<Blob> {
+  const scale = mermaidExportScale(width, height);
+  // floor makes the area cap a hard guarantee; a side below 1px afterwards means the aspect
+  // ratio is too extreme to export — fail through the existing feedback rather than silently
+  // copying a 1px image.
+  const canvasWidth = Math.floor(width * scale);
+  const canvasHeight = Math.floor(height * scale);
+  if (canvasWidth < 1 || canvasHeight < 1) throw new Error('Mermaid diagram too large to export');
+  // Bound the SVG image viewport as well as the canvas; preserve its original viewBox.
   const image = new Image();
-  image.src = mermaidSvgToDataUrl(svg, width, height);
+  image.src = mermaidSvgToDataUrl(svg, canvasWidth, canvasHeight);
   await image.decode();
   const canvas = document.createElement('canvas');
-  canvas.width = width * MERMAID_EXPORT_PIXEL_RATIO;
-  canvas.height = height * MERMAID_EXPORT_PIXEL_RATIO;
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas 2D context unavailable');
   context.fillStyle = background;
@@ -587,16 +625,17 @@ export function MermaidDiagram(props: {
     const diagramCopyPhase = copyFeedback.phaseFor(MERMAID_IMAGE_COPY_KEY);
     async function copyDiagramToClipboard(event: ReactMouseEvent<HTMLButtonElement>) {
       if (state.status !== 'rendered') return;
-      // 背景色取 figure 实际解析值（styles.css 里 .maka-mermaid-diagram 绑定 --background），
-      // 深色主题导出的 PNG 不会是透明底或误用浅色底。
+      // Background color comes from the figure's resolved value (styles.css binds --background on
+      // .maka-mermaid-diagram), so a dark-theme export is neither transparent nor wrongly light.
       const figure = event.currentTarget.closest('figure');
-      const background = figure ? getComputedStyle(figure).backgroundColor : '';
+      if (!figure) return;
+      const background = getComputedStyle(figure).backgroundColor;
       await copyFeedback.attempt(MERMAID_IMAGE_COPY_KEY, async () => {
         const blob = await mermaidSvgToPngBlob(
           state.svg,
           state.naturalWidth,
           state.naturalHeight,
-          background || '#ffffff',
+          background,
         );
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       });

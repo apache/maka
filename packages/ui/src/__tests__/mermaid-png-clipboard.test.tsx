@@ -22,14 +22,31 @@ import { test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LocaleProvider } from '../locale-context.js';
-import { MermaidDiagram } from '../mermaid-diagram.js';
+import {
+  MERMAID_EXPORT_MAX_EDGE_PX,
+  MERMAID_EXPORT_MAX_PIXELS,
+  MERMAID_EXPORT_PIXEL_RATIO,
+  MermaidDiagram,
+} from '../mermaid-diagram.js';
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 
 const BACKGROUND = 'rgb(24, 32, 48)';
+const cases = [
+  ...(['none', 'decode', 'toBlob-null', 'toBlob-throw', 'write'] as const).map((failure) => ({
+    name: failure,
+    failure,
+    width: 123,
+    height: 45,
+    exportWidth: 123 * MERMAID_EXPORT_PIXEL_RATIO,
+    exportHeight: 45 * MERMAID_EXPORT_PIXEL_RATIO,
+  })),
+  { name: 'area cap', failure: 'none', width: 10_000, height: 10_000, exportWidth: 8192, exportHeight: 8192 },
+  { name: 'edge cap', failure: 'none', width: 40_000, height: 100, exportWidth: 32767, exportHeight: 81 },
+];
 
 for (const expanded of [false, true]) {
-  for (const failure of ['none', 'decode', 'toBlob-null', 'toBlob-throw', 'write'] as const) {
-    test(`copies PNG from ${expanded ? 'fullscreen' : 'inline'} toolbar: ${failure}`, async (t) => {
+  for (const { name, failure, width, height, exportWidth, exportHeight } of cases) {
+    test(`copies PNG from ${expanded ? 'fullscreen' : 'inline'} toolbar: ${name}`, async (t) => {
       const dom = installDom();
       t.after(() => dom.restore());
       const createElement = dom.document.createElement.bind(dom.document);
@@ -47,16 +64,15 @@ for (const expanded of [false, true]) {
       t.mock.method(mermaid, 'initialize', () => {});
       t.mock.method(mermaid, 'render', async (id: string) => ({
         diagramType: 'flowchart-v2',
-        svg: `<svg id="${id}" viewBox="0 0 123 45" width="100%" style="max-width:123px"><rect width="10" height="10" /></svg>`,
+        svg: `<svg id="${id}" viewBox="0 0 ${width} ${height}" width="100%" style="max-width:${width}px"><rect width="10" height="10" /></svg>`,
       }));
 
-      const calls: string[] = [];
+      const paintOrder: string[] = [];
       const images: TestImage[] = [];
       class TestImage {
         src = '';
         constructor() { images.push(this); }
         async decode() {
-          calls.push('decode');
           if (failure === 'decode') throw new Error('decode rejected');
         }
       }
@@ -84,7 +100,6 @@ for (const expanded of [false, true]) {
         value: {
           clipboard: {
             async write(items: TestClipboardItem[]) {
-              calls.push('write');
               writes.push(items);
               if (failure === 'write') throw new Error('clipboard rejected');
             },
@@ -92,16 +107,17 @@ for (const expanded of [false, true]) {
         },
       });
       const canvases: HTMLCanvasElement[] = [];
-      const paints: unknown[][] = [];
+      const fills: { color: string; bounds: number[] }[] = [];
+      const draws: unknown[][] = [];
       const context = {
         fillStyle: '',
         fillRect(...args: number[]) {
-          calls.push('fill');
-          paints.push([this.fillStyle, ...args]);
+          paintOrder.push('fill');
+          fills.push({ color: this.fillStyle, bounds: args });
         },
         drawImage(...args: unknown[]) {
-          calls.push('draw');
-          paints.push(args);
+          paintOrder.push('draw');
+          draws.push(args);
         },
       };
       t.mock.method(dom.document.defaultView!.HTMLCanvasElement.prototype, 'getContext', function (this: HTMLCanvasElement, kind: string) {
@@ -115,7 +131,6 @@ for (const expanded of [false, true]) {
       Object.defineProperty(canvasPrototype, 'toBlob', {
         configurable: true,
         value(callback: BlobCallback, mime: string) {
-          calls.push('toBlob');
           assert.equal(mime, 'image/png');
           if (failure === 'toBlob-throw') throw new Error('canvas export rejected');
           callback(failure === 'toBlob-null' ? null : blob);
@@ -130,7 +145,7 @@ for (const expanded of [false, true]) {
       try {
         await act(async () => root.render(
           <LocaleProvider locale="en">
-            <MermaidDiagram code={`flowchart LR\n${expanded}_${failure} --> b`} density="default" />
+            <MermaidDiagram code={`flowchart LR\n${expanded}_${failure}_${width}_${height} --> b`} density="default" />
           </LocaleProvider>,
         ));
         await settleEffects();
@@ -147,17 +162,27 @@ for (const expanded of [false, true]) {
         assert.equal(images.length, 1);
         assert.match(images[0]!.src, /^data:image\/svg\+xml;charset=utf-8,/);
         const svg = decodeURIComponent(images[0]!.src.split(',')[1]!);
-        assert.match(svg, /^<svg width="123" height="45"/);
-        assert.doesNotMatch(svg, /width="100%"/);
+        const svgRoot = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+        assert.equal(Number(svgRoot.getAttribute('width')), exportWidth);
+        assert.equal(Number(svgRoot.getAttribute('height')), exportHeight);
+        assert.equal(svgRoot.getAttribute('viewBox'), `0 0 ${width} ${height}`);
         if (failure === 'decode') {
-          assert.deepEqual(calls, ['decode']);
           assert.equal(canvases.length, 0);
         } else {
           assert.equal(canvases.length, 1);
-          assert.equal(canvases[0]!.width, 246);
-          assert.equal(canvases[0]!.height, 90);
-          assert.deepEqual(paints, [[BACKGROUND, 0, 0, 246, 90], [images[0], 0, 0, 246, 90]]);
-          assert.deepEqual(calls, ['decode', 'fill', 'draw', 'toBlob', ...(['none', 'write'].includes(failure) ? ['write'] : [])]);
+          assert.equal(canvases[0]!.width, exportWidth);
+          assert.equal(canvases[0]!.height, exportHeight);
+          const canvas = canvases[0]!;
+          assert.ok(canvas.width > 0 && canvas.width <= MERMAID_EXPORT_MAX_EDGE_PX);
+          assert.ok(canvas.height > 0 && canvas.height <= MERMAID_EXPORT_MAX_EDGE_PX);
+          assert.ok(canvas.width * canvas.height <= MERMAID_EXPORT_MAX_PIXELS);
+          assert.ok(fills.some(({ color, bounds }) => color === BACKGROUND
+            && bounds[0] === 0 && bounds[1] === 0
+            && bounds[2] === canvas.width && bounds[3] === canvas.height),
+          'fills the full canvas with the theme background');
+          assert.ok(draws.some(([image]) => image === images[0]), 'draws the decoded diagram');
+          assert.ok(paintOrder.lastIndexOf('fill') < paintOrder.indexOf('draw'),
+            'fills the background before drawing, without painting over the diagram');
         }
         if (failure === 'none' || failure === 'write') {
           assert.equal(writes.length, 1);

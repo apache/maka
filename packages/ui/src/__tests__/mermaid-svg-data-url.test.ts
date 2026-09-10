@@ -19,7 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { mermaidSvgToDataUrl } from '../mermaid-diagram.js';
+import {
+  MERMAID_EXPORT_MAX_EDGE_PX,
+  MERMAID_EXPORT_MAX_PIXELS,
+  MERMAID_EXPORT_PIXEL_RATIO,
+  mermaidExportScale,
+  mermaidSvgToDataUrl,
+} from '../mermaid-diagram.js';
 
 describe('mermaidSvgToDataUrl', () => {
   test('injects explicit pixel dimensions and strips responsive sizing from the root tag', () => {
@@ -38,5 +44,45 @@ describe('mermaidSvgToDataUrl', () => {
     const decoded = decodeURIComponent(mermaidSvgToDataUrl(svg, 10, 10).split(',')[1]);
     assert.ok(decoded.includes('<rect x="1" y="1" width="2" height="2"/>'));
     assert.match(decoded, /^<svg width="10" height="10"/);
+  });
+});
+
+describe('mermaidExportScale', () => {
+  function bitmap(width: number, height: number) {
+    const scale = mermaidExportScale(width, height);
+    return { width: Math.floor(width * scale), height: Math.floor(height * scale) };
+  }
+  function withinBudget({ width, height }: { width: number; height: number }) {
+    assert.ok(width <= MERMAID_EXPORT_MAX_EDGE_PX, `${width} exceeds the edge budget`);
+    assert.ok(height <= MERMAID_EXPORT_MAX_EDGE_PX, `${height} exceeds the edge budget`);
+    assert.ok(width * height <= MERMAID_EXPORT_MAX_PIXELS, `${width}x${height} exceeds the pixel budget`);
+  }
+
+  test('keeps the full pixel ratio for diagrams that fit the budget', () => {
+    assert.equal(mermaidExportScale(123, 45), MERMAID_EXPORT_PIXEL_RATIO);
+    assert.deepEqual(bitmap(123, 45), {
+      width: 123 * MERMAID_EXPORT_PIXEL_RATIO,
+      height: 45 * MERMAID_EXPORT_PIXEL_RATIO,
+    });
+  });
+
+  test('clamps the report case below the ratio that would exceed the canvas limits', () => {
+    // 30_000x4_000 at 2x used to become a 60_000x8_000 canvas.
+    assert.ok(mermaidExportScale(30_000, 4_000) < MERMAID_EXPORT_PIXEL_RATIO);
+    withinBudget(bitmap(30_000, 4_000));
+  });
+
+  test('clamps a near-square viewBox by area before the edge budget applies', () => {
+    const size = bitmap(10_000, 10_000);
+    withinBudget(size);
+    assert.ok(size.width < MERMAID_EXPORT_MAX_EDGE_PX);
+  });
+
+  test('scales below 1x for elongated diagrams rather than rejecting them', () => {
+    // Wider than the edge budget, so only the edge clamp can resolve it.
+    const scale = mermaidExportScale(40_000, 100);
+    assert.ok(scale > 0 && scale < 1);
+    assert.ok(Math.abs(40_000 * scale - MERMAID_EXPORT_MAX_EDGE_PX) <= 1);
+    withinBudget(bitmap(40_000, 100));
   });
 });
