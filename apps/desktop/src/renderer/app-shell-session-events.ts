@@ -122,10 +122,13 @@ export function createAppShellSessionEventHandlers(options: {
           const run = () => {
             if (!pending) return;
             pending = false;
+            // Hidden windows can suspend frames while the timeout keeps flushing.
+            cancelAnimationFrame(frameId);
+            window.clearTimeout(timeoutId);
             callback();
           };
-          requestAnimationFrame(run);
-          window.setTimeout(run, 100);
+          const frameId = requestAnimationFrame(run);
+          const timeoutId = window.setTimeout(run, 100);
         }
       : undefined
   );
