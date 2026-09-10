@@ -1729,6 +1729,64 @@ test('continues projecting the active Turn while a steer awaits Host admission',
   });
 });
 
+test('consumes a steered attachment when the started turn binds the admission', async () => {
+  const pendingSteer = deferred<{ kind: 'started'; turnId: string }>();
+  let admissionId: string | undefined;
+  let admitted = 0;
+  let steerPayload: { attachmentItems?: readonly WorkbarIngestInput[] } | undefined;
+  const attachmentItem: WorkbarIngestInput = { approvalId: 'approval-1', name: 'kept.png' };
+  const { container, emit, send, steer } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    steer: async (_sessionId, _text, requestedAdmissionId, payload) => {
+      admissionId = requestedAdmissionId;
+      steerPayload = payload;
+      return pendingSteer.promise;
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let steerResult!: Promise<boolean>;
+  await act(async () => {
+    steerResult = steer('steer with the kept image', [attachmentItem], () => {
+      admitted += 1;
+    });
+    await Promise.resolve();
+  });
+  await waitUntil(() => admissionId !== undefined);
+
+  await act(async () => {
+    pendingSteer.resolve({ kind: 'started', turnId: 'steer-started-turn' });
+    assert.equal(await steerResult, true);
+    await Promise.resolve();
+  });
+
+  // The attachments travel with the steering Message...
+  assert.deepEqual(steerPayload, { attachmentItems: [attachmentItem] });
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-live-turn-id'),
+    'steer-started-turn',
+  );
+  // ...and binding the started turn IS the admission boundary: the consumer
+  // fires exactly once here, not on the later admission echo.
+  assert.equal(admitted, 1);
+
+  await act(async () => {
+    emit(
+      messageAdmittedEvent(
+        'late-admission-echo',
+        'steer-started-turn',
+        1,
+        admissionId as string,
+      ),
+    );
+    await Promise.resolve();
+  });
+  assert.equal(admitted, 1, 'the admission echo must not consume a second time');
+});
+
 test('fails a send when observation seed rejects and resubscribes for retry', async () => {
   let sendCalls = 0;
   let subscriptionCount = 0;

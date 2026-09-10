@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   decodeMessageContent,
+  hasMeaningfulMessageContent,
   isCanonicalStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
@@ -884,6 +885,19 @@ describe('runtimeEventHasModelVisibleContent', () => {
       runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '' } })),
       false,
     );
+  });
+
+  test('treats whitespace-only inline text as contentless everywhere (#4815 review)', () => {
+    // The desktop guard trims before judging; the shared predicate must trim
+    // too, or a whitespace-only message is admitted by the Host and then
+    // dropped by the desktop path — the same one-layer-accepts split this
+    // predicate exists to prevent.
+    assert.strictEqual(
+      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '   ' } })),
+      false,
+    );
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '   ' }), false);
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '   ', quotes: [{ text: 'q' }] }), true);
   });
 });
 

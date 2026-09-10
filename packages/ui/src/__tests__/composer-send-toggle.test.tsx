@@ -64,6 +64,34 @@ test('a running composer keeps Send alone — no mode switch in the send slot', 
   assert.doesNotMatch(markup, /SegmentedControl/);
 });
 
+test('an opt-in attachment-only draft enables Send without text (#4815 review)', () => {
+  const attachments = [{ displayName: 'kept.png', kind: 'image' as const, size: 12 }];
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        allowAttachmentOnlySend
+        pendingAttachments={attachments}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.match(markup, /aria-label="Send"/);
+  assert.doesNotMatch(markup, /<button[^>]*aria-label="Send"[^>]*disabled/);
+  // Without the Host opt-in the same staged attachment keeps Send disabled:
+  // attachment-only sends stay a per-host decision, not a composer default.
+  const optedOut = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        pendingAttachments={attachments}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.match(optedOut, /aria-label="Send"[^>]*disabled/);
+});
+
 test('keeps Host order visible until the reordered projection arrives', async () => {
   const original = {
     document: globalThis.document,

@@ -173,11 +173,15 @@ const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
  * is present: inline text, an inline excerpt, or an attachment reference.
  * Admission, compaction estimates, and recap projection must share this one
  * predicate (#4804) — restating it per layer is how a quote-only message ends
- * up admitted by one boundary and silently dropped by the next.
+ * up admitted by one boundary and silently dropped by the next. The inline
+ * text is trimmed here so a whitespace-only message is judged contentless by
+ * every layer at once: the desktop guard already trims, and a predicate that
+ * did not would re-create the one-layer-accepts split on `"   "` (#4815
+ * review).
  */
 export function hasMeaningfulMessageContent(content: MessageContent): boolean {
   return (
-    content.text.length > 0 ||
+    content.text.trim().length > 0 ||
     (content.quotes?.length ?? 0) > 0 ||
     (content.attachments?.length ?? 0) > 0
   );
