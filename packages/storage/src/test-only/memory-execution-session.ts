@@ -1225,9 +1225,8 @@ function selectCatalog(s: MemoryState, filter: Parameters<SessionAuthorityStore[
       (r) =>
         r.header.role !== WORKHUB_COORDINATION_SESSION_ROLE &&
         r.header.conversationCopy?.state !== 'preparing' &&
-        (filter?.subagentParentSessionId
-          ? r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId
-          : !r.header.subagentParent),
+        (filter?.subagentParentSessionId === undefined ||
+          r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId),
     )
     .map((r) => catalog(s, r.header.id))
     .sort(

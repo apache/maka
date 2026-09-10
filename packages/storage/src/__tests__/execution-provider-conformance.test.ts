@@ -28,7 +28,7 @@ import { messageContentDigest, normalizeMessageContent } from '@maka/core/events
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
-import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
 import { WORKHUB_COORDINATION_SESSION_ID as HUB } from '@maka/core/session';
@@ -76,6 +76,64 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(
+    backend + ': catalog lists subagent Sessions unless a parent filter restricts them',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        for (const { filter, expected } of await createSubagentCatalogFixture(s, root)) {
+          assert.deepEqual(
+            (await s.list(filter)).map((entry) => entry.id),
+            expected,
+            `Catalog list with filter ${JSON.stringify(filter)}`,
+          );
+        }
+      });
+    },
+  );
+  test(
+    backend + ': catalog paginates parents and subagent Sessions without omissions',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        for (const { filter, expected } of await createSubagentCatalogFixture(s, root)) {
+          for (const limit of [1, 2, 3, 10]) {
+            const visited: string[] = [];
+            let cursor: SessionCatalogPageCursor | undefined;
+            let revision: `sha256:${string}` | undefined;
+            for (let pageIndex = 0; ; pageIndex++) {
+              assert.ok(pageIndex <= expected.length, 'Pagination did not converge');
+              const page = await s.listCatalogPage(filter, cursor, limit, revision);
+              assert.equal(page.kind, 'page');
+              if (page.kind !== 'page') throw new Error('Unchanged catalog revision changed');
+              revision ??= page.revision;
+              assert.equal(page.revision, revision);
+              assert.ok(page.records.length <= limit);
+              for (const record of page.records) {
+                assert.ok(
+                  !visited.includes(record.header.id),
+                  'Repeated Session: ' + record.header.id,
+                );
+                visited.push(record.header.id);
+              }
+              const last = page.records.at(-1);
+              if (last) cursor = { activityAt: last.activityAt, sessionId: last.header.id };
+              if (!page.hasMore) break;
+              assert.ok(last, 'Nonterminal page must advance');
+            }
+            assert.deepEqual(
+              visited,
+              expected,
+              `Complete traversal with filter ${JSON.stringify(filter)} and page size ${limit}`,
+            );
+            const empty = await s.listCatalogPage(filter, cursor, limit, revision);
+            assert.equal(empty.kind, 'page');
+            if (empty.kind !== 'page') throw new Error('Catalog revision changed');
+            assert.deepEqual(empty.records, []);
+            assert.equal(empty.hasMore, false);
+          }
+        }
+      });
+    },
+  );
   test(
     backend + ': catalog hides preparing copies until publication without losing recovery state',
     async () => {
@@ -1598,6 +1656,72 @@ async function withRollback(
       database?.close();
     }
   });
+}
+async function createSubagentCatalogFixture(
+  s: Stores['sessionStore'],
+  root: string,
+): Promise<Array<{ filter: SessionListFilter | undefined; expected: string[] }>> {
+  const parentA = await s.create({ ...sessionInput(root), name: 'Parent A' });
+  const parentB = await s.create({ ...sessionInput(root), name: 'Parent B' });
+  const children: string[] = [];
+  for (const [index, parent] of [parentA, parentA, parentB, parentB].entries()) {
+    const child = await s.createSubagent({
+      ...sessionInput(root),
+      name: `Child ${index}`,
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: parent.id,
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: `spawn-${index}`,
+        },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: 1,
+        agentId: 'local-read',
+        agentName: 'Local Read',
+        profile: 'local_read',
+        systemPrompt: 'Read the assigned workspace task.',
+        toolNames: ['Read'],
+        categoryPolicy: { read: 'allow' },
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: 'a'.repeat(64),
+        initialTurnId: `child-turn-${index}`,
+        initialRunId: `child-run-${index}`,
+      },
+    });
+    assert.equal(child.created, true);
+    children.push(child.header.id);
+  }
+  await createCoordinationSession(s, root);
+  // Interleave both families and their parents across page boundaries. The
+  // coordination Session remains hidden even when no parent filter is supplied.
+  const all = [children[0]!, parentA.id, children[2]!, children[1]!, parentB.id, children[3]!];
+  for (const [index, id] of all.entries()) {
+    await s.updateHeader(id, { createdAt: 10, lastMessageAt: 100 - index });
+  }
+  return [
+    { filter: undefined, expected: all },
+    { filter: {}, expected: all },
+    { filter: { subagentParentSessionId: undefined }, expected: all },
+    {
+      filter: { subagentParentSessionId: parentA.id },
+      expected: [children[0]!, children[1]!],
+    },
+    {
+      filter: { subagentParentSessionId: parentB.id },
+      expected: [children[2]!, children[3]!],
+    },
+    { filter: { subagentParentSessionId: children[0]! }, expected: [] },
+    { filter: { subagentParentSessionId: 'missing-parent' }, expected: [] },
+    // Explicit queries must not leave a sticky filter on the store.
+    { filter: undefined, expected: all },
+  ];
 }
 function graphProvision(): AgentGraphOperatorProvisionRequest {
   return {
