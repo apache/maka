@@ -58,3 +58,7 @@ export {
   clearPending,
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+
+export { publishTransientUserMessage } from './controller/publish-transient-user-message.js';
+export { captureSessionSteeringPosition } from './controller/capture-session-steering-position.js';
+export { enqueueComposerFollowUp } from './controller/enqueue-composer-follow-up.js';

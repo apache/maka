@@ -1505,7 +1505,10 @@ describe('Runtime Host bootstrap protocol', () => {
         originHostEpoch: 'epoch-1',
         sessionId: 'session-1',
         messageId: 'message-1',
-        content: { text: 'adjust the active turn' },
+        content: {
+          text: 'adjust the active turn',
+          displayAfter: { kind: 'tool' as const, id: 'visible-tool' },
+        },
         placement: 'current_turn' as const,
       },
     };

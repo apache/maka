@@ -36,6 +36,7 @@ export interface DesktopLocalMessage {
   readonly canCancel: boolean;
   readonly placement: 'current_turn' | 'next_turn';
   readonly text: string;
+  readonly displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null;
   readonly attachments: readonly AttachmentRef[];
   readonly directoryReferences?: readonly DirectoryReference[];
   readonly quotes?: readonly QuoteRef[];

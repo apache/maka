@@ -1242,6 +1242,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
   [
     'displayText',
+    'displayAfter',
     'attachments',
     'directoryReferences',
     'quotes',
@@ -1513,6 +1514,7 @@ function decodeMessage(
       ) {
         const {
           displayText,
+          displayAfter,
           attachments,
           directoryReferences,
           quotes,
@@ -1527,6 +1529,7 @@ function decodeMessage(
             ...decodeMessageContent({
               text: message.text,
               displayText,
+              displayAfter,
               attachments,
               directoryReferences,
               quotes,

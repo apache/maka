@@ -728,6 +728,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'directoryReferences',
     'quotes',
     'inlineReferences',
+    'displayAfter',
     'steering',
     'providerOptions',
   ],
@@ -1052,6 +1053,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return isMessageContent({
         text: value.text,
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
+        ...(value.displayAfter !== undefined ? { displayAfter: value.displayAfter } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
         ...(value.directoryReferences !== undefined
           ? { directoryReferences: value.directoryReferences }

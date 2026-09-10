@@ -29,6 +29,7 @@ import {
 } from "../materialize.js";
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import { armLiveTurn } from "../live-turn-projection.js";
+import { captureSteeringPosition, createTranscriptProjection } from '../transcript-projection.js';
 
 const originalUser = {
   type: "user" as const,
@@ -60,6 +61,75 @@ function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefi
 }
 
 describe("steering timeline", () => {
+  test('keeps the Send position through waiting, live acceptance, durable handoff and reload', () => {
+    const projection = createTranscriptProjection();
+    const position = captureSteeringPosition({ messages: [originalUser], locale: 'en' }, 't1');
+    assert.equal(position.displayAfter, null);
+    const pending = { id: 'steer-1', text: 'steer', ts: 2, transientPlacement: 'current_turn' as const, ...position };
+    const project = (messages: StoredMessage[], liveTurn?: ReturnType<typeof armLiveTurn>, transientMessages = [pending]) =>
+      projection.project({ messages, liveTurn, transientMessages, locale: 'en' })[0];
+    assert.deepEqual(timelineText(project([originalUser])), ['user:steer']);
+    let live: ReturnType<typeof armLiveTurn> | undefined = applyLiveTurnEvent(armLiveTurn('t1'), {
+      type: 'text_delta', id: 'answer', messageId: beforeAssistant.id, turnId: 't1', ts: 3, text: 'before',
+    });
+    assert.deepEqual(timelineText(project([originalUser], live)), ['user:steer', 'text:before']);
+    live = applyLiveTurnEvent(live, {
+      type: 'steering_message', id: 'accepted', messageId: pending.id, turnId: 't1', ts: 4,
+      content: { text: pending.text, displayAfter: position.displayAfter },
+    });
+    const accepted = project([originalUser], live, []);
+    assert.deepEqual(timelineText(accepted), ['user:steer', 'text:before']);
+    assert.equal(accepted?.timeline[0]?.kind === 'user' && accepted.timeline[0].transient, undefined);
+    const durable = [originalUser, beforeAssistant, { ...steeringUser, displayAfter: position.displayAfter }];
+    assert.deepEqual(timelineText(project(durable, live)), ['user:steer', 'text:before']);
+    assert.deepEqual(timelineText(materializeTurns(durable, 'en')[0]), ['user:steer', 'text:before']);
+  });
+
+  test('anchors consecutive pending messages after the visible tool, splitting a growing tool group', () => {
+    const calls: StoredMessage[] = ['tool-1', 'tool-2'].map((id, i) => ({
+      type: 'tool_call', id, turnId: 't1', stepId: 'step-1', ts: i + 2, toolName: 'Read', args: {},
+    }));
+    const firstPosition = captureSteeringPosition({ messages: [originalUser, calls[0]!], locale: 'en' }, 't1');
+    assert.deepEqual(firstPosition.displayAfter, { kind: 'tool', id: 'tool-1' });
+    const first = { ...firstPosition, id: 'steer-1', text: 'first', ts: 3, transientPlacement: 'current_turn' as const };
+    const secondPosition = captureSteeringPosition({ messages: [originalUser, calls[0]!], transientMessages: [first], locale: 'en' }, 't1');
+    assert.deepEqual(secondPosition.displayAfter, { kind: 'user', id: first.id });
+    const second = { ...secondPosition, id: 'steer-2', text: 'second', ts: 4, transientPlacement: 'current_turn' as const };
+    const messages = [originalUser, ...calls];
+    const turn = createTranscriptProjection().project({ messages, transientMessages: [first, second], locale: 'en' })[0];
+    assert.deepEqual(timelineText(turn), ['tools:', 'user:first', 'user:second', 'tools:']);
+    const durable = materializeTurns([
+      ...messages,
+      { type: 'user', turnId: 't1', ...first },
+      { type: 'user', turnId: 't1', ...second },
+    ], 'en')[0];
+    assert.deepEqual(timelineText(durable), timelineText(turn));
+  });
+
+  test('distinguishes thinking and answer boundaries in the same step', () => {
+    const thinking: StoredMessage = { ...beforeAssistant, text: '', thinking: { text: 'thinking' } };
+    const position = captureSteeringPosition({ messages: [originalUser, thinking], locale: 'en' }, 't1');
+    assert.deepEqual(position.displayAfter, { kind: 'thinking', id: beforeAssistant.id });
+    const messages = [originalUser, { ...thinking, text: 'answer' }, { ...steeringUser, displayAfter: position.displayAfter }];
+    assert.deepEqual(timelineText(materializeTurns(messages, 'en')[0]), ['thinking:thinking', 'user:steer', 'text:answer']);
+    const afterAnswer = captureSteeringPosition({ messages, locale: 'en' }, 't1');
+    assert.deepEqual(afterAnswer.displayAfter, { kind: 'text', id: beforeAssistant.id });
+  });
+
+  test('does not move an anchored message when a later step persists before the earlier live answer settles', () => {
+    const live = applyLiveTurnEvent(armLiveTurn('t1'), {
+      type: 'text_complete', id: 'answer', messageId: beforeAssistant.id, turnId: 't1', ts: 2, text: 'before',
+    });
+    const position = captureSteeringPosition({ messages: [originalUser], liveTurn: live, locale: 'en' }, 't1');
+    const durable = [originalUser, beforeAssistant,
+      { ...steeringUser, displayAfter: position.displayAfter, steeringEventId: 'accepted' },
+      { ...beforeAssistant, id: 'after', ts: 5, text: 'after' },
+    ];
+    assert.deepEqual(timelineText(overlayLiveTurn(materializeTurns(durable, 'en'), live, 'en')[0]), [
+      'text:before', 'user:steer', 'text:after',
+    ]);
+  });
+
   test("keeps a steering message at its conversational position", () => {
     const [turn] = materializeTurns([
       originalUser,

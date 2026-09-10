@@ -187,6 +187,7 @@ export class DesktopSessionLocalService {
       sessionId,
       messageId: record.messageId,
       createdAt: record.createdAt,
+      displayAfter: record.intent.command.content.displayAfter,
       state: record.state,
       canCancel:
         (!record.intent.originHostEpoch && record.state !== 'accepted') ||
@@ -614,6 +615,7 @@ export function registerDesktopSessionLocalIpc(deps: {
             placement,
             content: {
               text: command.text,
+              ...(command.displayAfter !== undefined ? { displayAfter: command.displayAfter } : {}),
               ...(command.displayText !== undefined ? { displayText } : {}),
               attachments: retained,
               directoryReferences: command.directoryReferences,

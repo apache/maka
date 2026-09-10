@@ -358,6 +358,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         placement: "current_turn" as const,
         content: {
           text: command.text,
+          ...(command.displayAfter !== undefined ? { displayAfter: command.displayAfter } : {}),
           ...(command.displayText !== undefined
             ? { displayText: command.displayText }
             : {}),
@@ -478,6 +479,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         placement,
         content: {
           text: command.text,
+          ...(command.displayAfter !== undefined ? { displayAfter: command.displayAfter } : {}),
           ...(command.displayText !== undefined
             ? { displayText: command.displayText }
             : {}),

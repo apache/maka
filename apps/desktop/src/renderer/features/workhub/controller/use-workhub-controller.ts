@@ -20,11 +20,13 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnEvent,
+  projectQueuedUserMessages,
   armLiveTurn,
   createTranscriptViewportNavigation,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
   useUiLocale,
+  captureSteeringPosition,
   type LiveTurnProjection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -76,7 +78,7 @@ export function useWorkHubController() {
   currentSessionId.current = sessionId;
   const sendingRef = useRef(false);
   const pendingSend = useRef<SendAttempt | undefined>(undefined);
-  const pendingSteer = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; observed: boolean }>(undefined);
+  const pendingSteer = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; displayAfter: import('@maka/core/events').MessageDisplayAnchor | null; observed: boolean }>(undefined);
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
 
@@ -255,6 +257,16 @@ export function useWorkHubController() {
       sessionId,
       (event) => {
         if (disposed) return;
+        if (event.type === 'queue_update') {
+          const queued = projectQueuedUserMessages(event).filter((message) => message.transientPlacement === 'current_turn');
+          if (queued.length) setTransientMessages((previous) => [
+            ...previous.filter((message) => !queued.some((entry) => entry.id === message.id)),
+            ...queued,
+          ]);
+        }
+        if (event.type === 'message_admission' && event.outcome === 'retracted') {
+          setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
+        }
         if (event.type === 'steering_message') {
           if (pendingSteer.current?.messageId === event.messageId) pendingSteer.current.observed = true;
           // The live Turn now owns this row, before the durable transcript
@@ -336,18 +348,18 @@ export function useWorkHubController() {
     setError(undefined);
     try {
       if (steeringTurnId) {
-        const attempt = sameSteer ?? { sessionId: target, turnId: steeringTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], observed: false };
+        const attempt = sameSteer ?? { sessionId: target, turnId: steeringTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], ...captureSteeringPosition({ messages: transcript.messages, liveTurn, transientMessages, locale }, steeringTurnId), observed: false };
         pendingSteer.current = attempt;
-        const result = await services.steer(target, attempt.messageId, text, attachments);
+        const result = await services.steer(target, attempt.messageId, text, attachments, attempt.displayAfter);
         if (result === 'rejected' && pendingSteer.current === attempt) pendingSteer.current = undefined;
         if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
         if (pendingSteer.current === attempt) pendingSteer.current = undefined;
         if (currentSessionId.current === target) {
           viewportNavigation.followLatest(target);
           if (!attempt.observed && !transcriptRef.current.messages.some((message) => message.id === attempt.messageId)) {
-            setTransientMessages((messages) => [...messages, {
+            setTransientMessages((messages) => [...messages.filter((message) => message.id !== attempt.messageId), {
               id: attempt.messageId, hostTurnId: steeringTurnId, text, attachments: [...attachments],
-              ts: Date.now(), transientPlacement: 'current_turn',
+              ts: Date.now(), transientPlacement: 'current_turn', displayAfter: attempt.displayAfter,
             }]);
           }
         }

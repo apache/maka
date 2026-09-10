@@ -1490,13 +1490,19 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     ['proved-steering', 'already delivered'],
     ['still-pending', 'deliver after recovery'],
   ] as const) {
+    const content = {
+      text,
+      ...(messageId === 'still-pending'
+        ? { displayAfter: { kind: 'tool' as const, id: 'visible-tool' } }
+        : {}),
+    };
     await fixture.admissions.commitMessageAdmission({
       sessionId: ROOT.sessionId,
       turnId: ROOT.turnId,
       runId: ROOT.runId,
       messageId,
-      content: { text },
-      submittedContentDigest: messageContentDigest({ text }),
+      content,
+      submittedContentDigest: messageContentDigest(content),
       submittedPlacement: 'current_turn',
       placement: 'current_turn',
       disposition: 'steering',
@@ -1513,6 +1519,8 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
     ['still-pending'],
   );
+  const [lease] = fixture.coordinator.bindRun(ROOT).pull();
+  assert.deepEqual(lease?.content.displayAfter, { kind: 'tool', id: 'visible-tool' });
 });
 
 test('a retry of a recovered queued Message reuses its durable Skill outcome', async () => {

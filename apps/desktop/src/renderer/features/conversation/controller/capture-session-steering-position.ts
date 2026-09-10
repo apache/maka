@@ -17,4 +17,9 @@
  * under the License.
  */
 
-export { toComposerIngestItems, type PendingAttachment } from './features/conversation/index.js';
+import { captureSteeringPosition, type TranscriptProjectionInput } from '@maka/ui';
+
+export function captureSessionSteeringPosition(input: TranscriptProjectionInput, runningTurnId?: string) {
+  const turnId = input.liveTurn ? (input.liveTurn.terminal ? undefined : input.liveTurn.turnId) : runningTurnId;
+  return turnId ? captureSteeringPosition(input, turnId) : undefined;
+}
