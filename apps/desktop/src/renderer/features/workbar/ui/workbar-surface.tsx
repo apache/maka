@@ -401,6 +401,7 @@ export function WorkbarSurface(props: {
     kind: SessionWorkbarTabKind,
   ) => void;
   quotes?: readonly QuoteCompanionPanelState[];
+  sessions?: readonly SessionSummary[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -548,13 +549,20 @@ export function WorkbarSurface(props: {
           const panelId = tab.id.slice('side-chat:'.length);
           const quote = props.quotes?.find((candidate) => candidate.id === panelId);
           if (quote) {
+            const sourceSession = props.sessions?.find(
+              (session) => session.id === quote.sourceSessionId,
+            ) ??
+              (props.sourceSession?.id === quote.sourceSessionId
+                ? props.sourceSession
+                : undefined);
             content = (
               <QuoteCompanionPanel
                 panelId={quote.id}
+                sourceSessionId={quote.sourceSessionId}
                 active={!props.hidden && active}
                 quotes={quote.quotes}
                 initialPrompt={quote.initialPrompt}
-                sourceSession={props.sourceSession}
+                sourceSession={sourceSession}
                 modelChoices={props.modelChoices ?? []}
                 confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
@@ -570,7 +578,7 @@ export function WorkbarSurface(props: {
         }
         return content ? (
           <WorkbarPanel
-            key={tab.id}
+            key={tab.kind === 'side-chat' ? tab.id : `${props.sessionId}:${tab.id}`}
             id={`maka-workbar-panel-${tab.id}`}
             active={selected && !props.hidden}
             collapsed={!panelVisible}

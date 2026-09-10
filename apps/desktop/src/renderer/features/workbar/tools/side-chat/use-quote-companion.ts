@@ -116,6 +116,8 @@ function admissionOutcomeForMessage(
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
   panelId: string;
+  /** Immutable source id used for cleanup even if the source leaves the catalog. */
+  sourceSessionId: string;
   /** Excerpts staged for the next send; accumulates as the user adds more from
    *  the main transcript. Attached to the next turn, then cleared by the host. */
   pendingQuotes: readonly StagedCompanionQuote[];
@@ -215,13 +217,14 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * inherited history is hidden from the side transcript. The subscription is
  * established the moment the fork commits — before the run starts — so no
  * prompt/complete is missed. Reset only by unmount (tab close or switching away
- * from the owning source session), which removes the ephemeral fork. Workbar
+ * from the owning source Session family), which removes the ephemeral fork. Workbar
  * collapse and New Tab navigation keep the panel mounted.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
   const { sideChat } = useWorkbarServices();
   const {
     panelId,
+    sourceSessionId,
     locale,
     sourceSession,
     modelChoices,
@@ -246,9 +249,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const confirmBypassRef = useRef(input.confirmBypass);
   confirmBypassRef.current = input.confirmBypass;
   const sourceModelReady = sessionHasExactModelChoice(sourceSession, modelChoices);
-  const sourceSessionId = sourceSession?.id;
-  const sourceSessionIdRef = useRef(sourceSession?.id);
-  sourceSessionIdRef.current = sourceSessionId;
+  const sourceSessionIdRef = useRef(sourceSessionId);
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestRef = useRef<Promise<unknown> | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -759,7 +760,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     sessionHasExactModelChoice(companion, modelChoices);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
-  // switching source session — unsubscribe and remove the fork so it never
+  // leaving the linked source Session family — unsubscribe and remove the fork so it never
   // lingers in the session list. Collapsing keeps the panel mounted and alive.
   useEffect(() => {
     const shouldDismiss = dismissalGuardRef.current.beginMount();

@@ -63,6 +63,10 @@ import {
 } from '../tools/side-chat/quote-companion-visibility.js';
 import { recoverOrphanedCompanionCopies } from '../tools/side-chat/quote-companion-core.js';
 import { useSideConversationWorkspace } from '../tools/side-chat/use-side-conversation-workspace.js';
+import {
+  isLinkedSideConversationSessionFamily,
+  linkedSideConversationFamilyRootId,
+} from '../tools/side-chat/side-conversation-session-family.js';
 import { useWorkbarLayoutState } from './use-workbar-layout-state.js';
 import { LiveContextUsageProbe } from '../tools/inspector/live-context-usage-probe.js';
 
@@ -93,6 +97,7 @@ export interface UseWorkbarControllerInput {
   /** Local selection owns layout even while Host creation is pending. */
   layoutSessionId: string | undefined;
   activeSession: SessionSummary | undefined;
+  sessions: readonly SessionSummary[];
   projectId: string | null | undefined;
   projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
@@ -187,6 +192,39 @@ export function useWorkbarController(
   const [, setLiveBrowserSessionIds] = useState<readonly string[]>([]);
 
   const activeSessionIdRef = useRef<string | undefined>(undefined);
+  const lastKnownFamilySessionRef = useRef<SessionSummary | undefined>(undefined);
+  const lastKnownFamilySessionsRef = useRef<readonly SessionSummary[]>([]);
+  const activeSessionIsCataloged = Boolean(
+    input.activeSession && input.sessions.some((session) => session.id === input.activeSession!.id),
+  );
+  if (activeSessionIsCataloged) {
+    lastKnownFamilySessionRef.current = input.activeSession;
+    lastKnownFamilySessionsRef.current = input.sessions;
+  }
+  // Local navigation may precede Host/catalog delivery. Unknown membership
+  // cannot authorize destructive cleanup of an already-mounted Side Chat.
+  const canUseLastKnownFamily = Boolean(
+    input.layoutSessionId &&
+    !input.sessions.some((session) => session.id === input.layoutSessionId) &&
+    (!input.activeSession ||
+      (input.activeSession.model === '' && input.activeSession.llmConnectionSlug === '') ||
+      lastKnownFamilySessionsRef.current.some((session) =>
+        session.id === (input.activeSession?.subagent?.parentSessionId ??
+          input.activeSession?.subagentParent?.parentSessionId))) &&
+    lastKnownFamilySessionRef.current,
+  );
+  const familySessionForSideChat =
+    activeSessionIsCataloged || canUseLastKnownFamily
+      ? activeSessionIsCataloged
+        ? input.activeSession
+        : lastKnownFamilySessionRef.current
+      : input.activeSession;
+  const familySessionsForSideChat =
+    activeSessionIsCataloged || canUseLastKnownFamily
+      ? activeSessionIsCataloged
+        ? input.sessions
+        : lastKnownFamilySessionsRef.current
+      : input.sessions;
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
@@ -433,7 +471,8 @@ export function useWorkbarController(
           id: `side-chat:${panel.id}`,
           kind: 'side-chat',
           ordinal:
-            activeTab?.ordinal ?? reserveOrdinal('side-chat'),
+            (activePanel ? activeTab?.ordinal : undefined) ??
+            reserveOrdinal('side-chat'),
         },
         placement,
       );
@@ -560,7 +599,12 @@ export function useWorkbarController(
 
   useLayoutEffect(() => {
     const stalePanels = sideConversations.panels.filter(
-      (panel) => panel.sourceSessionId !== activeSessionId,
+      (panel) =>
+        !isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          familySessionForSideChat,
+          familySessionsForSideChat,
+        ),
     );
     if (stalePanels.length === 0) return;
     const staleIds = new Set(stalePanels.map((panel) => panel.id));
@@ -579,6 +623,8 @@ export function useWorkbarController(
   }, [
     activeSessionId,
     layout.closeWorkbarTabs,
+    familySessionForSideChat,
+    familySessionsForSideChat,
     layout.workbarPanelsState,
     sideConversations.panels,
     sideConversations.removePanels,
@@ -689,15 +735,33 @@ export function useWorkbarController(
     ],
   );
 
-  const activeSideChatTabIds = useMemo(
+  const activeSideConversationPanels = useMemo(
     () =>
-      new Set(
-        sideConversations.panels
-          .filter((panel) => panel.sourceSessionId === activeSessionId)
-          .map((panel) => `side-chat:${panel.id}`),
+      sideConversations.panels.filter((panel) =>
+        isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          familySessionForSideChat,
+          familySessionsForSideChat,
+        ),
       ),
-    [activeSessionId, sideConversations.panels],
+    [familySessionForSideChat, familySessionsForSideChat, sideConversations.panels],
   );
+  const activeSideChatTabIds = useMemo(
+    () => new Set(activeSideConversationPanels.map((panel) => `side-chat:${panel.id}`)),
+    [activeSideConversationPanels],
+  );
+  // The surface retains Side Chat identity across a linked family. Other tool
+  // panels remain keyed by their Session inside WorkbarSurface.
+  const sideConversationSurfaceKey = useMemo(() => {
+    const familyRoot = linkedSideConversationFamilyRootId(
+      familySessionForSideChat,
+      familySessionsForSideChat,
+    );
+    if (familyRoot !== undefined) {
+      return familyRoot;
+    }
+    return activeSessionId;
+  }, [activeSessionId, familySessionForSideChat, familySessionsForSideChat]);
   const hostPanelsState = useMemo(
     () =>
       projectWorkbarPanelsForSession(
@@ -707,7 +771,6 @@ export function useWorkbarController(
       ),
     [activeSessionId, activeSideChatTabIds, layout.workbarPanelsState],
   );
-
   return {
     commands,
     LiveContextUsageProbe,
@@ -725,6 +788,7 @@ export function useWorkbarController(
       rightWidth: layout.workbarWidth,
       bottomHeight: layout.bottomPanelHeight,
       panelsState: hostPanelsState,
+      surfaceKey: sideConversationSurfaceKey,
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,
@@ -739,9 +803,8 @@ export function useWorkbarController(
       },
       rightResizable: layout.workbarResizable,
       bottomResizable: layout.bottomPanelResizable,
-      quotes: sideConversations.panels.filter(
-        (panel) => panel.sourceSessionId === activeSessionId,
-      ),
+      quotes: activeSideConversationPanels,
+      sessions: input.sessions,
       onQuotesConsumed: (snapshot) =>
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,

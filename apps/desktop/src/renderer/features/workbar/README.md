@@ -21,8 +21,9 @@
 
 Workbar is a vertical renderer feature. Its application-level model owns the
 right/bottom panel topology, active tabs, dimensions and persisted collapse
-state. Tool data remains session-scoped, and the session content surface is
-remounted when the active session changes.
+state. Tool data remains session-scoped. The content surface is remounted when
+navigation leaves the linked Session scope; within that scope tools receive a
+new `sessionId` in place and must reset any session-derived data themselves.
 
 ## Dependency direction
 
@@ -71,8 +72,9 @@ remounted when the active session changes.
 - Terminal ownership is registered as soon as `start` returns, before the tab
   state commits. Host projection excludes resources owned by another Session,
   so a Session switch cannot briefly reattach an old Terminal.
-- Side Chat survives panel collapse and is cleaned only when its tab closes or
-  when navigation leaves its source session.
+- Side Chat survives panel collapse and navigation from its source Session to
+  linked descendants; it is cleaned when its tab closes or navigation leaves
+  that source/descendant scope.
 - Disposed Side Chat operations are fenced at every fork/send boundary; a late
   fork is cleaned and a late send cannot write back into an abandoned panel.
 - Inactive tabs stay mounted; their hooks receive the existing active/hidden
