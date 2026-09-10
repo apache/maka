@@ -152,6 +152,7 @@ import {
   createHostPluginModel,
   createHostSessionEffectModel,
   createHostWorkHubRoutingModel,
+  type HostWorkHubRoutingModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
@@ -272,6 +273,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly primaryBackendFactory?: BackendFactory;
+  readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
     'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
@@ -1863,12 +1865,14 @@ export async function createExecutionRuntimeHostComposition(
         : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel: createHostWorkHubRoutingModel({
-        runtimePolicy: runtimePolicyStores,
-        oauthCredentials,
-        usage: openedUsageStores,
-        requestDrain: context.requestDrain,
-      }),
+      routingModel:
+        dependencies.workHubRoutingModel ??
+        createHostWorkHubRoutingModel({
+          runtimePolicy: runtimePolicyStores,
+          oauthCredentials,
+          usage: openedUsageStores,
+          requestDrain: context.requestDrain,
+        }),
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
