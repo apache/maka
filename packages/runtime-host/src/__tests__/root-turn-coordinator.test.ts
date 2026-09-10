@@ -3655,8 +3655,12 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
   }
 });
 
-test('WorkHub v2 binds the requesting Desktop before admission while v1 stays unbound', async () => {
-  for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
+test('WorkHub v2 requires binding evidence before admission while v1 stays unbound', async () => {
+  for (const [toolProfile, missingEvidence] of [
+    ['workhub-coordination-v1', false],
+    ['workhub-coordination-v2', false],
+    ['workhub-coordination-v2', true],
+  ] as const) {
     const capabilities = new HostClientCapabilityCoordinator({
       ...clientCapabilityCoordinatorTestAdmission(),
       activation: new RuntimePolicyActivationGate(),
@@ -3665,7 +3669,9 @@ test('WorkHub v2 binds the requesting Desktop before admission while v1 stays un
     const bindings: [string, string | undefined][] = [];
     capabilities.bindSession = async (sessionId, connectionId) => {
       bindings.push([sessionId, connectionId]);
-      return { ok: false, message: 'Desktop capability unavailable' };
+      return missingEvidence
+        ? { ok: true }
+        : { ok: false, message: 'Desktop capability unavailable' };
     };
     const fixture = await createFailureFixture({
       clientCapabilities: capabilities,
@@ -3727,7 +3733,16 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
     const sent: BackendSendInput[] = [];
     const successorReady = [deferred<void>(), deferred<void>()];
     const successorRelease = [deferred<void>(), deferred<void>()];
+    const capabilities = new HostClientCapabilityCoordinator({
+      ...clientCapabilityCoordinatorTestAdmission(),
+      activation: new RuntimePolicyActivationGate(),
+      onModelToolsChanged: () => undefined,
+    });
+    capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+      send: async () => {},
+    });
     const fixture = await createFailureFixture({
+      clientCapabilities: capabilities,
       registerBackend: (backends) => {
         backends.register(
           'ai-sdk',
@@ -3763,6 +3778,27 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       },
     });
     try {
+      const registered = await capabilities.handlers['client.capability.replace'](
+        {
+          registrationId: 'workhub-tools',
+          offers: [
+            {
+              offerId: 'desktop-workhub',
+              version: '0',
+              affinity: 'session',
+              hostPathAccess: 'none',
+              label: 'Desktop WorkHub',
+              tools: ['control', 'tasks'].map((name) => ({
+                serverId: 'desktop_workhub',
+                name,
+                inputSchema: { type: 'object', additionalProperties: false },
+              })),
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
       const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
       await fixture.stores.sessionStore.createStableSession({
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
@@ -3891,6 +3927,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       backend?.release();
       for (const release of successorRelease) release.resolve();
       await fixture.coordinator.close();
+      await capabilities.close();
       await fixture.dispose();
     }
   }

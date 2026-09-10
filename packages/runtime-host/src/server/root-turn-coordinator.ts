@@ -2001,9 +2001,22 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           attachments,
         );
         if (attachmentError) return completedStart(operationConflict(attachmentError));
-        const binding =
+        const isWorkHubV2 =
           request.execution.kind === 'workhub_coordination' &&
-          header.toolProfile === 'workhub-coordination-v1'
+          header.toolProfile === 'workhub-coordination-v2';
+        const workHubBinding = isWorkHubV2
+          ? await this.clientCapabilities?.bindSession(
+              request.sessionId,
+              context.connectionId,
+              hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
+                name.startsWith('mcp__'),
+              ),
+            )
+          : undefined;
+        const binding = isWorkHubV2
+          ? workHubBinding
+          : request.execution.kind === 'workhub_coordination' &&
+              header.toolProfile === 'workhub-coordination-v1'
             ? undefined
             : prepared.commitCapabilityBinding
               ? await prepared.commitCapabilityBinding()
@@ -2011,22 +2024,18 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (binding && !binding.ok) {
           return completedStart(operationConflict(binding.message));
         }
+        const capabilityBinding = workHubBinding?.ok ? workHubBinding.capabilityBinding : undefined;
+        if (isWorkHubV2 && !capabilityBinding) {
+          return completedStart(
+            operationUnavailable('WorkHub Desktop capability binding is unavailable'),
+          );
+        }
         if (!this.beginRootAdmission(reservation)) {
           return completedStart(sessionBusy('Root Turn reservation is no longer current'));
         }
         if (request.execution.kind === 'external_message') {
           await this.prepareFreshAgentGraphEpoch(header, request.turnOrchestration);
         }
-        const capabilityBinding =
-          request.execution.kind === 'workhub_coordination' &&
-          header.toolProfile === 'workhub-coordination-v2'
-            ? this.clientCapabilities?.sessionToolProviderBinding(
-                request.sessionId,
-                hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
-                  name.startsWith('mcp__'),
-                ),
-              )
-            : undefined;
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: request.sessionId,
           turnId: request.turnId,

@@ -1211,6 +1211,39 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('required tools must have one available provider before a Session binding commits', async () => {
+    const coordinator = createCoordinator();
+    const names = ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks'];
+    try {
+      coordinator.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+        send: async () => {},
+      });
+      coordinator.attachConnection(clientCapabilityConnectionIdentity('other'), {
+        send: async () => {},
+      });
+      await registerSessionTools(coordinator, 'desktop', 'control-only', 'desktop_workhub', [
+        'control',
+      ]);
+      assert.equal((await coordinator.bindSession('session-a', 'desktop', names)).ok, false);
+      assert.equal(coordinator.snapshotForSession('session-a'), undefined);
+      await registerSessionTools(coordinator, 'other', 'tasks-only', 'desktop_workhub', ['tasks']);
+      assert.equal((await coordinator.bindSession('session-a', 'desktop', names)).ok, false);
+      assert.equal(coordinator.snapshotForSession('session-a'), undefined);
+      await registerSessionTools(coordinator, 'desktop', 'complete', 'desktop_workhub', [
+        'control',
+        'tasks',
+      ]);
+      const bound = await coordinator.bindSession('session-a', 'desktop', names);
+      assert.ok(bound.ok);
+      assert.match(bound.capabilityBinding!, /^sha256:[a-f0-9]{64}$/);
+      const snapshot = coordinator.snapshotForSession('session-a');
+      assert.deepEqual(snapshot?.registrationIds, ['complete']);
+      snapshot?.release();
+    } finally {
+      await coordinator.close();
+    }
+  });
+
   test('cold binding authenticates provider principal, Client and credential owner independently of registration identity', async () => {
     const names = ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks'];
     const identity = clientCapabilityConnectionIdentity(
@@ -1226,8 +1259,9 @@ describe('Host Client Capability coordinator', () => {
       'control',
       'tasks',
     ]);
-    assert.deepEqual(await original.bindSession('session-a', 'original'), { ok: true });
-    const binding = original.sessionToolProviderBinding('session-a', names);
+    const result = await original.bindSession('session-a', 'original', names);
+    assert.ok(result.ok);
+    const binding = result.capabilityBinding;
     assert.ok(binding);
     await original.close();
     for (const changed of [
@@ -1247,7 +1281,7 @@ describe('Host Client Capability coordinator', () => {
           'tasks',
         ]);
         assert.equal(await recovered.bindRecoveredSession('session-a', binding, names), false);
-        assert.equal(recovered.sessionToolProviderBinding('session-a', names), undefined);
+        assert.equal(recovered.snapshotForSession('session-a'), undefined);
         await unrelated.close();
         recovered.attachConnection(
           { ...identity, connectionId: 'reconnected' },
@@ -1261,7 +1295,9 @@ describe('Host Client Capability coordinator', () => {
           ['control', 'tasks'],
         );
         assert.equal(await recovered.bindRecoveredSession('session-a', binding, names), true);
-        assert.equal(recovered.sessionToolProviderBinding('session-a', names), binding);
+        const snapshot = recovered.snapshotForSession('session-a');
+        assert.deepEqual(snapshot?.registrationIds, ['new-registration']);
+        snapshot?.release();
       } finally {
         await recovered.close();
       }

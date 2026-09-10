@@ -148,7 +148,7 @@ type SessionBindingSelection =
   | { readonly ok: false; readonly message: string };
 
 type SessionBindingResult =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly capabilityBinding?: `sha256:${string}` }
   | { readonly ok: false; readonly message: string };
 
 export type SessionBindingPreview<T> =
@@ -268,8 +268,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   async bindSession(
     sessionId: string,
     initiatingConnectionId: string,
-  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
-    return this.#bindSession(sessionId, initiatingConnectionId, 'strict');
+    requiredToolNames?: readonly string[],
+  ): Promise<SessionBindingResult> {
+    return this.#bindSession(sessionId, initiatingConnectionId, 'strict', requiredToolNames);
   }
 
   async bindSessionSuccessor(sessionId: string): Promise<void> {
@@ -302,22 +303,24 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     sessionId: string,
     initiatingConnectionId: string,
     mode: SessionBindingMode,
+    requiredToolNames?: readonly string[],
   ): Promise<SessionBindingResult> {
     return this.#activation.runMutation(async () => {
       const selection = this.#selectSessionState(sessionId, initiatingConnectionId, mode);
       if (!selection.ok) return selection;
+      const capabilityBinding = requiredToolNames
+        ? this.#toolProviderBinding(selection.state, requiredToolNames)
+        : undefined;
+      if (requiredToolNames && !capabilityBinding) {
+        return {
+          ok: false,
+          message: 'Required Client Capability tools do not have one available provider',
+        };
+      }
       this.#storeSessionState(sessionId, selection.state);
       if (selection.modelToolsChanged) this.#onModelToolsChanged();
-      return { ok: true };
+      return { ok: true, ...(capabilityBinding ? { capabilityBinding } : {}) };
     });
-  }
-
-  /** Identity of the single authenticated provider that owns these bound tools. */
-  sessionToolProviderBinding(
-    sessionId: string,
-    toolNames: readonly string[],
-  ): `sha256:${string}` | undefined {
-    return this.#toolProviderBinding(this.#sessions.get(sessionId), toolNames);
   }
 
   async bindRecoveredSession(

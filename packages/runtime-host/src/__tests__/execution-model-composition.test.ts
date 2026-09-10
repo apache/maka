@@ -1829,8 +1829,12 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       registrationId: string,
       names: string[],
       connectionId = context.connectionId,
+      handlers: Pick<
+        HostClientCapabilityCoordinator['handlers'],
+        'client.capability.replace'
+      > = composition!.handlers,
     ) => {
-      const result = await composition!.handlers['client.capability.replace'](
+      const result = await handlers['client.capability.replace'](
         {
           registrationId,
           offers: [
@@ -1882,11 +1886,45 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       assert.equal(selected.kind, 'committed');
       composition = await createComposition();
       await composition.recover();
-      composition.clientCapabilities!.attachConnection(
-        clientCapabilityConnectionIdentity('desktop'),
-        { send: async () => {} },
-      );
+      const capabilities = composition.clientCapabilities;
+      assert.ok(capabilities instanceof HostClientCapabilityCoordinator);
+      const desktop = capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+        send: async () => {},
+      });
       await registerDesktop('before-crash', ['control', 'tasks']);
+      // Disconnect after binding succeeds, before its caller can admit the root.
+      // Reconnect only after admission, before the real backend composes tools.
+      const bindSession = capabilities.bindSession.bind(capabilities);
+      let disconnected = false;
+      capabilities.bindSession = async (...args) => {
+        const result = await bindSession(...args);
+        if (args[0] === sessionId && !disconnected) {
+          assert.ok(result.ok);
+          await desktop.close();
+          assert.equal(capabilities.snapshotForSession(sessionId), undefined);
+          disconnected = true;
+        }
+        return result;
+      };
+      const bindDurableRoot = capabilities.bindDurableRoot.bind(capabilities);
+      let reconnected = false;
+      capabilities.bindDurableRoot = async (input) => {
+        if (input.sessionId === sessionId && disconnected && !reconnected) {
+          capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+            send: async () => {},
+          });
+          // Avoid the public replacement handler's pending-admission retry while
+          // this admission is still preparing its backend.
+          await registerDesktop(
+            'reconnected',
+            ['control', 'tasks'],
+            'desktop',
+            capabilities.handlers,
+          );
+          reconnected = true;
+        }
+        await bindDurableRoot(input);
+      };
       const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
       assert.ok(resolved.ok, JSON.stringify(resolved));
       const initialTurnId = randomUUID();
@@ -1908,6 +1946,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         context,
       );
       assert.equal(terminal.status, 'completed');
+      assert.equal(disconnected && reconnected, true);
       await composition.close();
       composition = undefined;
       await owner.close();
@@ -1988,13 +2027,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         requestsBeforeRecovery,
         'an unrelated provider cannot activate the recovered Turn',
       );
-      assert.equal(
-        recoveredCapabilities.sessionToolProviderBinding(sessionId, [
-          'mcp__desktop_workhub__control',
-          'mcp__desktop_workhub__tasks',
-        ]),
-        undefined,
-      );
+      assert.equal(recoveredCapabilities.snapshotForSession(sessionId), undefined);
 
       composition.clientCapabilities!.attachConnection(
         clientCapabilityConnectionIdentity('desktop'),
@@ -2040,13 +2073,14 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         hostileFrames.some((frame) => frame.kind === 'client.capability.call'),
         false,
       );
-      assert.equal(
-        recoveredCapabilities.sessionToolProviderBinding(sessionId, [
-          'mcp__desktop_workhub__control',
-          'mcp__desktop_workhub__tasks',
-        ]),
-        capabilityBinding,
-      );
+      const snapshot = recoveredCapabilities.snapshotForSession(sessionId);
+      assert.deepEqual(snapshot?.registrationIds, ['capable-desktop']);
+      snapshot?.release();
+      const admissions =
+        await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+      const successor = admissions.at(-1)!;
+      assert.ok(successor.execution.kind === 'workhub_coordination');
+      assert.equal(successor.execution.capabilityBinding, capabilityBinding);
       assert.equal(drained, false);
     } finally {
       await composition?.close();
