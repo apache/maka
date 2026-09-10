@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
@@ -586,15 +587,33 @@ function createTurnSkillInventorySnapshotResolver(
   context: Pick<HostModelPromptContext, 'sessionId' | 'turnId' | 'cwd'>,
 ) => Promise<CanonicalSkillInventorySnapshot> {
   const inventoryByTurn = new Map<string, Promise<CanonicalSkillInventorySnapshot>>();
+  let latestCompleted: { key: string; snapshot: CanonicalSkillInventorySnapshot } | undefined;
   return async (context) => {
     const key = `${context.sessionId}\u0000${context.turnId}`;
     const cached = inventoryByTurn.get(key);
     if (cached) return await cached;
-    const pending = skills.readCanonicalModelInventory({ projectRoot: context.cwd });
+    const pending = skills
+      .readCanonicalModelInventory({ projectRoot: context.cwd })
+      .then((snapshot) => {
+        // An evicted late read still resolves its caller without acquiring another owner.
+        if (inventoryByTurn.get(key) !== pending) return snapshot;
+        // Revisions omit some raw paths and ordering, so sharing requires full equality.
+        const shared =
+          latestCompleted !== undefined &&
+          latestCompleted.snapshot.revision === snapshot.revision &&
+          isDeepStrictEqual(latestCompleted.snapshot, snapshot)
+            ? latestCompleted.snapshot
+            : snapshot;
+        latestCompleted = { key, snapshot: shared };
+        return shared;
+      });
     inventoryByTurn.set(key, pending);
     if (inventoryByTurn.size > 100) {
       const oldest = inventoryByTurn.keys().next().value;
-      if (typeof oldest === 'string' && oldest !== key) inventoryByTurn.delete(oldest);
+      if (typeof oldest === 'string' && oldest !== key) {
+        inventoryByTurn.delete(oldest);
+        if (latestCompleted?.key === oldest) latestCompleted = undefined;
+      }
     }
     try {
       return await pending;
