@@ -152,7 +152,21 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   const close = await workhub.getByRole('button', { name: /^(隐藏|Hide)$/ }).boundingBox();
   const input = await editor.boundingBox();
   expect(close!.y).toBeLessThan(input!.y);
-  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toHaveCSS('opacity', '1');
+  const collapseFrames = await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ opacity: number; visible: boolean }[]>((resolve) => {
+    const history = document.querySelector('.workHubHistory')!;
+    const frames: { opacity: number; visible: boolean }[] = [];
+    const started = performance.now();
+    const sample = () => {
+      const style = getComputedStyle(history);
+      frames.push({ opacity: Number(style.opacity), visible: style.visibility === 'visible' });
+      if (performance.now() - started < 220) requestAnimationFrame(sample);
+      else resolve(frames);
+    };
+    (button as HTMLButtonElement).click();
+    requestAnimationFrame(sample);
+  }));
+  expect(collapseFrames.some((frame) => frame.visible && frame.opacity > 0 && frame.opacity < 1)).toBe(true);
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect(workhub.getByRole('button', { name: /滚动到底部|Scroll to bottom/ })).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBeLessThan(expandedHeight / 2);

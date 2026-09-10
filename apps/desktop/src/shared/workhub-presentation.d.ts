@@ -35,6 +35,7 @@ export interface WorkHubPresentationSnapshot {
   readonly floatingVisible: boolean;
   readonly shortcutRegistered: boolean;
   readonly rendererCrashed: boolean;
+  readonly progressRequest?: number;
 }
 
 export type WorkHubMainNavigation =
@@ -46,11 +47,13 @@ export interface WorkHubPresentationBridge {
   getSnapshot(): Promise<WorkHubPresentationSnapshot>;
   setHost(host: WorkHubHost): Promise<string | void>;
   setConversationLayout(layout: { expanded: boolean; compactHeight: number }): Promise<void>;
+  progressReady(request: number): Promise<void>;
+  showConversation(): Promise<void>;
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
-  onFocusComposer(handler: () => void): () => void;
+  onFocusComposer(handler: (expand?: boolean) => void): () => void;
   onOpenMain(handler: (navigation: WorkHubMainNavigation) => void): () => void;
 }

@@ -710,7 +710,7 @@
         "nonTriviaTokens": 1395
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 71,
+        "importDeclarations": 70,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -863,7 +863,6 @@
           "./use-turn-action-registry": 1,
           "./workspace-readiness-recovery": 1,
           "@astryxdesign/core/AppShell": 1,
-          "@astryxdesign/core/Button": 1,
           "@maka/core/onboarding-milestone": 1,
           "@maka/core/session": 1,
           "@maka/core/session-revisions": 1,
@@ -872,8 +871,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 109,
-        "nonTriviaTokens": 13749
+        "importSpecifiers": 108,
+        "nonTriviaTokens": 13697
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -4657,7 +4656,7 @@
         "react-dom/client": 1
       },
       "importSpecifiers": 7,
-      "nonTriviaTokens": 268
+      "nonTriviaTokens": 260
     }
   },
   "rootDebtClosure": {
