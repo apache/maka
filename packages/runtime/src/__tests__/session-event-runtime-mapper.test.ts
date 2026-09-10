@@ -82,7 +82,6 @@ describe('SessionEvent Runtime mapper', () => {
         messageId: 'steering-message',
         content: {
           text: '<invoked-skill>Prepared</invoked-skill>',
-          displayAfter: { kind: 'tool', id: 'visible-tool' },
         },
         submittedContentDigest: digest,
       },
@@ -91,9 +90,6 @@ describe('SessionEvent Runtime mapper', () => {
 
     assert.equal(runtimeEvent.refs?.sourceMessageDigest, digest);
     assert.equal(runtimeEvent.content?.kind, 'text');
-    if (runtimeEvent.content?.kind === 'text') {
-      assert.deepEqual(runtimeEvent.content.displayAfter, { kind: 'tool', id: 'visible-tool' });
-    }
   });
 
   test('maps provider retry progress as a partial non-terminal runtime fact', () => {

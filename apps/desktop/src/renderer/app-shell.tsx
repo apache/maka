@@ -327,7 +327,6 @@ function AppShellContent({
     setMessages,
     addTransientMessage,
     updateTransientMessage,
-    projectQueuedTransientMessages,
     retireCancelledTransientMessages,
     removeTransientMessage,
     transcriptRangeRef,
@@ -1599,21 +1598,24 @@ function AppShellContent({
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean> {
-    return Conversation.enqueueComposerFollowUp({
-      sessionId, text, mode, pending: submittableAttachments,
-      context: {
-        ...directoryOptions,
-        quotes: pendingQuotes,
-        workspaceFileReferences: metadata?.workspaceFileReferences,
-      },
-      enqueueMessage, clearSubmittedContext, clearQuotes,
-      onError: (error) => {
-        if (activeIdRef.current !== sessionId) return;
+    try {
+      const sent = await enqueueMessage(sessionId, text,
+        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
+          ...directoryOptions, quotes: pendingQuotes,
+          workspaceFileReferences: metadata?.workspaceFileReferences,
+        });
+      if (!sent) return false;
+      clearSubmittedContext(submittableAttachments);
+      clearQuotes();
+      return true;
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         showSessionError(sessionId, copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
-      },
-    });
+      }
+      return false;
+    }
   }
 
   async function sendWithAttachments(
@@ -1930,7 +1932,6 @@ function AppShellContent({
     setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
-    projectQueuedTransientMessages,
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,

@@ -28,9 +28,8 @@ import {
   settleLiveTurnStep,
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  projectQueuedUserMessages,
 } from '@maka/ui';
-import type { LiveTurnProjection, InteractionQueues, TransientUserMessageProjection } from '@maka/ui';
+import type { LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
@@ -80,10 +79,6 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
-  projectQueuedTransientMessages?: (
-    sessionId: string,
-    messages: readonly TransientUserMessageProjection[],
-  ) => void;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -112,7 +107,6 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
-    projectQueuedTransientMessages,
     removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -319,10 +313,9 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
-        projectQueuedTransientMessages?.(
-          sessionId,
-          projectQueuedUserMessages(event),
-        );
+        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          removeTransientMessage?.(sessionId, entry.messageId);
+        }
         setMessageQueueBySession?.((current) => {
           if (!event.steering.length && !event.followup.length) {
             if (!current[sessionId]) return current;
@@ -347,9 +340,8 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire the renderer-owned tail row and its pending-queue card; a
-        // later nack queue_update will project both again if the Host returns
-        // the message to the queue.
+        // Retire the local submission placeholder; a later nack is represented
+        // by the Host queue alone.
         removeTransientMessage?.(sessionId, event.messageId);
         setMessageQueueBySession?.((current) => {
           const queue = current[sessionId];

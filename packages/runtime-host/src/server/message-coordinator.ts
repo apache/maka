@@ -2326,18 +2326,19 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  #pull(run: BoundRun): readonly SteeringLease[] {
+  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+    // A provider boundary must observe committed edits, not mistake a pending
+    // write for an empty queue. Recheck for mutations admitted while waiting.
+    for (;;) {
+      const pending = [...this.#pendingQueuedMutations.values()].filter(
+        ({ payload }) => payload.sessionId === run.sessionId,
+      );
+      if (pending.length === 0) break;
+      await Promise.all(pending.map(({ result }) => result));
+    }
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];
-    // Queue edits await durable storage while provider boundaries run outside
-    // the admission gate. Take the entire batch only after those edits settle.
-    if (
-      [...this.#pendingQueuedMutations.values()].some(
-        ({ payload }) => payload.sessionId === run.sessionId,
-      )
-    )
-      return [];
     const entries = state.steering.splice(0);
     if (entries.length === 0) return [];
     const leases = entries.map((entry): SteeringLease => {

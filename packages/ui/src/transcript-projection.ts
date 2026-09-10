@@ -259,25 +259,3 @@ function isPlainObject(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
-
-/** Restore the pending presentation from the Host queue after reconnecting. */
-export function projectQueuedUserMessages(event: Extract<import('@maka/core/events').SessionEvent, { type: 'queue_update' }>): import('./chat-view.js').TransientUserMessageProjection[] {
-  return (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
-    .filter((entry) => entry.state === 'queued')
-    .map((entry) => ({
-      id: entry.messageId,
-      transientPlacement: entry.placement,
-      pendingSteering: entry.placement === 'current_turn',
-      ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
-      ts: event.ts,
-      text: entry.content.displayText ?? entry.content.text,
-      ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-      ...(entry.content.directoryReferences && {
-        directoryReferences: entry.content.directoryReferences,
-      }),
-      ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-      ...(entry.content.inlineReferences && {
-        inlineReferences: [...entry.content.inlineReferences],
-      }),
-    }));
-}

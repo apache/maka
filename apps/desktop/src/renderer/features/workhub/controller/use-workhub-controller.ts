@@ -20,7 +20,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnEvent,
-  projectQueuedUserMessages,
   armLiveTurn,
   createTranscriptViewportNavigation,
   reconcileTerminalLiveTurn,
@@ -271,12 +270,13 @@ export function useWorkHubController() {
       (event) => {
         if (disposed) return;
         if (event.type === 'queue_update') {
-          setMessageQueue({ entries: [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])], revision: event.queueRevision });
-          const queued = projectQueuedUserMessages(event);
-          if (queued.length) setTransientMessages((previous) => [
-            ...previous.filter((message) => !queued.some((entry) => entry.id === message.id)),
-            ...queued,
-          ]);
+          const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
+          setMessageQueue({ entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision });
+          // Host evidence retires local submission placeholders. Queue state
+          // lives only in messageQueue, including after reconnect or withdrawal.
+          const ids = new Set(entries.map((entry) => entry.messageId));
+          if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
+          setTransientMessages((previous) => previous.filter((message) => !ids.has(message.id)));
         }
         if (event.type === 'message_admission') {
           if (event.outcome === 'admitted') {
@@ -365,8 +365,11 @@ export function useWorkHubController() {
     const placement = requestedMode === 'steer' ? 'current_turn' : 'next_turn';
     const previousQueued = pendingQueued.current;
     const sameQueued = previousQueued?.sessionId === target && previousQueued.text === text &&
-      (!requestedMode || previousQueued.placement === placement) &&
       JSON.stringify(previousQueued.attachments) === JSON.stringify(attachments) ? previousQueued : undefined;
+    if (sameQueued && sameQueued.placement !== placement) {
+      setError(workHubLiveCopy[localeRef.current][sameQueued.placement === 'current_turn' ? 'retrySteering' : 'retryFollowup']);
+      return false;
+    }
     const queuedTurnId = sameQueued?.turnId ?? runningTurnId;
     sendingRef.current = true;
     setSending(true);
@@ -385,6 +388,8 @@ export function useWorkHubController() {
           setTransientMessages((messages) => messages.filter((message) => message.id !== attempt.messageId));
         }
         if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
+        setTransientMessages((messages) => messages.filter((message) => message.id !== attempt.messageId ||
+          (message.transientPlacement === 'current_turn' && !message.pendingSteering)));
         if (pendingQueued.current === attempt) pendingQueued.current = undefined;
         if (currentSessionId.current === target) {
           viewportNavigation.followLatest(target);

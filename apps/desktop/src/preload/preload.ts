@@ -448,6 +448,20 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   return { scope, sessionId: ref.sessionId };
 }
 
+function hostAttachmentRefs(
+  session: { scope: DesktopTargetScope; sessionId: string },
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind !== 'session_file') return attachment;
+    const owner = parseDesktopSessionKey(attachment.ref.sessionId);
+    if (owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) {
+      throw new Error('Retained attachment belongs to another Host or Session');
+    }
+    return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
+  });
+}
+
 type DiagnosticRuntimeHostResolution<TTarget extends 'default' | 'task'> = {
   readonly hostTarget: TTarget;
   readonly scope?: DesktopTargetScope;
@@ -2023,11 +2037,15 @@ const makaBridge = {
     },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+      const attachments = await ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items)) as AttachmentRef[];
+      return projectDesktopAttachmentRefs(scope, attachments);
     },
     async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<WorkHubAnswerResult>;
+      return ipcRenderer.invoke('workhub:answer', scope, {
+        ...input,
+        ...(input.attachments ? { attachments: hostAttachmentRefs({ scope, sessionId: parseDesktopSessionKey(coordinationSessionId).sessionId }, input.attachments) } : {}),
+      }) as Promise<WorkHubAnswerResult>;
     },
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
@@ -2135,12 +2153,7 @@ const makaBridge = {
         placement,
         {
           ...command,
-          ...(command.retainedAttachments ? { retainedAttachments: command.retainedAttachments.map((attachment) => {
-            if (attachment.ref.kind !== 'session_file') return attachment;
-            const owner = parseDesktopSessionKey(attachment.ref.sessionId);
-            if (!owner || owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) throw new Error('Retained attachment belongs to another Host or Session');
-            return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
-          }) } : {}),
+          ...(command.retainedAttachments ? { retainedAttachments: hostAttachmentRefs(session, command.retainedAttachments) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
         },
       )) as Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>;

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { isMessageDisplayAnchor } from '@maka/core/events';
 import type {
   BranchFromTurnInput,
   RegenerateTurnInput,
@@ -63,7 +62,6 @@ interface NormalizedSendSessionCommand {
   turnId?: string;
   text: string;
   displayText?: string;
-  displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null;
   skillIds?: string[];
   attachmentItems?: unknown;
   retainedAttachments?: AttachmentRef[];
@@ -207,9 +205,6 @@ export function normalizeRuntimeHostReviseBeforeTurnInput(
 export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessionCommand | undefined {
   const value = requireObject(input, 'Invalid session command');
   if (value.type !== 'send') return undefined;
-  if (value.displayAfter !== undefined && value.displayAfter !== null && !isMessageDisplayAnchor(value.displayAfter)) {
-    throw new Error('Invalid message display anchor');
-  }
   const text = normalizeSendText(value.text);
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
@@ -222,7 +217,6 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...normalizeOptionalSendMessageId(value.messageId),
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
-    ...(value.displayAfter !== undefined ? { displayAfter: value.displayAfter === null ? null : { ...value.displayAfter } } : {}),
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),

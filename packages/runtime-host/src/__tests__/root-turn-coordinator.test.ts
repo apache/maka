@@ -3742,7 +3742,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
                   this.release();
                 }
                 for await (const event of super.send(input)) {
-                  for (const lease of input.pullSteering?.() ?? []) {
+                  for (const lease of (await input.pullSteering?.()) ?? []) {
                     yield {
                       type: 'steering_message',
                       id: randomUUID(),
@@ -3893,6 +3893,108 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       await fixture.coordinator.close();
       await fixture.dispose();
     }
+  }
+});
+
+test('startup recovers WorkHub follow-ups between a durable terminal root and successor admission', {
+  timeout: 20_000,
+}, async () => {
+  const sent: BackendSendInput[] = [];
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              sent.push(input);
+              yield* super.send(input);
+            }
+          })(context),
+      ),
+  });
+  let recovery: RootTurnCoordinator | undefined;
+  const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+  try {
+    const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    await fixture.stores.sessionStore.createStableSession({
+      sessionId,
+      requestFingerprint: `sha256:${'c'.repeat(64)}`,
+      input: {
+        cwd: ordinary.cwd,
+        llmConnectionId: ordinary.llmConnectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        role: WORKHUB_COORDINATION_SESSION_ROLE,
+        toolProfile: 'workhub-coordination-v2',
+        permissionMode: 'bypass',
+      },
+    });
+    const content = { text: 'initial WorkHub request' };
+    const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+      {
+        sessionId,
+        turnId: 'workhub-before-crash',
+        archivedMessage: 'Archived',
+        execution: { kind: 'workhub_coordination', inputDigest: messageContentDigest(content) },
+        prepareFreshContent: async () => ({ kind: 'ready', content }),
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+    );
+    assert.ok(started.ok, JSON.stringify(started));
+    await fixture.coordinator.whenIdle(sessionId);
+    await fixture.coordinator.close();
+    // Seed the exact crash cut: terminal root and queued admissions are durable,
+    // but neither successor has a root admission or an in-memory queue owner.
+    for (const [index, messageId] of ['pending-first', 'pending-second'].entries()) {
+      const content = { text: messageId };
+      await fixture.stores.sessionStore.commitMessageAdmission({
+        sessionId,
+        turnId: 'workhub-before-crash',
+        runId: started.result.runId,
+        messageId,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        placement: 'next_turn',
+        submittedPlacement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: Date.now() + index,
+      });
+    }
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length,
+      1,
+    );
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+    await recovery.recover();
+    await fixture.messages.recoverPendingAfterHostRestart([sessionId]);
+    await waitUntil(() => sent.length === 3);
+    await recovery.whenIdle(sessionId);
+    assert.deepEqual(
+      sent.map(({ text }) => text),
+      ['initial WorkHub request', 'pending-first', 'pending-second'],
+    );
+    const admissions =
+      await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+    assert.deepEqual(
+      admissions.map(({ execution }) => execution.kind),
+      ['workhub_coordination', 'workhub_coordination', 'workhub_coordination'],
+    );
+    const users = (await readLedgerMessages(fixture.stores.runtimeEventStore, sessionId)).filter(
+      (message) => message.type === 'user',
+    );
+    assert.deepEqual(
+      users.map(({ text }) => text),
+      ['initial WorkHub request', 'pending-first', 'pending-second'],
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
   }
 });
 
@@ -5809,7 +5911,7 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
               entered[attempt]!.resolve();
               await release[attempt]!.promise;
               assert.ok(input.pullSteering, 'successors retain the logical message owner');
-              const leases = input.pullSteering();
+              const leases = await input.pullSteering();
               assert.equal(leases.length, 1);
               for (const lease of leases) {
                 yield {
@@ -6152,6 +6254,8 @@ async function createFailureFixture(options: {
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission, commitAdmission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission, commitAdmission),
+    startRecoveredMessages: (input, admission) =>
+      requireCoordinator(coordinator).startRecoveredMessages(input, admission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),

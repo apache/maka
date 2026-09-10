@@ -43,6 +43,12 @@ export function SessionLocalMessages(props: {
         .then((messages) => {
           if (disposed || revision !== admitted) return;
           for (const message of messages) {
+            if (message.state === 'accepted' && !message.turnId) {
+              // The Host queue owns accepted steering and follow-ups. A local
+              // durable copy is not a second pending row after withdrawal.
+              retire(sessionId, message.messageId);
+              continue;
+            }
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
             };
@@ -50,8 +56,7 @@ export function SessionLocalMessages(props: {
               id: message.messageId,
               text: message.text,
               ts: message.createdAt,
-              ...(message.displayAfter !== undefined ? { pendingSteering: true } : {}),
-              transientPlacement: message.placement,
+              transientPlacement: message.turnId ? 'current_turn' : message.placement,
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,
               quotes: message.quotes,

@@ -97,7 +97,7 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { Context } from '../plugin-kernel.js';
 import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
@@ -14691,7 +14691,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     }
   };
 
-  test('injects a steer that arrives after the turn last tool-call boundary', async () => {
+  test('the final provider boundary waits for an asynchronous steering lease and asks the model again', async () => {
     // A tool-free turn runs exactly one provider step, and the top-of-loop
     // drain happens before the model has said anything — so a steer typed
     // while the answer streams has no boundary left to land on. Whether
@@ -14705,14 +14705,19 @@ describe('AiSdkBackend steering durability and identity', () => {
     const acked: string[] = [];
     const nacked: string[] = [];
     let pulls = 0;
-    const events = await drainDurably(
+    const boundary = deferred<void>();
+    const mutation = deferred<void>();
+    let completed = false;
+    const completion = drainDurably(
       backend.send(
         durable.input({
-          pullSteering: () => {
+          pullSteering: async () => {
             pulls += 1;
             // Nothing to take before the model speaks; the interjection lands
             // while the first (and only) step is streaming.
             if (pulls !== 2) return [];
+            boundary.resolve();
+            await mutation.promise;
             return [
               { id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } },
             ];
@@ -14722,7 +14727,23 @@ describe('AiSdkBackend steering durability and identity', () => {
         }),
       ),
       durable,
-    );
+    ).then((events) => {
+      completed = true;
+      return events;
+    });
+    await boundary.promise;
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        completed,
+        false,
+        'the final boundary cannot finish while its Host lease is pending',
+      );
+      assert.equal(model.doStreamCalls.length, 1);
+    } finally {
+      mutation.resolve();
+    }
+    const events = await completion;
 
     const steering = events.filter((event) => event.type === 'steering_message');
     assert.equal(steering.length, 1);

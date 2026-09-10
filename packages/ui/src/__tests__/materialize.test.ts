@@ -62,7 +62,7 @@ function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefi
 describe("steering timeline", () => {
   test('ignores old display anchors and keeps Runtime consumption order', () => {
     const messages = [originalUser, beforeAssistant,
-      { ...steeringUser, displayAfter: null, steeringEventId: 'accepted' },
+      { ...steeringUser, steeringEventId: 'accepted' },
       { ...beforeAssistant, id: 'after', ts: 5, text: 'after' },
     ];
     assert.deepEqual(timelineText(materializeTurns(messages, 'en')[0]), [

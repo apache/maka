@@ -702,7 +702,7 @@ test('submit re-runs admission when the queue revision moves during preflight', 
       // steering outside the admission lock while it awaits, so the queue
       // revision moves and the stale candidate must be re-admitted instead
       // of surfacing a spurious session_busy to the client.
-      const [lease] = owner.pull();
+      const [lease] = await owner.pull();
       assert.ok(lease);
       owner.ack([lease.id]);
     }
@@ -787,7 +787,7 @@ test('persists prepared Skill content while projecting the submitted text', asyn
   assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering[0]?.content, {
     text: '/skill:writer steer',
   });
-  const [steering] = owner.pull();
+  const [steering] = await owner.pull();
   assert.deepEqual(steering?.content, {
     text: '<invoked-skill>Prepared</invoked-skill>\n\n/skill:writer steer',
     displayText: '/skill:writer steer',
@@ -1103,7 +1103,7 @@ test('invalidates the canonical projection after each observable queue mutation'
   const owner = fixture.coordinator.bindRun(ROOT);
 
   assert.equal((await submit(fixture, 'steering-1', 'first', 'current_turn')).ok, true);
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   owner.release();
@@ -1490,12 +1490,7 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     ['proved-steering', 'already delivered'],
     ['still-pending', 'deliver after recovery'],
   ] as const) {
-    const content = {
-      text,
-      ...(messageId === 'still-pending'
-        ? { displayAfter: { kind: 'tool' as const, id: 'visible-tool' } }
-        : {}),
-    };
+    const content = { text };
     await fixture.admissions.commitMessageAdmission({
       sessionId: ROOT.sessionId,
       turnId: ROOT.turnId,
@@ -1519,8 +1514,8 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
     ['still-pending'],
   );
-  const [lease] = fixture.coordinator.bindRun(ROOT).pull();
-  assert.deepEqual(lease?.content.displayAfter, { kind: 'tool', id: 'visible-tool' });
+  const [lease] = await fixture.coordinator.bindRun(ROOT).pull();
+  assert.deepEqual(lease?.content, { text: 'deliver after recovery' });
 });
 
 test('a retry of a recovered queued Message reuses its durable Skill outcome', async () => {
@@ -1618,7 +1613,7 @@ test('binds the exact reserved Run after a pre-bind stop fence', async () => {
   assert.equal(fixture.liveResidencies(), 0);
 
   const owner = fixture.coordinator.bindRun(ROOT);
-  assert.deepEqual(owner.pull(), []);
+  assert.deepEqual(await owner.pull(), []);
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(batch.sources, []);
@@ -1711,7 +1706,7 @@ test('pull crosses the retract commit cut and only queued entries are retracted'
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
   await submit(fixture, 'follow-1', 'later', 'next_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.retract'](
@@ -1853,7 +1848,7 @@ test('entry retract of an in-flight steering lease conflicts', async () => {
   const owner = fixture.coordinator.bindRun(ROOT);
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.entry.retract'](
@@ -1998,7 +1993,7 @@ test('entry update of an in-flight steering lease conflicts', async () => {
   const owner = fixture.coordinator.bindRun(ROOT);
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.entry.update'](
@@ -2137,7 +2132,7 @@ test('entry promote moves a follow-up into the steering queue', async () => {
   assert.equal(again.ok, false);
   if (!again.ok) assert.equal(again.error.code, 'operation_conflict');
 
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.deepEqual(
     leases.map((lease) => lease.messageId),
     ['follow-2'],
@@ -2180,7 +2175,7 @@ test('a carried follow-up promoted in its successor requeues after nack', async 
     operationContext(),
   );
   assert.equal(promoted.ok, true);
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.deepEqual(
     leases.map((lease) => lease.messageId),
     ['carried-followup'],
@@ -2217,7 +2212,7 @@ test('an acked carried follow-up is not redelivered after restart', async () => 
     operationContext(),
   );
   assert.equal(promoted.ok, true);
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.equal(leases.length, 1);
   owner.ack(leases.map((lease) => lease.id));
   fixture.events.push({
@@ -2407,20 +2402,22 @@ test('steering edits and reorders settle before one complete batch is pulled; fo
     operationContext(),
   );
   await storing.promise;
-  assert.deepEqual(
-    owner.pull(),
-    [],
-    'a provider boundary cannot take stale order while the edit is being stored',
-  );
+  let pulled = false;
+  const pulling = owner.pull().then((batch) => {
+    pulled = true;
+    return batch;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(pulled, false, 'the same boundary waits for durable queue mutations');
   stored.resolve();
   assert.equal((await reorder).ok, true);
-  const batch = owner.pull();
+  const batch = await pulling;
   assert.deepEqual(
     batch.map((lease) => lease.messageId),
     ['steer-3', 'steer-1', 'steer-2'],
   );
   assert.equal(batch[2]?.content.text, 'edited second instruction');
-  assert.deepEqual(owner.pull(), []);
+  assert.deepEqual(await owner.pull(), []);
   owner.ack(batch.map((lease) => lease.id));
   owner.release();
   const first = fixture.coordinator.beginTerminalTransition(ROOT);
@@ -2561,7 +2558,7 @@ test('concurrent and completed retract retries preserve one exact cut', async ()
   await submit(fixture, 'steer-1', 'first', 'current_turn');
   await submit(fixture, 'steer-2', 'second', 'current_turn');
   await submit(fixture, 'follow-1', 'later', 'next_turn');
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.equal(leases.length, 2);
   const retracted = fixture.coordinator.handlers['queue.retract'](
     {
@@ -2655,7 +2652,7 @@ test('an interrupt generation fence makes a late nack discard its in-flight entr
     attachments: [attachment('interrupt', 'queued.png')],
   };
   await submitContent(fixture, 'follow-1', interruptedContent, 'next_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const interrupted = fixture.coordinator.handlers['turn.interrupt'](
@@ -2739,7 +2736,7 @@ test('stale interrupt deletion reclaims state after terminal transition complete
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
   await submit(fixture, 'consumed-before-stale', 'consume', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   const rootRead = fixture.delayRootState();
@@ -2993,7 +2990,7 @@ test('run settlement hands off only steering admissions with immutable proof', a
   await submit(fixture, 'steer-proved', 'provider must see this', 'current_turn');
   const admittedAt = fixture.readMessageAdmission('steer-proved')?.admittedAt;
   assert.ok(admittedAt);
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   owner.release();
@@ -3691,7 +3688,7 @@ test('canonical content preserves ordered attachment and quote identity across q
     quotes: followupQuotes,
   });
 
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   assert.deepEqual(lease.content, {
     text: '<model>first</model>',

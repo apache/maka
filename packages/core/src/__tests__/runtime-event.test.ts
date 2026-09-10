@@ -347,35 +347,6 @@ describe('RuntimeEvent content variants', () => {
     );
   });
 
-  test('preserves and validates the display-only steering anchor in canonical content', () => {
-    const source = { text: 'steer', displayAfter: { kind: 'tool' as const, id: 'visible-tool' } };
-    const decoded = decodeMessageContent(source);
-    assert.deepEqual(decoded, source);
-    assert.notEqual(decoded.displayAfter, source.displayAfter);
-    assert.deepEqual(decodeMessageContent({ text: 'steer', displayAfter: null }), {
-      text: 'steer',
-      displayAfter: null,
-    });
-    assert.equal(messageContentsEqual(source, { text: 'steer', displayAfter: null }), false);
-    const event = decodeRuntimeEvent(
-      baseEvent({ role: 'user', content: { kind: 'text', ...source, steering: true } }),
-    );
-    assert.deepEqual(event.content, { kind: 'text', ...source, steering: true });
-    const stored = { type: 'user', id: 'steering', turnId: 'turn-1', ts: 1, ...source };
-    assert.deepEqual(decodeCanonicalMessage(stored), stored);
-    for (const displayAfter of [
-      { kind: 'unknown', id: 'x' },
-      { kind: 'tool', id: '' },
-      { kind: 'tool', id: 'x', extra: 1 },
-      false,
-    ]) {
-      assert.throws(
-        () => decodeMessageContent({ text: 'steer', displayAfter }),
-        /Invalid MessageContent/,
-      );
-    }
-  });
-
   test('owns canonical MessageContent decoding, copying, and equality', () => {
     const attachments = [
       {

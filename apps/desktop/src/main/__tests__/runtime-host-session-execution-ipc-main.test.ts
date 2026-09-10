@@ -787,7 +787,6 @@ test("submits an ordinary composer message once under its stable message identit
   const result = await ipc.invoke("sessions:submitMessage", "session-1", "current_turn", {
     messageId: "message-1",
     text: "check the projection",
-    displayAfter: { kind: 'thinking', id: 'visible-step' },
   });
 
   assert.deepEqual(submits, [
@@ -796,7 +795,6 @@ test("submits an ordinary composer message once under its stable message identit
       messageId: "message-1",
       content: {
         text: "check the projection",
-        displayAfter: { kind: 'thinking', id: 'visible-step' },
         inlineReferences: [],
       },
       placement: "current_turn",

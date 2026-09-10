@@ -145,12 +145,6 @@ export interface InlineReference {
   start: number;
 }
 
-/** Legacy display boundary retained for messages authored by earlier clients. */
-export interface MessageDisplayAnchor {
-  kind: 'user' | 'thinking' | 'text' | 'tool';
-  id: string;
-}
-
 /** Canonical user-authored content shared by storage, runtime, and Host wire. */
 export interface MessageContent {
   /**
@@ -160,8 +154,6 @@ export interface MessageContent {
   text: string;
   /** Human-facing text when it differs from `text`; omit when equal. */
   displayText?: string;
-  /** Legacy display hint. Readers accept it; transcript order follows Runtime consumption. */
-  displayAfter?: MessageDisplayAnchor | null;
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
   directoryReferences?: DirectoryReference[];
@@ -173,30 +165,8 @@ export interface MessageContent {
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  [
-    'displayText',
-    'displayAfter',
-    'attachments',
-    'directoryReferences',
-    'quotes',
-    'inlineReferences',
-  ],
+  ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
-const MESSAGE_DISPLAY_ANCHOR_SHAPE = defineObjectShape<MessageDisplayAnchor>()(['kind', 'id'], []);
-
-export function isMessageDisplayAnchor(value: unknown): value is MessageDisplayAnchor {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, MESSAGE_DISPLAY_ANCHOR_SHAPE) &&
-    (value.kind === 'user' ||
-      value.kind === 'thinking' ||
-      value.kind === 'text' ||
-      value.kind === 'tool') &&
-    typeof value.id === 'string' &&
-    value.id.length > 0 &&
-    value.id.length <= 256
-  );
-}
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
@@ -228,9 +198,6 @@ const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'e
 export function normalizeMessageContent(content: MessageContent): MessageContent {
   return {
     text: content.text,
-    ...(content.displayAfter !== undefined
-      ? { displayAfter: content.displayAfter === null ? null : { ...content.displayAfter } }
-      : {}),
     ...(content.directoryReferences?.length
       ? { directoryReferences: content.directoryReferences.map((ref) => ({ ...ref })) }
       : {}),
@@ -301,9 +268,6 @@ export function isMessageContent(value: unknown): value is MessageContent {
     isRecord(value) &&
     hasExactShape(value, MESSAGE_CONTENT_SHAPE) &&
     typeof value.text === 'string' &&
-    (value.displayAfter === undefined ||
-      value.displayAfter === null ||
-      isMessageDisplayAnchor(value.displayAfter)) &&
     (value.directoryReferences === undefined ||
       (Array.isArray(value.directoryReferences) &&
         value.directoryReferences.every(isDirectoryReference))) &&
@@ -467,11 +431,6 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
-    (left.displayAfter === right.displayAfter ||
-      (left.displayAfter != null &&
-        right.displayAfter != null &&
-        left.displayAfter.kind === right.displayAfter.kind &&
-        left.displayAfter.id === right.displayAfter.id)) &&
     (left.directoryReferences?.length ?? 0) === (right.directoryReferences?.length ?? 0) &&
     (left.directoryReferences ?? []).every(
       (ref, index) =>

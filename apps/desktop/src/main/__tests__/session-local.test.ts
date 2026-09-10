@@ -674,7 +674,7 @@ test('local submit preserves picked-file approvals until durable admission succe
   });
   for (let index = 0; index < 256; index++)
     store.enqueue('authority', { ...intent(`full-${index}`), staged: [] });
-  const draft = { messageId: 'picked-message', text: 'hello', attachmentItems: [picked], displayAfter: { kind: 'tool', id: 'visible-tool' } };
+  const draft = { messageId: 'picked-message', text: 'hello', attachmentItems: [picked] };
   const send = () =>
     submit(
       { sender: { id: 7 } } as IpcMainInvokeEvent,
@@ -687,8 +687,6 @@ test('local submit preserves picked-file approvals until durable admission succe
   store.cancel('authority', 'full-0');
   await send();
   assert.equal(store.get('authority', 'picked-message')?.state, 'saved');
-  assert.deepEqual(store.get('authority', 'picked-message')?.intent.command.content.displayAfter, draft.displayAfter);
-  assert.deepEqual(service.listMessages(target, 'session-1').find((message) => message.messageId === draft.messageId)?.displayAfter, draft.displayAfter);
   assert.equal(
     Buffer.from(store.stagedAttachments('authority', 'picked-message')[0]!.content).toString(),
     'x',

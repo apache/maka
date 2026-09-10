@@ -101,9 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 137 as const;
-// 137: MessageContent carries the optional displayAfter steering anchor; older
-// strict peers cannot preserve or decode the submitted conversation position.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 138 as const;
+// 138: Removes the unused steering display anchor from canonical MessageContent.
+// 137: Reserved by the former display anchor contract.
 // 136: WorkHub transient proposals distinguish routing dispositions from linked
 // operations. Older peers expect replace/stop_work/resume_work dispositions.
 // 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.

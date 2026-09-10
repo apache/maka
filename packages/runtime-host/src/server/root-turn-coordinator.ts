@@ -1448,7 +1448,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         return { error: 'A root Turn is still active' };
       }
       const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-      const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+      const execution = {
+        kind: isWorkHubCoordinationSessionId(header.id)
+          ? ('workhub_coordination' as const)
+          : ('external_message' as const),
+        inputDigest: messageContentDigest(input.submittedContent),
+      };
+      const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
@@ -1463,10 +1469,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           turnId,
           proposedRunId: input.rootIdentity?.runId ?? randomUUID(),
           proposedUserMessageId: input.sources.length === 1 ? input.sources[0]!.messageId : null,
-          execution: {
-            kind: 'external_message',
-            inputDigest: messageContentDigest(input.submittedContent),
-          },
+          execution,
           normalizedInput: input.content,
           ...(turnOrchestration ? { turnOrchestration } : {}),
           sourceMessages: input.sources,

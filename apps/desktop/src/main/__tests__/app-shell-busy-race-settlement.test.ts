@@ -40,11 +40,10 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('busy-raced send settlement', () => {
-  it('keeps steering pending through Host admission without submitting a display anchor', async () => {
+  it('keeps steering pending while the Host admits it', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
-      submitMessage: async (_sessionId: string, _placement: string, command: { displayAfter?: unknown }) => {
-        assert.equal(command.displayAfter, undefined);
+      submitMessage: async (_sessionId: string, _placement: string, _command: unknown) => {
         assert.equal([...transient.values()][0]?.pendingSteering, true);
         return { ok: true, disposition: 'steering', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },

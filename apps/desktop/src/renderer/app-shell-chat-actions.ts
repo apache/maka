@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
-import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
@@ -358,23 +358,17 @@ export function createAppShellChatActions(deps: {
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
     // they come back to it.
-    Conversation.publishTransientUserMessage(
-      deps,
-      sessionId,
-      messageId,
-      input.displayText ??
-        skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
-      result.attachments,
-      {
-        updateOnly: true,
-        placement,
-        pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
-        ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...copiedArray('directoryReferences', directoryReferences),
-        ...copiedArray('quotes', quotes),
-        inlineReferences: result.inlineReferences ?? [],
-      },
-    );
+    publishTransientUserMessage(sessionId, {
+      id: messageId,
+      text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
+      attachments: [...result.attachments],
+      transientPlacement: placement,
+      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
+      inlineReferences: [...(result.inlineReferences ?? [])],
+    }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
@@ -487,18 +481,12 @@ export function createAppShellChatActions(deps: {
         // session-owned transient in the same state transition that replaces
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
-        Conversation.publishTransientUserMessage(
-          deps,
-          session.id,
-          messageId,
-          options.displayText ?? text,
-          [],
-          {
-            ...copiedArray('directoryReferences', directoryReferences),
-            ...copiedArray('quotes', quotes),
-            inlineReferences: [],
-          },
-        );
+        publishTransientUserMessage(session.id, {
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          inlineReferences: [],
+        });
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
@@ -526,19 +514,13 @@ export function createAppShellChatActions(deps: {
       if (!await onFollowLatest(sessionId)) return false;
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
-      Conversation.publishTransientUserMessage(
-        deps,
-        sessionId,
-        messageId,
-        options.displayText ?? text,
-        [],
-        {
-          ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
-          ...copiedArray('directoryReferences', directoryReferences),
-          ...copiedArray('quotes', quotes),
-          inlineReferences: [],
-        },
-      );
+      publishTransientUserMessage(sessionId, {
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+        ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
+        inlineReferences: [],
+      });
       const submitted = await submitIntoSession(sessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
@@ -615,10 +597,11 @@ export function createAppShellChatActions(deps: {
     const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
-    Conversation.publishTransientUserMessage(deps, sessionId, messageId, text, Conversation.retainedAttachmentRefs(pending ?? []), {
+    publishTransientUserMessage(sessionId, {
+      id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
       pendingSteering: placement === 'current_turn',
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
-      placement,
+      transientPlacement: placement,
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
@@ -738,6 +721,21 @@ export function createAppShellChatActions(deps: {
     } finally {
       messageRetryPending.release(sessionId);
     }
+  }
+
+  function publishTransientUserMessage(
+    sessionId: string,
+    message: Omit<TransientUserMessageProjection, 'ts'>,
+    updateOnly = false,
+  ): void {
+    (updateOnly ? deps.updateTransientMessage : deps.addTransientMessage)(sessionId, { ...message, ts: Date.now() });
+    if (activeIdRef.current !== sessionId) return;
+    setMessageLoadErrorBySession((current) => {
+      if (!current[sessionId]) return current;
+      const cleared = { ...current };
+      delete cleared[sessionId];
+      return cleared;
+    });
   }
 
   return {

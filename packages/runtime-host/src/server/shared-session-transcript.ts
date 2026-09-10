@@ -36,9 +36,6 @@ export function projectSharedSessionMessageContent(
   );
   return {
     text: userFacingText(content),
-    ...(content.displayAfter !== undefined
-      ? { displayAfter: structuredClone(content.displayAfter) }
-      : {}),
     ...(attachments === undefined ? {} : { attachments: structuredClone(attachments) }),
     ...(content.quotes === undefined ? {} : { quotes: structuredClone(content.quotes) }),
     ...(content.inlineReferences === undefined

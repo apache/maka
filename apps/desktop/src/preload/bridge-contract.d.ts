@@ -1103,7 +1103,6 @@ export interface MakaBridge {
       command: {
         messageId: string;
         text: string;
-        displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null;
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
