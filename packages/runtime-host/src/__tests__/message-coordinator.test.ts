@@ -1987,6 +1987,100 @@ test('entry update preserves queue identity, order, and placement and replays it
   await fixture.coordinator.close();
 });
 
+for (const disposition of ['consumed', 'retracted'] as const) {
+  test(`compact replay identities preserve submit and update outcomes after ${disposition}`, async (t) => {
+    const clone = structuredClone;
+    const identities: Record<string, unknown>[] = [];
+    t.mock.method(globalThis, 'structuredClone', (value: unknown) => {
+      if (value && typeof value === 'object' && 'originHostEpoch' in value) {
+        identities.push(value as Record<string, unknown>);
+      }
+      return clone(value);
+    });
+    const fixture = createFixture();
+    fixture.coordinator.reserveRootTurn(ROOT);
+    const owner = fixture.coordinator.bindRun(ROOT);
+    const content = { text: 'original'.repeat(1024), attachments: [attachment('image', 'a.png')] };
+    const first = await submitContent(fixture, 'compact', content, 'current_turn');
+    assert.equal(first.ok, true);
+    const input = {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      updateId: 'compact-update',
+      expectedQueueRevision: 1,
+      text: 'edited'.repeat(1024) + '\ud800',
+    };
+    const update = (request = input) =>
+      fixture.coordinator.handlers['queue.entry.update'](request, operationContext());
+    const updated = await update();
+    assert.equal(updated.ok, true);
+    assert.equal(identities.length, 2);
+    assert.equal(identities[0]?.contentDigest, messageContentDigest(content));
+    assert.equal(
+      identities[1]?.textDigest,
+      createHash('sha256').update(input.text, 'utf16le').digest('hex'),
+    );
+    for (const identity of identities) {
+      assert.equal('content' in identity, false);
+      assert.equal('text' in identity, false);
+      assert.ok(JSON.stringify(identity).length < 512);
+    }
+
+    const assertReplay = async () => {
+      assert.deepEqual(
+        await submitContent(
+          fixture,
+          'compact',
+          { attachments: content.attachments, text: content.text },
+          'current_turn',
+        ),
+        first,
+      );
+      assert.deepEqual(await update(), updated);
+      const conflicts = [
+        await submitContent(fixture, 'compact', { ...content, text: 'changed' }, 'current_turn'),
+        await submitContent(
+          fixture,
+          'compact',
+          { ...content, attachments: [attachment('other', 'a.png')] },
+          'current_turn',
+        ),
+        await submitContent(fixture, 'compact', content, 'next_turn'),
+        await update({ ...input, text: input.text.slice(0, -1) + '\ud801' }),
+        await update({ ...input, expectedQueueRevision: 2 }),
+        await update({ ...input, entryId: 'other-entry' }),
+      ];
+      for (const conflict of conflicts) {
+        assert.equal(conflict.ok, false);
+        if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+      }
+    };
+    await assertReplay();
+    if (disposition === 'consumed') {
+      const [lease] = await owner.pull();
+      assert.ok(lease);
+      owner.ack([lease.id]);
+    } else {
+      const retractInput = {
+        originHostEpoch: 'epoch-1',
+        sessionId: ROOT.sessionId,
+        retractId: 'compact-retract',
+      };
+      const retract = () =>
+        fixture.coordinator.handlers['queue.retract'](retractInput, operationContext());
+      const retracted = await retract();
+      assert.equal(retracted.ok, true);
+      if (retracted.ok) assert.equal(retracted.result.retracted[0]?.content.text, input.text);
+      assert.deepEqual(await retract(), retracted);
+    }
+    owner.release();
+    fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
+    await assertReplay();
+    await fixture.coordinator.close();
+  });
+}
+
 test('entry update of an in-flight steering lease conflicts', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
