@@ -50,6 +50,7 @@ import {
   acquireOperationalStateDatabase,
   inspectOperationalStateSchema,
   OPERATIONAL_STATE_DATABASE_NAME,
+  OperationalStateMigrationBlockedError,
 } from './operational-state-store.js';
 import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
 import { isSafeStorageId } from './storage-id.js';
@@ -406,11 +407,19 @@ async function backupOperationalState(stateRoot: string, destinationPath: string
   try {
     lease = acquireOperationalStateDatabase(stateRoot, { schemaMigration: 'require_current' });
   } catch (error) {
-    throw new SessionBundleExportError(
-      'schema_unsupported',
-      'Session bundle source is not at the current schema',
-      { cause: error },
-    );
+    // Only a blocked migration means "this build cannot read that schema".
+    // A permission, busy or I/O failure is the environment talking, and the
+    // operational store preserves it deliberately -- flattening those into a
+    // schema verdict tells the caller to upgrade when the real answer is that
+    // the file could not be opened.
+    if (error instanceof OperationalStateMigrationBlockedError) {
+      throw new SessionBundleExportError(
+        'schema_unsupported',
+        'Session bundle source is not at the current schema',
+        { cause: error },
+      );
+    }
+    throw error;
   }
   try {
     await lease.backup(destinationPath);

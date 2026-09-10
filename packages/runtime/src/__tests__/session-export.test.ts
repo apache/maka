@@ -996,6 +996,30 @@ test(
 );
 
 test(
+  'reports an unreadable database as an environment failure, not a schema verdict',
+  withRoot('maka-session-export-unreadable', async (root, workspaceRoot) => {
+    const { chmod } = await import('node:fs/promises');
+    const sessionId = await createSession(workspaceRoot);
+    const databasePath = join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
+    await chmod(databasePath, 0o000);
+    try {
+      // Telling the user to upgrade when the real answer is that the file could
+      // not be opened sends them after the wrong problem.
+      const result = await exportSessionBundle({
+        workspaceRoot,
+        sessionId,
+        destination: join(root, 'bundle.maka-session'),
+      });
+      assert.equal(result.ok, false);
+      assert.notEqual(result.ok === false && result.reason.kind, 'schema_unsupported');
+      assert.equal(result.ok === false && result.reason.kind, 'io_failed');
+    } finally {
+      await chmod(databasePath, 0o600);
+    }
+  }),
+);
+
+test(
   'refuses a source whose schema is not current',
   withRoot('maka-session-export-schema', async (root, workspaceRoot) => {
     const sessionId = await createSession(workspaceRoot);
