@@ -544,8 +544,6 @@ export async function replaceRuntimeHostLifecycle(input: {
   readonly prepareSourceRetirement?: Parameters<
     typeof retireRuntimeHostLifecycleOwner
   >[0]['prepareSourceRetirement'];
-  /** Package updates must not reactivate old code after the successor may have opened storage. */
-  readonly retainDesiredOnActivationFailure?: boolean;
   readonly retirementSupervisor?: {
     status(): Promise<{ readonly active: boolean; readonly pid: number | null }>;
     retire(): Promise<void>;
@@ -597,7 +595,10 @@ export async function replaceRuntimeHostLifecycle(input: {
       await verifyRuntimeHostLifecycleReady(desired, input.deps);
     }
   } catch (activationError) {
-    if (input.retainDesiredOnActivationFailure) {
+    // An on-demand update may have allowed its successor to open the State Root
+    // before readiness failed. Keep that successor authoritative; configuring an
+    // existing package and supervised updates retain their rollback behavior.
+    if (input.operation === 'update' && desired.lifecycle.mode === 'on_demand') {
       throw new RuntimeHostLifecycleTransactionError(
         'recovery_failed',
         'The updated Runtime Host could not become ready. Its deployment is retained; retry activation or repair it without restoring older code.',

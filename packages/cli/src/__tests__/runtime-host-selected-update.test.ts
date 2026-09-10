@@ -530,7 +530,6 @@ describe('canonical WSL update fences', () => {
         canonical: {
           ...canonical,
           replaceLifecycle: async (input) => {
-            assert.equal(input.retainDesiredOnActivationFailure, true);
             assert.equal(await input.prepareSourceRetirement?.(), 'active_work');
             return { kind: 'active_tasks' };
           },

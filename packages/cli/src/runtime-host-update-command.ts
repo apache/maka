@@ -808,7 +808,6 @@ async function runCanonicalRuntimeHostUpdate(
           ...(options.expectedHost ? { expectedOwner: options.expectedHost } : {}),
           ...(desired.lifecycle.mode === 'on_demand'
             ? {
-                retainDesiredOnActivationFailure: true,
                 ...(options.expectedHost
                   ? {
                       prepareSourceRetirement: (signal?: AbortSignal) => {

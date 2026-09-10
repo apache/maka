@@ -465,7 +465,7 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
   }
 });
 
-test('failed on-demand candidate activation restores the known-good package authority', async (t) => {
+test('failed on-demand candidate activation retains the successor authority', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-on-demand-update-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
@@ -508,14 +508,14 @@ test('failed on-demand candidate activation restores the known-good package auth
         },
       },
     }),
-    { code: 'transition_failed' },
+    { code: 'recovery_failed' },
   );
 
-  const restored = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
-  assert.equal(restored?.state, 'active');
-  assert.equal(restored?.configRevision, 3);
-  assert.deepEqual(restored?.launch, current.launch);
-  assert.deepEqual(operatorProjection.launch, current.launch);
+  const retained = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
+  assert.equal(retained?.state, 'active');
+  assert.equal(retained?.configRevision, 2);
+  assert.deepEqual(retained?.launch, desired.launch);
+  assert.deepEqual(operatorProjection.launch, desired.launch);
 });
 
 test('revalidates product invariants after Host retirement and restores the prior lifecycle', async (t) => {
@@ -1015,7 +1015,6 @@ test('failed on-demand update activation retains the committed package without r
       operation: 'update',
       current,
       desired,
-      retainDesiredOnActivationFailure: true,
       activateDesired: async () => {
         throw new Error('Successor opened storage but readiness failed');
       },

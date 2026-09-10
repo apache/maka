@@ -906,7 +906,6 @@ async function runRuntimeHostOnDemandSetupLocked(
                 : 'install',
           ...(current ? { current } : {}),
           desired: desiredConfig,
-          retainDesiredOnActivationFailure: Boolean(current && packageChanged),
           ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
           ...(legacyToMigrate && legacyBackend
             ? { activatePrevious: () => legacyBackend.start() }

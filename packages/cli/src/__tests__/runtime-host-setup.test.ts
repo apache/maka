@@ -362,7 +362,6 @@ test('on-demand setup installs one exact deployment without a service backend', 
         replaceLifecycle: async (input) => {
           // Model the source Host refusing retirement while a TUI owns work.
           assert.equal(input.allowInterruptActiveTasks, false);
-          assert.equal(input.retainDesiredOnActivationFailure, true);
           return { kind: 'active_tasks' };
         },
         writeOutput: (value) => busyOutputs.push(value),
