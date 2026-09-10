@@ -101,8 +101,11 @@ export function truncateToolOutput(
   // A single trailing newline terminates the last line; it is not an extra
   // empty line, so it must not count against the line budget.
   const body = text.endsWith('\n') ? text.slice(0, -1) : text;
-  const lines = body.split('\n');
-  if (lines.length <= maxLines && totalBytes <= maxBytes) {
+  let lineCount = 1;
+  for (let index = body.indexOf('\n'); index !== -1; index = body.indexOf('\n', index + 1)) {
+    lineCount++;
+  }
+  if (lineCount <= maxLines && totalBytes <= maxBytes) {
     return { content: text, truncated: false, removed: 0, unit: 'lines' };
   }
 
@@ -111,24 +114,33 @@ export function truncateToolOutput(
   let hitBytes = false;
 
   if (direction === 'head') {
-    for (let i = 0; i < lines.length && i < maxLines; i++) {
-      const size = utf8Len(lines[i]) + (i > 0 ? 1 : 0);
+    let start = 0;
+    for (let i = 0; i < lineCount && i < maxLines; i++) {
+      const newline = body.indexOf('\n', start);
+      const end = newline === -1 ? body.length : newline;
+      const line = body.slice(start, end);
+      const size = utf8Len(line) + (i > 0 ? 1 : 0);
       if (bytes + size > maxBytes) {
         hitBytes = true;
         break;
       }
-      out.push(lines[i]);
+      out.push(line);
       bytes += size;
+      start = end + 1;
     }
   } else {
-    for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-      const size = utf8Len(lines[i]) + (out.length > 0 ? 1 : 0);
+    let end = body.length;
+    for (let i = lineCount - 1; i >= 0 && out.length < maxLines; i--) {
+      const start = end > 0 ? body.lastIndexOf('\n', end - 1) + 1 : 0;
+      const line = body.slice(start, end);
+      const size = utf8Len(line) + (out.length > 0 ? 1 : 0);
       if (bytes + size > maxBytes) {
         hitBytes = true;
         break;
       }
-      out.unshift(lines[i]);
+      out.unshift(line);
       bytes += size;
+      end = start - 1;
     }
   }
 
@@ -137,7 +149,11 @@ export function truncateToolOutput(
   // JSON/stack trace), keep a byte-safe slice of that line.
   let preview: string;
   if (out.length === 0) {
-    const line = direction === 'head' ? lines[0] : lines[lines.length - 1];
+    const firstNewline = body.indexOf('\n');
+    const line =
+      direction === 'head'
+        ? body.slice(0, firstNewline === -1 ? body.length : firstNewline)
+        : body.slice(body.lastIndexOf('\n') + 1);
     preview = sliceLineByBytes(line, maxBytes, direction);
     bytes = utf8Len(preview);
     hitBytes = true;
@@ -145,7 +161,7 @@ export function truncateToolOutput(
     preview = out.join('\n');
   }
 
-  const removed = hitBytes ? Math.max(0, totalBytes - bytes) : lines.length - out.length;
+  const removed = hitBytes ? Math.max(0, totalBytes - bytes) : lineCount - out.length;
   if (removed <= 0) {
     // Nothing was actually dropped — e.g. content fits but a lone trailing
     // newline pushed totalBytes one over the byte budget. Don't emit a
