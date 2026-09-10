@@ -613,6 +613,17 @@ const SESSION_LINK_COLUMNS = [
   'root_session_id',
 ] as const;
 
+/**
+ * Tables the target writes for itself.
+ *
+ * `session_metadata` carries triggers that maintain the catalog projection, so
+ * inserting the bundle's copy of it and then the Session row makes the trigger
+ * collide with what was just inserted. The projection is derived; letting the
+ * target derive it is both simpler and the only way it stays correct when the
+ * derivation changes.
+ */
+const TRIGGER_MAINTAINED_TABLES = new Set(['session_catalog_projection']);
+
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
   'session_metadata_schema',
@@ -832,4 +843,309 @@ function assertSafeSessionId(sessionId: string): void {
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+export type SessionBundleImportErrorCode =
+  | 'invalid_root'
+  | 'schema_unsupported'
+  | 'session_exists'
+  | 'conflict'
+  | 'io_failed';
+
+export class SessionBundleImportError extends Error {
+  constructor(
+    readonly code: SessionBundleImportErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'SessionBundleImportError';
+  }
+}
+
+export interface SessionBundleImportInput {
+  /** The workspace receiving the Sessions. */
+  stateRoot: string;
+  /** A hydrated bundle's state tree: the filtered database, artifacts, context. */
+  bundleStateRoot: string;
+}
+
+export interface SessionBundleImportResult {
+  sessionIds: string[];
+  artifactFiles: number;
+  contextRefs: number;
+}
+
+/**
+ * Merge a hydrated bundle into a workspace.
+ *
+ * The mirror of the export, and the asymmetry is the whole design: the export
+ * owns a private copy and can DELETE what is not the subtree, while the import
+ * writes into a live workspace holding other people's Sessions and can only
+ * ADD. What keeps that from needing a table list is that the bundle's database
+ * already contains nothing else -- so this copies every table it has, and a
+ * table added to the schema later travels in both directions without anyone
+ * updating a list.
+ *
+ * Write order is the safety argument. Artifact bytes land first and the
+ * database transaction commits last, so a failure between them leaves files
+ * nothing points at -- reclaimable -- rather than rows pointing at files that
+ * are not there.
+ */
+export async function importSessionBundleState(
+  input: SessionBundleImportInput,
+): Promise<SessionBundleImportResult> {
+  const bundleStateRoot = await canonicalRoot(input.bundleStateRoot, 'bundle state');
+  const bundleDatabasePath = resolveInside(bundleStateRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  await assertRegularFile(bundleDatabasePath, OPERATIONAL_STATE_DATABASE_NAME);
+
+  return withOfflineContextSnapshot(input.stateRoot, (contextLocked) =>
+    withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+      const sessionIds = readBundleSessionIds(bundleDatabasePath);
+      if (sessionIds.length === 0) {
+        throw new SessionBundleImportError('invalid_root', 'Bundle carries no Session');
+      }
+
+      // The export refuses to migrate its source because it only reads. An
+      // import is a write the user asked for, and the target is often a
+      // workspace with no database yet -- moving to a new machine is the whole
+      // point -- so this opens the ordinary way and lets it be initialised.
+      const lease = acquireOperationalStateDatabase(stateRoot);
+      try {
+        const target = lease.database;
+        assertImportableInto(target, sessionIds);
+        const artifactFiles = await copyBundleArtifacts(bundleStateRoot, stateRoot);
+        const inserted = mergeBundleDatabase(target, bundleDatabasePath);
+        const contextRefs = await mergeBundleContext(
+          bundleStateRoot,
+          stateRoot,
+          contextLocked,
+          sessionIds,
+        );
+        return { sessionIds: inserted, artifactFiles, contextRefs };
+      } finally {
+        lease.close();
+      }
+    }),
+  );
+}
+
+function readBundleSessionIds(bundleDatabasePath: string): string[] {
+  const database = new DatabaseSync(bundleDatabasePath, { readOnly: true });
+  try {
+    return (
+      database
+        .prepare('SELECT session_id FROM session_metadata ORDER BY session_id')
+        .all() as Array<{
+        session_id?: unknown;
+      }>
+    ).map((row) => String(row.session_id));
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Refuse before writing anything.
+ *
+ * Session ids are generated, not chosen, so one already present means this
+ * Session is already here -- not that two of them collided. Importing over it
+ * would merge two histories that share ids and agree about nothing else.
+ */
+function assertImportableInto(target: DatabaseSync, sessionIds: readonly string[]): void {
+  const existing = target.prepare('SELECT 1 FROM session_metadata WHERE session_id = ?');
+  const present = sessionIds.filter((sessionId) => existing.get(sessionId) !== undefined);
+  if (present.length > 0) {
+    throw new SessionBundleImportError(
+      'session_exists',
+      `Session already present in this workspace: ${present.join(', ')}`,
+    );
+  }
+}
+
+/** Bytes first: a file nothing points at is reclaimable, a row pointing at nothing is not. */
+async function copyBundleArtifacts(bundleStateRoot: string, stateRoot: string): Promise<number> {
+  const source = resolveInside(bundleStateRoot, 'artifacts');
+  if (!(await pathExists(source))) return 0;
+  let copied = 0;
+  const walk = async (relative: string): Promise<void> => {
+    const absolute = relative ? resolveInside(source, relative) : source;
+    for (const entry of await readdir(absolute, { withFileTypes: true })) {
+      const next = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(next);
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw new SessionBundleImportError(
+          'io_failed',
+          `Bundle artifact is not a regular file: ${next}`,
+        );
+      }
+      const destination = resolveInside(resolveInside(stateRoot, 'artifacts'), next);
+      await mkdir(dirname(destination), { recursive: true });
+      // Never overwrite: an existing path means this artifact is already here,
+      // which the Session precheck should have caught. Failing is the honest
+      // answer to being wrong about that.
+      await copyFile(resolveInside(source, next), destination, constants.COPYFILE_EXCL).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            throw new SessionBundleImportError('conflict', `Artifact already present: ${next}`);
+          }
+          throw error;
+        },
+      );
+      copied += 1;
+    }
+  };
+  await walk('');
+  return copied;
+}
+
+/**
+ * Copy every table the bundle has, in one transaction.
+ *
+ * No allow-list: the bundle's database was already filtered down to its own
+ * Sessions, so "everything it has" is exactly what belongs. Only the tables
+ * describing the WORKSPACE rather than a Session are skipped -- the target has
+ * its own, and they are not the bundle's to bring.
+ */
+function mergeBundleDatabase(target: DatabaseSync, bundleDatabasePath: string): string[] {
+  target.exec(`ATTACH DATABASE '${bundleDatabasePath.replaceAll("'", "''")}' AS bundle`);
+  try {
+    target.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE');
+    try {
+      const tables = target
+        .prepare(
+          "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all() as Array<{ name?: unknown }>;
+      for (const row of tables) {
+        const name = row.name;
+        if (
+          typeof name !== 'string' ||
+          PORTABLE_GLOBAL_TABLES.has(name) ||
+          TRIGGER_MAINTAINED_TABLES.has(name)
+        ) {
+          continue;
+        }
+        const quoted = quoteIdentifier(name);
+        target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
+      }
+      const violation = target.prepare('PRAGMA foreign_key_check').get();
+      if (violation) {
+        throw new SessionBundleImportError(
+          'conflict',
+          'Imported Sessions would leave dangling references',
+        );
+      }
+      const sessionIds = (
+        target
+          .prepare('SELECT session_id FROM bundle.session_metadata ORDER BY session_id')
+          .all() as Array<{ session_id?: unknown }>
+      ).map((entry) => String(entry.session_id));
+      target.exec('COMMIT');
+      return sessionIds;
+    } catch (error) {
+      try {
+        target.exec('ROLLBACK');
+      } catch {}
+      throw error;
+    }
+  } finally {
+    target.exec('DETACH DATABASE bundle');
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  return lstat(path)
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * Merge the bundle's offloaded context into the workspace.
+ *
+ * Without this an imported Session arrives with its read-image references
+ * intact and none of the bytes behind them, which is the same hole the export
+ * had before it learned to carry the closure.
+ *
+ * Blobs are content-addressed, so an id already present is the same bytes and
+ * the insert is skipped rather than treated as a conflict.
+ */
+async function mergeBundleContext(
+  bundleStateRoot: string,
+  stateRoot: string,
+  contextLocked: boolean,
+  sessionIds: readonly string[],
+): Promise<number> {
+  const bundleContext = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
+  if (!(await pathExists(bundleContext))) return 0;
+  if (!contextLocked) {
+    throw new SessionBundleImportError(
+      'io_failed',
+      'Context import requires an offline Storage Root; stop the Runtime Host first',
+    );
+  }
+
+  const bundleValues = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  if (await pathExists(bundleValues)) {
+    const targetValues = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+    for (const entry of await readdir(bundleValues, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const destination = resolveInside(targetValues, entry.name);
+      await mkdir(dirname(destination), { recursive: true });
+      // Managed files are named by content, so an existing one is the same one.
+      await copyFile(
+        resolveInside(bundleValues, entry.name),
+        destination,
+        constants.COPYFILE_EXCL,
+      ).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      });
+    }
+  }
+
+  const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
+  if (!(await pathExists(targetContext))) {
+    await copyFile(bundleContext, targetContext);
+    return countContextRefs(targetContext, sessionIds);
+  }
+  const database = new DatabaseSync(targetContext);
+  try {
+    database.exec(`ATTACH DATABASE '${bundleContext.replaceAll("'", "''")}' AS bundle`);
+    try {
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        database.exec(
+          'INSERT OR IGNORE INTO main.context_blobs SELECT * FROM bundle.context_blobs',
+        );
+        database.exec('INSERT INTO main.context_refs SELECT * FROM bundle.context_refs');
+        database.exec('COMMIT');
+      } catch (error) {
+        try {
+          database.exec('ROLLBACK');
+        } catch {}
+        throw error;
+      }
+    } finally {
+      database.exec('DETACH DATABASE bundle');
+    }
+  } finally {
+    database.close();
+  }
+  return countContextRefs(targetContext, sessionIds);
+}
+
+function countContextRefs(databasePath: string, sessionIds: readonly string[]): number {
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const placeholders = sessionIds.map(() => '?').join(', ');
+    const row = database
+      .prepare(`SELECT COUNT(*) AS count FROM context_refs WHERE session_id IN (${placeholders})`)
+      .get(...sessionIds) as { count?: unknown };
+    return Number(row.count ?? 0);
+  } finally {
+    database.close();
+  }
 }
