@@ -147,8 +147,7 @@ interface ConnectionState {
   sink: SessionContinuityFrameSink;
   subscriptionIds: Set<string>;
   pendingOpenCount: number;
-  readonly closed: Promise<void>;
-  resolveClosed(): void;
+  readonly closed: AbortController;
 }
 
 interface QueuedSubscriptionFrame {
@@ -354,13 +353,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (this.#connections.has(connectionId)) {
       throw new Error(`Duplicate Runtime Host connection: ${connectionId}`);
     }
-    const closed = signal();
     this.#connections.set(connectionId, {
       sink,
       subscriptionIds: new Set(),
       pendingOpenCount: 0,
-      closed: closed.promise,
-      resolveClosed: closed.resolve,
+      closed: new AbortController(),
     });
     let attached = true;
     return {
@@ -952,12 +949,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                     preparationPermit,
                   );
                   cachedTranscriptOverlay.pendingConsumers += 1;
-                  retainedTranscriptOverlay = await Promise.race([
+                  retainedTranscriptOverlay = await waitForConnectionOpen(
                     cachedTranscriptOverlay.prepared,
-                    connection.closed.then(() => {
-                      throw new Error('Runtime Host connection closed during subscription open');
-                    }),
-                  ]);
+                    connection.closed.signal,
+                  );
                   const snapshot = projectSessionSnapshot(committed.value, identity.principalKind);
                   const created = await createSessionTranscriptBootstrap({
                     reader: this.#transcriptReader,
@@ -1242,12 +1237,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const ticket = this.#queueTranscriptOverlayPreparation();
     let release: () => void;
     try {
-      release = await Promise.race([
-        ticket.ready,
-        connection.closed.then(() => {
-          throw new Error('Runtime Host connection closed during subscription open');
-        }),
-      ]);
+      release = await waitForConnectionOpen(ticket.ready, connection.closed.signal);
     } catch (error) {
       this.#cancelTranscriptOverlayPreparation(ticket.waiter);
       throw error;
@@ -1472,7 +1462,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #closeConnection(connectionId: string): void {
     const connection = this.#connections.get(connectionId);
     if (!connection) return;
-    connection.resolveClosed();
+    connection.closed.abort(new Error('Runtime Host connection closed during subscription open'));
     for (const subscriptionId of [...connection.subscriptionIds]) {
       const subscriber = this.#ownedSubscriber(connectionId, subscriptionId);
       if (subscriber) this.#removeSubscriber(subscriber);
@@ -2271,10 +2261,22 @@ function toolStartShellRunRef(
   }
 }
 
-function signal(): { readonly promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
+function waitForConnectionOpen<T>(task: Promise<T>, closed: AbortSignal): Promise<T> {
+  // A race against a connection-lifetime Promise retains every winning overlay
+  // until disconnect. Remove the close listener as soon as this wait finishes.
+  return new Promise<T>((resolve, reject) => {
+    const onClose = () => reject(closed.reason);
+    if (closed.aborted) onClose();
+    else closed.addEventListener('abort', onClose, { once: true });
+    void task.then(
+      (value) => {
+        closed.removeEventListener('abort', onClose);
+        resolve(value);
+      },
+      (error: unknown) => {
+        closed.removeEventListener('abort', onClose);
+        reject(error);
+      },
+    );
   });
-  return { promise, resolve };
 }
