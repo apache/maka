@@ -22,6 +22,7 @@ import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import type { ConnectionEffectFetch } from '../connection-effect-fetch.js';
 import { matchesBypassList } from './bypass-matcher.js';
 import { buildProxyDispatcher } from './proxy-dispatcher.js';
+import { buildAbortableConnector } from './abortable-connector.js';
 
 export const FETCH_PROXY_SNAPSHOT = Symbol.for('maka.fetch.proxy-snapshot');
 
@@ -72,7 +73,7 @@ export function createProxiedFetchTransport(
   // Dispatchers do not own sockets until their connectors call back. Abort
   // direct and proxy connection establishment too, including TLS handshakes.
   const connections = new AbortController();
-  const directDispatcher = new Agent({ connect: { signal: connections.signal } });
+  const directDispatcher = new Agent({ connect: buildAbortableConnector(connections.signal) });
   let proxyDispatcher: Dispatcher | undefined;
   let closePromise: Promise<void> | undefined;
   let closed = false;

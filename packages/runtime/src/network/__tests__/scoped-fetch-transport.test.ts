@@ -20,7 +20,9 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import net from 'node:net';
-import { withTimeout } from '@maka/core/test-only/async-primitives';
+import { getEventListeners } from 'node:events';
+import { Agent, fetch as undiciFetch } from 'undici';
+import { waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import { PROXY_DEFAULTS, type ProxySettings } from '@maka/core/settings/network-settings';
 import {
@@ -35,8 +37,142 @@ import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.
 import { testProxyConnection } from '../proxy-test.js';
 import { proxiedFetch } from '../../bots/proxied-fetch.js';
 import { setActiveProxy } from '../active-proxy-state.js';
+import { buildProxyDispatcher } from '../proxy-dispatcher.js';
+import { buildAbortableConnector } from '../abortable-connector.js';
 
 describe('connection effect network transport', () => {
+  for (const type of ['direct', 'http', 'socks5'] as const) {
+    test(`closed successful connections do not accumulate abort listeners (${type})`, async () => {
+      const server = createServer((_request, response) => {
+        response.writeHead(200, { connection: 'close' });
+        response.end('proxy-ok');
+      });
+      const port = await listen(server);
+      const socks = type === 'socks5' ? await startStalledProxy('socks-http') : undefined;
+      const controller = new AbortController();
+      const dispatcher =
+        type === 'direct'
+          ? new Agent({ connect: buildAbortableConnector(controller.signal) })
+          : buildProxyDispatcher(
+              {
+                ...PROXY_DEFAULTS,
+                enabled: true,
+                type,
+                host: '127.0.0.1',
+                port: socks?.port ?? port,
+                bypassList: [],
+              },
+              controller.signal,
+            );
+      try {
+        for (let index = 0; index < 25; index++) {
+          const response = await undiciFetch(
+            type === 'direct'
+              ? `http://127.0.0.1:${port}/models`
+              : 'http://provider.invalid/models',
+            { dispatcher },
+          );
+          assert.equal(await response.text(), 'proxy-ok');
+          // Socket close is delivered after the body. Wait for I/O, not GC.
+          await waitFor(() => getEventListeners(controller.signal, 'abort').length === 0, {
+            timeoutMs: 1_000,
+            message: 'closed socket retained an abort listener',
+          });
+        }
+      } finally {
+        controller.abort();
+        await dispatcher.destroy();
+        await socks?.close();
+        await closeServer(server);
+      }
+    });
+  }
+
+  for (const stage of [
+    'direct',
+    'http-tls',
+    'https-proxy-tls',
+    'https-proxy-tls-forward',
+    'socks-tls',
+  ] as const) {
+    test(`failed TLS connections do not accumulate abort listeners (${stage})`, async () => {
+      const proxy = await startStalledProxy(stage === 'direct' ? 'https-proxy-tls' : stage, true);
+      const controller = new AbortController();
+      const dispatcher =
+        stage === 'direct'
+          ? new Agent({ connect: buildAbortableConnector(controller.signal) })
+          : buildProxyDispatcher(
+              {
+                ...PROXY_DEFAULTS,
+                enabled: true,
+                type:
+                  stage === 'socks-tls'
+                    ? 'socks5'
+                    : stage.startsWith('https-proxy-tls')
+                      ? 'https'
+                      : 'http',
+                host: '127.0.0.1',
+                port: proxy.port,
+                bypassList: [],
+              },
+              controller.signal,
+            );
+      try {
+        for (let index = 0; index < 25; index++) {
+          await assert.rejects(
+            undiciFetch(
+              stage === 'direct'
+                ? `https://127.0.0.1:${proxy.port}/models`
+                : `${stage.endsWith('-forward') ? 'http' : 'https'}://provider.invalid/models`,
+              { dispatcher },
+            ),
+          );
+          await waitFor(() => getEventListeners(controller.signal, 'abort').length === 0, {
+            timeoutMs: 1_000,
+            message: 'failed TLS socket retained an abort listener',
+          });
+        }
+      } finally {
+        controller.abort();
+        await dispatcher.destroy();
+        await proxy.close();
+      }
+    });
+  }
+
+  test('SOCKS leaves the negotiation deadline to SocksClient after TCP connects', async (t) => {
+    const proxy = await startStalledProxy('socks-greeting');
+    const sockets = new Set<net.Socket>();
+    const original = net.Socket.prototype.setTimeout;
+    t.mock.method(
+      net.Socket.prototype,
+      'setTimeout',
+      function (this: net.Socket, ...args: Parameters<typeof original>) {
+        sockets.add(this);
+        return original.apply(this, args);
+      },
+    );
+    const transport = createConnectionEffectFetchTransport({
+      ...PROXY_DEFAULTS,
+      enabled: true,
+      type: 'socks5',
+      host: '127.0.0.1',
+      port: proxy.port,
+      bypassList: [],
+    });
+    const request = transport.fetch('https://provider.invalid/models').catch(() => undefined);
+    try {
+      await withTimeout(proxy.started, 2_000, 'SOCKS greeting did not start');
+      const socket = [...sockets].find((entry) => entry.remotePort === proxy.port);
+      assert.ok(socket);
+      assert.equal(socket.timeout, 0, 'TCP timeout must be cleared before SOCKS negotiation');
+    } finally {
+      await transport.close();
+      await proxy.close();
+      await request;
+    }
+  });
+
   for (const authenticated of [false, true]) {
     test(`SOCKS preserves remote DNS and successful HTTP responses (auth: ${authenticated})`, async () => {
       const proxy = await startStalledProxy(authenticated ? 'socks-auth-http' : 'socks-http');
@@ -67,22 +203,34 @@ describe('connection effect network transport', () => {
 
   for (const type of ['http', 'https', 'socks5'] as const) {
     test(`immediate close rejects pending and subsequent requests (${type})`, async () => {
+      const proxy = await startStalledProxy(
+        type === 'socks5'
+          ? 'socks-greeting'
+          : type === 'https'
+            ? 'https-proxy-tls'
+            : 'http-connect',
+      );
       const transport = createConnectionEffectFetchTransport({
         ...PROXY_DEFAULTS,
         enabled: true,
         type,
         host: '127.0.0.1',
-        port: 1,
+        port: proxy.port,
         bypassList: [],
       });
-      const request = assert.rejects(transport.fetch('https://provider.invalid/models'));
-      const closed = transport.close();
-      assert.equal(transport.close(), closed);
-      await withTimeout(Promise.all([request, closed]), 2_000, 'immediate close did not finish');
-      await assert.rejects(
-        transport.fetch('https://provider.invalid/models'),
-        /transport is closed/,
-      );
+      try {
+        const request = assert.rejects(transport.fetch('https://provider.invalid/models'));
+        const closed = transport.close();
+        assert.equal(transport.close(), closed);
+        await withTimeout(Promise.all([request, closed]), 2_000, 'immediate close did not finish');
+        await assert.rejects(
+          transport.fetch('https://provider.invalid/models'),
+          /transport is closed/,
+        );
+      } finally {
+        await transport.close();
+        await proxy.close();
+      }
     });
   }
 
@@ -151,6 +299,7 @@ describe('connection effect network transport', () => {
     'http-connect',
     'http-tls',
     'https-proxy-tls',
+    'https-proxy-tls-forward',
     'socks-greeting',
     'socks-connect',
     'socks-tls',
@@ -165,7 +314,7 @@ describe('connection effect network transport', () => {
           enabled: true,
           type: stage.startsWith('socks')
             ? 'socks5'
-            : stage === 'https-proxy-tls'
+            : stage.startsWith('https-proxy-tls')
               ? 'https'
               : 'http',
           host: '127.0.0.1',
@@ -173,9 +322,11 @@ describe('connection effect network transport', () => {
           bypassList: [],
         });
         const abort = new AbortController();
-        const request = transport
-          .fetch('https://provider.invalid/models', { signal: abort.signal })
-          .catch(() => undefined);
+        const request = fetchForConnectionEffect(
+          transport.fetch,
+          `${stage.endsWith('-forward') ? 'http' : 'https'}://provider.invalid/models`,
+          { signal: abort.signal, timeoutMs: 0 },
+        ).catch((error: unknown) => error);
         let deadline: ReturnType<typeof setTimeout> | undefined;
         try {
           await withTimeout(proxy.started, 2_000, `${stage} did not start`);
@@ -192,7 +343,9 @@ describe('connection effect network transport', () => {
               );
             }),
           ]);
-          await request;
+          const outcome = await request;
+          assert.ok(outcome instanceof ConnectionEffectFetchError);
+          assert.equal(outcome.kind, 'network');
         } finally {
           clearTimeout(deadline);
           abort.abort();
@@ -222,11 +375,14 @@ describe('connection effect network transport', () => {
       const port = await listen(server);
       const transport = createConnectionEffectFetchTransport(null);
       const abort = new AbortController();
-      const request = transport
-        .fetch(`https://127.0.0.1:${port}/models`, {
+      const request = fetchForConnectionEffect(
+        transport.fetch,
+        `https://127.0.0.1:${port}/models`,
+        {
           signal: abort.signal,
-        })
-        .catch(() => undefined);
+          timeoutMs: 0,
+        },
+      ).catch((error: unknown) => error);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
         await started;
@@ -245,7 +401,9 @@ describe('connection effect network transport', () => {
             );
           }),
         ]);
-        await request;
+        const outcome = await request;
+        assert.ok(outcome instanceof ConnectionEffectFetchError);
+        assert.equal(outcome.kind, 'network');
       } finally {
         clearTimeout(deadline);
         abort.abort();
@@ -620,7 +778,7 @@ describe('connection effect network transport', () => {
   });
 });
 
-async function startStalledProxy(stage: string) {
+async function startStalledProxy(stage: string, rejectTls = false) {
   const sockets = new Set<net.Socket>();
   let started!: () => void;
   const reachedStage = new Promise<void>((resolve) => {
@@ -632,7 +790,7 @@ async function startStalledProxy(stage: string) {
     socket.on('error', () => {});
     let phase = stage.startsWith('socks')
       ? 'greeting'
-      : stage === 'https-proxy-tls'
+      : stage.startsWith('https-proxy-tls')
         ? 'tls'
         : 'http';
     let buffer = Buffer.alloc(0);
@@ -642,6 +800,7 @@ async function startStalledProxy(stage: string) {
         assert.equal(buffer[0], 22, 'expected a TLS handshake record');
         phase = 'stalled';
         started();
+        if (rejectTls) socket.destroy();
       } else if (phase === 'http' && buffer.includes('\r\n\r\n')) {
         assert.match(buffer.toString('latin1'), /^CONNECT provider\.invalid:443 /);
         buffer = Buffer.alloc(0);
