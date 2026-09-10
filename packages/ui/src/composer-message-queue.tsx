@@ -18,27 +18,47 @@
  */
 
 import { memo, useRef, useState } from 'react';
+import type { TransientUserMessageProjection } from './chat-view.js';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
-import { Button, IconButton } from '@astryxdesign/core';
+import { Button, IconButton, Tooltip } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { Check, GripVertical, ICON_SIZE, Trash2, X } from './icons.js';
+import { Check, GripVertical, HelpCircle, ICON_SIZE, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
+
+type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
+  state: MessageQueueEntryProjection['state'] | 'local';
+  localMessage?: TransientUserMessageProjection;
+};
 
 /**
  * The pending plate above the composer card. It lists both pending steering
  * and follow-up entries so a submitted message stays editable, reorderable and
  * deletable while it waits for the active Turn to reach a steering boundary.
- * Each row is a one-line preview: the transcript owns the full message text.
+ * Steering enters the transcript only when Runtime actually consumes it.
  */
 export interface ComposerMessageQueueProps {
-  queuedMessages: readonly MessageQueueEntryProjection[];
+  queuedMessages: readonly ComposerQueueEntry[];
   queueRevision?: number;
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
   onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
   onDeleteEntry?(entryId: string): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
+}
+
+/** Host entries own queue actions; local sends remain visible before a receipt. */
+export function projectComposerMessageQueue(
+  queued: readonly MessageQueueEntryProjection[],
+  transient: readonly TransientUserMessageProjection[],
+): readonly ComposerQueueEntry[] {
+  const ids = new Set(queued.map((entry) => entry.messageId));
+  const pending = transient.filter((message) => (message.pendingSteering || message.transientPlacement === 'next_turn') && !ids.has(message.id));
+  if (pending.length === 0) return queued;
+  return [...queued, ...pending.map((message): ComposerQueueEntry => ({
+    entryId: message.id, messageId: message.id, content: { text: message.text },
+    placement: message.transientPlacement, state: 'local', localMessage: message,
+  }))];
 }
 
 export const ComposerMessageQueue = memo(function ComposerMessageQueue(
@@ -53,7 +73,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   const copy = props.copy;
 
   const entries = props.queuedMessages;
-  const followup = entries.filter((entry) => entry.placement === 'next_turn');
+  const groups = (['current_turn', 'next_turn'] as const).map((placement) => ({
+    placement, entries: entries.filter((entry) => entry.placement === placement),
+  })).filter((group) => group.entries.length > 0);
 
   async function runEntryAction(
     entryId: string,
@@ -78,7 +100,10 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     const fromId = dragEntryId.current;
     dragEntryId.current = null;
     if (!fromId || fromId === targetEntryId || !props.onReorderEntries) return;
-    const ids = followup.map((entry) => entry.entryId);
+    const target = entries.find((entry) => entry.entryId === targetEntryId);
+    const source = entries.find((entry) => entry.entryId === fromId);
+    if (!target || source?.placement !== target.placement) return;
+    const ids = entries.filter((entry) => entry.placement === target.placement && entry.state === 'queued').map((entry) => entry.entryId);
     const from = ids.indexOf(fromId);
     const to = ids.indexOf(targetEntryId);
     if (from === -1 || to === -1) return;
@@ -89,7 +114,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     void runEntryAction(fromId, () => props.onReorderEntries?.(ids));
   }
 
-  function beginEdit(entry: MessageQueueEntryProjection) {
+  function beginEdit(entry: ComposerQueueEntry) {
     if (pendingEntryId || !props.onUpdateEntry || props.queueRevision === undefined) return;
     setEditingEntryId(entry.entryId);
     const text = entry.content.displayText ?? entry.content.text;
@@ -122,12 +147,19 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       role="region"
       aria-label={copy.queuedMessagesAriaLabel(entries.length)}
     >
-      <List className="maka-composer-queue-list" density="compact">
-        {entries.map((entry) => {
+      {groups.map((group, index) => <section key={group.placement} data-queue-placement={group.placement}>
+        <div className="maka-composer-queue-status">
+          <span>{group.placement === 'current_turn' ? copy.steeringPending : copy.followupPending}</span>
+          {index === 0 && <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}>{copy.queueShortcuts}</span>}>
+            <IconButton variant="ghost" size="sm" type="button" label={copy.queueShortcutsLabel}
+              icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />} />
+          </Tooltip>}
+        </div>
+        <List className="maka-composer-queue-list" density="compact">
+        {group.entries.map((entry) => {
           const editing = editingEntryId === entry.entryId;
           const reorderable =
-            entry.placement === 'next_turn'
-            && entry.state === 'queued'
+            entry.state === 'queued'
             && !editing
             && Boolean(props.onReorderEntries)
             && pendingEntryId === null;
@@ -163,14 +195,15 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   }}
                 />
               ) : (
-                // The transcript renders the queued message in full; the plate
-                // only needs enough of it to tell the rows apart.
-                <span className="maka-composer-queue-text">
-                  {entry.content.displayText ?? entry.content.text}
-                </span>
+                <>
+                  <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
+                    {entry.content.displayText ?? entry.content.text}
+                  </span>
+                  {entry.localMessage?.deliveryStatus && <span className="maka-composer-queue-delivery" role="status" title={entry.localMessage.deliveryDetail}>{entry.localMessage.deliveryStatus}</span>}
+                </>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
-              startContent={entry.placement === 'next_turn' ? (
+              startContent={(
                 <span
                   className="maka-composer-queue-grip"
                   draggable={reorderable}
@@ -186,10 +219,12 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 >
                   <GripVertical size={ICON_SIZE.control} aria-hidden="true" />
                 </span>
-              ) : undefined}
+              )}
               endContent={(
                 <span className="maka-composer-queue-actions">
-                  {editing ? (
+                  {entry.localMessage?.deliveryActions?.length ? entry.localMessage.deliveryActions.map((action) => (
+                    <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} onClick={action.onClick} />
+                  )) : editing ? (
                     <>
                       <IconButton
                         variant="ghost"
@@ -222,6 +257,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                           pendingEntryId !== null
                           || entry.state !== 'queued'
                           || props.queueRevision === undefined
+                          || !props.onUpdateEntry
                         }
                         label={copy.editQueuedEntry}
                         onClick={() => beginEdit(entry)}
@@ -245,7 +281,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                         variant="ghost"
                         size="sm"
                         type="button"
-                        isDisabled={pendingEntryId !== null || entry.state !== 'queued'}
+                        isDisabled={pendingEntryId !== null || entry.state !== 'queued' || !props.onDeleteEntry}
                         label={copy.deleteQueuedEntry}
                         tooltip={copy.deleteQueuedEntry}
                         onClick={() => void runEntryAction(
@@ -264,7 +300,8 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
             </div>
           );
         })}
-      </List>
+        </List>
+      </section>)}
     </div>
   );
 });

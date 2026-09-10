@@ -79,14 +79,28 @@ export function createDesktopWorkHubServices(
     readAttachmentBytes: bridge.attachments.readBytes,
     prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
     answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
+    enqueueMessage: async (sessionId, messageId, text, attachments, placement) => {
+      const result = await bridge.sessions.submitMessage(sessionId, placement, {
+        messageId, text, retainedAttachments: attachments,
+      }, { waitForHostAdmission: true });
+      if (result.ok) return result.disposition === (placement === 'current_turn' ? 'steering' : 'followup') ? 'admitted' : 'rejected';
+      return result.reason === 'outcome_unknown' ? 'unknown' : 'rejected';
+    },
+    retractQueueEntry: (sessionId, entryId) => bridge.sessions.retractQueueEntry(sessionId, entryId),
+    promoteQueueEntry: (sessionId, entryId) => bridge.sessions.promoteQueueEntry(sessionId, entryId),
+    updateQueueEntry: (sessionId, entryId, revision, text) => bridge.sessions.updateQueueEntry(sessionId, entryId, revision, text),
+    reorderQueueEntries: (sessionId, entryIds) => bridge.sessions.reorderQueueEntries(sessionId, entryIds),
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
     observe: (sessionId, handler, onError, onPhase) =>
       bridge.sessions.subscribeEvents(sessionId, handler, () => onPhase('ready'), onPhase, onError),
-    stop: (sessionId, turnId) =>
-      bridge.sessions.stop(sessionId, {
+    stop: async (sessionId, turnId) => {
+      const result = await bridge.sessions.stop(sessionId, {
         source: 'stop_button',
         expectedTurnId: turnId,
-      }),
+      });
+      return result?.kind === 'interrupted' ? result.retractedMessageIds
+        : result?.kind === 'retracted' ? [result.messageId] : undefined;
+    },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
       const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>

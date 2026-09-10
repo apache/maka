@@ -48,12 +48,15 @@ export interface WorkHubPresentationBridge {
   setHost(host: WorkHubHost): Promise<string | void>;
   setConversationLayout(layout: { expanded: boolean; compactHeight: number }): Promise<void>;
   progressReady(request: number): Promise<void>;
-  showConversation(): Promise<void>;
+  resizeProgress(request: number, height: number): Promise<void>;
+  showConversation(progressRequest?: number): Promise<void>;
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
+  /** Visible top edge inside the animation canvas, in CSS pixels. */
+  onViewportInset(handler: (inset: number) => void): () => void;
   onFocusComposer(handler: (expand?: boolean) => void): () => void;
   onOpenMain(handler: (navigation: WorkHubMainNavigation) => void): () => void;
 }

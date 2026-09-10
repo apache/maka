@@ -110,8 +110,9 @@ export interface BackendSendInput {
   ) => Promise<'continue' | 'pause'>;
   /**
    * Steering pull — a LEASE, and the single atomic commit point of delivery.
-   * Backends that support mid-turn steering call this at every step boundary;
-   * each returned message moves to the caller's in-flight set, where it still
+   * Backends that support mid-turn steering await this at every step boundary,
+   * including the final one: the Host may still be committing a queue edit.
+   * Each returned message moves to the caller's in-flight set, where it still
    * counts as pending but is past the user-retract point: it settles only by
    * durability — `ackSteering` when the echoed `steering_message` event is
    * durably persisted AND in the injection set, `nackSteering` when it
@@ -121,7 +122,7 @@ export interface BackendSendInput {
    * continuing the same turn. Absent for callers that do not steer, including
    * child agents and non-interactive clients.
    */
-  pullSteering?: () => readonly SteeringLease[];
+  pullSteering?: () => readonly SteeringLease[] | Promise<readonly SteeringLease[]>;
   /** Confirm delivery of leased steering messages (see pullSteering). */
   ackSteering?: (leaseIds: readonly string[]) => void;
   /** Return undelivered leased steering messages to the queue (see pullSteering). */

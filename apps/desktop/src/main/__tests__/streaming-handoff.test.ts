@@ -231,8 +231,8 @@ describe('single live-turn handoff', () => {
     const answerIndex = markup.indexOf('maka-assistant-answer');
     assert.ok(answerIndex >= 0);
     assert.ok(markup.indexOf('send now') < answerIndex);
-    assert.ok(markup.indexOf('do this next') > answerIndex);
-    assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
+    assert.equal(markup.includes('do this next'), false, 'queued follow-up stays above the composer until its Turn starts');
+    assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 1);
   });
 
   it('renders one ordered timeline: thinking before its tool and answer', () => {

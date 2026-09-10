@@ -21,7 +21,7 @@ import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
-import type { SessionEvent, AttachmentRef } from '@maka/core/events';
+import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
@@ -58,6 +58,11 @@ export interface WorkHubServices {
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
+  enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  updateQueueEntry(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   configureModel(
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,
@@ -74,5 +79,6 @@ export interface WorkHubServices {
     signal: AbortSignal,
     onError: (error: unknown) => void,
   ): Promise<WorkHubTranscript>;
-  stop(sessionId: string, turnId: string): Promise<unknown>;
+  /** Retracted message IDs, or undefined when the requested Turn was no longer active. */
+  stop(sessionId: string, turnId: string): Promise<readonly string[] | undefined>;
 }

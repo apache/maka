@@ -327,7 +327,6 @@ function AppShellContent({
     setMessages,
     addTransientMessage,
     updateTransientMessage,
-    projectQueuedTransientMessages,
     retireCancelledTransientMessages,
     removeTransientMessage,
     transcriptRangeRef,
@@ -1486,6 +1485,11 @@ function AppShellContent({
     retryMessages,
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
+    getRunningTurnId: (sessionId) => {
+      if (sessionId !== activeId) return undefined;
+      const liveTurn = sessionUiController.liveTurnBySessionRef.current[sessionId];
+      return liveTurn ? (liveTurn.terminal ? undefined : liveTurn.turnId) : activeSession?.runningTurnIds?.[0];
+    },
     activeIdRef,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
@@ -1594,36 +1598,21 @@ function AppShellContent({
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean> {
-    const pending = submittableAttachments;
-    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     try {
-      const sent = await enqueueMessage(
-        sessionId,
-        text,
-        mode === 'steer' ? 'current_turn' : 'next_turn',
-        pending,
-        {
-          ...directoryOptions,
-          ...(quotes ? { quotes: [...quotes] } : {}),
-          ...(metadata?.workspaceFileReferences?.length
-            ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
-            : {}),
-        },
-      );
-      // Refused: the composer keeps the draft, the attachments and the quotes,
-      // because the user has to change something and send it again.
+      const sent = await enqueueMessage(sessionId, text,
+        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
+          ...directoryOptions, quotes: pendingQuotes,
+          workspaceFileReferences: metadata?.workspaceFileReferences,
+        });
       if (!sent) return false;
-      clearSubmittedContext(pending);
-      if (quotes) clearQuotes();
+      clearSubmittedContext(submittableAttachments);
+      clearQuotes();
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(
-          sessionId,
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-        );
+        showSessionError(sessionId, copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
       }
       return false;
     }
@@ -1943,7 +1932,6 @@ function AppShellContent({
     setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
-    projectQueuedTransientMessages,
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
@@ -2575,6 +2563,7 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
+                  pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}

@@ -2558,7 +2558,11 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const unique = [...new Set(messageIds)];
@@ -2574,15 +2578,15 @@ export class SqliteSessionMetadataStore {
           `
           SELECT message_id
           FROM message_admissions
-          WHERE session_id = ? AND disposition = 'followup'
+          WHERE session_id = ? AND disposition = ?
           ORDER BY queue_order, sequence
         `,
         )
-        .all(sessionId) as Array<{ message_id?: unknown }>;
+        .all(sessionId, disposition) as Array<{ message_id: string }>;
       const current = rows.map((row) => row.message_id);
       const currentIds = new Set(current);
       if (
-        current.length !== unique.length ||
+        (disposition === 'followup' && current.length !== unique.length) ||
         unique.some((messageId) => !currentIds.has(messageId))
       ) {
         throw new SessionMetadataConflictError('Message admission reorder identity conflict');
@@ -2594,7 +2598,14 @@ export class SqliteSessionMetadataStore {
         WHERE session_id = ? AND message_id = ?
       `,
       );
-      unique.forEach((messageId, index) => update.run(index, sessionId, messageId));
+      // Older steering may already be in flight. Keep those entries in their
+      // slots so recovery never interleaves them with a newly reordered batch.
+      const selected = new Set(unique);
+      let next = 0;
+      current.forEach((messageId, index) => {
+        const orderedId = selected.has(messageId) ? unique[next++]! : messageId;
+        update.run(index, sessionId, orderedId);
+      });
     });
   }
 

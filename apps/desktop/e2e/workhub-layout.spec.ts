@@ -252,7 +252,37 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await workhub.evaluate(() => innerHeight)).toBe(longInputHeight);
   await editor.fill('Keep this draft while folding the conversation.');
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
-  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  // Sample the real native resize, including repeated folds. The composer
+  // must stay inside the window while its original 12px gutter interpolates.
+  for (const expanded of [true, false, true]) {
+    const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number; height: number; inset: number }[]>((resolve) => {
+      const frames: { bottom: number; left: number; height: number; inset: number }[] = [];
+      const started = performance.now();
+      const sample = () => {
+        const rect = document.querySelector('.workHubComposerSurface')!.getBoundingClientRect();
+        const inset = parseFloat(getComputedStyle(document.querySelector('.workHubLive')!).getPropertyValue('--workhub-viewport-inset'));
+        frames.push({ bottom: innerHeight - rect.bottom, left: rect.left, height: innerHeight, inset });
+        if (performance.now() - started < 500) requestAnimationFrame(sample);
+        else resolve(frames);
+      };
+      (button as HTMLButtonElement).click();
+      requestAnimationFrame(sample);
+    }));
+    expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
+    expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
+    expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
+    expect(new Set(motion.map(({ height }) => height)).size).toBeLessThanOrEqual(2);
+    expect(motion.some(({ inset }) => inset > 0)).toBe(true);
+    expect(motion.at(-1)!.inset).toBe(0);
+  }
+  const keptEditor = await workhub.evaluate(async () => {
+    const editor = document.querySelector('.maka-composer-editor [contenteditable]');
+    (document.querySelector('.workHubWindowActions [aria-expanded="true"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    (document.querySelector('.workHubExpandButton') as HTMLButtonElement).click();
+    return document.querySelector('.maka-composer-editor [contenteditable]') === editor;
+  });
+  expect(keptEditor).toBe(true);
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBe(expandedHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
@@ -313,8 +343,37 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
+  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
+  await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
+  await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
+  await expect(followups).toHaveText([queuedTexts[0]]);
+  await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[1]);
+  await workhub.locator(COMPOSER_INPUT).press('Enter');
+  await expect(followups).toHaveText(queuedTexts);
+  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
+  await expect(shortcuts).toHaveCount(1);
+  await shortcuts.hover();
+  const shortcutHint = workhub.getByRole('tooltip');
+  await expect(shortcutHint).toHaveText('Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）');
+  await expect.poll(() => shortcutHint.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
+  })).toBe(true);
+  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
+  for (const text of queuedTexts) {
+    await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
+  }
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
+  await workhub.locator(COMPOSER_INPUT).press('Shift+Enter');
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  await expect(workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' })).toHaveCount(1);
+  await expect(followups).toHaveText(queuedTexts);
+  await expect(stop).toBeVisible();
   await stop.click();
   await expect(stop).toHaveCount(0);
+  await expect(followups).toHaveCount(0);
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
   await expect(prompt).toHaveCount(1);
   await expect(prompt).toBeInViewport();

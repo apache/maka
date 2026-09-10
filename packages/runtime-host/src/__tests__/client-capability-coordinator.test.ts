@@ -1211,6 +1211,99 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('required tools must have one available provider before a Session binding commits', async () => {
+    const coordinator = createCoordinator();
+    const names = ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks'];
+    try {
+      coordinator.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+        send: async () => {},
+      });
+      coordinator.attachConnection(clientCapabilityConnectionIdentity('other'), {
+        send: async () => {},
+      });
+      await registerSessionTools(coordinator, 'desktop', 'control-only', 'desktop_workhub', [
+        'control',
+      ]);
+      assert.equal((await coordinator.bindSession('session-a', 'desktop', names)).ok, false);
+      assert.equal(coordinator.snapshotForSession('session-a'), undefined);
+      await registerSessionTools(coordinator, 'other', 'tasks-only', 'desktop_workhub', ['tasks']);
+      assert.equal((await coordinator.bindSession('session-a', 'desktop', names)).ok, false);
+      assert.equal(coordinator.snapshotForSession('session-a'), undefined);
+      await registerSessionTools(coordinator, 'desktop', 'complete', 'desktop_workhub', [
+        'control',
+        'tasks',
+      ]);
+      const bound = await coordinator.bindSession('session-a', 'desktop', names);
+      assert.ok(bound.ok);
+      assert.match(bound.capabilityBinding!, /^sha256:[a-f0-9]{64}$/);
+      const snapshot = coordinator.snapshotForSession('session-a');
+      assert.deepEqual(snapshot?.registrationIds, ['complete']);
+      snapshot?.release();
+    } finally {
+      await coordinator.close();
+    }
+  });
+
+  test('cold binding authenticates provider principal, Client and credential owner independently of registration identity', async () => {
+    const names = ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks'];
+    const identity = clientCapabilityConnectionIdentity(
+      'original',
+      'desktop-client',
+      'provider-principal',
+      'capability_provider',
+      { principalId: 'desktop-owner', clientInstanceId: 'owner-client' },
+    );
+    const original = createCoordinator();
+    original.attachConnection(identity, { send: async () => {} });
+    await registerSessionTools(original, 'original', 'original-reg', 'desktop_workhub', [
+      'control',
+      'tasks',
+    ]);
+    const result = await original.bindSession('session-a', 'original', names);
+    assert.ok(result.ok);
+    const binding = result.capabilityBinding;
+    assert.ok(binding);
+    await original.close();
+    for (const changed of [
+      { principalId: 'other-provider' },
+      { clientInstanceId: 'other-client' },
+      { capabilityOwner: { principalId: 'other-owner', clientInstanceId: 'owner-client' } },
+      { capabilityOwner: { principalId: 'desktop-owner', clientInstanceId: 'other-owner-client' } },
+    ]) {
+      const recovered = createCoordinator();
+      try {
+        const unrelated = recovered.attachConnection(
+          { ...identity, ...changed, connectionId: 'unrelated' },
+          { send: async () => {} },
+        );
+        await registerSessionTools(recovered, 'unrelated', 'hostile-reg', 'desktop_workhub', [
+          'control',
+          'tasks',
+        ]);
+        assert.equal(await recovered.bindRecoveredSession('session-a', binding, names), false);
+        assert.equal(recovered.snapshotForSession('session-a'), undefined);
+        await unrelated.close();
+        recovered.attachConnection(
+          { ...identity, connectionId: 'reconnected' },
+          { send: async () => {} },
+        );
+        await registerSessionTools(
+          recovered,
+          'reconnected',
+          'new-registration',
+          'desktop_workhub',
+          ['control', 'tasks'],
+        );
+        assert.equal(await recovered.bindRecoveredSession('session-a', binding, names), true);
+        const snapshot = recovered.snapshotForSession('session-a');
+        assert.deepEqual(snapshot?.registrationIds, ['new-registration']);
+        snapshot?.release();
+      } finally {
+        await recovered.close();
+      }
+    }
+  });
+
   test('retires Session bindings after explicit replacement and unregister', async () => {
     const coordinator = createCoordinator();
     const connection = coordinator.attachConnection(

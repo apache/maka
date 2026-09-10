@@ -1127,9 +1127,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     await this.metadata.updateMessageAdmission(admission);
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     await this.ensureReady();
-    await this.metadata.reorderMessageAdmissions(sessionId, messageIds);
+    await this.metadata.reorderMessageAdmissions(sessionId, messageIds, disposition);
   }
 
   async cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {

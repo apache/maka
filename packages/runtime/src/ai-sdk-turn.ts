@@ -3084,7 +3084,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;

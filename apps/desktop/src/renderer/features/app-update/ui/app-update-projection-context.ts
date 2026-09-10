@@ -24,6 +24,10 @@ export interface AppUpdateAboutProjection {
   readonly status: AppUpdateStatus | null;
   readonly checking: boolean;
   readonly checkForUpdates: () => Promise<AppUpdateStatus>;
+  /** The sidebar footer's restart, offered here too; undefined until an update is downloaded. */
+  readonly installDownloadedUpdate: (() => void) | undefined;
+  /** True from the install request until it settles, including while the active-tasks dialog is open. */
+  readonly installPending: boolean;
 }
 
 const AppUpdateAboutProjectionContext = createContext<AppUpdateAboutProjection | null>(null);

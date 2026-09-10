@@ -1816,7 +1816,10 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const providerRetry = execution.kind === 'linked_child_provider_retry';
   const inputlessExecution =
     execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
-  const sourceBatch = execution.kind === 'external_message' && admission.sourceMessages.length > 1;
+  const allowsQueueSources =
+    execution.kind === 'external_message' ||
+    (execution.kind === 'workhub_coordination' && execution.operation !== 'action');
+  const sourceBatch = allowsQueueSources && admission.sourceMessages.length > 1;
   const messageLessExecution = inputlessExecution || providerRetry || sourceBatch;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
@@ -1842,7 +1845,7 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: execution has an invalid input requirement',
     );
   }
-  if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
+  if (!allowsQueueSources && admission.sourceMessages.length !== 0) {
     throw new Error(
       'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
@@ -2030,17 +2033,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   }
   if (value.kind === 'workhub_coordination') {
     if (
-      !hasExactKeys(
-        value,
-        value.operation === undefined
-          ? ['kind', 'inputDigest']
-          : [
-              'kind',
-              'inputDigest',
-              'operation',
-              ...(value.actionId === undefined ? [] : ['actionId']),
-            ],
-      ) ||
+      !hasExactKeys(value, [
+        'kind',
+        'inputDigest',
+        ...(value.capabilityBinding === undefined ? [] : ['capabilityBinding']),
+        ...(value.operation === undefined ? [] : ['operation']),
+        ...(value.actionId === undefined ? [] : ['actionId']),
+      ]) ||
+      (value.capabilityBinding !== undefined && !isSha256Digest(value.capabilityBinding)) ||
+      (value.actionId !== undefined && value.operation !== 'action') ||
       (value.operation !== undefined && value.operation !== 'action') ||
       (value.actionId !== undefined &&
         (typeof value.actionId !== 'string' || !isSafeId(value.actionId))) ||
@@ -2052,6 +2053,9 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       kind: 'workhub_coordination',
       ...(value.operation === 'action' ? { operation: 'action' as const } : {}),
       inputDigest: value.inputDigest,
+      ...(isSha256Digest(value.capabilityBinding)
+        ? { capabilityBinding: value.capabilityBinding }
+        : {}),
       ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
     });
   }

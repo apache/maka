@@ -239,8 +239,10 @@ export type RootExecutionDescriptor =
       maxSteps?: number;
     }
   | {
-      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      /** Conversational execution admitted only by WorkHub authority. */
       kind: 'workhub_coordination';
+      /** Host-authenticated Desktop provider identity, including its credential owner. */
+      capabilityBinding?: `sha256:${string}`;
       operation?: 'action';
       /** Stable request identity shared by physical action retries. */
       actionId?: string;

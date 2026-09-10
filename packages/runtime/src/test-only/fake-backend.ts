@@ -175,8 +175,8 @@ export class FakeBackend implements AgentBackend {
       outstanding.splice(index, 1);
       input.ackSteering?.([leaseId]);
     };
-    const drainSteering = (): Array<{ leaseId: string; event: SessionEvent }> => {
-      const leases = input.pullSteering?.() ?? [];
+    const drainSteering = async (): Promise<Array<{ leaseId: string; event: SessionEvent }>> => {
+      const leases = (await input.pullSteering?.()) ?? [];
       if (leases.length === 0) return [];
       outstanding.push(...leases.map((lease) => lease.id));
       return leases.map((lease) => {
@@ -214,7 +214,7 @@ export class FakeBackend implements AgentBackend {
           text: waitingText,
         };
         while (!this.stopped) {
-          const pending = drainSteering();
+          const pending = await drainSteering();
           for (const { leaseId, event } of pending) {
             yield event;
             settleOutstanding(leaseId);
@@ -248,10 +248,10 @@ export class FakeBackend implements AgentBackend {
       }
 
       if (isSteeringScenario) {
-        let pending = drainSteering();
+        let pending = await drainSteering();
         while (pending.length === 0 && !this.stopped) {
           await sleep(5);
-          pending = drainSteering();
+          pending = await drainSteering();
         }
         for (const { leaseId, event } of pending) {
           yield event;
@@ -272,7 +272,7 @@ export class FakeBackend implements AgentBackend {
           return;
         }
         if (!isSteeringScenario) await sleep(45);
-        for (const { leaseId, event } of drainSteering()) {
+        for (const { leaseId, event } of await drainSteering()) {
           yield event;
           settleOutstanding(leaseId);
         }
@@ -288,7 +288,7 @@ export class FakeBackend implements AgentBackend {
 
       // Final stranded drain (grok-build safety): a steer that landed after the
       // last boundary still lands in this turn instead of being lost.
-      for (const { leaseId, event } of drainSteering()) {
+      for (const { leaseId, event } of await drainSteering()) {
         yield event;
         settleOutstanding(leaseId);
       }

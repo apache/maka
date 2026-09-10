@@ -89,6 +89,7 @@ import { defineInteractiveRuntimeHostComposition } from '../server/host-composit
 import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -2671,27 +2672,56 @@ async function actWorkHub(
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
 ) {
-  const { userText, attachments, ...action } = input;
-  const turnId = randomUUID();
-  const started = await composition.handlers['workhub.coordination.answer'](
-    { turnId, text: userText, ...(attachments ? { attachments } : {}) },
-    context,
+  const desktop = composition.clientCapabilities!.attachConnection(
+    clientCapabilityConnectionIdentity(context.connectionId),
+    { send: async () => {} },
   );
-  assert.ok(started.ok, JSON.stringify(started));
   try {
-    return await composition.handlers['workhub.coordination.actFromTurn'](
-      { ...action, turnId },
+    const registered = await composition.handlers['client.capability.replace'](
+      {
+        registrationId: randomUUID(),
+        offers: [
+          {
+            offerId: 'desktop-workhub',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'Desktop WorkHub',
+            tools: ['control', 'tasks'].map((name) => ({
+              serverId: 'desktop_workhub',
+              name,
+              inputSchema: { type: 'object', additionalProperties: false },
+            })),
+          },
+        ],
+      },
       context,
     );
+    assert.ok(registered.ok, JSON.stringify(registered));
+    const { userText, attachments, ...action } = input;
+    const turnId = randomUUID();
+    const started = await composition.handlers['workhub.coordination.answer'](
+      { turnId, text: userText, ...(attachments ? { attachments } : {}) },
+      context,
+    );
+    assert.ok(started.ok, JSON.stringify(started));
+    try {
+      return await composition.handlers['workhub.coordination.actFromTurn'](
+        { ...action, turnId },
+        context,
+      );
+    } finally {
+      const run = await composition.handlers['turn.query'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
+        context,
+      );
+      assert.ok(run.ok, JSON.stringify(run));
+      await composition.handlers['turn.stop'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
+        context,
+      );
+    }
   } finally {
-    const run = await composition.handlers['turn.query'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
-      context,
-    );
-    assert.ok(run.ok, JSON.stringify(run));
-    await composition.handlers['turn.stop'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
-      context,
-    );
+    await desktop.close();
   }
 }

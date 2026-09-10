@@ -844,6 +844,7 @@ export async function createExecutionRuntimeHostComposition(
     let recoveryTask: Promise<void> | undefined;
     let rootCloseTask: Promise<void> | undefined;
     let rootRecoveryCompleted = false;
+    let clientBoundRecovery: Promise<void> = Promise.resolve();
     let closeTask: Promise<void> | undefined;
     let backendInvalidationPoisoned = false;
     let domainModules: readonly RuntimeHostDomainModule[] | undefined;
@@ -2423,7 +2424,38 @@ export async function createExecutionRuntimeHostComposition(
       }),
       createRuntimeHostDomainModule({
         id: 'client-capability',
-        handlers: [clientCapabilities.handlers],
+        handlers: [
+          {
+            ...clientCapabilities.handlers,
+            'client.capability.replace': async (input, operationContext) => {
+              const outcome = await clientCapabilities.handlers['client.capability.replace'](
+                input,
+                operationContext,
+              );
+              if (outcome.ok && rootRecoveryCompleted && !draining) {
+                // Registration completes outside the policy mutation gate before
+                // recovery selects bindings or composes a backend. Serialize
+                // reconnects and retain the task for the shutdown barrier.
+                clientBoundRecovery = clientBoundRecovery.then(async () => {
+                  if (draining) return;
+                  await coordinator.recover();
+                  await messages.consumePendingAdmissions(
+                    recoverySessions
+                      .filter((session) => session.toolProfile === 'workhub-coordination-v2')
+                      .map((session) => session.id),
+                  );
+                });
+                try {
+                  await clientBoundRecovery;
+                } catch (error) {
+                  context.requestDrain();
+                  throw error;
+                }
+              }
+              return outcome;
+            },
+          },
+        ],
         recovery: {
           resources: async () => {
             await recoverClientCapabilityOutcomes(
@@ -2505,6 +2537,7 @@ export async function createExecutionRuntimeHostComposition(
         close: [
           async () => {
             if (!rootRecoveryCompleted || poisonFailure) return;
+            await clientBoundRecovery.catch(() => undefined);
             rootCloseTask ??= coordinator.close();
             await rootCloseTask;
           },
