@@ -47,24 +47,42 @@ export function appIconLoadOrder(icon: AppIconChoice): readonly AppIconChoice[] 
 }
 
 /**
- * First path in the fallback order whose artwork actually reads.
+ * First path in the fallback order whose artwork actually reads, or
+ * `undefined` when every candidate is gone.
  *
  * A path being well-formed says nothing about the file existing: a persisted
  * custom id whose file was deleted resolves to a perfectly valid path that
  * decodes to nothing. Windows and Linux hand that path straight to a new
  * window, so window creation has to walk the same fallback the dock does
  * instead of trusting the first candidate.
+ *
+ * `undefined` is the answer a caller *replacing* artwork needs: `setIcon` with
+ * an unreadable path blanks the icon a window already has, so "nothing reads"
+ * has to be sayable rather than answered with a path that decodes to nothing.
+ */
+export function firstReadableAppIconPath(
+  icon: AppIconChoice,
+  toPath: (choice: AppIconChoice) => string,
+  isReadable: (path: string) => boolean,
+): string | undefined {
+  for (const candidate of appIconLoadOrder(icon)) {
+    const path = toPath(candidate);
+    if (isReadable(path)) return path;
+  }
+  return undefined;
+}
+
+/**
+ * The same walk for a caller that has to name a path even when nothing reads:
+ * a window being created cannot report an error and has no previous icon to
+ * leave alone, so the brand mark is named instead.
  */
 export function pickReadableAppIconPath(
   icon: AppIconChoice,
   toPath: (choice: AppIconChoice) => string,
   isReadable: (path: string) => boolean,
 ): string {
-  for (const candidate of appIconLoadOrder(icon)) {
-    const path = toPath(candidate);
-    if (isReadable(path)) return path;
-  }
-  return toPath('default');
+  return firstReadableAppIconPath(icon, toPath, isReadable) ?? toPath('default');
 }
 
 /**

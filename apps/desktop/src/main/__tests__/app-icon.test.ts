@@ -21,11 +21,13 @@ import assert from 'node:assert/strict';
 import { open } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { test } from 'node:test';
+import { deflateSync } from 'node:zlib';
 import { APP_ICONS } from '@maka/core/settings';
 import {
   appIconAssetSegments,
   appIconLoadOrder,
   encodeWindowsIco,
+  firstReadableAppIconPath,
   pickReadableAppIconPath,
   resolveAppIconPath,
   WINDOWS_TASKBAR_ICON_SIZES,
@@ -135,11 +137,81 @@ test('a persisted custom id whose file disappeared falls back to the brand mark'
   );
 });
 
+test('artwork that is gone resolves to nothing rather than to a dead path', () => {
+  // The contract the icon *replacement* path depends on: `undefined` is what
+  // leaves a window's existing icon alone, where a path that decodes to
+  // nothing would blank it.
+  const gone = `custom:${'e'.repeat(32)}` as const;
+  const toPath = (choice: AppIconChoice) => join('/user-data', 'app-icons', `${choice.slice(7)}.png`);
+
+  assert.equal(
+    firstReadableAppIconPath(gone, toPath, () => false),
+    undefined,
+    'no candidate reads, so there is no path to hand Windows or Linux',
+  );
+
+  // And a readable candidate still wins, so the answer is not just "none".
+  const readable = toPath(gone);
+  assert.equal(
+    firstReadableAppIconPath(gone, toPath, (path) => path === readable),
+    readable,
+  );
+});
+
+/**
+ * CRC-32 over one chunk's type and data, as PNG defines it. The frames below
+ * are built here rather than faked with a string, because a container test
+ * cannot say whether the bytes Windows would decode are actually an image.
+ */
+const CRC_TABLE = new Uint32Array(256).map((_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([length, body, crc]);
+}
+
+/**
+ * An 8-bit RGBA PNG of one flat colour, `size` by `size`.
+ *
+ * Real bytes, at the size the directory entry declares: that is what the
+ * Windows loader reads, and a frame whose own header disagrees with its entry
+ * is invisible to a test that only walks the container.
+ */
+function pngOfSize(size: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header.writeUInt8(8, 8); // bit depth
+  header.writeUInt8(6, 9); // colour type: RGBA, the 32bpp the entries declare
+  // Bytes 10..12 stay 0: the one compression, filter and interlace method.
+  const row = Buffer.alloc(1 + size * 4); // filter byte, then RGBA pixels
+  const pixels = Buffer.concat(Array.from({ length: size }, () => row));
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(pixels)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 test('the Windows ICO carries every taskbar size as a PNG frame', () => {
-  const frames = WINDOWS_TASKBAR_ICON_SIZES.map((size) => ({
-    size,
-    png: Buffer.from(`png-${size}`),
-  }));
+  const frames = WINDOWS_TASKBAR_ICON_SIZES.map((size) => ({ size, png: pngOfSize(size) }));
   const encoded = encodeWindowsIco(frames);
   assert.equal(encoded.readUInt16LE(0), 0);
   assert.equal(encoded.readUInt16LE(2), 1);
@@ -155,12 +227,24 @@ test('the Windows ICO carries every taskbar size as a PNG frame', () => {
     assert.equal(encoded.readUInt16LE(cursor + 6), 32);
     assert.equal(encoded.readUInt32LE(cursor + 8), frame.png.byteLength);
     const offset = encoded.readUInt32LE(cursor + 12);
-    assert.equal(
-      encoded.subarray(offset, offset + frame.png.byteLength).toString(),
-      frame.png.toString(),
-    );
+    const payload = encoded.subarray(offset, offset + frame.png.byteLength);
+    // The entry has to land on this frame's own bytes — an offset that is
+    // merely in range leaves Windows decoding a neighbour's data.
+    assert.deepEqual(Buffer.from(payload), frame.png);
+    // ...and those bytes have to be a PNG of the size the entry promises.
+    assert.equal(payload.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.equal(payload.readUInt32BE(16), frame.size, 'the frame is not the size the entry declares');
+    assert.equal(payload.readUInt32BE(20), frame.size, 'the frame is not the size the entry declares');
     cursor += 16;
   }
+
+  // Header plus frames and nothing more: an offset past the end of the file
+  // would still be readable as a number here.
+  assert.equal(
+    encoded.byteLength,
+    6 + 16 * frames.length + frames.reduce((total, frame) => total + frame.png.byteLength, 0),
+  );
+
   assert.deepEqual(
     [...WINDOWS_TASKBAR_ICON_SIZES],
     [16, 24, 32, 48, 64, 256],

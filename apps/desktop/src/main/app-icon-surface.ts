@@ -18,7 +18,6 @@
  */
 
 import { app, BrowserWindow, nativeImage } from 'electron';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   APP_ICONS,
@@ -36,10 +35,11 @@ import {
 import {
   appIconLoadOrder,
   encodeWindowsIco,
-  pickReadableAppIconPath,
+  firstReadableAppIconPath,
   resolveAppIconPath,
   WINDOWS_TASKBAR_ICON_SIZES,
 } from './app-icon.js';
+import { writeWindowsTaskbarIconCache } from './app-icon-cache.js';
 import { desktopAssetRoot } from './desktop-assets.js';
 
 /**
@@ -63,25 +63,42 @@ export function appIconPath(value: unknown): string {
 }
 
 /**
+ * The path a window's icon surface should be set from, or `null` when no
+ * artwork reads.
+ *
+ * On Windows this is the rebuilt multi-size ICO file (see
+ * `windowsTaskbarIconFile`) because the taskbar needs the small/large HICON a
+ * PNG NativeImage does not provide. macOS and Linux take the first 1024px PNG
+ * master that actually reads.
+ *
+ * `null` is the answer a caller *replacing* an icon needs: `setIcon` with a
+ * path that decodes to nothing blanks the icon a window already has, so
+ * "nothing reads" has to be sayable rather than turned into a path.
+ */
+export function appIconSurfacePath(value: unknown): string | null {
+  const icon = toAppIconChoice(value);
+  if (process.platform === 'win32') {
+    const icoPath = windowsTaskbarIconFile(icon);
+    if (icoPath !== null) return icoPath;
+  }
+  return firstReadableAppIconPath(icon, appIconPath, readsAsArtwork) ?? null;
+}
+
+/**
  * The path a window should be born with: the same fallback `applyAppIcon`
  * walks, so a window created after the artwork went missing gets the brand
  * mark rather than a path that decodes to nothing.
  *
- * On Windows this resolves to the rebuilt multi-size ICO file (see
- * `windowsTaskbarIconFile`) because the taskbar needs the small/large HICON
- * a PNG NativeImage does not provide. macOS and Linux take the 1024px PNG
- * master path directly.
+ * The `string` form of `appIconSurfacePath`, for the callers that have to name
+ * a path: a window being created cannot report an error.
  */
 export function readableAppIconPath(value: unknown): string {
-  if (process.platform === 'win32') {
-    const icoPath = windowsTaskbarIconFile(value);
-    if (icoPath !== null) return icoPath;
-  }
-  return pickReadableAppIconPath(
-    toAppIconChoice(value),
-    appIconPath,
-    (path) => !nativeImage.createFromPath(path).isEmpty(),
-  );
+  return appIconSurfacePath(value) ?? appIconPath('default');
+}
+
+/** `nativeImage` reports a missing or undecodable file as an EMPTY image. */
+function readsAsArtwork(path: string): boolean {
+  return !nativeImage.createFromPath(path).isEmpty();
 }
 
 /**
@@ -108,16 +125,7 @@ export function windowsTaskbarIconFile(value: unknown): string | null {
     return png.byteLength > 0 ? [{ size, png: Buffer.from(png) }] : [];
   });
   if (frames.length === 0) return null;
-  try {
-    const directory = join(app.getPath('userData'), 'app-icon-cache');
-    mkdirSync(directory, { recursive: true });
-    const path = join(directory, 'taskbar.ico');
-    writeFileSync(path, encodeWindowsIco(frames));
-    return path;
-  } catch (error) {
-    console.error('[icon] failed to cache the Windows taskbar icon:', error);
-    return null;
-  }
+  return writeWindowsTaskbarIconCache(app.getPath('userData'), encodeWindowsIco(frames));
 }
 
 /**
@@ -150,8 +158,12 @@ let shippedPreviews: readonly AppIconPreview[] | undefined;
  * which is why every open window is updated: the `icon` option in
  * `createWindow` only covers windows opened *after* the choice was persisted.
  *
- * Windows is handed a path to the rebuilt `.ico` (see `readableAppIconPath`):
+ * Windows is handed a path to the rebuilt `.ico` (see `appIconSurfacePath`):
  * a PNG NativeImage leaves the taskbar on the packaged `.exe` tile.
+ *
+ * Nothing readable means nothing is set. `setIcon` with a path that decodes to
+ * nothing blanks the icon the window already has, so a missing set of artwork
+ * has to leave the running icon alone and say so instead.
  */
 export function applyAppIcon(value: unknown, onIconError: (error: unknown) => void): void {
   const icon = toAppIconChoice(value);
@@ -165,7 +177,11 @@ export function applyAppIcon(value: unknown, onIconError: (error: unknown) => vo
       app.dock.setIcon(image);
       return;
     }
-    const surface = readableAppIconPath(icon);
+    const surface = appIconSurfacePath(icon);
+    if (surface === null) {
+      onIconError(new Error(`no readable artwork for app icon "${icon}"`));
+      return;
+    }
     for (const window of BrowserWindow.getAllWindows()) window.setIcon(surface);
   } catch (error) {
     onIconError(error);
