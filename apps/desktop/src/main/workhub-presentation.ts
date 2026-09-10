@@ -608,13 +608,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const enabled = deps.isEnabled();
     if (disposed) return;
     if (enabled) {
-      // Prepare the reusable native window and renderer while enabling WorkHub,
-      // before a shortcut needs them. Never restart a crashed renderer implicitly.
-      const target = ensureFloating();
-      if (!rendererCrashed) {
-        ensureView();
-        if (!parent) { attach(target); fitFloating(); }
-      }
+      // Enabling only registers the shortcut. The dock, shortcut or control
+      // request creates the renderer on first use; settings alone must not
+      // load a second application in the background.
       if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
     } else {
       if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);

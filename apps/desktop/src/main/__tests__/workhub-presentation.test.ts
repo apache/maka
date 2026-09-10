@@ -550,21 +550,29 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
 });
 
 
-test('prewarms once and the shortcut shows and hides synchronously', async () => {
+test('enabling stays lazy and the first shortcut creates a reusable ready-gated view', async () => {
   const h = await harness();
   await h.controller.refreshSettings();
+  await h.controller.refreshSettings();
+  assert.equal(h.windows.length, 1, 'settings do not create a floating window');
+  assert.equal(h.views.length, 0, 'settings do not preload a second application');
+  h.shortcut();
   const floating = h.windows[1]!;
   const view = h.views[0]!;
-  assert.equal(floating.visible, false);
-  assert.equal(view.visible, false);
+  assert.equal(floating.visible, true, 'show happens in the shortcut callback, without an async queue');
+  assert.equal(view.visible, true);
   assert.ok(floating.children.has(view));
+  assert.equal(view.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), false);
+  await h.command(view.webContents, 'ready');
+  assert.equal(view.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), true);
   await h.controller.refreshSettings();
   assert.equal(h.windows.length, 2);
   assert.equal(h.views.length, 1);
   h.shortcut();
-  assert.equal(floating.visible, true, 'show happens in the shortcut callback, without an async queue');
-  h.shortcut();
   assert.equal(floating.visible, false);
+  h.shortcut();
+  assert.equal(floating.visible, true);
+  assert.equal(h.views.length, 1, 'hiding and summoning preserve the live draft');
   assert.equal(h.mainRequests, 0);
   assert.equal(h.main.focused, 0);
   h.controller.dispose();

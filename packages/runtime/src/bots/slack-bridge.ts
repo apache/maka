@@ -17,9 +17,10 @@
  * under the License.
  */
 
+import { createRequire } from 'node:module';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { SocketModeClient } from '@slack/socket-mode';
-import { WebClient } from '@slack/web-api';
+import type { SocketModeClient } from '@slack/socket-mode';
+import type { WebClient } from '@slack/web-api';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, SendCapable } from './types.js';
 
@@ -86,6 +87,10 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       return;
     }
 
+    const require = createRequire(import.meta.url);
+    const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
+    const { SocketModeClient } =
+      require('@slack/socket-mode') as typeof import('@slack/socket-mode');
     this.web = new WebClient(botToken);
     try {
       const identity = await this.web.auth.test();

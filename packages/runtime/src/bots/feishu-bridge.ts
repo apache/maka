@@ -17,13 +17,8 @@
  * under the License.
  */
 
-import {
-  Domain,
-  LoggerLevel,
-  createLarkChannel,
-  type LarkChannel,
-  type NormalizedMessage,
-} from '@larksuiteoapi/node-sdk';
+import { createRequire } from 'node:module';
+import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
@@ -99,6 +94,11 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     }
 
     this.explicitlyStopped = false;
+    // Load the SDK only for a configured channel. Keep initialization
+    // synchronous so stop() cannot race a new module-loading await.
+    const { Domain, LoggerLevel, createLarkChannel } = createRequire(import.meta.url)(
+      '@larksuiteoapi/node-sdk',
+    ) as typeof import('@larksuiteoapi/node-sdk');
     const isLark = this.settings.domain?.trim() === 'larksuite.com';
     const channel = createLarkChannel({
       appId,

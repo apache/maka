@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { WSClient, type TextMessage, type WsFrame } from '@wecom/aibot-node-sdk';
+import { createRequire } from 'node:module';
+import type { WSClient, TextMessage, WsFrame } from '@wecom/aibot-node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
@@ -90,6 +91,9 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     }
 
     this.explicitlyStopped = false;
+    const { WSClient } = createRequire(import.meta.url)(
+      '@wecom/aibot-node-sdk',
+    ) as typeof import('@wecom/aibot-node-sdk');
     const client = new WSClient({
       botId,
       secret,

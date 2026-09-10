@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
@@ -25,6 +26,42 @@ import { BotRegistry } from '../bot-registry.js';
 import type { BotStatus } from '../types.js';
 
 describe('BotRegistry', () => {
+  test('the public entry and unconfigured channels do not load platform SDKs', () => {
+    // Use a fresh process: other bridge tests deliberately load and mock SDKs.
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
+      import assert from 'node:assert/strict';
+      import { createRequire } from 'node:module';
+      const require = createRequire(${JSON.stringify(import.meta.url)});
+      const { BotRegistry, testBotChannel } = await import(${JSON.stringify(new URL('../index.js', import.meta.url).href)});
+      const { BOT_PROVIDERS, createDefaultBotChannel } = await import('@maka/core/settings');
+      const registry = new BotRegistry({ onIncomingMessage() {}, onStatusChange() {} });
+      for (const enabled of [false, true]) {
+        const channels = Object.fromEntries(BOT_PROVIDERS.map(provider => [
+          provider, { ...createDefaultBotChannel(provider), enabled },
+        ]));
+        await registry.applySettings({ channels });
+        assert.equal((await testBotChannel('slack', channels.slack)).errorCode, 'slack_tokens_missing');
+      }
+      await registry.stopAll();
+      const sdkModules = Object.keys(require.cache).filter(path =>
+        /[\\\\/]node_modules[\\\\/](@larksuiteoapi|@wecom|@slack)[\\\\/]/.test(path));
+      assert.deepEqual(sdkModules, []);
+    `,
+      ],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+    assert.equal(
+      result.status,
+      0,
+      result.stderr || result.error?.message || 'SDK loading probe failed',
+    );
+  });
+
   test('reports disabled and missing-credential statuses without opening network connections', async () => {
     const statuses: BotStatus[] = [];
     const registry = new BotRegistry({
