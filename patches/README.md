@@ -60,6 +60,21 @@ semantics and collection after successful, invalid, and throwing parses while
 schemas remain alive. Delete the patch when those tests pass against unpatched
 Zod.
 
+## `@modelcontextprotocol/client@2.0.0`
+
+Pending transport sends retain settled request arguments and results through
+error observers, even after response, abort, timeout, or connection close.
+The ESM and CJS patches scope cancellation observers independently and revoke
+the request observer's native `reject` reference in request cleanup. Late send
+errors still remove progress handlers, and cancellation send errors still reach
+`onerror`; queued frames and connection behavior stay intact. The private SDK
+request funnel has no public observer-lifetime hook for a call-site fix.
+
+`packages/mcp/src/__tests__/sdk-request-send-lifetime.test.ts` verifies both
+published entries with retained pending sends, active-request ownership, and
+settled-object GC, plus legacy and modern cancellation/error semantics. Delete
+the patch when these tests pass against the unpatched dependency.
+
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
 The published ECDSA verification paths rely on Node choosing a digest when
