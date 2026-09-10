@@ -63,3 +63,26 @@ test('retires React measures, preserves other diagnostics, and releases its obse
     else Reflect.deleteProperty(globalThis, 'PerformanceObserver');
   }
 });
+
+test('preserves a mixed-name bucket when only one measure belongs to React', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'PerformanceObserver');
+  Object.defineProperty(globalThis, 'PerformanceObserver', { configurable: true, value: NodePerformanceObserver });
+  let stop = () => {};
+  try {
+    performance.measure('Update', { start: 0, detail: { purpose: 'application-latency' } });
+    stop = observeReactPerformanceMeasures();
+    performance.measure('Update', { start: 0, detail: { devtools: { trackGroup: 'Scheduler ⚛' } } });
+    await setImmediate();
+    await setImmediate();
+
+    assert.deepEqual(
+      performance.getEntriesByName('Update', 'measure').map((entry) => (entry as PerformanceMeasure).detail),
+      [{ purpose: 'application-latency' }, { devtools: { trackGroup: 'Scheduler ⚛' } }],
+    );
+  } finally {
+    stop();
+    performance.clearMeasures();
+    if (descriptor) Object.defineProperty(globalThis, 'PerformanceObserver', descriptor);
+    else Reflect.deleteProperty(globalThis, 'PerformanceObserver');
+  }
+});
