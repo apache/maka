@@ -486,12 +486,18 @@ export const TurnView = memo(function TurnView(props: {
   const toolSurfaceOwnsSpinner = turn.timeline.some(
     (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
   );
+  // Live state is a separate projection and may lag the durable transcript.
+  // Once that transcript records a terminal outcome, it owns the turn chrome;
+  // inferred `completed` remains eligible because active legacy turns use it.
+  const hasRecordedTerminalStatus =
+    turn.statusSource === 'recorded' && turn.status !== 'running';
+  const activeLiveStreaming = hasRecordedTerminalStatus ? undefined : props.liveStreaming;
   return (
     <section
       className="maka-turn"
       data-maka-contract="markdown-flow"
       data-turn-id={turn.turnId}
-      data-live-streaming={props.liveStreaming ? 'true' : undefined}
+      data-live-streaming={activeLiveStreaming ? 'true' : undefined}
       data-search-highlight={props.searchHighlighted ? 'true' : undefined}
       tabIndex={props.searchHighlighted ? -1 : undefined}
     >
@@ -590,7 +596,7 @@ export const TurnView = memo(function TurnView(props: {
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
               turn.status === 'running' ||
-              !!props.liveStreaming
+              !!activeLiveStreaming
             }
             editDisabledReason={
               (turn.user.attachments?.length ?? 0) > 0
@@ -678,20 +684,20 @@ export const TurnView = memo(function TurnView(props: {
                         ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
                         : undefined
                     }
-                    initialLiveContent={props.liveStreaming?.initialLiveContent}
+                    initialLiveContent={activeLiveStreaming?.initialLiveContent}
                   />
                 ) : (
                   <TurnTimelineEntry
                     key={timelineEntryKey(item, index)}
                     item={item}
-                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onStreamingSettled={activeLiveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
                       props.onSwitchToBypassAndRetry
                         ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
                         : undefined
                     }
-                    initialLiveContent={props.liveStreaming?.initialLiveContent}
+                    initialLiveContent={activeLiveStreaming?.initialLiveContent}
                   />
                 ),
               )}
@@ -753,13 +759,13 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
+            {ownsTurnChrome && (activeLiveStreaming || props.footerActions?.length) ? (
               <TurnFooter
-                actions={props.liveStreaming ? [] : props.footerActions ?? []}
-                live={!!props.liveStreaming}
-                activity={props.liveStreaming?.providerRetry ? (
-                  <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                ) : props.liveStreaming?.runningStatus ? (
+                actions={activeLiveStreaming ? [] : props.footerActions ?? []}
+                live={!!activeLiveStreaming}
+                activity={activeLiveStreaming?.providerRetry ? (
+                  <ModelProviderRetryIndicator retry={activeLiveStreaming.providerRetry} />
+                ) : activeLiveStreaming?.runningStatus ? (
                   <TurnRunningStatus
                     startedAt={turn.startedAt}
                     showSpinner={!toolSurfaceOwnsSpinner}

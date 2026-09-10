@@ -445,9 +445,9 @@ export function ChatView(props: {
   //
   // Terminal liveTurn is evidence overlay only (e.g. empty shell_run still needs
   // pre-handoff chunks). It must NOT block footer actions — keeping evidence and
-  // being in-flight are separate signals. Wait indicators alone still mark
-  // streaming, but delayed flags can lag one frame past complete; terminal
-  // evidence must outrank them so copy/regenerate stay actionable.
+  // being in-flight are separate signals. Either the live projection or the
+  // durable transcript may learn the terminal state first, so both must outrank
+  // a delayed running witness and keep copy/regenerate actionable.
   // A live context-compaction Turn is not an assistant stream: it renders one
   // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
   // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
@@ -459,9 +459,18 @@ export function ChatView(props: {
   // which does not see that overlaid row, so it must treat this as visible
   // content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (props.liveTurn?.steps.length ?? 0) === 0;
-  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal) && !isCompactionLive;
+  const runningWitnessTurn = props.liveTurn
+    ? turns.find((turn) => turn.turnId === props.liveTurn?.turnId)
+    : turns.at(-1);
+  const runningWitnessRecordedAsEnded =
+    runningWitnessTurn?.statusSource === 'recorded' && runningWitnessTurn.status !== 'running';
+  const liveInFlight =
+    !!(props.liveTurn && !props.liveTurn.terminal) &&
+    !isCompactionLive &&
+    !runningWitnessRecordedAsEnded;
   const streamingActive =
-    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive);
+    !runningWitnessRecordedAsEnded &&
+    (liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive));
   const tailTurnId = liveInFlight
     ? props.liveTurn!.turnId
     : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);

@@ -85,6 +85,71 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   assert.match(committed, /data-transcript-turn-id="pending-turn"/);
 });
 
+test('prefers a recorded failed tail over a stale running witness for that turn', () => {
+  const turnId = 'failed-turn';
+  const markup = renderChat(
+    { turnId, phase: 'waiting', startedAt: 1, steps: [] },
+    {
+      messages: [
+        { type: 'user', id: 'user-1', turnId, text: 'Run this', ts: 1 },
+        { type: 'turn_state', id: 'state-1', turnId, status: 'failed', ts: 2 },
+      ],
+      runningStatus: true,
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {},
+        failedReasonLabels: { [turnId]: 'The turn failed' },
+        failedSeverities: {},
+        failedExecutionStateLabels: {},
+        lineageBadgesByTurn: {},
+      }),
+    },
+  );
+
+  assert.match(markup, /The turn failed/);
+  assert.doesNotMatch(markup, /Waiting for model output/);
+  const { document } = parseHTML(markup);
+  assert.equal(document.querySelector('.maka-turn')?.getAttribute('data-live-streaming'), null);
+});
+
+test('keeps a genuinely running sibling visible after a failed turn', () => {
+  const failedTurnId = 'failed-turn';
+  const runningTurnId = 'running-turn';
+  const markup = renderChat(
+    { turnId: runningTurnId, phase: 'waiting', startedAt: 3, steps: [] },
+    {
+      messages: [
+        { type: 'user', id: 'user-1', turnId: failedTurnId, text: 'First', ts: 1 },
+        {
+          type: 'turn_state',
+          id: 'failed-state',
+          turnId: failedTurnId,
+          status: 'failed',
+          ts: 2,
+        },
+        { type: 'user', id: 'user-2', turnId: runningTurnId, text: 'Second', ts: 3 },
+        {
+          type: 'turn_state',
+          id: 'running-state',
+          turnId: runningTurnId,
+          status: 'running',
+          ts: 4,
+        },
+      ],
+      runningStatus: true,
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {},
+        failedReasonLabels: { [failedTurnId]: 'The first turn failed' },
+        failedSeverities: {},
+        failedExecutionStateLabels: {},
+        lineageBadgesByTurn: {},
+      }),
+    },
+  );
+
+  assert.match(markup, /The first turn failed/);
+  assert.equal(parseHTML(markup).document.querySelectorAll('.maka-turn-processing').length, 1);
+});
+
 test('renders the empty hero when an empty session has no live compaction row', () => {
   const markup = renderChat(undefined);
 
