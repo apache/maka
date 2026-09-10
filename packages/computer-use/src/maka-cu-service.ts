@@ -205,15 +205,6 @@ export interface MakaCuHandshake {
 export interface MakaCuServiceOptions {
   /** Absolute path to the `maka-cu` executable; spawned as a DIRECT child (§11). */
   binaryPath: string;
-  /**
-   * Executor subcommand/argv after the executable path.
-   *
-   * The shipped Darwin executor is invoked as `maka-cu host`. A future
-   * platform binary behind the same `maka.cu/2` contract may need a different
-   * first argument or a platform launcher prefix; that difference belongs
-   * here, in the composition, not in a second child-process supervisor.
-   */
-  childArgs?: readonly string[];
   /** Host-owned image directory, purged before every spawn (§8, §11). */
   imageDir: string;
   hostVersion: string;
@@ -403,7 +394,7 @@ export class MakaCuService {
     // the host reported an exhausted restart budget rather than a wrong argv.
     // §11 said "spawns the executor as a direct child" and did not say with
     // what, so the two sides each picked, and disagreed.
-    const child = spawn(executablePath, [...(this.opts.childArgs ?? ['host'])], {
+    const child = spawn(executablePath, ['host'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       // §13: no env-var behaviour switches. Everything behavioural is a
       // `host.hello` parameter, so the wire says what the executor will do.
