@@ -87,12 +87,20 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
-  liveStreaming?: { runningStatus?: boolean; onStreamingSettled?: (messageId?: string) => void },
+  liveStreaming?: {
+    runningStatus?: boolean;
+    onStreamingSettled?: (messageId?: string) => void;
+  },
+  safeResumeAction?: { pending: boolean; onResume(): void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} liveStreaming={liveStreaming} />
+        <TurnView
+          turn={turn}
+          liveStreaming={liveStreaming}
+          safeResumeAction={safeResumeAction}
+        />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;
@@ -145,6 +153,29 @@ test('places the turn status row at the top of the assistant content', async () 
   assert.ok(content && statusbar && answer);
   // No work log: the standalone status row leads the assistant content.
   assert.equal(content.firstElementChild?.isSameNode(statusbar), true);
+});
+
+test('offers Safe resume in the Desktop Stop outcome notice', async () => {
+  const { container, root } = domRoot();
+  let resumeCalls = 0;
+  await renderTurn(
+    root,
+    {
+      ...turnWith([{ ...ANSWER, live: false }]),
+      status: 'aborted',
+      abortSource: 'renderer.stop_button',
+    },
+    undefined,
+    { pending: false, onResume: () => resumeCalls++ },
+  );
+
+  const statusbar = container.querySelector('.maka-turn-statusbar');
+  const button = container.querySelector('button');
+  assert.ok(statusbar, 'the existing turn status row remains the single outcome indicator');
+  assert.ok(button, 'the action stays attached to the stopped turn it continues');
+  assert.equal(button.textContent, 'Continue this turn');
+  await act(() => button.click());
+  assert.equal(resumeCalls, 1);
 });
 
 /**
