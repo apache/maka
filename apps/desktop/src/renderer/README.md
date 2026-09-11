@@ -114,9 +114,14 @@ from the base commit, the base commit's checker is also imported to measure
 both trees, and debt the base measurement rules (generation and classification)
 would have flagged fails as a `base-checker cross-check:` violation, so one
 change cannot loosen how debt is measured and lower both sides of the ratchet
-at once. The comparison itself still runs under the current checker: a change
-to `validateMonotonicDebt` is not covered by the cross-check and stays a review
-concern.
+at once. Under `--strict-base`, failure to write, import, or run an existing
+base checker, a missing `generateArchitectureConfig` export, or output that
+does not match the current ledger schema is a hard error. Without the flag,
+these conditions are reported and the cross-check is skipped. A base commit
+without a checker has no old measurement rules to run and is skipped in both
+modes. The schema validation and comparison still run under the current checker;
+changes to those rules remain a review concern. In particular, changes to
+`validateMonotonicDebt` are not protected by the cross-check.
 
 Dependency-path debt prices only regressive runtime edges. Type-only imports
 are erased at compile time and never count. Edges into a shell, feature public,

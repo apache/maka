@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import {
+  chmod,
   copyFile,
   mkdtemp,
   mkdir,
@@ -3307,7 +3308,7 @@ describe('validated copy catalog dependencies', () => {
 
 // These fixtures exercise the CLI end to end against a real git history: the
 // ratchet must re-derive the base commit's debt from the base *tree* (#4249),
-// `--strict-base` must refuse the silent fallback that wedged CI in #4250, and
+// `--strict-base` must refuse fallback that could reintroduce #4250's failure, and
 // a checker change must still be measured by the base commit's checker.
 describe('renderer architecture base-tree derivation (git fixtures)', () => {
   const checkerPath = fileURLToPath(new URL('./check-renderer-architecture.mjs', import.meta.url));
@@ -3512,58 +3513,79 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
     });
   });
 
-  it('cross-checks a weakened checker against the base commit checker', async () => {
-    await withGitFixture(async (fixture) => {
-      await fixture.writeLedger();
-      const base = fixture.commit('base');
+  for (const version of [1, 2]) {
+    it(`rejects weakened classification with ledger version ${version} under --strict-base`, async () => {
+      await withGitFixture(async (fixture) => {
+        await fixture.writeLedger();
+        const base = fixture.commit('base');
 
-      // Weaken the measurement: the head checker stops classifying anything under
-      // src/renderer/widgets/ as legacy, in both the generator and the ledger
-      // validation. The head ledger, the head snapshot check, and the plain
-      // ratchet (which re-derives the base with the SAME weakened rules) all agree.
-      const original = await readFile(fixture.scriptPath, 'utf8');
-      assert.equal(
-        original.split(LEGACY_CLASSIFICATION).length - 1,
-        2,
-        'the legacy classification filter moved; update this fixture',
-      );
-      await writeFile(
-        fixture.scriptPath,
-        original.replaceAll(
+        // Weaken the measurement: the head checker stops classifying anything under
+        // src/renderer/widgets/ as legacy, in both the generator and the ledger
+        // validation. The head ledger, the head snapshot check, and the plain
+        // ratchet (which re-derives the base with the SAME weakened rules) all agree.
+        const original = await readFile(fixture.scriptPath, 'utf8');
+        assert.equal(
+          original.split(LEGACY_CLASSIFICATION).length - 1,
+          2,
+          'the legacy classification filter moved; update this fixture',
+        );
+        let weakened = original.replaceAll(
           LEGACY_CLASSIFICATION,
           ".filter((path) => zoneFor(path).kind === 'legacy' && !path.includes('/widgets/'))",
-        ),
-        'utf8',
-      );
-      await fixture.writeFiles({ 'src/renderer/widgets/legacy-widget-panel.ts': 'export const hidden = 1;\n' });
-      const headLedger = await fixture.writeLedger();
-      assert.deepEqual(headLedger.legacyRendererFiles, [
-        LEGACY_PANEL_PATH,
-        LEGACY_WIDGET_PATH,
-        RENDERER_ENTRY_PATH,
-      ]);
-      fixture.commit('weaken the checker and add the debt it no longer sees');
+        );
+        if (version === 2) {
+          for (const [before, after] of [
+            [
+              "if (config.version !== 1) reject('version must be 1');",
+              "if (config.version !== 2) reject('version must be 2');",
+            ],
+            ['version: 1,', 'version: 2,'],
+          ]) {
+            assert.equal(weakened.split(before).length - 1, 1, `the ledger version anchor moved: ${before}`);
+            weakened = weakened.replace(before, after);
+          }
+        }
+        await writeFile(fixture.scriptPath, weakened, 'utf8');
+        await fixture.writeFiles({ 'src/renderer/widgets/legacy-widget-panel.ts': 'export const hidden = 1;\n' });
+        const headLedger = await fixture.writeLedger({ ...rendererEntrySeedConfig(), version });
+        assert.deepEqual(headLedger.legacyRendererFiles, [
+          LEGACY_PANEL_PATH,
+          LEGACY_WIDGET_PATH,
+          RENDERER_ENTRY_PATH,
+        ]);
+        fixture.commit('weaken the checker and add the debt it no longer sees');
 
-      const result = fixture.runChecker(['--base', base, '--strict-base']);
-      assert.notEqual(result.status, 0);
-      assert.match(result.stdout, /differs from .*; cross-checked debt under the base checker/u);
-      assert.match(
-        result.stderr,
-        /^- base-checker cross-check: src\/renderer\/widgets\/legacy-widget-panel\.ts: new unclassified renderer source files are forbidden/mu,
-      );
-      // Every reported violation comes from the cross-check: the weakened
-      // checker alone was satisfied on both sides of the ratchet.
-      const reported = result.stderr.split('\n').filter((line) => line.startsWith('- '));
-      assert.ok(reported.length > 0, result.stderr);
-      assert.ok(
-        reported.every((line) => line.startsWith('- base-checker cross-check: ')),
-        result.stderr,
-      );
-      assert.doesNotMatch(result.stderr, /falling back|cross-check skipped/u);
+        const result = fixture.runChecker(['--base', base, '--strict-base']);
+        assert.notEqual(result.status, 0);
+        if (version === 2) {
+          assert.match(result.stderr, /--strict-base forbids skipping the cross-check/u);
+          assert.match(result.stderr, /does not produce the current ledger shape.*version must be 2/u);
+          assert.doesNotMatch(result.stdout, /passed|cross-checked debt/u);
+
+          const lenient = fixture.runChecker(['--base', base]);
+          assertPassed(lenient, base, 'lenient schema transition');
+          assert.match(lenient.stdout, /does not produce the current ledger shape.*skipping the base-checker cross-check/u);
+          return;
+        }
+        assert.match(result.stdout, /differs from .*; cross-checked debt under the base checker/u);
+        assert.match(
+          result.stderr,
+          /^- base-checker cross-check: src\/renderer\/widgets\/legacy-widget-panel\.ts: new unclassified renderer source files are forbidden/mu,
+        );
+        // Every reported violation comes from the cross-check: the weakened
+        // checker alone was satisfied on both sides of the ratchet.
+        const reported = result.stderr.split('\n').filter((line) => line.startsWith('- '));
+        assert.ok(reported.length > 0, result.stderr);
+        assert.ok(
+          reported.every((line) => line.startsWith('- base-checker cross-check: ')),
+          result.stderr,
+        );
+        assert.doesNotMatch(result.stderr, /falling back|cross-check skipped/u);
+      });
     });
-  });
+  }
 
-  it('skips the cross-check with a notice when the base checker predates generateArchitectureConfig', async () => {
+  it('requires the base generator export only under --strict-base', async () => {
     await withGitFixture(async (fixture) => {
       const original = await readFile(fixture.scriptPath, 'utf8');
       const exported = 'export function generateArchitectureConfig(';
@@ -3574,9 +3596,42 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
       await writeFile(fixture.scriptPath, original, 'utf8');
       fixture.commit('restore the export');
 
-      const result = fixture.runChecker(['--base', base, '--strict-base']);
-      assertPassed(result, base, 'older base checker');
-      assert.match(result.stdout, /does not export generateArchitectureConfig; skipping the base-checker cross-check/u);
+      const lenient = fixture.runChecker(['--base', base]);
+      assertPassed(lenient, base, 'older base checker');
+      assert.match(lenient.stdout, /does not export generateArchitectureConfig; skipping the base-checker cross-check/u);
+
+      const strict = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(strict.status, 0);
+      assert.match(strict.stderr, /--strict-base forbids skipping the cross-check/u);
+      assert.match(strict.stderr, /does not export generateArchitectureConfig/u);
+      assert.doesNotMatch(strict.stdout, /passed|cross-checked debt/u);
+    });
+  });
+
+  it('handles a non-writable checker directory according to --strict-base', {
+    skip: process.platform === 'win32' || process.getuid?.() === 0,
+  }, async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+      const original = await readFile(fixture.scriptPath, 'utf8');
+      await writeFile(fixture.scriptPath, `${original}\n// Checker maintenance.\n`, 'utf8');
+      fixture.commit('change the checker without changing its rules');
+
+      const scriptDirectory = dirname(fixture.scriptPath);
+      await chmod(scriptDirectory, 0o555);
+      try {
+        const lenient = fixture.runChecker(['--base', base]);
+        assertPassed(lenient, base, 'non-writable checker directory');
+        assert.match(lenient.stderr, /base-checker cross-check skipped.*EACCES/u);
+
+        const strict = fixture.runChecker(['--base', base, '--strict-base']);
+        assert.notEqual(strict.status, 0);
+        assert.match(strict.stderr, /--strict-base forbids skipping the cross-check.*EACCES/u);
+        assert.doesNotMatch(strict.stdout, /passed|cross-checked debt/u);
+      } finally {
+        await chmod(scriptDirectory, 0o755);
+      }
     });
   });
 
@@ -3597,13 +3652,13 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
 
       const lenient = fixture.runChecker(['--base', base]);
       assertPassed(lenient, base, 'lenient');
-      assert.match(lenient.stderr, /base-checker cross-check skipped; the base checker could not be imported/u);
+      assert.match(lenient.stderr, /base-checker cross-check skipped; the base checker could not be written or imported/u);
 
       const strict = fixture.runChecker(['--base', base, '--strict-base']);
       assert.notEqual(strict.status, 0);
       assert.match(
         strict.stderr,
-        /the base checker could not be imported at .*--strict-base forbids skipping the cross-check/u,
+        /the base checker could not be written or imported at .*--strict-base forbids skipping the cross-check/u,
       );
       assert.doesNotMatch(strict.stdout, /passed/u);
     });

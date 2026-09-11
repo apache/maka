@@ -3459,7 +3459,7 @@ function deriveBaseTreeConfig(baseDesktopRoot, baseCommittedConfig) {
 
 // If the base tree cannot be materialized or analyzed (e.g. git worktree is
 // unavailable), fall back to the committed base ledger so the ratchet still
-// runs. That silent fallback is exactly what wedged CI in #4250, so
+// runs. That fallback could reintroduce the stale-ledger failure in #4250, so
 // `--strict-base` turns it into a hard failure instead.
 function baseTreeFallback({ base, baseCommittedConfig, error, strictBase }) {
   const reason = error instanceof Error ? error.message : String(error);
@@ -3518,6 +3518,7 @@ async function crossCheckUnderBaseChecker({
     return [];
   };
   const skip = (reason) => {
+    if (strictBase) return unavailable('the base checker is incompatible', reason);
     console.log(`Renderer architecture check: ${reason}; skipping the base-checker cross-check.`);
     return [];
   };
@@ -3526,12 +3527,12 @@ async function crossCheckUnderBaseChecker({
   // ours do; the name is gitignored and the copy is removed even on failure.
   const tempPath = join(dirname(scriptPath), `.tmp-base-checker-${process.pid}.mjs`);
   try {
-    writeFileSync(tempPath, baseSource);
     let baseChecker;
     try {
+      writeFileSync(tempPath, baseSource);
       baseChecker = await import(pathToFileURL(tempPath).href);
     } catch (error) {
-      return unavailable('the base checker could not be imported', error);
+      return unavailable('the base checker could not be written or imported', error);
     }
     if (typeof baseChecker.generateArchitectureConfig !== 'function') {
       return skip(`the checker at ${base} does not export generateArchitectureConfig`);
