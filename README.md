@@ -197,7 +197,7 @@ Workspace data lives under Electron `userData` by default:
 - API keys and similar secrets are a local plaintext file (`credential-vault.json`), readable only by your OS account. The renderer never sees them.
 - Tools that write files or run a shell must pass the sandbox boundary first.
 - `runtime.sqlite` is the live record. Older JSONL transcripts and Electron `safeStorage` credential files are not imported; an upgraded workspace can show empty threads, and those credentials must be entered again.
-- Resuming an interrupted turn is off by default. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` only if you want Desktop **Safe resume**, CLI `/resume`, and startup auto-resume — those calls hit the model and use tokens.
+- Explicit interrupted-turn resume is available by default in Desktop and through CLI/TUI `/resume`; a successful continuation calls the model and uses tokens. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` to disable new resume planning, or `=1` to additionally allow model-driven WorkHub resume. Startup recovery repairs already admitted continuations but does not automatically select an ordinary failed or cancelled turn.
 
 Details: [SECURITY.md](./SECURITY.md), [privacy](./docs/workspace-privacy-context.md), [resume](./docs/architecture/runtime-resume-architecture.md).
 
