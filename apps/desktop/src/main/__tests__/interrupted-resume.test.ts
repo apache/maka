@@ -23,6 +23,35 @@ import { materializeTurns } from '@maka/ui';
 import { latestInterruptedResumeTurnId } from '../../renderer/interrupted-resume.js';
 
 describe('latest interrupted resume candidate', () => {
+  it('recognizes the latest turn interrupted by the Desktop Stop button', () => {
+    assert.equal(
+      latestInterruptedResumeTurnId([
+        { turnId: 'turn-1', status: 'completed' },
+        {
+          turnId: 'turn-2',
+          status: 'aborted',
+          abortSource: 'renderer.stop_button',
+        },
+      ]),
+      'turn-2',
+    );
+  });
+
+  it('does not treat other aborted turns as a Desktop Stop resume candidate', () => {
+    for (const abortSource of [undefined, 'runtime_host.shutdown', 'user_stop']) {
+      assert.equal(
+        latestInterruptedResumeTurnId([
+          {
+            turnId: 'turn-1',
+            status: 'aborted',
+            ...(abortSource ? { abortSource } : {}),
+          },
+        ]),
+        undefined,
+      );
+    }
+  });
+
   it('recognizes a timeout after a completed tool result', () => {
     assert.equal(
       latestInterruptedResumeTurnId([

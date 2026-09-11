@@ -87,11 +87,16 @@ function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
   liveStreaming?: { onStreamingSettled?: (messageId?: string) => void },
+  safeResumeAction?: { pending: boolean; onResume(): void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} liveStreaming={liveStreaming} />
+        <TurnView
+          turn={turn}
+          liveStreaming={liveStreaming}
+          safeResumeAction={safeResumeAction}
+        />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;
@@ -135,6 +140,28 @@ test('places the aborted turn outcome after its timeline content', async () => {
   const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
   assert.ok(answer && assistantMessage && outcome);
   assert.equal(assistantMessage.nextElementSibling?.isSameNode(outcome), true);
+});
+
+test('offers Safe resume in the Desktop Stop outcome notice', async () => {
+  const { container, root } = domRoot();
+  let resumeCalls = 0;
+  await renderTurn(
+    root,
+    {
+      ...turnWith([{ ...ANSWER, live: false }]),
+      status: 'aborted',
+      abortSource: 'renderer.stop_button',
+    },
+    undefined,
+    { pending: false, onResume: () => resumeCalls++ },
+  );
+
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  const button = outcome?.querySelector('button');
+  assert.ok(button, 'the action stays attached to the Stop outcome it continues');
+  assert.equal(button.textContent, 'Continue this turn');
+  await act(() => button.click());
+  assert.equal(resumeCalls, 1);
 });
 
 /**
