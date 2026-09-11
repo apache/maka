@@ -137,34 +137,61 @@ async fn connection_teardown_releases_a_backpressured_writer() {
         );
         let mut outbound = outbound.expect("outbound stream");
         let inbound = inbound.expect("inbound stream");
-        // Keep the application reader alive but idle so both queues fill.
-        let payload = vec![0x5a; 4 * 1024 * 1024];
-        let writing = outbound.write_all(&payload);
-        tokio::pin!(writing);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut writing)
+        // An idle application reader does not stop the transport from buffering.
+        // Fill incrementally until one write actually stays pending, retaining
+        // that same future through teardown. Bound setup time and total traffic.
+        let payload = [0x5a; 8 * 1024]; // Leave room for libp2p framing below 16 KiB.
+        let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut sent = 0;
+        loop {
+            assert!(
+                sent < 64 * 1024 * 1024,
+                "backpressure setup exceeded 64 MiB"
+            );
+            assert!(
+                tokio::time::Instant::now() < setup_deadline,
+                "backpressure setup timed out"
+            );
+            let mut writing = Box::pin(async {
+                outbound.write_all(&payload).await?;
+                outbound.flush().await
+            });
+            if let Ok(result) = tokio::time::timeout(Duration::from_millis(100), &mut writing).await
+            {
+                result.expect("write before teardown");
+                sent += payload.len();
+                continue;
+            }
+            if explicit_close {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let (a, b) = tokio::join!(
+                        poll_fn(|cx| Pin::new(&mut connection_a).poll_close(cx)),
+                        poll_fn(|cx| Pin::new(&mut connection_b).poll_close(cx)),
+                    );
+                    a.expect("close offerer");
+                    b.expect("close answerer");
+                })
                 .await
+                .expect("connection close timeout");
+            }
+            drop((connection_a, connection_b));
+            // Already queued bytes may finish during close. Either result is
+            // valid, but the pending operation must settle and new writes fail.
+            let _ = tokio::time::timeout(Duration::from_secs(5), &mut writing)
+                .await
+                .expect("teardown must release the writer");
+            drop(writing);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    outbound.write_all(&payload).await?;
+                    outbound.flush().await
+                })
+                .await
+                .expect("write after teardown must settle")
                 .is_err()
-        );
-        if explicit_close {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                let (a, b) = tokio::join!(
-                    poll_fn(|cx| Pin::new(&mut connection_a).poll_close(cx)),
-                    poll_fn(|cx| Pin::new(&mut connection_b).poll_close(cx)),
-                );
-                a.expect("close offerer");
-                b.expect("close answerer");
-            })
-            .await
-            .expect("connection close timeout");
+            );
+            break;
         }
-        drop((connection_a, connection_b));
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), &mut writing)
-                .await
-                .expect("teardown must release the writer")
-                .is_err()
-        );
         drop(inbound);
     }
 }
