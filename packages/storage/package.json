@@ -44,6 +44,8 @@
     "./scheduled-task-store": "./dist/scheduled-task-store.js",
     "./quiescent-session-snapshot": "./dist/quiescent-session-snapshot.js",
     "./production-session-snapshot": "./dist/production-session-snapshot.js",
+    "./session-bundle-contract": "./dist/session-bundle-contract.js",
+    "./session-bundle-file-service": "./dist/session-bundle-file-service.js",
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
     "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
     "./session-todo-authority": "./dist/session-todo-authority.js",

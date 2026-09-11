@@ -41,6 +41,7 @@ import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/se
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import type { HostWorkHubRoutingModel } from '../server/execution-model-authority.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
 import {
@@ -50,6 +51,8 @@ import {
 } from '../server/workhub-coordination-action-gate.js';
 import {
   HostWorkHubCoordinationCoordinator,
+  WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+  WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
   type CoordinationCreateTarget,
   type HostWorkHubCoordinationCoordinatorOptions,
 } from '../server/workhub-coordination-coordinator.js';
@@ -62,6 +65,111 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('Host WorkHub Coordination coordinator', () => {
+  test('reads bounded recent history when preparing a routing decision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-history-'));
+    const store = createSessionStore(root);
+    let scanRequest: Parameters<SessionAuthorityStore['readMessagesAfter']>[1] | undefined;
+    let receivedTranscript: Parameters<HostWorkHubRoutingModel['decide']>[0]['transcript'] = [];
+    const stores = new Proxy(store, {
+      get(authority, property, receiver) {
+        if (property === 'readMessagesAfter') {
+          return async (...args: Parameters<SessionAuthorityStore['readMessagesAfter']>) => {
+            scanRequest = args[1];
+            return authority.readMessagesAfter(...args);
+          };
+        }
+        const value = Reflect.get(authority, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(authority) : value;
+      },
+    }) as SessionAuthorityStore;
+    const workhub = coordinator(
+      root,
+      stores,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        decide: async (input) => {
+          receivedTranscript = input.transcript;
+          return { kind: 'routing', disposition: 'answer_here' };
+        },
+      },
+    );
+    try {
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      await store.appendMessages(
+        WORKHUB_COORDINATION_SESSION_ID,
+        Array.from({ length: 48 }, (_, index) => ({
+          type: 'user' as const,
+          id: `routing-history-${index}`,
+          turnId: `routing-history-turn-${index}`,
+          ts: index,
+          text: `message-${index}`,
+        })),
+      );
+      const header = await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      assert.deepEqual(
+        await workhub.prepareRoutingDecision({
+          header,
+          turnId: 'fresh-turn',
+          content: { text: 'Continue Payments' },
+        }),
+        { kind: 'routing', disposition: 'answer_here' },
+      );
+      assert.deepEqual(scanRequest, {
+        beforeSequence: Number.MAX_SAFE_INTEGER,
+        maxMessages: WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+        maxStoredBytes: WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
+      });
+      assert.equal(receivedTranscript.length, 8);
+      assert.deepEqual(
+        receivedTranscript.map(({ text }) => text),
+        Array.from({ length: 8 }, (_, index) => `message-${index + 40}`),
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a model action that disagrees with the Turn-bound routing decision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-bind-'));
+    const store = createSessionStore(root);
+    try {
+      const workhub = coordinator(root, store, undefined, undefined, {
+        startWorkHubCoordinationMessage: async () => ({
+          ok: false,
+          error: { code: 'operation_unavailable', message: 'not used' },
+        }),
+        isSessionExecutionIdle: () => true,
+        readActiveWorkHubRoutingRequest: async () => ({
+          content: { text: 'Tell me how routing works' },
+          decision: { kind: 'routing', disposition: 'answer_here' },
+        }),
+      });
+      const outcome = await workhub.handlers['workhub.coordination.actFromTurn'](
+        {
+          turnId: 'active-turn',
+          actionId: 'unexpected-action',
+          proposal: { disposition: 'create_new', title: 'Unexpected' },
+        },
+        CONTEXT,
+      );
+      assert.deepEqual(outcome, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub action does not match the routing decision bound to this Turn',
+        },
+      });
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('model actions use only the active Turn user text and attachments, including stop authority', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-active-authority-'));
     const store = createSessionStore(root);
@@ -92,8 +200,8 @@ describe('Host WorkHub Coordination coordinator', () => {
         undefined,
         {
           ...executions,
-          readActiveWorkHubRequest: async (turnId) =>
-            turnId === 'active-turn' ? canonical : undefined,
+          readActiveWorkHubRoutingRequest: async (turnId) =>
+            turnId === 'active-turn' ? { content: canonical } : undefined,
         },
         admission,
         {
@@ -154,7 +262,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const stop = {
         turnId: 'active-turn',
         actionId: 'model-stop-call',
-        proposal: { disposition: 'stop_work' as const, expects: { targetSessionId: target.id } },
+        proposal: { operation: 'stop' as const, expects: { targetSessionId: target.id } },
       };
       canonical = { text: '可以把 Payments 停一下了' };
       const stopped = await workhub.handlers['workhub.coordination.actFromTurn'](stop, CONTEXT);
@@ -1050,7 +1158,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           candidateSetId: staleCandidates.result.candidateSetId,
 
           proposal: {
-            disposition: 'replace',
+            operation: 'correct',
             replacesActionId: staleSource.actionId,
             target: {
               disposition: 'delegate_existing',
@@ -1118,7 +1226,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1158,7 +1266,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: targetId },
           },
         },
@@ -1223,7 +1331,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1251,7 +1359,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       actionId: 'resume-action',
       userText: 'Resume Payments',
       proposal: {
-        disposition: 'resume_work' as const,
+        operation: 'resume' as const,
         resumesActionId: 'source-action',
         expects: { targetSessionId: targetId },
       },
@@ -1371,7 +1479,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         actionId: 'resume-after-recovery',
         userText: 'Resume Payments',
         proposal: {
-          disposition: 'resume_work' as const,
+          operation: 'resume' as const,
           resumesActionId: 'source-action',
           expects: { targetSessionId: target.id },
         },
@@ -1488,7 +1596,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-racing-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1517,7 +1625,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       actionId: 'stop-action',
       userText: 'Stop Payments',
       proposal: {
-        disposition: 'stop_work' as const,
+        operation: 'stop' as const,
         expects: { targetSessionId: targetId },
       },
     });
@@ -1696,7 +1804,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           {
             actionId: 'stop-action',
             userText: 'Stop Payments',
-            proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+            proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
           },
           CONTEXT,
         );
@@ -1819,7 +1927,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+          proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
         },
         CONTEXT,
       );
@@ -1885,7 +1993,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const stopInput = {
         actionId: 'stop-action',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work' as const, expects: { targetSessionId: target.id } },
+        proposal: { operation: 'stop' as const, expects: { targetSessionId: target.id } },
       };
       assert.equal(
         await store.claimWorkHubAction({
@@ -2014,7 +2122,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', expects: { targetSessionId: payments.id } },
+          proposal: { operation: 'stop', expects: { targetSessionId: payments.id } },
         },
         CONTEXT,
       );
@@ -2112,7 +2220,7 @@ describe('Host WorkHub Coordination coordinator', () => {
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRequest'
+  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRoutingRequest'
 >;
 
 /**
@@ -2125,7 +2233,7 @@ function coordinationExecutions(admission: SessionAdmissionGate) {
   const starts: Parameters<RootTurnCoordinator['startWorkHubCoordinationMessage']>[0][] = [];
   const prepared: MessageContent[] = [];
   const executions: CoordinationExecutions = {
-    readActiveWorkHubRequest: async () => undefined,
+    readActiveWorkHubRoutingRequest: async () => undefined,
     startWorkHubCoordinationMessage: async (request) => {
       starts.push(request);
       return admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
@@ -2155,7 +2263,7 @@ function coordinator(
   requestDrain: () => void = () => undefined,
   resolveCreateTarget: (() => Promise<CoordinationCreateTarget>) | undefined = undefined,
   executions: CoordinationExecutions = {
-    readActiveWorkHubRequest: async () => undefined,
+    readActiveWorkHubRoutingRequest: async () => undefined,
     startWorkHubCoordinationMessage: async () => ({
       ok: false,
       error: {
@@ -2167,6 +2275,9 @@ function coordinator(
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
   sessionActions: Partial<HostWorkHubCoordinationCoordinatorOptions['sessionActions']> = {},
+  routingModel: HostWorkHubRoutingModel = {
+    decide: async () => ({ kind: 'routing', disposition: 'answer_here' }),
+  },
 ) {
   const assign =
     sessionActions.assign ??
@@ -2192,14 +2303,17 @@ function coordinator(
         message: 'Not configured in this fixture',
       },
     }),
+    routingModel,
     stateRoot: root,
     stores: store,
     admission,
     continuity: { refreshCanonical: async () => undefined },
     executions: {
       ...executions,
-      readActiveWorkHubRequest: async (turnId) =>
-        activeRequests.get(turnId) ?? executions.readActiveWorkHubRequest(turnId),
+      readActiveWorkHubRoutingRequest: async (turnId) => {
+        const content = activeRequests.get(turnId);
+        return content ? { content } : executions.readActiveWorkHubRoutingRequest(turnId);
+      },
     },
     sessionActions: {
       readDelegationRetirement: async () => 'not_retired',
@@ -2225,6 +2339,7 @@ function coordinator(
   });
   return {
     handlers: host.handlers,
+    prepareRoutingDecision: host.prepareRoutingDecision.bind(host),
     async act(input: WorkHubAdmittedAction, context: ConnectionContext) {
       const turnId = randomUUID();
       const { userText, attachments, ...action } = input;

@@ -17,4 +17,4 @@
  * under the License.
  */
 
-export { toComposerIngestItems, retainedAttachmentRefs, type PendingAttachment } from './features/conversation/index.js';
+export { toComposerIngestItems, type PendingAttachment } from './features/conversation/index.js';

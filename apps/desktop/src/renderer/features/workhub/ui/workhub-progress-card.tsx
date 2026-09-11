@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useEffect } from 'react';
-import { Button, IconButton } from '@astryxdesign/core';
+import { useEffect, type Ref } from 'react';
+import { IconButton } from '@astryxdesign/core';
 import { MakaWordmark, useUiLocale, type LiveTurnProjection } from '@maka/ui';
 import { ArrowRight, X } from '@maka/ui/icons';
 import type { StoredMessage } from '@maka/core/session';
@@ -38,12 +38,14 @@ function latestText(liveTurn: LiveTurnProjection | undefined, messages: readonly
   return undefined;
 }
 
-export function WorkHubProgressCard({ request, control, liveTurn, messages, busy }: {
+export function WorkHubProgressCard({ ref, request, control, liveTurn, messages, busy, onOpen }: {
+  ref?: Ref<HTMLElement>;
   request: number;
   control?: WorkHubControlSnapshot;
   liveTurn?: LiveTurnProjection;
   messages: readonly StoredMessage[];
   busy: boolean;
+  onOpen(): void;
 }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
@@ -57,13 +59,13 @@ export function WorkHubProgressCard({ request, control, liveTurn, messages, busy
     });
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
   }, [presentation, request]);
-  return <aside className="workHubProgressCard" aria-label={t.progressTitle}>
+  return <aside ref={ref} className="workHubProgressCard" aria-label={t.progressTitle}>
     <div className="workHubProgressHeader">
       <span className="workHubProgressBrand"><MakaWordmark width={42} /></span>
       <span className="workHubProgressStatus" role="status"><i data-active={busy || control?.phase === 'acting'} />{status}</span>
+      <IconButton className="workHubProgressOpen" size="sm" variant="ghost" label={t.progressOpen} tooltip={t.progressOpen} icon={<ArrowRight size={12} />} onClick={onOpen} />
       <IconButton className="workHubProgressClose" size="sm" variant="ghost" icon={<X size={12} />} label={t.progressClose} onClick={() => { void presentation.hide().catch(console.error); }} />
     </div>
     <p className="workHubProgressText">{spoken?.replace(/\s+/g, ' ').trim() || t.progressHint}</p>
-    <Button className="workHubProgressOpen" size="sm" variant="ghost" label={t.progressOpen} endContent={<ArrowRight size={12} />} onClick={() => { void presentation.showConversation().catch(console.error); }} />
   </aside>;
 }

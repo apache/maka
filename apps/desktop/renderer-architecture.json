@@ -306,7 +306,7 @@
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-chat-actions.ts": {
-        "importDeclarations": 8,
+        "importDeclarations": 7,
         "bridgePaths": {
           "window.maka.newTasks.create": 1,
           "window.maka.sessions.remove": 1,
@@ -324,7 +324,7 @@
         "dependencyPaths": {
           "./app-shell-copy.js": 1,
           "./attachment-preflight.js": 1,
-          "./composer-attachments.js": 1,
+          "./features/conversation/index.js": 1,
           "./locales/shell-copy.js": 1,
           "./model-connection-errors.js": 1,
           "./session-workspace-errors.js": 1,
@@ -332,8 +332,8 @@
           "@maka/core/session-name": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 13,
-        "nonTriviaTokens": 4055
+        "importSpecifiers": 11,
+        "nonTriviaTokens": 4053
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -592,8 +592,7 @@
         "importDeclarations": 2,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "requestAnimationFrame": 1,
-          "window.setTimeout": 2
+          "window.setTimeout": 1
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -603,12 +602,13 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "./features/conversation/index.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 11,
-        "nonTriviaTokens": 2974
+        "importSpecifiers": 8,
+        "nonTriviaTokens": 2755
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -706,8 +706,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 11,
-        "nonTriviaTokens": 1395
+        "importSpecifiers": 10,
+        "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 70,
@@ -872,7 +872,7 @@
           "react": 1
         },
         "importSpecifiers": 108,
-        "nonTriviaTokens": 13697
+        "nonTriviaTokens": 13695
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

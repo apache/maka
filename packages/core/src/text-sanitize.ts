@@ -91,7 +91,7 @@ export interface SanitizeUnicodeOptions {
  *
  * Pipeline (applied in order): NFC → control chars → space, bidi format →
  * space, zero-width/invisible → removed, whitespace collapse, trim, then
- * code-point cap. The cap uses `Array.from(...)` to iterate by code points so a
+ * code-point cap. The cap iterates by code points so a
  * surrogate pair (e.g. `🦊` = U+1F98A, two UTF-16 code units) counts as one and
  * is never split in half.
  *
@@ -107,7 +107,12 @@ export function sanitizeUnicodeText(text: string, opts: SanitizeUnicodeOptions):
     .replace(ZERO_WIDTH_REGEX, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const points = Array.from(cleaned);
+  const points: string[] = [];
+  for (const point of cleaned) {
+    points.push(point);
+    // One extra point detects truncation without expanding the entire input.
+    if (opts.maxCodePoints >= 0 && points.length > opts.maxCodePoints) break;
+  }
   if (points.length <= opts.maxCodePoints) return cleaned;
   return points.slice(0, opts.maxCodePoints).join('') + suffix;
 }

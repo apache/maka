@@ -43,7 +43,9 @@ export function isChatInputComposing(
  * character no tool splitting a path on ASCII whitespace will match.
  */
 export function composerWireText(draft: string): string {
-  return draft.replace(/ /g, ' ').trim();
+  const wire = draft.replace(/ /g, ' ').trim();
+  // Sent text and recall history outlive the editor's original whitespace.
+  return wire.length < draft.length ? structuredClone(wire) : wire;
 }
 
 /**

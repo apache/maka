@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
-import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
@@ -48,11 +48,8 @@ import {
 import * as skillFeedback from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
-import {
-  retainedAttachmentRefs,
-  toComposerIngestItems,
-  type PendingAttachment,
-} from './composer-attachments.js';
+import * as Conversation from './features/conversation/index.js';
+import type { PendingAttachment } from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -151,6 +148,7 @@ export interface AppShellChatActions {
 
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
+  getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
@@ -221,8 +219,6 @@ export function createAppShellChatActions(deps: {
     setActiveId,
     setMessageLoadErrorBySession,
     setMessages,
-    addTransientMessage,
-    updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest,
@@ -242,44 +238,6 @@ export function createAppShellChatActions(deps: {
     newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
-
-  function showTransientUserMessage(
-    sessionId: string,
-    messageId: string,
-    text: string,
-    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
-    options: {
-      placement?: TransientUserMessageProjection['transientPlacement'];
-      hostTurnId?: string;
-      updateOnly?: boolean;
-      directoryReferences?: DirectoryReferences;
-      quotes?: readonly QuoteRef[];
-      inlineReferences?: readonly InlineReference[];
-    } = {},
-  ): void {
-    const directoryReferences = options.directoryReferences;
-    const quotes = options.quotes ?? [];
-    const next: TransientUserMessageProjection = {
-      id: messageId,
-      ts: Date.now(),
-      text,
-      ...copiedArray('attachments', attachments),
-      ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
-      inlineReferences: [...(options.inlineReferences ?? [])],
-      transientPlacement: options.placement ?? 'current_turn',
-      ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
-    };
-    if (options.updateOnly) updateTransientMessage(sessionId, next);
-    else addTransientMessage(sessionId, next);
-    if (activeIdRef.current !== sessionId) return;
-    setMessageLoadErrorBySession((current) => {
-      if (!current[sessionId]) return current;
-      const cleared = { ...current };
-      delete cleared[sessionId];
-      return cleared;
-    });
-  }
 
   function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
     removeTransientMessage(sessionId, turnId);
@@ -352,6 +310,7 @@ export function createAppShellChatActions(deps: {
     displayText?: string;
     quotes?: readonly QuoteRef[];
     exactTurn?: boolean;
+    pendingSteering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
@@ -399,21 +358,17 @@ export function createAppShellChatActions(deps: {
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
     // they come back to it.
-    showTransientUserMessage(
-      sessionId,
-      messageId,
-      input.displayText ??
-        skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
-      result.attachments,
-      {
-        updateOnly: true,
-        placement,
-        ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...copiedArray('directoryReferences', directoryReferences),
-        ...copiedArray('quotes', quotes),
-        inlineReferences: result.inlineReferences ?? [],
-      },
-    );
+    publishTransientUserMessage(sessionId, {
+      id: messageId,
+      text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
+      attachments: [...result.attachments],
+      transientPlacement: placement,
+      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
+      inlineReferences: [...(result.inlineReferences ?? [])],
+    }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
@@ -430,6 +385,7 @@ export function createAppShellChatActions(deps: {
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
+    const steeringTurnId = initialSessionId && !exactTurn ? deps.getRunningTurnId?.(initialSessionId) : undefined;
     const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -470,11 +426,11 @@ export function createAppShellChatActions(deps: {
         if (exactTurn) armTurnActive(sessionId, messageId);
         const attachmentItems =
           pending?.length
-            ? toComposerIngestItems(pending)
+            ? Conversation.toComposerIngestItems(pending)
             : undefined;
         const retainedAttachments =
           pending?.length
-            ? retainedAttachmentRefs(pending)
+            ? Conversation.retainedAttachmentRefs(pending)
             : undefined;
         const sendCommand = {
           text,
@@ -496,6 +452,7 @@ export function createAppShellChatActions(deps: {
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
           exactTurn,
+          pendingSteering: Boolean(steeringTurnId),
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -524,17 +481,12 @@ export function createAppShellChatActions(deps: {
         // session-owned transient in the same state transition that replaces
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
-        showTransientUserMessage(
-          session.id,
-          messageId,
-          options.displayText ?? text,
-          [],
-          {
-            ...copiedArray('directoryReferences', directoryReferences),
-            ...copiedArray('quotes', quotes),
-            inlineReferences: [],
-          },
-        );
+        publishTransientUserMessage(session.id, {
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          inlineReferences: [],
+        });
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
@@ -562,17 +514,13 @@ export function createAppShellChatActions(deps: {
       if (!await onFollowLatest(sessionId)) return false;
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
-      showTransientUserMessage(
-        sessionId,
-        messageId,
-        options.displayText ?? text,
-        [],
-        {
-          ...copiedArray('directoryReferences', directoryReferences),
-          ...copiedArray('quotes', quotes),
-          inlineReferences: [],
-        },
-      );
+      publishTransientUserMessage(sessionId, {
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+        ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
+        inlineReferences: [],
+      });
       const submitted = await submitIntoSession(sessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
@@ -646,21 +594,26 @@ export function createAppShellChatActions(deps: {
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
-    showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
-      placement,
+    publishTransientUserMessage(sessionId, {
+      id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
+      pendingSteering: placement === 'current_turn',
+      ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
+      transientPlacement: placement,
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
-      const attachmentItems = pending?.length ? toComposerIngestItems(pending) : [];
-      const retainedAttachments = pending?.length ? retainedAttachmentRefs(pending) : [];
+      const attachmentItems = pending?.length ? Conversation.toComposerIngestItems(pending) : [];
+      const retainedAttachments = pending?.length ? Conversation.retainedAttachmentRefs(pending) : [];
       const submitted = await submitAndProject({
         sessionId,
         messageId,
         placement,
+        pendingSteering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),
@@ -768,6 +721,21 @@ export function createAppShellChatActions(deps: {
     } finally {
       messageRetryPending.release(sessionId);
     }
+  }
+
+  function publishTransientUserMessage(
+    sessionId: string,
+    message: Omit<TransientUserMessageProjection, 'ts'>,
+    updateOnly = false,
+  ): void {
+    (updateOnly ? deps.updateTransientMessage : deps.addTransientMessage)(sessionId, { ...message, ts: Date.now() });
+    if (activeIdRef.current !== sessionId) return;
+    setMessageLoadErrorBySession((current) => {
+      if (!current[sessionId]) return current;
+      const cleared = { ...current };
+      delete cleared[sessionId];
+      return cleared;
+    });
   }
 
   return {

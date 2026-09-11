@@ -84,9 +84,14 @@ function normalizePreviewText(text: string): string {
 }
 
 function truncatePreview(text: string, maxLength = 96): string {
-  const chars = Array.from(text);
-  if (chars.length <= maxLength) return text;
-  return `${chars.slice(0, maxLength - 1).join('')}…`;
+  const chars: string[] = [];
+  for (const point of text) {
+    if (chars.length === maxLength) {
+      return `${chars.slice(0, maxLength - 1).join('')}…`;
+    }
+    chars.push(point);
+  }
+  return text;
 }
 
 /** One Turn's summary, folded message by message in transcript order. */

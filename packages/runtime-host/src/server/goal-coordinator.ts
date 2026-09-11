@@ -160,8 +160,11 @@ export class HostGoalCoordinator {
       acquireActivity: () => this.#acquireResidency(),
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
+        const controlLease = this.manager.getControlLease(sessionId);
         const messages = await options.readSessionMessages(sessionId);
-        tokenCache.set(sessionId, tokenCount(messages));
+        if (controlLease && this.manager.matchesControlLease(sessionId, controlLease)) {
+          tokenCache.set(sessionId, tokenCount(messages));
+        }
         return recentContext(messages);
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
@@ -298,6 +301,7 @@ export class HostGoalCoordinator {
         for (const sessionId of unique) {
           operations.get(sessionId)?.commit();
           this.#authorityBySession.delete(sessionId);
+          this.#tokenCache.delete(sessionId);
           if (this.manager.remove(sessionId)) this.#onProjectionChanged(sessionId);
         }
       },
@@ -366,6 +370,7 @@ export class HostGoalCoordinator {
     this.#recoveryAbort.abort();
     this.continuation.dispose();
     this.manager.dispose();
+    this.#tokenCache.clear();
     for (const residency of this.#residencies.values()) residency.release();
     this.#residencies.clear();
   }

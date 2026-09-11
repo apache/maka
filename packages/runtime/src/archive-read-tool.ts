@@ -112,7 +112,10 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
       },
     }),
     impl: async (input, ctx) =>
-      readToolResultArchiveResource(reader, ctx.sessionId, input, ctx.abortSignal),
+      // Detach bounded slices before active tool settlements retain their archive backing.
+      structuredClone(
+        await readToolResultArchiveResource(reader, ctx.sessionId, input, ctx.abortSignal),
+      ),
   };
 }
 
