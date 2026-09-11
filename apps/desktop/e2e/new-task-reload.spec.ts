@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import { COMPOSER_INPUT, awaitSendReady, ensureSidebarExpanded, expect, test } from './fixtures';
 
 test('archived-only history boots into a usable new task', async ({ window: page }, testInfo) => {
@@ -34,6 +35,13 @@ test('archived-only history boots into a usable new task', async ({ window: page
   // Prove bootstrap can restore this history before archiving it.
   await page.reload();
   await expect(reply).toBeVisible();
+  // Automatic naming is a separate Host effect that can outlive the Turn.
+  // Wait for its canonical write before archiving; the fake Turn backend does
+  // not replace the title model, whose failure falls back to the user message.
+  await expect.poll(
+    () => page.evaluate(async () => (await window.maka.sessions.list()).map(({ name }) => name)),
+    { timeout: 20_000 },
+  ).not.toContain(DEFAULT_SESSION_NAME);
   await page.evaluate(async () => {
     const sessions = await window.maka.sessions.list();
     for (const session of sessions) await window.maka.sessions.archive(session.id);
