@@ -78,17 +78,22 @@ const installScrollTestEnvironment = (
 ): {
   frames: Map<number, FrameRequestCallback>;
   resizeCallbacks: ResizeObserverCallback[];
+  /** Delivers a resize to whoever is observing `target` at this moment. */
+  deliverResizeOf: (target: unknown) => void;
 } => {
   let frameId = 0;
   const frames = new Map<number, FrameRequestCallback>();
   const resizeCallbacks: ResizeObserverCallback[] = [];
+  const observers: TestResizeObserver[] = [];
   class TestResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
+    readonly targets = new Set<unknown>();
+    constructor(readonly callback: ResizeObserverCallback) {
       resizeCallbacks.push(callback);
+      observers.push(this);
     }
-    disconnect() {}
-    observe() {}
-    unobserve() {}
+    disconnect() { this.targets.clear(); }
+    observe(target: unknown) { this.targets.add(target); }
+    unobserve(target: unknown) { this.targets.delete(target); }
   }
   class TestMutationObserver {
     disconnect() {}
@@ -122,7 +127,15 @@ const installScrollTestEnvironment = (
     requestAnimationFrame: window.requestAnimationFrame,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
-  return { frames, resizeCallbacks };
+  return {
+    frames,
+    resizeCallbacks,
+    deliverResizeOf: (target: unknown): void => {
+      for (const observer of [...observers]) {
+        if (observer.targets.has(target)) observer.callback([], observer as unknown as ResizeObserver);
+      }
+    },
+  };
 };
 
 function boxOf(top: number, bottom: number): DOMRect {
@@ -153,19 +166,20 @@ function createTranscript(
   assert.ok(scroller);
   let scrollTop = 0;
   let turnCount = options.turnCount;
+  let clientHeight = options.clientHeight;
   const contentHeight = (): number =>
-    Math.max(options.clientHeight, turnCount * options.turnHeight);
+    Math.max(clientHeight, turnCount * options.turnHeight);
   Object.defineProperties(scroller, {
-    clientHeight: { value: options.clientHeight },
+    clientHeight: { get: () => clientHeight },
     scrollHeight: { get: () => contentHeight() },
     scrollTop: {
       get: () => scrollTop,
       set: (value: number) => {
-        scrollTop = Math.max(0, Math.min(value, contentHeight() - options.clientHeight));
+        scrollTop = Math.max(0, Math.min(value, contentHeight() - clientHeight));
       },
     },
   });
-  scroller.getBoundingClientRect = () => boxOf(0, options.clientHeight);
+  scroller.getBoundingClientRect = () => boxOf(0, clientHeight);
   const install = (): void => {
     scroller.replaceChildren();
     for (let index = 0; index < turnCount; index += 1) {
@@ -182,6 +196,11 @@ function createTranscript(
   return {
     scroller,
     get scrollTop(): number { return scrollTop; },
+    /** The viewport alone changes; a real one re-clamps its offset too. */
+    setClientHeight(next: number): void {
+      clientHeight = next;
+      scroller.scrollTop = scrollTop;
+    },
     setTurnCount(next: number): void {
       turnCount = next;
       install();
@@ -475,6 +494,87 @@ test('the retained window is the band around the reader, and and an unmounted bo
   retained.length = 0;
   transcript.readerScrollTo(2_100);
   assert.deepEqual(retained, []);
+});
+
+test('a viewport that grows fills the band it just widened, without a reader gesture', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const { deliverResizeOf } = installScrollTestEnvironment(document, window, {
+    queueFrames: false,
+  });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 400, turnHeight: 600, turnCount: 10,
+  });
+
+  const edges: string[] = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-grow',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: (edge) => {
+        edges.push(edge);
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  transcript.readerScrollTo(1_000);
+  assert.deepEqual(edges, [], '1000px above is outside two 400px screens');
+
+  transcript.setClientHeight(800);
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(edges, ['older'], 'the same 1000px is inside two 800px screens');
+
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(edges, ['older'], 'the in-flight guard still holds across resizes');
+});
+
+test('a viewport that shrinks trims what it just pushed beyond the band', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const { deliverResizeOf } = installScrollTestEnvironment(document, window, {
+    queueFrames: false,
+  });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 1_000, turnHeight: 600, turnCount: 18,
+  });
+
+  const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-shrink',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      onRetainWindow: (value) => { retained.push(value); },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  transcript.readerScrollTo(4_000);
+  retained.length = 0;
+  transcript.readerScrollTo(4_100);
+  assert.deepEqual(retained, [], 'nothing lies six 1000px screens away');
+
+  transcript.setClientHeight(400);
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-4', lastTurnId: 'turn-10' });
 });
 
 test('a session switch restores a Turn anchor after async fill and preserves tail intent', async () => {

@@ -244,11 +244,18 @@ export function useChatScroll(input: {
     // Both phases matter: a gesture at an edge moves nothing and so reports
     // only `input`, and that is exactly where the next page is wanted.
     const stopWatchingReader = authority.subscribeToReaderScroll(() => check());
+    // A resize redefines the band itself — the screen it counts in is the
+    // root's own height — while the reader and the messages stand still. The
+    // authority publishes only when its snapshot changes, so a resize that
+    // leaves the pin and the reading Turn alone reaches nothing but this.
+    const size = new ResizeObserver(() => check());
+    size.observe(root);
     const frame = window.requestAnimationFrame(check);
     return () => {
       window.cancelAnimationFrame(frame);
       if (bandCheck.current === check) bandCheck.current = undefined;
       stopWatchingReader();
+      size.disconnect();
     };
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canPrefetch,
     input.scrollRef, input.sessionId]);
