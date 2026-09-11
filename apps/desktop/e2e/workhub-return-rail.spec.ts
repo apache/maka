@@ -87,6 +87,24 @@ test('Session keeps a return to WorkHub control when the sidebar is collapsed', 
   await page.screenshot({ path: testInfo.outputPath('session-return.png'), scale: 'css' });
   const back = page.getByRole('button', { name: '返回 WorkHub', exact: true });
   await expect(back).toBeVisible();
+  const alignment = await back.evaluate((button) => {
+    const composer = document.querySelector('.maka-composer-astryx')!;
+    const body = Array.from(composer.children).find((child) => child.querySelector('[contenteditable]'))!;
+    const a = button.getBoundingClientRect();
+    const b = composer.getBoundingClientRect();
+    return {
+      left: Math.abs(a.left - b.left), right: Math.abs(a.right - b.right),
+      above: a.bottom <= b.top,
+      radius: getComputedStyle(button).borderRadius,
+      composerRadius: getComputedStyle(body).borderRadius,
+      textAlign: getComputedStyle(button).textAlign,
+    };
+  });
+  expect(alignment.left).toBeLessThanOrEqual(1);
+  expect(alignment.right).toBeLessThanOrEqual(1);
+  expect(alignment.above).toBe(true);
+  expect(alignment.radius).toBe(alignment.composerRadius);
+  expect(alignment.textAlign).toBe('center');
   await back.click();
   await expect(page.locator('.workHubDock')).toBeVisible();
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText('Keep my WorkHub draft');

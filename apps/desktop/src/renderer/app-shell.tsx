@@ -2410,10 +2410,6 @@ function AppShellContent({
                     : undefined
                 }
                 parentSession={titlebarParentSession}
-                backAction={workHubEnabled ? {
-                  label: getShellCopy(uiLocale).navigation.backToWorkHub,
-                  onClick: openWorkHub,
-                } : undefined}
               />
             )}
             {!sharedSessionActive && !VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
@@ -2522,6 +2518,11 @@ function AppShellContent({
                       />
                     ) : null}
                     {!sharedSessionActive && navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {workHubEnabled && activeId && !sharedSessionActive && !onboardingComposerHidden ? (
+                      <button type="button" className="maka-return-workhub" onClick={openWorkHub}>
+                        {getShellCopy(uiLocale).navigation.backToWorkHub}
+                      </button>
+                    ) : null}
                     {sharedSessionActive && activeId ? (
                       <SessionCollaboration.SessionTurnRequestComposer
                         sessionId={activeId}
