@@ -65,6 +65,7 @@ import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState }
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
+import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
@@ -960,6 +961,60 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+
+let typographyStoryDefaultSlug: string | null = 'zai-live';
+let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
+
+const typographyStoryPet = {
+  schema: 'maka.pet/v1',
+  id: 'storybook.typography-pet',
+  displayName: 'Typography Pet',
+  description: 'Exercises action-to-badge transitions in the custom pet rows.',
+  spriteSheet: {
+    path: 'assets/typography-pet.png',
+    format: 'png',
+    frameWidth: 32,
+    frameHeight: 32,
+    columns: 1,
+    rows: 1,
+    frameCount: 1,
+  },
+  animations: {
+    idle: { frames: [0], fps: 1, loop: true },
+    working: { frames: [0], fps: 1, loop: true },
+    'needs-input': { frames: [0], fps: 1, loop: true },
+    ready: { frames: [0], fps: 1, loop: true },
+    blocked: { frames: [0], fps: 1, loop: true },
+  },
+} satisfies PetPackManifestV1;
+
+const withConnectionDefaultTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => ({
+      connections,
+      defaultConnection: typographyStoryDefaultSlug,
+      chatModelChoices: buildChatModelChoices(connections),
+    }),
+    setDefault: async (connection: Parameters<ConnectionsBridge['setDefault']>[0]) => {
+      typographyStoryDefaultSlug = connection?.slug ?? null;
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const withPetActionBadgeTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  pets: {
+    ...makaBridge.pets,
+    list: async () => [typographyStoryPet],
+    getSelection: async () => typographyStorySelectedPetId,
+    select: async (petId: string | null) => {
+      typographyStorySelectedPetId = petId;
+      return { ok: true as const, selectedPetId: petId };
+    },
+  },
+} satisfies Record<string, unknown>);
 
 /**
  * What the production App Update provider reads inside `SettingsStory`. Each
@@ -1903,6 +1958,31 @@ export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
+// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// with the settled state after a connection is the default. Both occupy the
+// same header slot, so changing state must not shrink the label typography.
+export const ModelsDefaultBadgeTypography: Story = {
+  decorators: [withConnectionDefaultTypographyBridge],
+  render: () => {
+    typographyStoryDefaultSlug = 'zai-live';
+    return <SettingsStory section="models" />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await userEvent.click(await canvas.findByText('OpenAI Review'));
+    const setDefaultButton = await canvas.findByRole('button', { name: '设为默认' });
+    const actionFontSize = getComputedStyle(setDefaultButton).fontSize;
+
+    await userEvent.click(setDefaultButton);
+    const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
+    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
+    if (!defaultBadge) throw new Error('Connection default-state badge did not render');
+
+    await expect(getComputedStyle(defaultBadge).fontSize).toBe(actionFontSize);
+  },
+};
 // Real path: sidebar footer 设置 → 子 Agent, with multiple approved model routes.
 export const Subagents: Story = {
   decorators: [withSubagentSettingsBridge],
@@ -2326,6 +2406,43 @@ export const Appearance: Story = {
     }
   },
 };
+// Real path: 设置 → 外观 → 桌宠. The selected and disabled badges each
+// replace a small action in the same row, so both settled states must retain
+// the action label's type tier.
+export const PetsActionBadgeTypography: Story = {
+  decorators: [withPetActionBadgeTypographyBridge],
+  globals: { locale: 'zh-CN' },
+  render: () => {
+    typographyStorySelectedPetId = typographyStoryPet.id;
+    return <SettingsStory section="appearance" />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const selectedLabel = await canvas.findByText('正在使用');
+    const selectedBadge = selectedLabel.closest<HTMLElement>('.astryx-badge');
+    const selectedActions = selectedBadge?.closest<HTMLElement>('.settingsRowEnd');
+    const removeButton = selectedActions
+      ? within(selectedActions).getByRole('button', { name: '删除' })
+      : null;
+    if (!selectedBadge || !removeButton) {
+      throw new Error('Selected-pet action row did not render');
+    }
+    await expect(getComputedStyle(selectedBadge).fontSize).toBe(
+      getComputedStyle(removeButton).fontSize,
+    );
+
+    const disableButton = await canvas.findByRole('button', { name: '关闭宠物' });
+    const disableActionFontSize = getComputedStyle(disableButton).fontSize;
+    await userEvent.click(disableButton);
+    const disabledLabels = await canvas.findAllByText('已关闭');
+    const disabledBadge = disabledLabels
+      .map((label) => label.closest<HTMLElement>('.astryx-badge'))
+      .find((badge): badge is HTMLElement => badge !== null);
+    if (!disabledBadge) throw new Error('Disabled-pet action badge did not render');
+    await expect(getComputedStyle(disabledBadge).fontSize).toBe(disableActionFontSize);
+  },
+};
+
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
 export const UsageEmpty: Story = {

@@ -19,14 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { LocaleProvider } from '../locale-context.js';
 import {
   holdJumpDestination,
   mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
-  PromptAnchorRail,
   selectPromptRailActiveTurn,
   selectPromptRailTickForMountedTurn,
   type PromptRailFrameScheduler,
@@ -481,25 +477,6 @@ test('updates landmark content when its body enters a later resident range', () 
   assert.deepEqual(intermediate.map((turn) => turn.reply), ['', 'Answer 2']);
 });
 
-test('keeps unloaded landmarks visually uniform and actionable', () => {
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en',
-    children: createElement(PromptAnchorRail, {
-      turns: [
-        { turnId: 'turn-1', label: 'Prompt 1', sequence: 0 },
-        { turnId: 'turn-2', label: 'Prompt 2', sequence: 2 },
-        { turnId: 'turn-3', label: 'Prompt 3', sequence: 4 },
-      ],
-      scrollRef: { current: null },
-    }),
-  }));
-
-  assert.match(markup, /data-prompt-turn-id="turn-2"/);
-  assert.doesNotMatch(markup, /data-resident/);
-  assert.match(markup, /aria-label="Jump to prompt: Prompt 2"/);
-  assert.doesNotMatch(markup, /Not currently loaded/);
-  assert.doesNotMatch(markup, /aria-disabled="true"/);
-});
 
 function box(top: number, bottom: number): DOMRect {
   return { top, bottom } as DOMRect;

@@ -73,6 +73,7 @@ apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
 apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx
 apps/desktop/src/renderer/features/workhub/ui/cursor.tsx
 apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx
+apps/desktop/src/renderer/features/workhub/ui/return-button.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx

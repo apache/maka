@@ -5299,7 +5299,11 @@ function buildAgentOutputCommittedResult(input: {
     };
   }
 
-  const codePoints = Array.from(text);
+  const codePoints: string[] = [];
+  for (const point of text) {
+    if (codePoints.length >= input.maxBytes) break;
+    codePoints.push(point);
+  }
   let low = 0;
   let high = codePoints.length;
   let best: AgentOutputCommittedResult = { ...withoutText, textTruncated: true };
