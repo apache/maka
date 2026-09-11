@@ -500,7 +500,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3816
+        "nonTriviaTokens": 3837
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
@@ -710,7 +710,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 70,
+        "importDeclarations": 69,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -775,7 +775,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 6,
-          "useState": 14,
+          "useState": 13,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -786,7 +786,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../preload/transcript-contract.js": 1,
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
@@ -871,8 +870,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 108,
-        "nonTriviaTokens": 13697
+        "importSpecifiers": 107,
+        "nonTriviaTokens": 13670
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
