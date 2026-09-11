@@ -944,6 +944,7 @@
      the answer wider than the composer under it. Two measures for one column
      is what put a second right edge inside a turn; there is one now. */
   --maka-reading-measure: 800px;
+  --maka-transcript-gutter: clamp(var(--space-3), 4vw, var(--space-10));
 
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value

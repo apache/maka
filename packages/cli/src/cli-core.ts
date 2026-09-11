@@ -43,6 +43,7 @@ export type MakaCliCommand =
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'session-export'; args: string[] }
+  | { kind: 'session-import'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'acp' }
   | RuntimeHostCliCommand
@@ -85,6 +86,7 @@ export function parseMakaCliArgs(
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'session-export') return { kind: 'session-export', args: argv.slice(1) };
+  if (first === 'session-import') return { kind: 'session-import', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1));
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
@@ -139,6 +141,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} session-export --workspace-root <dir> --session <id> --out <file.maka-session>`,
+    `  ${cliCommand} session-import --workspace-root <dir> --bundle <file.maka-session>`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
     `  ${cliCommand} update --target <latest|next|version>  Update this npm-global CLI and its local Runtime Host`,
@@ -299,6 +302,10 @@ export async function runMakaCli(
     case 'session-export': {
       const { runMakaSessionExportCli } = await import('./session-export-command.js');
       return runMakaSessionExportCli(command.args);
+    }
+    case 'session-import': {
+      const { runMakaSessionImportCli } = await import('./session-import-command.js');
+      return runMakaSessionImportCli(command.args);
     }
     case 'eval': {
       const { configureInstalledEvalBundle } = await import('./eval-bundle-path.js');

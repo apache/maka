@@ -96,7 +96,10 @@ test('legacy operator without a configuration fingerprint remains fenced by sour
   const { configurationFingerprint: _fingerprint, ...legacyService } = service;
   const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
     resolveBinding: async () => binding,
-    resolvePackage: async () => ({ kind: 'development_archive', path: '/selected.tgz', integrity: 'sha512-selected' }),
+    resolvePackage: async () => ({
+      kind: 'development_archive', path: '/selected.tgz', integrity: 'sha512-selected',
+      displayVersion: '0.3.0-dev-abcdef012345',
+    }),
     status: async () => ({ schemaVersion: 1, kind: 'result', action: 'status', service: legacyService }),
     update: async (input) => {
       assert.equal(input.expectedConfigFingerprint, undefined);
@@ -107,5 +110,24 @@ test('legacy operator without a configuration fingerprint remains fenced by sour
     },
   });
   assert.ok(blocker.replacement);
+  assert.deepEqual(blocker.packageChange, {
+    current: legacyService.installedVersion,
+    target: '0.3.0-dev-abcdef012345',
+  });
   assert.deepEqual(await blocker.replacement.execute('refuse_active_work', () => {}, 'explicit'), { kind: 'changed' });
+});
+
+test('development handoff never presents package integrity as a version', async () => {
+  const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
+    resolveBinding: async () => binding,
+    resolvePackage: async () => ({
+      kind: 'development_archive', path: '/selected.tgz', integrity: 'sha512-selected',
+    }),
+    status: async () => ({ schemaVersion: 1, kind: 'result', action: 'status', service }),
+    update: async () => assert.fail('displaying the package change must not start an update'),
+  });
+  assert.deepEqual(blocker.packageChange, {
+    current: service.installedVersion,
+    target: 'selected development build',
+  });
 });

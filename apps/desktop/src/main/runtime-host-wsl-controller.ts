@@ -255,7 +255,10 @@ export async function runDesktopRuntimeHostWslUpdate(
   const environment = `${RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV}=1 ` +
     (setupPackage.integrity ? `${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=${quotePosix(setupPackage.integrity)} ` : '');
   const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${environment}${args.map(quotePosix).join(' ')}`;
-  const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', `exec /bin/sh -c ${quotePosix(command)}`]);
+  const child = processFactory(executable, [
+    '--distribution', distribution, '--exec', '/bin/sh', '-lc',
+    runtimeHostWslLoginCommand(command),
+  ]);
   const terminal = await runWslFramedProcess({
     child, signal: input.signal, retirementCancellation: true,
     prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
@@ -336,6 +339,10 @@ function runtimeHostWslSetupCommand(
     ? `${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=${quotePosix(setupPackage.integrity)} `
     : '';
   const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${environment}${invocation}`;
+  return runtimeHostWslLoginCommand(command);
+}
+
+function runtimeHostWslLoginCommand(command: string): string {
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
 }
