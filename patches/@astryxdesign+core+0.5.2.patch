@@ -203,6 +203,21 @@ index e1d2ebd..1f8337e 100644
      if (!state.isActive || state.activeTrigger !== trigger) {
        triggerStartRef.current = triggerStart;
        setState(prev => ({
+diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+index eac4c4b..a21c0c4 100644
+--- a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
++++ b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+@@ -39,7 +39,9 @@ function buildLanguage(lang) {
+     return cached;
+   }
+   const def = buildLanguageUncached(lang);
+-  langCache.set(lang, def);
++  if (def !== null) {
++    langCache.set(lang, def);
++  }
+   return def;
+ }
+ function buildLanguageUncached(lang) {
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
 index 82ae62c..a97eff5 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts

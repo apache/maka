@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import { createRequire } from 'node:module';
 import { type BotChannelSettings, type BotProvider } from '@maka/core/bot-chat-settings';
-import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import { botDiagnosticMessage } from './base-adapter.js';
@@ -94,6 +94,9 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
     return { ok: false, errorCode: 'slack_tokens_missing' };
   }
   try {
+    const { WebClient } = createRequire(import.meta.url)(
+      '@slack/web-api',
+    ) as typeof import('@slack/web-api');
     const identity = await new WebClient(botToken).auth.test();
     if (!identity.ok) return { ok: false, error: identity.error ?? 'Slack auth.test failed' };
     const socket = await new WebClient(appToken).apps.connections.open();

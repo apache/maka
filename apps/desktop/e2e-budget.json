@@ -77,6 +77,10 @@
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
+    "workhub-return-rail.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft"
+    },
     "zh-tw-locale.spec.ts": {
       "tests": 1,
       "electron": "the locale is a persisted Host setting and only takes effect through a renderer reload"

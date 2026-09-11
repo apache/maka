@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
   type BrowserWindow,
@@ -1366,6 +1367,11 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
+    resolveWslHostHandoff: async (profile, error, signal) => resolveDesktopWslHostHandoff(profile, error, signal, {
+      locale: await desktopLocale.resolve(),
+      resolveBinding: (profileId) => runtimeHostProfileService.resolveManagedService(profileId),
+      resolvePackage: (packageSignal) => runtimeHostSetupPackage.resolve('none', packageSignal),
+    }),
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {

@@ -363,6 +363,18 @@ export class DesktopSessionLocalService {
     );
   }
 
+  #scheduleRetry(key: string): void {
+    // Keep the timer outside the delivery context, which owns the full message
+    // record. SQLite already owns the intent while it waits for another attempt.
+    const timer = setTimeout(() => {
+      this.#retries.delete(key);
+      this.#probed.delete(key);
+      this.wake();
+    }, 5000);
+    timer.unref();
+    this.#retries.set(key, timer);
+  }
+
   async #deliver(target: DesktopSessionLocalTarget, original: LocalOutboxRecord): Promise<void> {
     const client = target.client!;
     let record = original;
@@ -459,13 +471,7 @@ export class DesktopSessionLocalService {
               : 'Message preparation failed. The local copy is retained.',
       });
       if ((uncertain || retryable) && !this.#closed && !this.#retries.has(key)) {
-        const timer = setTimeout(() => {
-          this.#retries.delete(key);
-          this.#probed.delete(key);
-          this.wake();
-        }, 5000);
-        timer.unref();
-        this.#retries.set(key, timer);
+        this.#scheduleRetry(key);
       } else if (!uncertain && !retryable) this.#probed.delete(key);
     }
     this.deps.changed(target.scope, record.sessionId);

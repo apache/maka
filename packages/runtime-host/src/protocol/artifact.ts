@@ -511,7 +511,7 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
     if (!isCanonicalBase64(chunkBase64)) {
       throw invalidProtocolFrame('Invalid artifact chunk');
     }
-    const chunkBytes = Buffer.from(chunkBase64, 'base64').byteLength;
+    const chunkBytes = Buffer.byteLength(chunkBase64, 'base64');
     if (chunkBytes > ARTIFACT_READ_CHUNK_MAX_BYTES || offset + chunkBytes > totalBytes) {
       throw invalidProtocolFrame('Invalid artifact chunk bounds');
     }
@@ -640,7 +640,7 @@ function decodeBinaryPreview(value: unknown): ArtifactBinaryPreview {
     const base64 = boundedText(exact.base64, 'artifact binary base64', base64MaxBytes(), true);
     if (
       !isCanonicalBase64(base64) ||
-      Buffer.from(base64, 'base64').byteLength > ARTIFACT_PREVIEW_MAX_BYTES
+      Buffer.byteLength(base64, 'base64') > ARTIFACT_PREVIEW_MAX_BYTES
     ) {
       throw invalidProtocolFrame('Invalid artifact binary base64');
     }

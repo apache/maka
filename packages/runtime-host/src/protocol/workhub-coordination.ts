@@ -153,14 +153,16 @@ export interface WorkHubCoordinationCandidatesResult {
   readonly candidates: readonly WorkHubCoordinationCandidate[];
 }
 
-export type WorkHubCoordinationProposal =
+export type WorkHubRoutingProposal =
   | {
       readonly disposition: 'delegate_existing';
       readonly candidateRef: string;
     }
-  | { readonly disposition: 'create_new'; readonly title: string }
+  | { readonly disposition: 'create_new'; readonly title: string };
+
+export type WorkHubLinkedOperationProposal =
   | {
-      readonly disposition: 'replace';
+      readonly operation: 'correct';
       /** Action identity of the exact durable delegation link being corrected. */
       readonly replacesActionId: string;
       readonly target:
@@ -168,9 +170,9 @@ export type WorkHubCoordinationProposal =
         | { readonly disposition: 'create_new'; readonly title: string };
     }
   | {
-      readonly disposition: 'stop_work';
+      readonly operation: 'stop';
       /**
-       * The expected state the Action Policy resolved against. It carries no
+       * The expected state the Coordination policy resolved against. It carries no
        * authority of its own; the Action Gate revalidates it against current
        * durable facts, so a resolution that has gone stale fails closed instead
        * of stopping work the user never resolved.
@@ -179,16 +181,22 @@ export type WorkHubCoordinationProposal =
        * prove which link is live, so the Gate resolves it from its own active
        * links, and on replay from the durable claim this action already owns.
        */
-      readonly expects: WorkHubCoordinationStopPreconditions;
+      readonly expects: WorkHubCoordinationLinkedTargetPreconditions;
     }
   | {
-      readonly disposition: 'resume_work';
+      readonly operation: 'resume';
       /** Bound reference from candidate discovery; the Gate checks current ownership. */
       readonly resumesActionId: string;
-      readonly expects: WorkHubCoordinationStopPreconditions;
+      readonly expects: WorkHubCoordinationLinkedTargetPreconditions;
     };
 
-export interface WorkHubCoordinationStopPreconditions {
+/**
+ * A coordination proposal is either a routing decision or an operation over a
+ * durable delegation. Linked operations are deliberately not dispositions.
+ */
+export type WorkHubCoordinationProposal = WorkHubRoutingProposal | WorkHubLinkedOperationProposal;
+
+export interface WorkHubCoordinationLinkedTargetPreconditions {
   /**
    * Session the resolved delegation was proposed against. Sole-active-delegation
    * is proved by the Host from durable state under the admission lease, so the
@@ -399,8 +407,10 @@ function decodeWorkHubCoordinationActionFields(
     input.newWorkDefaults !== undefined &&
     (!isWorkHubCreateDefaults(input.newWorkDefaults) ||
       !(
-        proposal.disposition === 'create_new' ||
-        (proposal.disposition === 'replace' && proposal.target.disposition === 'create_new')
+        ('disposition' in proposal && proposal.disposition === 'create_new') ||
+        ('operation' in proposal &&
+          proposal.operation === 'correct' &&
+          proposal.target.disposition === 'create_new')
       ))
   ) {
     throw invalidProtocolFrame('Invalid WorkHub creation defaults');
@@ -416,9 +426,7 @@ function decodeWorkHubCoordinationActionFields(
   if (
     delegationText !== undefined &&
     (!delegationText.trim() ||
-      (proposal.disposition !== 'delegate_existing' &&
-        proposal.disposition !== 'create_new' &&
-        proposal.disposition !== 'replace'))
+      !('disposition' in proposal || ('operation' in proposal && proposal.operation === 'correct')))
   ) {
     throw invalidProtocolFrame('Invalid WorkHub delegation text');
   }
@@ -430,19 +438,19 @@ function decodeWorkHubCoordinationActionFields(
       : {}),
     ...(delegationText === undefined ? {} : { delegationText }),
   };
-  if (proposal.disposition === 'delegate_existing') {
+  if ('disposition' in proposal && proposal.disposition === 'delegate_existing') {
     if (input.create !== undefined || input.candidateSetId === undefined) {
       throw invalidProtocolFrame('Invalid WorkHub delegation context');
     }
     return { ...base, candidateSetId: candidateSetId(input.candidateSetId) };
   }
-  if (proposal.disposition === 'create_new') {
+  if ('disposition' in proposal && proposal.disposition === 'create_new') {
     if (input.candidateSetId !== undefined || input.create === undefined) {
       throw invalidProtocolFrame('Invalid WorkHub creation context');
     }
     return { ...base, create: decodeWorkHubCoordinationCreateContext(input.create) };
   }
-  if (proposal.disposition === 'replace') {
+  if ('operation' in proposal && proposal.operation === 'correct') {
     if (proposal.target.disposition === 'delegate_existing') {
       if (input.candidateSetId === undefined || input.create !== undefined) {
         throw invalidProtocolFrame('Invalid WorkHub replacement context');
@@ -527,9 +535,9 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
       title: requireUtf8String(exact.title, 'WorkHub Session title', COORDINATION_TITLE_MAX_BYTES),
     };
   }
-  if (proposal.disposition === 'replace') {
+  if (proposal.operation === 'correct') {
     const exact = requireExactRecord(proposal, 'WorkHub replacement proposal', [
-      'disposition',
+      'operation',
       'replacesActionId',
       'target',
     ]);
@@ -540,7 +548,7 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
         'candidateRef',
       ]);
       return {
-        disposition: 'replace',
+        operation: 'correct',
         replacesActionId: requireEntityId(exact.replacesActionId, 'WorkHub replaced action id'),
         target: {
           disposition: 'delegate_existing',
@@ -554,7 +562,7 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
         'title',
       ]);
       return {
-        disposition: 'replace',
+        operation: 'correct',
         replacesActionId: requireEntityId(exact.replacesActionId, 'WorkHub replaced action id'),
         target: {
           disposition: 'create_new',
@@ -568,32 +576,34 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     }
     throw invalidProtocolFrame('Invalid WorkHub replacement target');
   }
-  if (proposal.disposition === 'stop_work') {
-    const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
+  if (proposal.operation === 'stop') {
+    const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['operation', 'expects']);
     return {
-      disposition: 'stop_work',
-      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+      operation: 'stop',
+      expects: decodeWorkHubCoordinationLinkedTargetPreconditions(exact.expects),
     };
   }
-  if (proposal.disposition === 'resume_work') {
+  if (proposal.operation === 'resume') {
     const exact = requireExactRecord(proposal, 'WorkHub resume proposal', [
-      'disposition',
+      'operation',
       'expects',
       'resumesActionId',
     ]);
     return {
-      disposition: 'resume_work',
+      operation: 'resume',
       resumesActionId: requireEntityId(exact.resumesActionId, 'WorkHub resume assignment'),
-      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+      expects: decodeWorkHubCoordinationLinkedTargetPreconditions(exact.expects),
     };
   }
-  throw invalidProtocolFrame('Invalid WorkHub Coordination proposal disposition');
+  throw invalidProtocolFrame('Invalid WorkHub Coordination proposal');
 }
 
-function decodeWorkHubCoordinationStopPreconditions(
+function decodeWorkHubCoordinationLinkedTargetPreconditions(
   value: unknown,
-): WorkHubCoordinationStopPreconditions {
-  const expects = requireExactRecord(value, 'WorkHub stop preconditions', ['targetSessionId']);
+): WorkHubCoordinationLinkedTargetPreconditions {
+  const expects = requireExactRecord(value, 'WorkHub linked-target preconditions', [
+    'targetSessionId',
+  ]);
   return {
     targetSessionId: requireEntityId(expects.targetSessionId, 'WorkHub target Session id'),
   };

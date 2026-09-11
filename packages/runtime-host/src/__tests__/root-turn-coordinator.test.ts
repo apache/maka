@@ -107,6 +107,7 @@ import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import {
   continuationSafetyDigest,
   RootTurnCoordinator,
+  type HostWorkHubRoutingDecisionPreparation,
   type TurnStartOutcome,
 } from '../server/root-turn-coordinator.js';
 import {
@@ -3655,8 +3656,12 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
   }
 });
 
-test('WorkHub v2 binds the requesting Desktop before admission while v1 stays unbound', async () => {
-  for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
+test('WorkHub v2 requires binding evidence before admission while v1 stays unbound', async () => {
+  for (const [toolProfile, missingEvidence] of [
+    ['workhub-coordination-v1', false],
+    ['workhub-coordination-v2', false],
+    ['workhub-coordination-v2', true],
+  ] as const) {
     const capabilities = new HostClientCapabilityCoordinator({
       ...clientCapabilityCoordinatorTestAdmission(),
       activation: new RuntimePolicyActivationGate(),
@@ -3665,7 +3670,9 @@ test('WorkHub v2 binds the requesting Desktop before admission while v1 stays un
     const bindings: [string, string | undefined][] = [];
     capabilities.bindSession = async (sessionId, connectionId) => {
       bindings.push([sessionId, connectionId]);
-      return { ok: false, message: 'Desktop capability unavailable' };
+      return missingEvidence
+        ? { ok: true }
+        : { ok: false, message: 'Desktop capability unavailable' };
     };
     const fixture = await createFailureFixture({
       clientCapabilities: capabilities,
@@ -3723,15 +3730,85 @@ test('WorkHub v2 binds the requesting Desktop before admission while v1 stays un
 test('active WorkHub authority reads the admitted v2 input and refuses other or completed Turns', async () => {
   for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
     let backend: BlockingRootBackend | undefined;
+    const consumed: string[] = [];
+    const sent: BackendSendInput[] = [];
+    const successorReady = [deferred<void>(), deferred<void>()];
+    const successorRelease = [deferred<void>(), deferred<void>()];
+    const preparedRouting: Array<{ turnId: string; text: string }> = [];
+    const capabilities = new HostClientCapabilityCoordinator({
+      ...clientCapabilityCoordinatorTestAdmission(),
+      activation: new RuntimePolicyActivationGate(),
+      onModelToolsChanged: () => undefined,
+    });
+    capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+      send: async () => {},
+    });
     const fixture = await createFailureFixture({
+      clientCapabilities: capabilities,
+      ...(toolProfile === 'workhub-coordination-v2'
+        ? {
+            prepareWorkHubRoutingDecision: async (input: HostWorkHubRoutingDecisionPreparation) => {
+              preparedRouting.push({ turnId: input.turnId, text: input.content.text });
+              return { kind: 'routing' as const, disposition: 'answer_here' as const };
+            },
+          }
+        : {}),
       registerBackend: (backends) => {
         backends.register(
           'ai-sdk',
-          (context) => (backend = new BlockingRootBackend(context.sessionId)),
+          (context) =>
+            (backend = new (class extends BlockingRootBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                sent.push(input);
+                const successorIndex = sent.length - 2;
+                if (successorIndex >= 0) {
+                  successorReady[successorIndex]!.resolve();
+                  await successorRelease[successorIndex]!.promise;
+                  this.release();
+                }
+                for await (const event of super.send(input)) {
+                  for (const lease of (await input.pullSteering?.()) ?? []) {
+                    yield {
+                      type: 'steering_message',
+                      id: randomUUID(),
+                      turnId: input.turnId,
+                      ts: Date.now(),
+                      messageId: lease.messageId,
+                      content: lease.content,
+                      submittedContentDigest: lease.submittedContentDigest,
+                    };
+                    input.ackSteering?.([lease.id]);
+                    consumed.push(lease.messageId);
+                  }
+                  yield event;
+                }
+              }
+            })(context.sessionId)),
         );
       },
     });
     try {
+      const registered = await capabilities.handlers['client.capability.replace'](
+        {
+          registrationId: 'workhub-tools',
+          offers: [
+            {
+              offerId: 'desktop-workhub',
+              version: '0',
+              affinity: 'session',
+              hostPathAccess: 'none',
+              label: 'Desktop WorkHub',
+              tools: ['control', 'tasks'].map((name) => ({
+                serverId: 'desktop_workhub',
+                name,
+                inputSchema: { type: 'object', additionalProperties: false },
+              })),
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
       const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
       await fixture.stores.sessionStore.createStableSession({
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
@@ -3746,6 +3823,25 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
         },
       });
+      const submit = (
+        messageId: string,
+        placement: 'current_turn' | 'next_turn' = 'current_turn',
+      ) =>
+        fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            messageId,
+            content: { text: messageId },
+            placement,
+          },
+          operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+        );
+      assert.equal(
+        (await submit('idle-steering')).ok,
+        false,
+        'idle WorkHub cannot start an ordinary Turn',
+      );
       const turnId = 'live-workhub-turn';
       const content = { text: 'Continue Payments and explain the result here' };
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
@@ -3765,7 +3861,74 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
         await fixture.coordinator.readActiveWorkHubRequest(turnId),
         toolProfile === 'workhub-coordination-v2' ? content : undefined,
       );
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRoutingRequest(turnId),
+        toolProfile === 'workhub-coordination-v2'
+          ? { content, decision: { kind: 'routing', disposition: 'answer_here' } }
+          : undefined,
+      );
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
+      const submitted = await submit('workhub-steering');
+      assert.equal(
+        submitted.ok && submitted.result.disposition,
+        toolProfile === 'workhub-coordination-v2' ? 'steering' : false,
+      );
+      assert.equal(
+        (await submit('workhub-followup', 'next_turn')).ok,
+        toolProfile === 'workhub-coordination-v2',
+        'only active v2 WorkHub can queue a coordination successor',
+      );
+      if (toolProfile === 'workhub-coordination-v2') {
+        assert.equal((await submit('workhub-followup-second', 'next_turn')).ok, true);
+        backend!.release();
+        await withTimeout(
+          successorReady[0]!.promise,
+          5_000,
+          'first WorkHub successor did not start',
+        );
+        assert.equal(sent.length, 2);
+        assert.equal(sent[1]!.text, 'workhub-followup');
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[1]!.turnId), {
+          text: 'workhub-followup',
+        });
+        assert.deepEqual(
+          await fixture.coordinator.readActiveWorkHubRoutingRequest(sent[1]!.turnId),
+          {
+            content: { text: 'workhub-followup' },
+            decision: { kind: 'routing', disposition: 'answer_here' },
+          },
+        );
+        assert.deepEqual(
+          fixture.messages
+            .projection(WORKHUB_COORDINATION_SESSION_ID)
+            .followup.map((entry) => entry.messageId),
+          ['workhub-followup-second'],
+        );
+        successorRelease[0]!.resolve();
+        await withTimeout(
+          successorReady[1]!.promise,
+          5_000,
+          'second WorkHub successor did not start',
+        );
+        assert.equal(sent[2]!.text, 'workhub-followup-second');
+        assert.notEqual(sent[1]!.turnId, sent[2]!.turnId);
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[2]!.turnId), {
+          text: 'workhub-followup-second',
+        });
+        assert.deepEqual(preparedRouting, [
+          { turnId, text: content.text },
+          { turnId: sent[1]!.turnId, text: 'workhub-followup' },
+          { turnId: sent[2]!.turnId, text: 'workhub-followup-second' },
+        ]);
+        successorRelease[1]!.resolve();
+        await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+        assert.deepEqual(consumed, ['workhub-steering']);
+        assert.equal(
+          (await submit('workhub-steering')).ok,
+          true,
+          'a lost reply is recovered from durable admission after completion',
+        );
+      }
       await fixture.coordinator.stopRoot({
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         turnId,
@@ -3773,9 +3936,26 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       });
       await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+      assert.equal((await submit('completed-steering')).ok, false);
+      if (toolProfile === 'workhub-coordination-v2') {
+        await fixture.coordinator.close();
+        const recovery = fixture.createRecoveryCoordinator();
+        try {
+          await recovery.recover();
+        } finally {
+          await recovery.close();
+        }
+        assert.equal(
+          fixture.drainRequested(),
+          false,
+          'queued coordination admissions remain valid during recovery',
+        );
+      }
     } finally {
       backend?.release();
+      for (const release of successorRelease) release.resolve();
       await fixture.coordinator.close();
+      await capabilities.close();
       await fixture.dispose();
     }
   }
@@ -5694,7 +5874,7 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
               entered[attempt]!.resolve();
               await release[attempt]!.promise;
               assert.ok(input.pullSteering, 'successors retain the logical message owner');
-              const leases = input.pullSteering();
+              const leases = await input.pullSteering();
               assert.equal(leases.length, 1);
               for (const lease of leases) {
                 yield {
@@ -5967,6 +6147,9 @@ async function createFailureFixture(options: {
     admission: RootTurnAdmission,
     state: 'pending_fire_required' | 'run_recorded',
   ): Promise<void>;
+  prepareWorkHubRoutingDecision?(
+    input: HostWorkHubRoutingDecisionPreparation,
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -6037,6 +6220,8 @@ async function createFailureFixture(options: {
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission, commitAdmission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission, commitAdmission),
+    startRecoveredMessages: (input, admission) =>
+      requireCoordinator(coordinator).startRecoveredMessages(input, admission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
@@ -6171,6 +6356,7 @@ async function createFailureFixture(options: {
       options.agentGraphEpochs,
       undefined,
       options.directoryHostId,
+      options.prepareWorkHubRoutingDecision,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({
