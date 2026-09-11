@@ -205,6 +205,40 @@ describe('Git Review snapshot authority', () => {
     if (recovered.ok) assert.equal(recovered.snapshot.files.length, 0);
   });
 
+  it('degrades a diff that overflows the git buffer to a truncated review', async () => {
+    const root = await repository();
+    await git(root, 'checkout', '-b', 'feature');
+    await writeFile(join(root, 'feature.txt'), 'feature\n', 'utf8');
+    await git(root, 'add', '.');
+    await git(root, 'commit', '-m', 'feature');
+
+    const result = await readGitReview(root, 'branch', async (gitRoot, args) => {
+      if (args.includes('--binary')) {
+        // Node rejects an over-limit child buffer, handing back what it read.
+        throw Object.assign(new Error('stdout maxBuffer length exceeded'), {
+          code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+          stdout: [
+            'diff --git a/feature.txt b/feature.txt',
+            'new file mode 100644',
+            '--- /dev/null',
+            '+++ b/feature.txt',
+            '@@ -0,0 +1 @@',
+            '+feature',
+            '',
+          ].join('\n'),
+        });
+      }
+      const { stdout } = await execFileAsync('git', ['-C', gitRoot, ...args], {
+        encoding: 'utf8',
+      });
+      return stdout;
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.snapshot.truncated, true);
+    assert.deepEqual(result.snapshot.files.map((file) => file.path), ['feature.txt']);
+  });
+
   it('returns an explicit non-repository outcome', async () => {
     const root = await temporaryRoot();
     assert.deepEqual(await readGitReview(root, 'branch'), {
