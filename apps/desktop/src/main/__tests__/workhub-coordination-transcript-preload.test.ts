@@ -163,6 +163,69 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
   }]);
 });
 
+test('delegation feedback does not advance the target Session read marker', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const result: StoredMessage = {
+    type: 'assistant', id: 'answer', turnId: 'owned-turn', ts: 3,
+    modelId: 'model', text: 'The delegated task finished with this exact result.',
+  };
+  const later: StoredMessage = {
+    type: 'user', id: 'later', turnId: 'next-turn', ts: 4, text: 'A later turn nobody has read.',
+  };
+  const acknowledged: number[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: true, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        // The real open answers over IPC, so its first batches reach a consumer
+        // that is already listening.
+        await Promise.resolve();
+        const snapshot = {
+          sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+          durableThrough: 2, overlay: [], hasOlder: false, hasNewer: false,
+        };
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...snapshot,
+          durable: [{ sequence: 1, message: result }, { sequence: 2, message: later }],
+        })) onBatch({ ...batch, deliverySequence: 1 });
+        return {
+          ...snapshot, readThroughMessageId: later.id,
+          async acknowledgeTail(through: number) { acknowledged.push(through); },
+          loadBefore: async () => undefined, loadAfter: async () => undefined,
+          loadAround: async () => undefined, close: async () => undefined,
+        };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.equal((await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]))[0]?.resultPreview, result.text);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual(acknowledged, [], 'a result projection is not a reader of the target Session');
+});
+
 test('WorkHub proves a long historical Turn tail before caching its final result', async (t) => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });

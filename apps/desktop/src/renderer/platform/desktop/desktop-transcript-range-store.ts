@@ -50,9 +50,16 @@ export interface DesktopTranscriptRangeController {
   close(): Promise<void>;
 }
 
+/**
+ * `acknowledgesTail` is what a reader that renders the transcript says about
+ * itself. A consumer opened only to project rows reaches the tail just as a
+ * reader does, and acknowledging from there would mark the Session read on
+ * behalf of nobody, so the default is to stay silent.
+ */
 export function createDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
   open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
+  options: { readonly acknowledgesTail?: boolean } = {},
 ): DesktopTranscriptRangeController {
   let closed = false;
   let openController = new AbortController();
@@ -154,7 +161,7 @@ export function createDesktopTranscriptRangeController(
       }
     })();
   };
-  const unsubscribe = store.subscribe(acknowledgeTail);
+  const unsubscribe = options.acknowledgesTail ? store.subscribe(acknowledgeTail) : () => {};
   return {
     store,
     async ready() { await current(); },
@@ -287,7 +294,9 @@ export function createRecoveringDesktopTranscriptRangeController(
     onError(error: unknown): void;
   },
 ): RecoveringDesktopTranscriptRangeController {
-  const controller = createDesktopTranscriptRangeController(store, open);
+  // Every visible transcript reader recovers; a projection does not. So this is
+  // the one place that claims tail acknowledgement on a reader's behalf.
+  const controller = createDesktopTranscriptRangeController(store, open, { acknowledgesTail: true });
   const cached = () => {
     try {
       const range = store.range();

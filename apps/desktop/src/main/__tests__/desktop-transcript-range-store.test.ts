@@ -1178,12 +1178,13 @@ test('reports each tail the window reaches once, and none while it is parked', a
   const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
   const store = transcriptStore();
   const acknowledged: number[] = [];
-  const controller = createDesktopTranscriptRangeController(store, async () => ({
+  // The visible reader path: only a controller that acknowledges reports a tail.
+  const controller = createRecoveringDesktopTranscriptRangeController(store, async () => ({
     ...identity, readThroughMessageId: null,
     async acknowledgeTail(through) { acknowledged.push(through); },
     async loadBefore() {}, async loadAfter() {}, async loadAround() {},
     async loadLatest() {}, async close() {},
-  }));
+  }), { onError() {} });
   const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
   // Opening a Session at the tail: the read marker still moves on open.
