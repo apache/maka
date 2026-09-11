@@ -244,9 +244,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
         .all(sessionId);
       for (const [index, row] of messageRows.entries()) {
-        const data = typeof (row as { data?: unknown }).data === 'string'
-          ? ((row as { data: string }).data.length)
-          : 0;
+        const data =
+          typeof (row as { data?: unknown }).data === 'string'
+            ? (row as { data: string }).data.length
+            : 0;
         if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
           truncated = true;
           break;
@@ -261,9 +262,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         .all(sessionId);
       const parts: PartRow[] = [];
       for (const [index, row] of partRows.entries()) {
-        const data = typeof (row as { data?: unknown }).data === 'string'
-          ? ((row as { data: string }).data.length)
-          : 0;
+        const data =
+          typeof (row as { data?: unknown }).data === 'string'
+            ? (row as { data: string }).data.length
+            : 0;
         if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
           truncated = true;
           break;
