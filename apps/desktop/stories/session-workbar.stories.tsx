@@ -781,6 +781,7 @@ function bridge(options: {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
     artifacts: {
+      readToolResult: async () => ({ ok: false, reason: 'not_found' }),
       list: async () => artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),

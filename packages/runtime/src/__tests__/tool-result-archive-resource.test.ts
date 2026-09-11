@@ -27,10 +27,48 @@ import {
   TOOL_RESULT_ARCHIVE_MAX_LIMIT,
   TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS,
   TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES,
+  unwrapArchiveReadPage,
   type ToolResultArchiveResourceReader,
 } from '../tool-result-archive-resource.js';
 
 describe('tool-result archive resources', () => {
+  test('unwraps successful read, query, and line pages without accepting ordinary JSON', () => {
+    assert.deepEqual(
+      unwrapArchiveReadPage({
+        ok: true,
+        kind: 'tool_result_archive',
+        operation: 'read',
+        content: 'first',
+        offset: 0,
+        hasMore: true,
+      }),
+      { content: 'first', partial: true },
+    );
+    assert.deepEqual(
+      unwrapArchiveReadPage({
+        ok: true,
+        kind: 'tool_result_archive',
+        operation: 'query',
+        content: 'middle',
+        offset: 12,
+        hasMore: false,
+      }),
+      { content: 'middle', partial: true },
+    );
+    assert.deepEqual(
+      unwrapArchiveReadPage({
+        ok: true,
+        kind: 'tool_result_archive',
+        operation: 'read',
+        content: 'lines',
+        lineOffset: 0,
+        hasMore: false,
+      }),
+      { content: 'lines', partial: false },
+    );
+    assert.equal(unwrapArchiveReadPage({ content: 'ordinary JSON', hasMore: true }), null);
+  });
+
   test('round-trips a first-class archive URI with integrity metadata', () => {
     const body = JSON.stringify({ ok: true });
     const identity = {

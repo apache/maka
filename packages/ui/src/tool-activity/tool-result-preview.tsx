@@ -35,7 +35,7 @@ import { formatBoundedQuietJsonValue } from '@maka/core/tool-quiet-preview';
 import { SavedToolOutput, ToolTextPreview, ToolOutputScroller } from './tool-text-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
 import { DiffCodePreview } from './diff-code-preview.js';
-import { capLines, formatBytes, readResultText, webFetchReference, formatUserVisibleToolText } from './preview-utils.js';
+import { capLines, countTextLines, formatBytes, readResultText, webFetchReference, formatUserVisibleToolText } from './preview-utils.js';
 import { getToolActivityCopy } from './copy.js';
 import { isSandboxDeniedToolResult } from './sandbox-denial.js';
 
@@ -147,15 +147,23 @@ function WebFetchPreview(props: {
   args?: unknown;
 }) {
   const copy = getToolActivityCopy(useUiLocale());
-  const text = props.content.kind === 'text' ? props.content.text : undefined;
-  const bytes = props.content.kind === 'archived_tool_result' ? props.content.originalBytes : new TextEncoder().encode(props.content.text).byteLength;
+  const text = props.content.kind === 'text' && typeof props.content.text === 'string'
+    ? props.content.text
+    : undefined;
+  const bytes = props.content.kind === 'archived_tool_result'
+    ? props.content.originalBytes
+    : new TextEncoder().encode(text ?? '').byteLength;
   const truncated = props.content.kind === 'text' && props.content.truncated;
-  const reference = webFetchReference(text ?? '', props.args);
+  const reference = webFetchReference(
+    text ?? '',
+    props.args,
+    props.content.kind === 'text' ? props.content.sourceUrl : undefined,
+  );
   return <div data-kind="web_fetch" className="maka-tool-output-stack">
     <strong className="maka-tool-web-fetch-title">{reference.title}</strong>
     {reference.href && <Link href={reference.href} isExternalLink>{reference.location}</Link>}
     <p className={TOOL_OUTPUT_NOTE_CLASS}>
-      {formatBytes(bytes)}{text !== undefined && ` · ${copy.detail.lines(text.split('\n').length)}`}
+      {formatBytes(bytes)}{text !== undefined && ` · ${copy.detail.lines(countTextLines(text))}`}
       {truncated && ` · ${copy.result.outputTruncated}`}
     </p>
   </div>;
@@ -209,7 +217,8 @@ export function ToolResultPreview(props: {
 
   if (content.kind === 'web_search') {
     return (
-      <WebSearchPreview query={content.query} provider={content.provider} rows={content.rows} />
+      <WebSearchPreview query={content.query} provider={content.provider}
+        rows={Array.isArray(content.rows) ? content.rows : []} />
     );
   }
 
@@ -278,6 +287,9 @@ export function ToolResultPreview(props: {
     if (props.toolName === 'WebFetch' && !props.failed) {
       return <WebFetchPreview content={content} args={props.args} />;
     }
+    if (typeof content.text !== 'string') {
+      return <ToolCodeBlock code="[text]" actionIdentity={props.actionIdentity} />;
+    }
     return (
       <div data-kind="text">
         <ToolTextPreview
@@ -293,10 +305,13 @@ export function ToolResultPreview(props: {
   }
 
   if (content.kind === 'summary') {
-    return <ToolTextPreview text={content.original} actionIdentity={props.actionIdentity} />;
+    const text = typeof content.original === 'string'
+      ? content.original
+      : typeof content.summarized === 'string' ? content.summarized : '[summary]';
+    return <ToolTextPreview text={text} actionIdentity={props.actionIdentity} />;
   }
 
-  // image / summary / unknown — show a compact descriptor so the user knows
+  // image / unknown — show a compact descriptor so the user knows
   // what kind landed without dumping binary or storage refs.
   if (content.kind === 'file_write') {
     const copy = getToolActivityCopy(locale).result;

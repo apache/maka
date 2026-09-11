@@ -58,14 +58,15 @@ import type { SessionPresenceReader } from './session-presence.js';
 import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js';
 import type { ToolResultArchiveReadFailureReason } from '@maka/runtime/tool-result-archive';
 
-// At most 16 MiB of verified bodies, scoped to active transfers rather than a
-// persistent ref cache. Eviction only costs a fresh validated read.
-const MAX_ARCHIVE_TRANSFERS = 4;
+// Verified bodies are scoped to active transfers rather than a persistent ref
+// cache. The byte budget owns payload memory; the entry cap bounds tiny refs.
+const MAX_ARCHIVE_TRANSFER_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_TRANSFERS = 128;
 const ARCHIVE_TRANSFER_TTL_MS = 60_000;
 interface ArchiveTransfer {
   readonly connectionId: string;
   readonly sessionId: string;
-  readonly ref: string;
+  readonly sizeBytes: number;
   readonly expiresAt: number;
   readonly body: Promise<
     { ok: true; bytes: Buffer } | { ok: false; reason: ToolResultArchiveReadFailureReason }
@@ -102,6 +103,7 @@ export class HostArtifactCoordinator {
     | undefined;
   readonly #uploads: ConnectionBoundChunkUploads<ArtifactUploadMetadata>;
   readonly #archiveTransfers = new Map<string, ArchiveTransfer>();
+  #archiveTransferBytes = 0;
   readonly #now: () => number;
   readonly #readArchive:
     | ToolResultArchiveResourceReader['readArchivedToolResultResource']
@@ -136,8 +138,27 @@ export class HostArtifactCoordinator {
   releaseConnection(connectionId: string): void {
     this.#uploads.releaseConnection(connectionId);
     for (const [key, transfer] of this.#archiveTransfers) {
-      if (transfer.connectionId === connectionId) this.#archiveTransfers.delete(key);
+      if (transfer.connectionId === connectionId) this.#removeArchiveTransfer(key);
     }
+  }
+
+  #removeArchiveTransfer(key: string, expected?: ArchiveTransfer): void {
+    const current = this.#archiveTransfers.get(key);
+    if (!current || (expected && current !== expected)) return;
+    this.#archiveTransfers.delete(key);
+    this.#archiveTransferBytes -= current.sizeBytes;
+  }
+
+  #storeArchiveTransfer(key: string, transfer: ArchiveTransfer): void {
+    while (
+      this.#archiveTransfers.size > 0 &&
+      (this.#archiveTransfers.size >= MAX_ARCHIVE_TRANSFERS ||
+        this.#archiveTransferBytes + transfer.sizeBytes > MAX_ARCHIVE_TRANSFER_BYTES)
+    ) {
+      this.#removeArchiveTransfer(this.#archiveTransfers.keys().next().value!);
+    }
+    this.#archiveTransfers.set(key, transfer);
+    this.#archiveTransferBytes += transfer.sizeBytes;
   }
 
   async validateTurnAttachments(
@@ -357,7 +378,7 @@ export class HostArtifactCoordinator {
     try {
       if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
         for (const [key, transfer] of this.#archiveTransfers) {
-          if (transfer.sessionId === input.sessionId) this.#archiveTransfers.delete(key);
+          if (transfer.sessionId === input.sessionId) this.#removeArchiveTransfer(key);
         }
         return notFound('artifact.query', 'Session was not found');
       }
@@ -378,42 +399,42 @@ export class HostArtifactCoordinator {
         const identity = parseToolResultArchiveResourceRef(input.ref);
         if (!identity) return unavailable('not_allowed');
         if (identity.originalBytes > TOOL_RESULT_ARCHIVE_MAX_BYTES) return unavailable('too_large');
-        if (input.offset > identity.originalBytes) return invalidQuery('Archive offset is invalid');
+        if (input.offset >= identity.originalBytes)
+          return invalidQuery('Archive offset is invalid');
         if (!this.#readArchive) return unavailable('read_failed');
         const now = this.#now();
         for (const [key, transfer] of this.#archiveTransfers) {
-          if (transfer.expiresAt <= now) this.#archiveTransfers.delete(key);
+          if (transfer.expiresAt <= now) this.#removeArchiveTransfer(key);
         }
         const key = JSON.stringify([context.connectionId, input.sessionId, input.ref]);
         let transfer = this.#archiveTransfers.get(key);
-        if (input.offset === 0 || transfer?.ref !== input.ref) {
+        if (transfer) {
           this.#archiveTransfers.delete(key);
-          while (this.#archiveTransfers.size >= MAX_ARCHIVE_TRANSFERS) {
-            this.#archiveTransfers.delete(this.#archiveTransfers.keys().next().value!);
-          }
+          this.#archiveTransfers.set(key, transfer);
+        } else {
           transfer = {
             connectionId: context.connectionId,
             sessionId: input.sessionId,
-            ref: input.ref,
+            sizeBytes: identity.originalBytes,
             expiresAt: now + ARCHIVE_TRANSFER_TTL_MS,
             body: Promise.resolve()
               .then(() =>
                 this.#readArchive!({
                   ...identity,
                   sessionId: input.sessionId,
-                  maxBytes: TOOL_RESULT_ARCHIVE_MAX_BYTES,
+                  maxBytes: identity.originalBytes,
                 }),
               )
               .then((read) =>
                 read.ok ? { ok: true as const, bytes: Buffer.from(read.serializedResult) } : read,
               ),
           };
-          this.#archiveTransfers.set(key, transfer);
+          this.#storeArchiveTransfer(key, transfer);
         }
         const release = () => {
           // A disconnect or another request may have replaced the entry while
           // the reader awaited I/O. Never resurrect it or remove its successor.
-          if (this.#archiveTransfers.get(key) === transfer) this.#archiveTransfers.delete(key);
+          this.#removeArchiveTransfer(key, transfer);
         };
         const read = await transfer.body.catch((error) => {
           release();

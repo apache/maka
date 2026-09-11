@@ -75,7 +75,7 @@ import {
   type ChatToolCallItem,
   VisuallyHidden,
 } from '@astryxdesign/core';
-import { ToolOutputScroller } from './tool-activity/tool-text-preview.js';
+import { ToolOutputScroller, ToolOutputScrollProvider } from './tool-activity/tool-text-preview.js';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
 import {
@@ -227,6 +227,7 @@ export function ToolCallDetail({
   );
 
   return (
+    <ToolOutputScrollProvider key={item.toolUseId}>
     <div className="maka-tool-call-detail">
       {showSandboxBanner && (
         <SandboxBlockedBanner result={displayResult ?? item.result} />
@@ -291,6 +292,7 @@ export function ToolCallDetail({
         </div>
       )}
     </div>
+    </ToolOutputScrollProvider>
   );
 }
 

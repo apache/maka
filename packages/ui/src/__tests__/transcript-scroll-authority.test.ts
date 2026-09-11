@@ -251,6 +251,69 @@ test('scrollbar defaults can land after pointerup, while an unmoved click retire
   });
 });
 
+test('content growth never cancels an active scrollbar gesture', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority({ explicitResume: true });
+    authority.attach(root as unknown as HTMLElement);
+
+    root.grabScrollbar();
+    root.grow(100);
+    authority.followTail();
+    root.scrollTop = 1_700;
+    root.emitScroll();
+
+    assert.equal(authority.getSnapshot().pinned, false);
+    root.grow(100);
+    resize();
+    assert.equal(root.scrollTop, 1_700);
+  });
+});
+
+test('explicit resume stays released at the tail until the reader invokes it', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority({ explicitResume: true });
+    authority.attach(root as unknown as HTMLElement);
+
+    root.input(-100);
+    root.scrollTop = 1_000;
+    root.emitScroll();
+    root.input(100);
+    root.scrollTop = 2_400;
+    root.emitScroll();
+    root.end();
+    frame();
+    frame();
+
+    assert.deepEqual(authority.getSnapshot(), { pinned: false, awayFromTail: false });
+    root.grow(100);
+    resize();
+    assert.equal(root.scrollTop, 2_400);
+
+    authority.pinToTail();
+    assert.equal(root.scrollTop, 2_500);
+  });
+});
+
+test('a released reader keeps the same position when the rendered output node changes', () => {
+  withObservers(() => {
+    const live = fakeRoot();
+    const settled = fakeRoot();
+    const authority = createTranscriptScrollAuthority({ explicitResume: true });
+    const detachLive = authority.attach(live as unknown as HTMLElement);
+    live.input(-100);
+    live.scrollTop = 1_000;
+    live.emitScroll();
+
+    detachLive();
+    authority.attach(settled as unknown as HTMLElement);
+
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(settled.scrollTop, 1_000);
+  });
+});
+
 test('explicit navigation cancels input provenance before positioning its target', () => {
   withObservers(() => {
     const root = fakeRoot();

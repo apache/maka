@@ -117,7 +117,10 @@ export function createLocalWebFetchExecutor(input: LocalWebFetchInput): WebFetch
             ? htmlToMarkdown(body, response.url || currentUrl.toString())
             : body;
         if (!content.trim()) throw new Error('WebFetch returned an empty body.');
-        return content;
+        return {
+          content,
+          finalUrl: response.url || currentUrl.toString(),
+        };
       } catch (error) {
         if (timeout.signal.aborted && !abortSignal?.aborted) throw timeout.signal.reason;
         throw error;

@@ -33,6 +33,10 @@ import {
   type WorkbarController,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
+import {
+  ToolOutputPreviewProvider,
+  useToolOutputPreview,
+} from '../../renderer/features/workbar/tools/artifacts/tool-output-preview-context.js';
 
 function session(id: string): SessionSummary {
   return {
@@ -61,6 +65,7 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
   } as ShellRunUpdate;
 }
 let latestController: WorkbarController | undefined;
+let latestToolOutput: ReturnType<typeof useToolOutputPreview>;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;
   terminalOwnerIds: Array<string | undefined>;
@@ -70,6 +75,7 @@ type ControllerProbeInput = UseWorkbarControllerInput & { openOnActivation?: boo
 
 function ControllerProbe(props: ControllerProbeInput) {
   const workbar = useWorkbarController(props);
+  latestToolOutput = useToolOutputPreview();
   latestController = workbar;
   useLayoutEffect(() => {
     if (props.openOnActivation) workbar.host.onOpenLauncher('right');
@@ -99,7 +105,9 @@ function renderController(
       children: createElement(
         WorkbarServicesProvider,
         { services },
-        createElement(ControllerProbe, input),
+        createElement(ToolOutputPreviewProvider, {
+          children: createElement(ControllerProbe, input),
+        }),
       ),
     },
   );
@@ -135,6 +143,7 @@ function input(
 describe('useWorkbarController', () => {
   afterEach(() => {
     latestController = undefined;
+    latestToolOutput = undefined;
     controllerRenderSnapshots = [];
     cleanupFakeDom();
     delete (globalThis as { window?: unknown }).window;
@@ -171,6 +180,43 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.rightCollapsed, true);
     await act(async () => show('a'));
     assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it('keeps retained output selections Session-scoped and clears them when Files closes', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    const show = (id: string) => renderController(root, services, {
+      ...input(session(id)),
+      authoritativeSessionIds,
+    });
+    const request = (sessionId: string) => ({
+      sessionId,
+      title: `${sessionId} output`,
+      source: { kind: 'text' as const, text: `${sessionId} body` },
+    });
+
+    await act(async () => show('a'));
+    await act(async () => latestToolOutput?.open(request('a')));
+    assert.equal(latestToolOutput?.previewFor('a')?.request.title, 'a output');
+    assert.equal(latestToolOutput?.previewFor('b'), undefined);
+
+    await act(async () => show('b'));
+    assert.equal(latestToolOutput?.previewFor('b'), undefined);
+    await act(async () => latestToolOutput?.open(request('b')));
+    assert.equal(latestToolOutput?.previewFor('b')?.request.title, 'b output');
+
+    await act(async () => show('a'));
+    const files = controller().host.panelsState.right.tabs.find((tab) => tab.kind === 'files')
+      ?? controller().host.panelsState.bottom.tabs.find((tab) => tab.kind === 'files');
+    assert.ok(files);
+    const placement = controller().host.panelsState.right.tabs.includes(files) ? 'right' : 'bottom';
+    await act(async () => controller().host.onCloseTab(placement, files));
+    assert.equal(latestToolOutput?.previewFor('a'), undefined);
+    assert.equal(latestToolOutput?.previewFor('b')?.request.title, 'b output');
+
+    await act(async () => controller().commands.openTool('files'));
+    assert.equal(latestToolOutput?.previewFor('a'), undefined);
   });
 
   it('keeps an open requested in the activation commit bound to the new Session', async () => {

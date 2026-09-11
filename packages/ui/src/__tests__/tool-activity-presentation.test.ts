@@ -96,7 +96,7 @@ describe('tool activity presentation', () => {
     assert.match(detail, /data-kind="text"/);
     assert.doesNotMatch(detail, /data-kind="json"/);
     assert.match(detail, /first line/);
-    for (const [text, count] of [['', 0], ['one\n', 2], ['one\r\ntwo', 2]] as const) {
+    for (const [text, count] of [['', 0], ['one\n', 1], ['one\r\ntwo', 2]] as const) {
       const markup = renderToStaticMarkup(createElement(ToolTrow, { items: [{
         ...item, result: { kind: 'json', value: { content: text } },
       }] }), 'zh-CN');
@@ -114,6 +114,11 @@ describe('tool activity presentation', () => {
     )).document.querySelector('[data-slot="chat-tool-call-row"]')!;
     assert.equal(row(item).getAttribute('aria-expanded'), null);
     assert.match(row(item).textContent ?? '', /Succeeded/);
+    const argsOnly = row({
+      ...item,
+      args: { entries: ['buy milk', 'call bob'], notebook: 'personal' },
+    });
+    assert.equal(argsOnly.getAttribute('aria-expanded'), 'false');
     const diagnostic = row({ ...item, result: { kind: 'json', value: { ok: true, warning: 'Partial update' } } });
     assert.equal(diagnostic.getAttribute('aria-expanded'), 'false');
     assert.equal(row({ ...item, status: 'running', result: undefined }).getAttribute('aria-expanded'), 'false');
@@ -133,11 +138,17 @@ describe('tool activity presentation', () => {
   it('renders fetched pages as references and preserves failure diagnostics', () => {
     const item: ToolActivityItem = {
       toolUseId: 'fetch', toolName: 'WebFetch', status: 'completed',
-      args: { url: 'https://example.com/docs' }, result: { kind: 'text', text: 'FETCHED_BODY_SENTINEL\n' + 'body\n'.repeat(100) + 'FETCHED_TAIL' },
+      args: { url: 'https://short.example/docs' }, result: {
+        kind: 'text',
+        text: 'FETCHED_BODY_SENTINEL\n' + 'body\n'.repeat(100) + 'FETCHED_TAIL',
+        sourceUrl: 'https://final.example/reference',
+      },
     };
     const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }), 'en');
     assert.doesNotMatch(markup, /Open full output/);
-    assert.match(markup, /href="https:\/\/example.com\/docs"/);
+    assert.match(markup, /href="https:\/\/final.example\/reference"/);
+    assert.match(markup, /final\.example\/reference/);
+    assert.doesNotMatch(markup, /short\.example/);
     assert.match(markup, /534 B.*102 lines/);
     assert.doesNotMatch(markup, /FETCHED_BODY_SENTINEL/);
     assert.doesNotMatch(markup, /FETCHED_TAIL/);
@@ -650,6 +661,25 @@ describe('collapsed tool row target', () => {
       }],
     }));
     assert.match(markup, /npm test/);
+  });
+
+  it('contains malformed collapsed and expanded result fields', () => {
+    const cases = [
+      { toolName: 'WebFetch', args: { url: 'https://example.com' }, result: { kind: 'text' } },
+      { toolName: 'WebSearch', args: { query: 'maka' }, result: { kind: 'web_search' } },
+      { toolName: 'Summarize', args: {}, result: { kind: 'summary' } },
+    ] as const;
+    for (const [index, candidate] of cases.entries()) {
+      const item = {
+        toolUseId: `malformed-${index}`,
+        toolName: candidate.toolName,
+        status: 'completed',
+        args: candidate.args,
+        result: candidate.result as unknown as NonNullable<ToolActivityItem['result']>,
+      } satisfies ToolActivityItem;
+      assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolTrow, { items: [item] }), 'en'));
+      assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolCallDetail, { item }), 'en'));
+    }
   });
 
   it('keeps ordinary commands intact and retains a generous DOM safety cap', async () => {

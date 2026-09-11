@@ -461,6 +461,9 @@ export function useWorkbarController(
         const ref = terminalRefFromWorkbarTab(tab);
         if (ref && tab.ownerSessionId) stopTerminal(tab.ownerSessionId, ref);
       }
+      if (activeSessionId && tabs.some((tab) => tab.kind === 'files')) {
+        toolOutput?.close(activeSessionId);
+      }
       layout.closeWorkbarTabs(
         placement,
         tabs.map((tab) => tab.id),
@@ -473,7 +476,7 @@ export function useWorkbarController(
       );
       if (panelIds.size > 0) sideConversations.removePanels(panelIds);
     },
-    [layout.closeWorkbarTabs, sideConversations, stopTerminal],
+    [activeSessionId, layout.closeWorkbarTabs, sideConversations, stopTerminal, toolOutput],
   );
 
   const closeTabs = useCallback(
@@ -654,14 +657,15 @@ export function useWorkbarController(
     return () => window.removeEventListener('keydown', handleShortcut, true);
   }, [activeSessionId, input.available, input.shellObscured, openTool]);
 
+  const activeToolOutputPreview = activeSessionId
+    ? toolOutput?.previewFor(activeSessionId)
+    : undefined;
   useEffect(() => {
-    if (!toolOutput?.preview) { openedOutput.current = undefined; return; }
-    if (openedOutput.current === toolOutput.preview) return;
-    openedOutput.current = toolOutput.preview;
+    if (!activeToolOutputPreview) { openedOutput.current = undefined; return; }
+    if (openedOutput.current === activeToolOutputPreview) return;
+    openedOutput.current = activeToolOutputPreview;
     openTool('files');
-  }, [toolOutput?.preview, openTool]);
-  const closeToolOutput = toolOutput?.close;
-  useLayoutEffect(() => () => closeToolOutput?.(), [activeSessionId, closeToolOutput]);
+  }, [activeToolOutputPreview, openTool]);
 
   const confirmPendingClose = useCallback(
     (skipFutureConfirmations: boolean) => {

@@ -34,10 +34,18 @@ test('archived-only history boots into a usable new task', async ({ window: page
   // Prove bootstrap can restore this history before archiving it.
   await page.reload();
   await expect(reply).toBeVisible();
-  await page.evaluate(async () => {
+  await expect.poll(async () => page.evaluate(async () => {
     const sessions = await window.maka.sessions.list();
-    for (const session of sessions) await window.maka.sessions.archive(session.id);
-  });
+    try {
+      for (const session of sessions) {
+        if (!session.isArchived) await window.maka.sessions.archive(session.id);
+      }
+      return true;
+    } catch (error) {
+      if (String(error).includes('has a live derived effect')) return false;
+      throw error;
+    }
+  }), { timeout: 20_000 }).toBe(true);
   await expect.poll(async () =>
     page.evaluate(async () => (await window.maka.sessions.list()).map(({ isArchived }) => isArchived)),
   ).toEqual([true]);

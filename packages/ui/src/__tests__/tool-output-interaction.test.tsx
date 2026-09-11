@@ -73,7 +73,7 @@ it('keeps all retained shell output in a tail-pinned viewport', () => {
   assert.doesNotMatch(markup, /Open full output|more lines/);
 });
 
-it('pauses on a one-pixel upward scroll and resumes only through Jump to bottom', async () => {
+it('pauses on a one-pixel upward scroll and offers resume only away from the tail', async () => {
   const { container, click } = mount();
   const render = (seq: number) => <LocaleProvider locale="en"><ToolCallDetail item={{
     toolUseId: 'stream', toolName: 'Bash', status: 'running', args: { command: 'npm test' },
@@ -93,7 +93,8 @@ it('pauses on a one-pixel upward scroll and resumes only through Jump to bottom'
   await act(async () => { pre.dispatchEvent(new window.Event('scroll')); });
   await act(async () => { root!.render(render(3)); });
   assert.equal(pre.scrollTop, 799);
-  pre.scrollTop = 800;
+  assert.doesNotMatch(container.textContent!, /Jump to bottom/);
+  pre.scrollTop = 600;
   await act(async () => { pre.dispatchEvent(new window.Event('scroll')); });
   await click('Jump to bottom');
   await act(async () => { root!.render(render(4)); });

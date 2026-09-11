@@ -38,7 +38,7 @@ const connectionContext: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('an archive transfer validates the full body once and releases it after the final chunk', async () => {
+test('an archive transfer validates input once and releases its body at the owning boundaries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-'));
   const owner = await tryAcquireInteractiveRootOwner(
     await resolveStorageRoot({ path: root, kind: 'interactive' }),
@@ -46,13 +46,14 @@ test('an archive transfer validates the full body once and releases it after the
   assert.ok(owner);
   const store = await openInteractiveArtifactStoreForWrite(owner.lease);
   try {
-    const serializedResult = 'x'.repeat(4 * 1024 * 1024);
+    const serializedResult = 'x'.repeat(512 * 1024);
     const ref = buildToolResultArchiveResourceRef({
       artifactId: 'archive-1',
       bodySha256: createHash('sha256').update(serializedResult).digest('hex'),
       originalBytes: serializedResult.length,
     });
     let reads = 0;
+    const maxBytes: number[] = [];
     let now = 0;
     let present = true;
     const coordinator = new HostArtifactCoordinator(
@@ -62,11 +63,50 @@ test('an archive transfer validates the full body once and releases it after the
       { probeSessionRemoval: async () => (present ? { kind: 'present' } : { kind: 'removed' }) },
       () => now,
       undefined,
-      async () => {
+      async (input) => {
         reads++;
+        maxBytes.push(input.maxBytes);
         return { ok: true, serializedResult };
       },
     );
+    const rejectedRefs = [
+      { ref: 'not-an-archive-ref', reason: 'not_allowed' },
+      {
+        ref: buildToolResultArchiveResourceRef({
+          artifactId: 'oversize',
+          bodySha256: createHash('sha256').update('oversize').digest('hex'),
+          originalBytes: 4 * 1024 * 1024 + 1,
+        }),
+        reason: 'too_large',
+      },
+    ] as const;
+    for (const rejected of rejectedRefs) {
+      const result = await coordinator.handlers['artifact.query'](
+        { kind: 'read_archive_chunk', sessionId: 'session-1', ref: rejected.ref, offset: 0 },
+        connectionContext,
+      );
+      assert.ok(result.ok && result.result.kind === 'archive_unavailable');
+      assert.equal(result.result.reason, rejected.reason);
+    }
+    assert.equal(reads, 0, 'rejected refs must not reach archive storage');
+    const invalidOffset = await coordinator.handlers['artifact.query'](
+      { kind: 'read_archive_chunk', sessionId: 'session-1', ref, offset: serializedResult.length },
+      connectionContext,
+    );
+    assert.ok(!invalidOffset.ok && invalidOffset.error.code === 'invalid_request');
+    assert.equal(reads, 0, 'an invalid offset must not reach archive storage');
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const first = await coordinator.handlers['artifact.query'](
+        { kind: 'read_archive_chunk', sessionId: 'session-1', ref, offset: 0 },
+        connectionContext,
+      );
+      assert.ok(first.ok && first.result.kind === 'archive_chunk');
+    }
+    assert.equal(reads, 1, 'an offset-zero replay reuses the verified transfer');
+    assert.deepEqual(maxBytes, [serializedResult.length]);
+    coordinator.releaseConnection(connectionContext.connectionId);
+
     const chunks: Buffer[] = [];
     for (
       let offset = 0;
@@ -81,34 +121,176 @@ test('an archive transfer validates the full body once and releases it after the
       chunks.push(Buffer.from(result.result.chunkBase64, 'base64'));
     }
     assert.equal(Buffer.concat(chunks).toString(), serializedResult);
-    assert.equal(reads, 1);
+    assert.equal(reads, 2);
     await coordinator.handlers['artifact.query'](
       { kind: 'read_archive_chunk', sessionId: 'session-1', ref, offset: 0 },
       connectionContext,
     );
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
     const continueRead = (context = connectionContext, sessionId = 'session-1') =>
       coordinator.handlers['artifact.query'](
         { kind: 'read_archive_chunk', sessionId, ref, offset: ARTIFACT_READ_CHUNK_MAX_BYTES },
         context,
       );
     await continueRead({ ...connectionContext, connectionId: 'other-connection' });
-    assert.equal(reads, 3, 'connections cannot reuse each other’s validated bodies');
+    assert.equal(reads, 4, 'connections cannot reuse each other’s validated bodies');
     await continueRead(connectionContext, 'other-session');
-    assert.equal(reads, 4, 'Sessions cannot reuse each other’s validated bodies');
+    assert.equal(reads, 5, 'Sessions cannot reuse each other’s validated bodies');
     coordinator.releaseConnection(connectionContext.connectionId);
     await continueRead();
-    assert.equal(reads, 5, 'disconnect releases the transfer');
+    assert.equal(reads, 6, 'disconnect releases the transfer');
     now = 60_000;
     await continueRead();
-    assert.equal(reads, 6, 'expired transfers are revalidated');
+    assert.equal(reads, 7, 'expired transfers are revalidated');
     present = false;
     const removed = await continueRead();
     assert.ok(!removed.ok && removed.error.code === 'not_found');
-    assert.equal(reads, 6);
+    assert.equal(reads, 7);
     present = true;
     await continueRead();
-    assert.equal(reads, 7, 'a removed Session cannot leave a reusable snapshot');
+    assert.equal(reads, 8, 'a removed Session cannot leave a reusable snapshot');
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
+
+test('archive transfers use the shared byte budget without entry-count thrashing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-budget-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const serializedResult = 'x'.repeat(512 * 1024);
+    const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
+    const refs = Array.from({ length: 5 }, (_, index) =>
+      buildToolResultArchiveResourceRef({
+        artifactId: `archive-${index}`,
+        bodySha256,
+        originalBytes: serializedResult.length,
+      }),
+    );
+    let reads = 0;
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('read must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      async () => {
+        reads += 1;
+        return { ok: true, serializedResult };
+      },
+    );
+    const contexts = refs.map((_, index) => ({
+      ...connectionContext,
+      connectionId: `connection-${index}`,
+    }));
+    for (
+      let offset = 0;
+      offset < serializedResult.length;
+      offset += ARTIFACT_READ_CHUNK_MAX_BYTES
+    ) {
+      await Promise.all(
+        refs.map((ref, index) =>
+          coordinator.handlers['artifact.query'](
+            { kind: 'read_archive_chunk', sessionId: `session-${index}`, ref, offset },
+            contexts[index]!,
+          ),
+        ),
+      );
+    }
+    assert.equal(reads, refs.length);
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
+
+test('archive transfer byte accounting survives repeated release and evicts the LRU body', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-eviction-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const serializedResult = 'x'.repeat(4 * 1024 * 1024);
+    const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
+    const refs = Array.from({ length: 6 }, (_, index) =>
+      buildToolResultArchiveResourceRef({
+        artifactId: `archive-${index}`,
+        bodySha256,
+        originalBytes: serializedResult.length,
+      }),
+    );
+    let reads = 0;
+    let releaseFirstRead!: () => void;
+    let markFirstReadStarted!: () => void;
+    const firstReadBarrier = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    const firstReadStarted = new Promise<void>((resolve) => {
+      markFirstReadStarted = resolve;
+    });
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('read must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      async () => {
+        reads += 1;
+        if (reads === 1) {
+          markFirstReadStarted();
+          await firstReadBarrier;
+        }
+        return { ok: true, serializedResult };
+      },
+    );
+    const contexts = refs.map((_, index) => ({
+      ...connectionContext,
+      connectionId: `eviction-connection-${index}`,
+    }));
+    const read = async (index: number, offset = 0) => {
+      const result = await coordinator.handlers['artifact.query'](
+        {
+          kind: 'read_archive_chunk',
+          sessionId: `eviction-session-${index}`,
+          ref: refs[index]!,
+          offset,
+        },
+        contexts[index]!,
+      );
+      assert.ok(result.ok && result.result.kind === 'archive_chunk');
+    };
+
+    const terminalRead = read(0, serializedResult.length - ARTIFACT_READ_CHUNK_MAX_BYTES);
+    await firstReadStarted;
+    coordinator.releaseConnection(contexts[0]!.connectionId);
+    releaseFirstRead();
+    await terminalRead;
+    assert.equal(reads, 1, 'disconnect and terminal completion release one transfer once');
+
+    for (let index = 1; index <= 4; index += 1) await read(index);
+    assert.equal(reads, 5, 'four bodies exactly fill the 16 MiB budget');
+    await read(1);
+    assert.equal(reads, 5, 'replaying a body promotes it without another storage read');
+
+    await read(5);
+    assert.equal(reads, 6, 'adding a fifth body performs one storage read');
+    await read(1);
+    assert.equal(reads, 6, 'the promoted body remains cached');
+    await read(2);
+    assert.equal(reads, 7, 'crossing the byte budget evicts exactly the least-recently used body');
   } finally {
     store.close();
     await owner.close();

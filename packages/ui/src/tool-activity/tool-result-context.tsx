@@ -25,6 +25,7 @@ export type ToolOutputSource =
   | { kind: 'archive'; sessionId: string; identity: ToolResultArchiveIdentity };
 
 export interface ToolOutputOpenRequest {
+  sessionId: string;
   title: string;
   toolName?: string;
   source: ToolOutputSource;

@@ -38,7 +38,12 @@ export interface WebFetchExecutor {
     readonly url: string;
     readonly sessionId: string;
     readonly abortSignal?: AbortSignal;
-  }): Promise<string>;
+  }): Promise<WebFetchResponse>;
+}
+
+export interface WebFetchResponse {
+  readonly content: string;
+  readonly finalUrl: string;
 }
 
 /** Builds the model-facing tool while the host owns policy and transport. */
@@ -61,12 +66,12 @@ export function buildWebFetchTool(
     },
     impl: async ({ url }, context) => {
       const canonicalUrl = new URL(httpUrlSchema.parse(url)).toString();
-      const content = await executor.fetch({
+      const response = await executor.fetch({
         url: canonicalUrl,
         sessionId: context.sessionId,
         ...(context.abortSignal ? { abortSignal: context.abortSignal } : {}),
       });
-      return truncateWebFetchOutput(content);
+      return truncateWebFetchOutput(response.content, response.finalUrl);
     },
   };
 }
@@ -81,13 +86,16 @@ export function routeWebFetchTools(
     : [...tools];
 }
 
-function truncateWebFetchOutput(content: string): Extract<ToolResultContent, { kind: 'text' }> {
+function truncateWebFetchOutput(
+  content: string,
+  sourceUrl: string,
+): Extract<ToolResultContent, { kind: 'text' }> {
   if (Buffer.byteLength(content, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES)
-    return { kind: 'text', text: content };
+    return { kind: 'text', text: content, sourceUrl };
   const markerBytes = Buffer.byteLength(WEB_FETCH_TRUNCATION_MARKER, 'utf8');
   const kept = Buffer.from(content, 'utf8')
     .subarray(0, WEB_FETCH_MODEL_OUTPUT_MAX_BYTES - markerBytes)
     .toString('utf8')
     .replace(/�+$/, '');
-  return { kind: 'text', text: kept, truncated: true };
+  return { kind: 'text', text: kept, sourceUrl, truncated: true };
 }

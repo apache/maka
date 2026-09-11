@@ -643,7 +643,7 @@ export async function createExecutionRuntimeHostComposition(
     pluginWeb.bindRuntime({
       search: ({ query, limit, abortSignal }) =>
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
-      fetch: (input) => webFetchService.fetch(input),
+      fetch: async (input) => (await webFetchService.fetch(input)).content,
     });
     const historyTools = buildHistoryTools({
       listSessions: () => requireSessionManager(manager).listSessions(),

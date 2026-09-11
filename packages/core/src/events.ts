@@ -822,6 +822,7 @@ export type ToolResultContent =
   | {
       kind: 'text';
       text: string;
+      sourceUrl?: string;
       truncated?: boolean;
       sandboxDenial?: SandboxDenialSignal;
       sandboxFailure?: SandboxBoundaryFailureSignal;

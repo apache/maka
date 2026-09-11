@@ -27,11 +27,17 @@ const TOOL_LINE_CAP = 500;
 
 /** Read persists its file body inside a JSON content envelope. */
 export function readResultText(result: ToolResultContent | undefined): string | undefined {
-  if (result?.kind === 'text') return result.text;
+  if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : undefined;
   if (result?.kind !== 'json' || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return undefined;
   const record = result.value as Record<string, unknown>;
   // Preserve other fields (including diagnostics) in the generic JSON preview.
   return Object.keys(record).length === 1 && typeof record.content === 'string' ? record.content : undefined;
+}
+
+/** User-visible logical lines; a final newline terminates rather than adds a line. */
+export function countTextLines(text: string): number {
+  if (text === '') return 0;
+  return (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n').length;
 }
 
 export function capLines(
@@ -89,11 +95,13 @@ export function summarizeErrorText(text: string): string {
 }
 
 /** A citation label shared by the collapsed row and the expanded fetch card. */
-export function webFetchReference(text: string, args: unknown) {
-  const rawUrl = args && typeof args === 'object' && 'url' in args ? args.url : undefined;
+export function webFetchReference(text: unknown, args: unknown, sourceUrl?: string) {
+  const rawUrl = sourceUrl ?? (args && typeof args === 'object' && 'url' in args ? args.url : undefined);
   const normalized = typeof rawUrl === 'string' ? normalizeSearchUrl(redactSecrets(rawUrl)) : undefined;
   const url = normalized?.ok ? new URL(normalized.value) : undefined;
-  const heading = /^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/m.exec(text.slice(0, 16_000))?.[1];
+  const heading = typeof text === 'string'
+    ? /^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/m.exec(text.slice(0, 16_000))?.[1]
+    : undefined;
   return {
     title: redactSecrets(heading ?? url?.hostname ?? 'WebFetch').slice(0, 160),
     href: url?.href,

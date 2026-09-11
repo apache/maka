@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { buildWebFetchTool } from '@maka/runtime/web-fetch-tool';
+import { buildWebFetchTool, type WebFetchResponse } from '@maka/runtime/web-fetch-tool';
 import { createLocalWebFetchExecutor } from '@maka/runtime/local-web-fetch';
 import {
   createProxiedFetchTransport,
@@ -38,7 +38,7 @@ export interface HostWebFetchService {
     readonly url: string;
     readonly sessionId: string;
     readonly abortSignal?: AbortSignal;
-  }): Promise<string>;
+  }): Promise<WebFetchResponse>;
 }
 
 export function createHostWebFetchService(input: HostWebFetchServiceInput): HostWebFetchService {

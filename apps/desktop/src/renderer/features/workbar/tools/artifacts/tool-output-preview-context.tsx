@@ -21,30 +21,55 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
 import { ToolResultHostProvider, type ToolOutputOpenRequest } from '@maka/ui';
 
 const ToolOutputPreviewContext = createContext<{
-  preview?: { request: ToolOutputOpenRequest; id: number };
-  close(): void;
-  hide(): void;
+  previewFor(sessionId: string): { request: ToolOutputOpenRequest; id: number } | undefined;
+  open(request: ToolOutputOpenRequest): void;
+  close(sessionId: string): void;
+  hide(sessionId: string): void;
 } | undefined>(undefined);
 
 export const useToolOutputPreview = () => useContext(ToolOutputPreviewContext);
 
 /** Retained tool output is a transient selection in the existing Files viewer. */
 export function ToolOutputPreviewProvider(props: { children?: ReactNode }) {
-  const [preview, setPreview] = useState<{ request: ToolOutputOpenRequest; id: number }>();
+  const [previews, setPreviews] = useState<ReadonlyMap<string, { request: ToolOutputOpenRequest; id: number }>>(
+    () => new Map(),
+  );
   const nextId = useRef(0);
-  const opener = useRef<HTMLElement | null>(null);
-  const close = useCallback(() => { setPreview(undefined); opener.current = null; }, []);
-  const hide = useCallback(() => {
-    setPreview(undefined);
-    if (opener.current?.isConnected) opener.current.focus();
-    opener.current = null;
+  const openers = useRef(new Map<string, HTMLElement>());
+  const close = useCallback((sessionId: string) => {
+    setPreviews((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+    openers.current.delete(sessionId);
   }, []);
-  const openOutput = useCallback((request: ToolOutputOpenRequest) => {
-      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setPreview({ request, id: ++nextId.current });
+  const hide = useCallback((sessionId: string) => {
+    setPreviews((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+    const opener = openers.current.get(sessionId);
+    if (opener?.isConnected) opener.focus();
+    openers.current.delete(sessionId);
   }, []);
-  const value = useMemo(() => ({ preview, close, hide }), [preview, close, hide]);
+  const open = useCallback((request: ToolOutputOpenRequest) => {
+    if (document.activeElement instanceof HTMLElement) {
+      openers.current.set(request.sessionId, document.activeElement);
+    } else {
+      openers.current.delete(request.sessionId);
+    }
+    setPreviews((current) => new Map(current).set(
+      request.sessionId,
+      { request, id: ++nextId.current },
+    ));
+  }, []);
+  const previewFor = useCallback((sessionId: string) => previews.get(sessionId), [previews]);
+  const value = useMemo(() => ({ previewFor, open, close, hide }), [previewFor, open, close, hide]);
   return <ToolOutputPreviewContext.Provider value={value}>
-    <ToolResultHostProvider value={openOutput}>{props.children}</ToolResultHostProvider>
+    <ToolResultHostProvider value={open}>{props.children}</ToolResultHostProvider>
   </ToolOutputPreviewContext.Provider>;
 }

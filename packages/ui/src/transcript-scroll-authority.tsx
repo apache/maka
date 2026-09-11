@@ -58,6 +58,8 @@ export interface TranscriptScrollAuthority {
   attach(root: HTMLElement | null): () => void;
   /** One-shot: put the tail back under the reader and follow it again. */
   pinToTail(): void;
+  /** Follow content growth without overriding an in-progress reader gesture. */
+  followTail(): void;
   /**
    * The reader chose a position, so stop following. A command that moves the
    * viewport itself calls this first; afterwards nothing here writes, which is
@@ -92,6 +94,7 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
   let root: HTMLElement | null = null;
   let pinned = true;
   let awayFromTail = false;
+  let readerScrollTop: number | undefined;
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
@@ -109,6 +112,7 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
+    readerScrollTop = root.scrollTop;
     awayFromTail = false;
     publish();
   };
@@ -122,6 +126,10 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
       const target = root;
       if (!target) return () => undefined;
       const previousOverflowAnchor = target.style.overflowAnchor;
+      if (!pinned && readerScrollTop !== undefined) {
+        target.scrollTop = readerScrollTop;
+        awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+      }
       publish();
       const begin = (event: Event, direction: 'up' | 'down'): void => {
         if (event.defaultPrevented || !reachesTranscript(event, target, direction)) return;
@@ -188,6 +196,7 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
       };
       const onTouchEnd = (): void => { touchY = undefined; };
       const onScroll = (): void => {
+        readerScrollTop = target.scrollTop;
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         if (gesture) {
           const delta = target.scrollTop - gesture.top;
@@ -279,6 +288,7 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
         target.removeEventListener('scroll', onScroll);
         target.removeEventListener('scrollend', onScrollEnd);
         target.style.overflowAnchor = previousOverflowAnchor;
+        readerScrollTop = target.scrollTop;
         gesture = undefined;
         if (root === target) root = null;
       };
@@ -288,6 +298,9 @@ export function createTranscriptScrollAuthority(options: { explicitResume?: bool
       pinned = true;
       writeToTail();
       publish();
+    },
+    followTail() {
+      if (pinned && !gesture) writeToTail();
     },
     releasePin() {
       gesture = undefined;

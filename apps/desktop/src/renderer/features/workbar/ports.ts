@@ -126,7 +126,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
-  readToolResult?(sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult>;
+  readToolResult(sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult>;
   list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,

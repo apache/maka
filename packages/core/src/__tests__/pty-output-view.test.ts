@@ -20,13 +20,13 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import type { PtyShellOutput } from '../shell-run.js';
-import { PTY_TRUNCATED_MARKER, ptyHumanTerminalText } from '../pty-output-view.js';
+import { ptyHumanTerminalText, ptyTuiTerminalRows } from '../pty-output-view.js';
 
-it('keeps structured PTY truncation metadata out of the human-readable text', () => {
+it('projects the same retained PTY text to human and TUI views when truncated', () => {
   const output: PtyShellOutput = {
     mode: 'pty',
     screen: 'ALL_TESTS_PASSED',
-    scrollback: `${PTY_TRUNCATED_MARKER}\nretained output`,
+    scrollback: 'retained output',
     cols: 80,
     rows: 24,
     cursor: { x: 0, y: 0, visible: true },
@@ -36,4 +36,5 @@ it('keeps structured PTY truncation metadata out of the human-readable text', ()
   };
 
   assert.equal(ptyHumanTerminalText(output), 'retained output\nALL_TESTS_PASSED');
+  assert.deepEqual(ptyTuiTerminalRows(output), ['retained output', 'ALL_TESTS_PASSED']);
 });

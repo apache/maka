@@ -32,23 +32,33 @@ test('WebFetch forwards the canonical URL to its executor', async () => {
   const tool = buildWebFetchTool({
     fetch: async (input) => {
       received = input;
-      return 'page body';
+      return { content: 'page body', finalUrl: 'https://cdn.example/final' };
     },
   });
   const abort = new AbortController();
 
   const result = await tool.impl({ url: 'https://example.com/a/../page' }, context(abort.signal));
 
-  assert.deepEqual(result, { kind: 'text', text: 'page body' });
+  assert.deepEqual(result, {
+    kind: 'text',
+    text: 'page body',
+    sourceUrl: 'https://cdn.example/final',
+  });
   assert.deepEqual(received, {
     url: 'https://example.com/page',
     sessionId: 'session-1',
     abortSignal: abort.signal,
   });
+  assert.deepEqual(tool.toModelOutput!({ toolCallId: 'fetch', input: {}, output: result }), {
+    type: 'text',
+    value: 'page body',
+  });
 });
 
 test('WebFetch accepts only an HTTP or HTTPS url argument', () => {
-  const tool = buildWebFetchTool({ fetch: async () => 'unused' });
+  const tool = buildWebFetchTool({
+    fetch: async () => ({ content: 'unused', finalUrl: 'https://example.com/' }),
+  });
   const parameters = tool.parameters as ZodType;
 
   assert.deepEqual(parameters.parse({ url: 'https://example.com/page' }), {
@@ -59,7 +69,12 @@ test('WebFetch accepts only an HTTP or HTTPS url argument', () => {
 });
 
 test('WebFetch bounds model output with a head-truncation marker', async () => {
-  const tool = buildWebFetchTool({ fetch: async () => `begin:${'x'.repeat(60 * 1024)}:end` });
+  const tool = buildWebFetchTool({
+    fetch: async () => ({
+      content: `begin:${'x'.repeat(60 * 1024)}:end`,
+      finalUrl: 'https://example.com/large',
+    }),
+  });
 
   const result = await tool.impl(
     { url: 'https://example.com/large' },
@@ -77,7 +92,9 @@ test('WebFetch bounds model output with a head-truncation marker', async () => {
 });
 
 test('privacy mode removes WebFetch from a turn', () => {
-  const webFetch = buildWebFetchTool({ fetch: async () => 'unused' });
+  const webFetch = buildWebFetchTool({
+    fetch: async () => ({ content: 'unused', finalUrl: 'https://example.com/' }),
+  });
   const other = { ...webFetch, name: 'Read' };
 
   assert.deepEqual(

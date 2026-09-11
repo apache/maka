@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, getToolActivityCopy, useClipboardCopyFeedback, useUiLocale, redactSecrets, type ToolOutputOpenRequest } from '@maka/ui';
 import { ArrowLeft, ICON_SIZE } from '@maka/ui/icons';
 import { formatSavedToolJson } from '@maka/core/tool-quiet-preview';
+import { unwrapArchiveReadPage } from '@maka/runtime/tool-result-archive-resource';
 import { getArtifactCopy } from '../../../../locales/artifact-copy.js';
 import { TextFilePreview } from './artifact-preview.js';
 import { useWorkbarServices } from '../../services-context.js';
@@ -30,7 +31,7 @@ export function ToolOutputPreview(props: { request: ToolOutputOpenRequest; onClo
   const locale = useUiLocale();
   const copy = getToolActivityCopy(locale);
   const artifactCopy = getArtifactCopy(locale);
-  const [result, setResult] = useState<{ text: string; partial: boolean } | 'failed' | 'unavailable' | ArtifactReadFailureReason>();
+  const [result, setResult] = useState<{ text: string; partial: boolean } | 'failed' | ArtifactReadFailureReason>();
   const [attempt, setAttempt] = useState(0);
   const region = useRef<HTMLDivElement>(null);
   const feedback = useClipboardCopyFeedback();
@@ -41,29 +42,24 @@ export function ToolOutputPreview(props: { request: ToolOutputOpenRequest; onClo
     const load = source.kind === 'text'
       ? Promise.resolve(source.text)
       : (async () => {
-          const result = await artifacts.readToolResult?.(
+          const result = await artifacts.readToolResult(
             source.sessionId,
             source.identity,
           );
-          return result?.ok ? result.text : result;
+          return result.ok ? result.text : result;
         })();
     load.then((raw) => {
       if (cancelled) return;
-      if (raw === undefined) { setResult('unavailable'); return; }
       if (typeof raw !== 'string') { setResult(raw.reason); return; }
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch { /* Plain output is valid too. */ }
       let partial = false;
-      // ArchiveRead wraps a retained page in protocol metadata. Only unwrap
-      // successful body responses; ordinary JSON and diagnostics stay intact.
-      if (props.request.toolName === 'ArchiveRead' && parsed && typeof parsed === 'object' && 'kind' in parsed && parsed.kind === 'tool_result_archive'
-        && 'ok' in parsed && parsed.ok === true && 'operation' in parsed
-        && (parsed.operation === 'read' || parsed.operation === 'query')
-        && 'content' in parsed && typeof parsed.content === 'string') {
-        partial ||= ('hasMore' in parsed && parsed.hasMore === true)
-          || ('offset' in parsed && typeof parsed.offset === 'number' && parsed.offset > 0)
-          || ('lineOffset' in parsed && typeof parsed.lineOffset === 'number' && parsed.lineOffset > 0);
-        parsed = parsed.content;
+      const archivePage = props.request.toolName === 'ArchiveRead'
+        ? unwrapArchiveReadPage(parsed)
+        : null;
+      if (archivePage) {
+        partial = archivePage.partial;
+        parsed = archivePage.content;
       }
       const text = parsed === undefined ? redactSecrets(raw)
         : typeof parsed === 'string' ? redactSecrets(parsed) : formatSavedToolJson(parsed);
@@ -90,7 +86,6 @@ export function ToolOutputPreview(props: { request: ToolOutputOpenRequest; onClo
       <div ref={region} className="maka-artifact-preview" role="region"
         aria-label={artifactCopy.pane.previewNamed(props.request.title)} tabIndex={-1}>
         {!result && <p role="status">{copy.detail.loading}</p>}
-        {result === 'unavailable' && <p role="status">{copy.detail.unavailable}</p>}
         {result && typeof result === 'string' && result !== 'read_failed' && result in copy.detail.readFailure &&
           <p role="status">{copy.detail.readFailure[result as ArtifactReadFailureReason]}</p>}
         {(result === 'failed' || result === 'read_failed') && <div role="alert"><p>{copy.detail.loadFailed}</p>
