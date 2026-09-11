@@ -189,7 +189,7 @@
   position: relative;
   width: 100%;
   box-sizing: border-box;
-  padding-inline: clamp(var(--space-3), 4vw, var(--space-10));
+  padding-inline: var(--maka-transcript-gutter, clamp(var(--space-3), 4vw, var(--space-10)));
 }
 
 .maka-chat-layout {

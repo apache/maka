@@ -2410,6 +2410,10 @@ function AppShellContent({
                     : undefined
                 }
                 parentSession={titlebarParentSession}
+                backAction={workHubEnabled ? {
+                  label: getShellCopy(uiLocale).navigation.backToWorkHub,
+                  onClick: openWorkHub,
+                } : undefined}
               />
             )}
             {!sharedSessionActive && !VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (

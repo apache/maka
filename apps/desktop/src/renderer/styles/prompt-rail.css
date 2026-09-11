@@ -25,30 +25,12 @@
    The hover preview is Astryx's HoverCard; only the two lines inside it are
    styled here. */
 
-/* Astryx's ChatLayout is the scroll container and the transcript — chat shell
-   and all — renders inside it, so `position: absolute` resolves against a box
-   as tall as the whole conversation: the rail used to be laid out across
-   ~32000px and scroll away with the content instead of staying on screen.
-
-   This zero-height sticky anchor is what pins it. It costs no flow space and
-   holds the scrollport's top edge at every scroll position — the same sticky
-   mechanism Astryx uses for the composer dock. It only works from the anchor's
-   own static position onward, so ChatView renders it as the first child of
-   `.maka-chat-shell`.
-
-   `top: 0` rather than the centreline, deliberately: a sticky offset is
-   clamped by its containing block, and this one's is the chat shell, which
-   ends where the transcript does — above the scrollport's bottom edge, since
-   the dock's own box follows it in flow. An anchor parked mid-scrollport
-   therefore gets dragged upward as the reader reaches the end of a
-   conversation, taking the rail off the top of the scrollport with it (CI
-   caught -62px at a 500px window). Pinned to the top edge the clamp cannot
-   engage while any transcript is on screen, and the rail does its own
-   centring from the measured band below.
-
-   `--maka-prompt-rail-scrollport` / `--maka-prompt-rail-dock` /
-   `--maka-prompt-rail-height` are measured in prompt-anchor-rail.tsx; see the
-   rail's own rule for what they buy. */
+/* The full-width message-area host pins the rail to the scrollport's top
+   edge without adding flow space. Keeping it outside bounded transcript
+   columns gives Session and WorkHub the same right edge. Standalone ChatView
+   retains its sticky anchor. The rail measures the scrollport and dock to
+   centre itself in the visible transcript band. */
+.maka-prompt-rail-host,
 .maka-prompt-rail-anchor {
   position: sticky;
   top: 0;
@@ -58,6 +40,10 @@
      target, or it would swallow clicks across the transcript. */
   pointer-events: none;
 }
+
+/* The layout anchor is outside capped transcript columns and context banners.
+   A standalone ChatView keeps its own sticky anchor as a fallback. */
+.maka-prompt-rail-host > .maka-prompt-rail-anchor { position: relative; }
 
 .maka-prompt-rail {
   position: absolute;

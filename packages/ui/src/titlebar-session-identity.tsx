@@ -43,6 +43,7 @@ export function TitlebarSessionIdentity(props: {
   onRenameSession(name: string): void;
   project?: TitlebarProject;
   parentSession?: TitlebarParentSession;
+  backAction?: { label: string; onClick(): void };
   readOnly?: boolean;
   action?: { readonly label: string; onClick(): void };
 }) {
@@ -90,6 +91,17 @@ export function TitlebarSessionIdentity(props: {
 
   return (
     <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
+      {props.backAction ? (
+        <Button
+          className="maka-titlebar-identity__action"
+          label={props.backAction.label}
+          tooltip={props.backAction.label}
+          icon={<ArrowLeft size={14} />}
+          variant="ghost"
+          size="sm"
+          onClick={props.backAction.onClick}
+        />
+      ) : null}
       {props.parentSession ? (
         <IconButton
           className="maka-titlebar-identity__action"

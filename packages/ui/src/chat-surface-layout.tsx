@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useMemo, type ComponentProps } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import {
@@ -25,6 +25,7 @@ import {
   TranscriptScrollButton,
 } from './transcript-scroll-authority.js';
 import { cn } from './utils.js';
+import { PromptAnchorRailHostContext } from './prompt-anchor-rail.js';
 
 /**
  * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
@@ -57,11 +58,13 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
  */
 export function ChatSurfaceLayout({
   className,
+  children,
   density = 'balanced',
   scrollToBottomLabel,
   onReturnToTail,
   ...props
 }: ChatSurfaceLayoutProps) {
+  const [railHost, setRailHost] = useState<HTMLDivElement | null>(null);
   const astryxOverrides = useMemo(
     () =>
       scrollToBottomLabel
@@ -71,6 +74,8 @@ export function ChatSurfaceLayout({
         : undefined,
     [scrollToBottomLabel],
   );
+  const hasContent = children != null && children !== false
+    && !(Array.isArray(children) && children.length === 0);
   const layout = (
     <ChatLayout
       {...props}
@@ -82,7 +87,12 @@ export function ChatSurfaceLayout({
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
-    />
+    >
+      {hasContent ? <>
+        <div className="maka-prompt-rail-host" ref={setRailHost} />
+        {children}
+      </> : children}
+    </ChatLayout>
   );
   const localized = astryxOverrides ? (
     <AstryxLocaleProvider overrides={astryxOverrides}>{layout}</AstryxLocaleProvider>
@@ -93,5 +103,7 @@ export function ChatSurfaceLayout({
   // and costs one object, and providing it always is what lets everything
   // below treat it as present instead of carrying a second, unreachable
   // behaviour for its absence.
-  return <TranscriptScrollAuthorityProvider>{localized}</TranscriptScrollAuthorityProvider>;
+  return <TranscriptScrollAuthorityProvider>
+    <PromptAnchorRailHostContext value={railHost}>{localized}</PromptAnchorRailHostContext>
+  </TranscriptScrollAuthorityProvider>;
 }
