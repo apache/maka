@@ -239,12 +239,14 @@ test('superseded batches remain ACKable and cannot reset the latest range while 
   const firstOldBatch = deferred<void>();
   const eventsClosed = deferred<void>();
   const bootstrap = page(1);
-  const historyPage = page(1);
+  const historyPage = { ...page(1), direction: 'newer' as const };
+  const beforeStartPage = page(1);
   const latestPage = page(1);
   const old = record(0);
   const largeOld = { ...old, message: { ...old.message, text: 'A'.repeat(700 * 1024) } as StoredMessage };
   const latest = record(1);
   const blocked: DesktopTranscriptBatch[] = [];
+  const requests: Array<{ direction: string; anchorSequence: number | null }> = [];
   let releaseAcks = false;
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: async () => runtimeHostSessionFixture({
@@ -255,11 +257,22 @@ test('superseded batches remain ACKable and cannot reset the latest range while 
         durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
       },
       loadTranscriptOverlay: async () => [],
-      decodeTranscriptPage: async (candidate) => ({
-        messages: candidate === historyPage ? [largeOld] : [latest],
-        nextCursor: candidate === historyPage ? 'newer' : 'older',
-      }),
-      loadTranscriptPage: async (request) => request.direction === 'newer' ? historyPage : latestPage,
+      decodeTranscriptPage: async (candidate) => candidate === beforeStartPage
+        ? { messages: [], nextCursor: null }
+        : {
+            messages: candidate === historyPage ? [largeOld] : [latest],
+            nextCursor: candidate === historyPage ? 'newer' : 'older',
+          },
+      loadTranscriptPage: async (request) => {
+        requests.push({ direction: request.direction, anchorSequence: request.anchorSequence ?? null });
+        if (request.direction === 'newer') {
+          assert.equal(request.anchorSequence, null);
+          return historyPage;
+        }
+        if (request.anchorSequence === 0) return beforeStartPage;
+        assert.equal(request.anchorSequence, 2);
+        return latestPage;
+      },
       async close() { eventsClosed.resolve(); },
     }) },
     emitSessionsChanged() {},
@@ -287,6 +300,11 @@ test('superseded batches remain ACKable and cannot reset the latest range while 
   releaseAcks = true;
   for (const batch of blocked) ack(batch);
   await Promise.all([history, following]);
+  assert.deepEqual(requests, [
+    { direction: 'newer', anchorSequence: null },
+    { direction: 'older', anchorSequence: 0 },
+    { direction: 'older', anchorSequence: 2 },
+  ]);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
   const snapshot = store.snapshot();
   for (const batch of blocked) assert.equal(store.accept(batch), false);

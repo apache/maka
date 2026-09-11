@@ -1222,6 +1222,7 @@ test('loads a history target with newer messages available below it', async () =
   }));
   const bootstrapPage = transcriptPage('older', null, 4);
   const aroundPage = transcriptPage('newer', 'newer', 4);
+  const beforeStartPage = olderProbePage(0, false);
   const inputs: Array<{ direction: string; anchorSequence: number | null }> = [];
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
@@ -1236,10 +1237,12 @@ test('loads a history target with newer messages available below it', async () =
     loadTranscriptOverlay: async () => [],
     decodeTranscriptPage: async (page) => page === bootstrapPage
       ? { messages: messages.slice(4), nextCursor: null }
-      : { messages: messages.slice(0, 3), nextCursor: 'newer' },
+      : page === beforeStartPage
+        ? { messages: [], nextCursor: null }
+        : { messages: messages.slice(0, 3), nextCursor: 'newer' },
     loadTranscriptPage: async (input) => {
       inputs.push(input);
-      return input.direction === 'older' ? olderProbePage(0, false) : aroundPage;
+      return input.direction === 'older' ? beforeStartPage : aroundPage;
     },
     async close() {},
   });
@@ -1273,6 +1276,8 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
   const bootstrapPage = transcriptPage('older', 'older', 15);
   const historicalPage = transcriptPage('newer', 'newer', 15);
   const intermediatePage = transcriptPage('newer', 'newer', 15);
+  const beforeStartPage = transcriptPage('older', null, 15);
+  const beforeIntermediatePage = transcriptPage('older', 'older', 15);
   const latestPage = transcriptPage('older', 'older', 15);
   const requests: Array<{
     direction: 'older' | 'newer';
@@ -1294,6 +1299,10 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
     loadTranscriptOverlay: async () => [],
     decodeTranscriptPage: async (page) => page === bootstrapPage || page === latestPage
       ? { messages: messages.slice(12, 16), nextCursor: 'older' }
+      : page === beforeStartPage
+        ? { messages: [], nextCursor: null }
+        : page === beforeIntermediatePage
+          ? { messages: messages.slice(1, 6), nextCursor: 'older' }
       : page === historicalPage
         ? { messages: messages.slice(0, 5), nextCursor: 'newer' }
         : { messages: messages.slice(6, 11), nextCursor: 'newer' },
@@ -1304,8 +1313,9 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
         maxBytes: input.maxBytes,
       });
       if (input.direction === 'older') {
-        if (input.maxBytes > 1) return latestPage;
-        return olderProbePage(input.anchorSequence!, input.anchorSequence !== 0);
+        if (input.anchorSequence === 0) return beforeStartPage;
+        if (input.anchorSequence === 6) return beforeIntermediatePage;
+        return latestPage;
       }
       return input.anchorSequence === null ? historicalPage : intermediatePage;
     },
@@ -1338,8 +1348,8 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
   assertRangeFitsBudget(rendererStore);
 
   await replica.loadAround(6, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
-  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [6, 7, 8, 9, 10]);
-  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 4', 'Prompt 5', 'Prompt 6']);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [4, 5, 6, 7]);
+  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 3', 'Prompt 4']);
   assert.equal(rendererStore.range().hasOlder, true);
   assert.equal(rendererStore.range().hasNewer, true);
   assertRangeFitsBudget(rendererStore);
@@ -1351,13 +1361,13 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
   assert.equal(rendererStore.range().hasNewer, false);
   assertRangeFitsBudget(rendererStore);
 
-  // Every jump that is not to the tail pays one extra single-byte read, the
-  // only thing that can say whether the anchor has anything older than it.
+  // Every jump that is not to the tail reads both sides of the target. The
+  // resident budget then keeps the target and the nearest complete Turns.
   assert.deepEqual(requests, [
     { direction: 'newer', anchorSequence: null, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
-    { direction: 'older', anchorSequence: 0, maxBytes: 1 },
+    { direction: 'older', anchorSequence: 0, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
     { direction: 'newer', anchorSequence: 5, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
-    { direction: 'older', anchorSequence: 6, maxBytes: 1 },
+    { direction: 'older', anchorSequence: 6, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
     { direction: 'older', anchorSequence: 16, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
   ]);
   replica.close();

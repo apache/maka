@@ -66,8 +66,8 @@
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
     "transcript-scroll-cost.spec.ts": {
-      "tests": 3,
-      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"
+      "tests": 4,
+      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping; prompt-rail navigation and history prepend cross the renderer, preload and main-process transcript range boundary"
     },
     "workhub-layout.spec.ts": {
       "tests": 2,

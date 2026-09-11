@@ -63,6 +63,11 @@ test('durable tail advancement preserves an explicitly selected oversized histor
   try {
     await fixture.replica.loadAround(0, PAGE_BYTES);
     assert.deepEqual(sequences(fixture.replica), [0, 1]);
+    assert.equal(fixture.replica.snapshot().hasOlder, false);
+    assert.deepEqual(fixture.requests, [
+      { direction: 'newer', anchorSequence: null, throughSequence: 3 },
+      { direction: 'older', anchorSequence: 0, throughSequence: 3 },
+    ]);
     fixture.requests.length = 0;
 
     await fixture.replica.advance(4);
@@ -455,15 +460,23 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
       const through = request.throughSequence ?? 4;
       const anchor = request.anchorSequence ?? null;
       requests.push({ direction: request.direction, anchorSequence: anchor, throughSequence: through });
-      const history = request.direction === 'older' ? anchor === 2 : anchor === null;
+      const available = records.filter(({ identity }) => identity <= through && (
+        anchor === null || (request.direction === 'older' ? identity < anchor : identity > anchor)
+      ));
+      const history = request.direction === 'older'
+        ? anchor !== null && anchor <= 2
+        : anchor === null;
+      // Keep the fixture's oversized first Turn on its own page, but never
+      // return records on the wrong side of the requested exclusive anchor.
+      const selected = history ? available.filter(({ identity }) => identity < 2)
+        : request.direction === 'older' ? available.filter(({ identity }) => identity >= 2)
+          : available;
       return page({
         direction: request.direction,
         through,
-        records: history ? records.slice(0, 2)
-          : request.direction === 'older' ? records.slice(2, through + 1)
-            : records.slice((anchor ?? -1) + 1, through + 1),
-        hasMore: history ? request.direction === 'newer' : request.direction === 'older',
-        protectedSequence: history ? 0 : through >= 5 ? 5 : 2,
+        records: selected,
+        hasMore: selected.length < available.length,
+        protectedSequence: selected.length === 0 ? null : history ? 0 : through >= 5 ? 5 : 2,
       });
     },
     async close() {},

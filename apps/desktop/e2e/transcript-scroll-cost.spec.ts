@@ -230,6 +230,66 @@ test('the browser skips the Turns the reader has scrolled past', async ({
   expect((await sample(page)).skippedTurns).toBeGreaterThan(0);
 });
 
+test('a large upward gesture after a prompt-rail jump stays continuous', async ({
+  promptRailWindow: page,
+}) => {
+  const wheelDelta = 80;
+  const wheelTicks = 24;
+  await page.setViewportSize({ width: 1_000, height: 700 });
+  const ticks = page.locator('.maka-prompt-rail-tick[data-prompt-turn-id]');
+  const tick = ticks.nth(Math.floor(await ticks.count() / 2));
+  const turnId = await tick.getAttribute('data-prompt-turn-id');
+  expect(turnId).not.toBeNull();
+
+  await tick.click();
+  const destination = page.locator(`[data-turn-id="${turnId}"]`);
+  await expect(destination).toHaveCount(1);
+  await expect.poll(async () => page.evaluate((id) => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    const turn = document.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(id)}"]`);
+    if (!root || !turn) return null;
+    return turn.getBoundingClientRect().top - root.getBoundingClientRect().top;
+  }, turnId!)).toBe(0);
+
+  const turns = page.locator('[data-turn-id]');
+  const firstTurnBefore = await turns.first().getAttribute('data-turn-id');
+  expect(firstTurnBefore).not.toBe(turnId);
+  const cdp = await page.context().newCDPSession(page);
+  const box = await page.locator(SCROLLER).boundingBox();
+  if (!box) throw new Error('the chat scroll container has no box');
+  const visibleTurnTops = () => page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) return [];
+    const rootRect = root.getBoundingClientRect();
+    return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].flatMap((turn) => {
+      const rect = turn.getBoundingClientRect();
+      return rect.bottom > rootRect.top && rect.top < rootRect.bottom
+        ? [{ id: turn.dataset.turnId!, top: rect.top - rootRect.top }]
+        : [];
+    });
+  });
+  for (let index = 0; index < wheelTicks; index += 1) {
+    const before = await visibleTurnTops();
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: box.x + box.width / 2,
+      y: box.y + box.height / 2,
+      deltaX: 0,
+      deltaY: -wheelDelta,
+    });
+    await page.evaluate(() => new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    ));
+    const after = new Map((await visibleTurnTops()).map((turn) => [turn.id, turn.top]));
+    const retained = before.find((turn) => after.has(turn.id));
+    expect(retained, 'each input step must retain visible transcript content').toBeDefined();
+    expect(Math.abs(after.get(retained!.id)! - retained!.top))
+      .toBeLessThanOrEqual(wheelDelta + 2);
+  }
+
+  await expect.poll(() => turns.first().getAttribute('data-turn-id')).not.toBe(firstTurnBefore);
+});
+
 /**
  * The bound the Desktop transcript is built on: paging back through a history
  * far longer than the active range mounts a bounded number of Turns, not a

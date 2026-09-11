@@ -379,6 +379,8 @@
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-gap-row {
+  /* A range boundary is transient UI, not a reader-visible transcript anchor. */
+  overflow-anchor: none;
   width: min(var(--maka-reading-measure), 100%);
   margin: var(--space-2) auto;
   padding-block: var(--space-1);

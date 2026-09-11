@@ -444,10 +444,11 @@ export class DesktopTranscriptReplica {
       maxBytes,
     });
     if (!this.#isNavigationCurrent(token)) return;
-    // A durable sequence is an event ordinal times its stride, so the oldest row
-    // of a Session is at no fixed number and `sequence > 0` cannot answer this.
-    // Ask for one row older than the anchor instead; a jump is user-initiated,
-    // so the extra bounded read is paid once per jump.
+    // A navigation target is a reading position, not a range boundary. Keep a
+    // bounded page on its older side too, so the first upward gesture after a
+    // prompt-rail jump moves through resident Turns instead of racing a prepend.
+    // A durable sequence is an event ordinal times its stride, so only an older
+    // page can also say whether this target is the start of the Session.
     const older = loadTail
       ? null
       : await this.#handle.loadTranscriptPage({
@@ -456,8 +457,20 @@ export class DesktopTranscriptReplica {
           throughSequence,
           cursor: null,
           anchorSequence: sequence,
-          maxBytes: 1,
+          maxBytes,
         });
+    let decodedOlder: Awaited<ReturnType<DesktopRuntimeHostSession['decodeTranscriptPage']>>
+      | undefined;
+    if (older) {
+      await this.#withDecodedPage(older, (decoded) => {
+        this.#acceptRange(decoded.messages);
+        const lastOlder = decoded.messages.at(-1);
+        if (lastOlder && !this.#matchesCoverageStep(sequence, lastOlder.identity + 1)) {
+          throw correlationError('Desktop transcript older range crossed its anchor');
+        }
+        decodedOlder = decoded;
+      });
+    }
     await this.#withDecodedPage(page, (decoded) => {
       if (!this.#isNavigationCurrent(token)) return;
       // `#resident` can flip to false across the `await` above (a concurrent
@@ -467,7 +480,10 @@ export class DesktopTranscriptReplica {
       // memory budget. The paged catch-up guards its own post-await callback
       // the same way; mirror it before mutating or publishing.
       if (!this.#resident) return;
-      this.#acceptRange(decoded.messages);
+      const messages = decodedOlder
+        ? [...decodedOlder.messages, ...decoded.messages]
+        : decoded.messages;
+      this.#acceptRange(messages);
       if (
         decoded.messages.length > 0 &&
         (loadTail
@@ -478,13 +494,13 @@ export class DesktopTranscriptReplica {
       }
       const evictedDurableSequences = [...this.#durable.keys()];
       this.#clearDurable();
-      const completedOverlayMessageIds = this.#installDurable(decoded.messages);
+      const completedOverlayMessageIds = this.#installDurable(messages);
       this.#durableThrough = throughSequence;
       this.#readingAnchorSequence = this.#intent === 'history' ? sequence : undefined;
       this.#readingAnchorTurnId = this.#intent === 'history'
         ? this.#durable.get(sequence)?.message.turnId : undefined;
       this.#adjacentReadingSequence = undefined;
-      this.#hasOlder = loadTail ? decoded.nextCursor !== null : older!.fragments.length > 0;
+      this.#hasOlder = loadTail ? decoded.nextCursor !== null : decodedOlder!.nextCursor !== null;
       this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
       evictedDurableSequences.push(
         ...this.#evictToBudget(
@@ -493,7 +509,7 @@ export class DesktopTranscriptReplica {
           loadTail ? (page.protectedTurnSequence ?? sequence) : sequence,
         ),
       );
-      this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+      this.#publish(messages, completedOverlayMessageIds, evictedDurableSequences);
     });
     if (this.#isNavigationCurrent(token) && this.#needsOverlaySettlement(throughSequence)) {
       await this.#settleOverlayThrough(throughSequence, token);
