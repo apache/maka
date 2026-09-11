@@ -194,7 +194,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   );
   const railTurns = railTurnIndexes.map((turnIndex) => turns[turnIndex]!);
   const activeRailTurnId = selectPromptRailTick({
-    readingTurnId: snapshot.readingTurnId,
+    // Pinned to the tail, the reader is on the newest Turn, whichever one
+    // happens to cross the top of the scrollport.
+    readingTurnId: snapshot.pinned ? orderedTurnIds.at(-1) : snapshot.readingTurnId,
     orderedTurnIds,
     railTurnIds,
     previousRailTurnId: previousActiveRailTurnIdRef.current,

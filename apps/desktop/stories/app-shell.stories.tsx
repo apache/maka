@@ -1962,19 +1962,35 @@ const PARTIAL_HISTORY_INDEX = Array.from({ length: 8 }, (_, index) => ({
 }));
 
 function PartialHistoryHarness() {
-  const [readingEarlier, setReadingEarlier] = useState(false);
+  const [range, setRange] = useState({ from: 5, count: 4 });
+  const [target, setTarget] = useState<{ turnId: string; nonce: number }>();
   return (
     <ComposedShell
       frameHeight={720}
       chat={{
-        messages: readingEarlier ? transcriptTurns(1, 4) : transcriptTurns(5, 4),
+        messages: transcriptTurns(range.from, range.count),
         transcriptTurnIndex: PARTIAL_HISTORY_INDEX,
-        onLoadTranscriptTurn: () => setReadingEarlier(true),
-        hasOlderHistory: !readingEarlier,
-        hasNewerHistory: readingEarlier,
+        // The Host's half of a rail jump, as `createSessionOpenCommand` does
+        // it: the range moves to the Turn and a scroll target names it.
+        onLoadTranscriptTurn: (loaded) => {
+          setRange({ from: loaded.sequence, count: 4 });
+          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+        },
+        scrollTargetTurn: target,
+        onScrollTargetHandled: () => setTarget(undefined),
+        hasOlderHistory: range.from > 1,
+        hasNewerHistory: range.from + range.count <= PARTIAL_HISTORY_INDEX.length,
+        // A fill extends the window; it never replaces what the reader jumped
+        // to. Like the Host's range controller it answers `false` for a window
+        // it has already read and settles a frame later: the transcript chains
+        // the next band check on `true`, so a fill that says `true` without
+        // having laid anything out is asked again in the same microtask, forever.
         onPrefetchHistory: async (edge) => {
           if (edge !== 'newer') return false;
-          setReadingEarlier(false);
+          const count = PARTIAL_HISTORY_INDEX.length - range.from + 1;
+          if (count <= range.count) return false;
+          setRange({ ...range, count });
+          await painted(2);
           return true;
         },
       }}
@@ -2444,23 +2460,15 @@ export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
   },
 };
 
-export const TailFollowDoesNotAskForHistory: Story = {
+export const TailPrefetchesHistoryUntilTheBandIsFull: Story = {
   render: () => <HistoryHarness turns={7} />,
   play: async () => {
     const before = firstResidentTurnId();
-    // A transcript shorter than about three viewports has its tail inside the
-    // band that asks for earlier history, so "near the start" cannot mean the
-    // reader wants it.
-    await waitFor(() => {
-      const settled = tailMetrics();
-      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
-      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
-    });
-
-    await painted(12);
-    // Nothing arrived that the reader did not ask for.
-    expect(historyLoads).toEqual([]);
-    expect(firstResidentTurnId()).toBe(before);
+    // Opening a Session fills the band above the reader without a gesture, and
+    // the reader stays at the tail while the pages land above them.
+    await historySettled();
+    expect(historyLoads.length).toBeGreaterThan(0);
+    expect(firstResidentTurnId()).not.toBe(before);
   },
 };
 
@@ -2611,23 +2619,6 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
 export const OversizedLiveTurnHoldsAReadingAnchorOnColdScroll: Story = {
   ...OversizedTurnHoldsAReadingAnchorOnColdScroll,
   render: () => <ComposedShell chat={{ messages: oversizedTurn, runningStatus: true }} />,
-};
-
-export const AWheelTheScrollerCannotActOnAsksForHistory: Story = {
-  render: () => <HistoryHarness turns={1} />,
-  play: async () => {
-    const before = firstResidentTurnId();
-    await painted(6);
-    const settled = tailMetrics();
-    // Too short to move: no scroll can follow the wheel, so the authority
-    // never learns the reader asked. The wheel itself has to carry it.
-    expect(settled.scrollHeight, JSON.stringify(settled)).toBeLessThanOrEqual(
-      settled.clientHeight,
-    );
-
-    wheelUp(tailScroller());
-    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
-  },
 };
 
 export const EarlierHistoryLandsAboveTheReader: Story = {
@@ -3088,18 +3079,25 @@ function turnOffsetFromScroller(turnId: string): number {
 }
 
 /**
- * The Host's half of a rail jump: a tick for a Turn outside the active range
- * comes back out as `onLoadTranscriptTurn`, and the range moves to it. ChatView
- * holds the claim until the Turn mounts, then aligns to it.
+ * The Host's half of a rail jump, as `createSessionOpenCommand` does it: a tick
+ * for a Turn outside the active range comes back out as `onLoadTranscriptTurn`,
+ * the range moves to it and a scroll target names it. ChatView holds the claim
+ * until the Turn mounts, then aligns the target to the rail's edge.
  */
 function PromptRailNavigationHarness() {
   const [firstIndex, setFirstIndex] = useState(PROMPT_RAIL_TAIL_RANGE_START);
+  const [target, setTarget] = useState<{ turnId: string; nonce: number }>();
   return (
     <ComposedShell
       chat={{
         messages: transcriptTurns(firstIndex, PROMPT_RAIL_TAIL_TURNS),
         transcriptTurnIndex: promptRailIndex,
-        onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
+        onLoadTranscriptTurn: (loaded) => {
+          setFirstIndex(loaded.sequence);
+          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+        },
+        scrollTargetTurn: target,
+        onScrollTargetHandled: () => setTarget(undefined),
       }}
     />
   );
@@ -3240,7 +3238,7 @@ export const RailStaysOnTheVisiblePrompt: Story = {
       // Reading positions across the active range, then a jump that replaces
       // the range entirely — the two ways the rail's input changes.
       for (const fraction of [0.75, 0.5, 0.25, 0]) {
-        root.scrollTop = Math.round((root.scrollHeight - root.clientHeight) * fraction);
+        scrollAsReader(root, Math.round((root.scrollHeight - root.clientHeight) * fraction));
         root.dispatchEvent(new Event('scroll'));
         await painted(4);
         await expectRailMatchesReadingPosition(`${fraction * 100}% of the transcript`);
