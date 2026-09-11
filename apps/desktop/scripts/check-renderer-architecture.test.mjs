@@ -3608,7 +3608,8 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
     });
   });
 
-  it('handles a non-writable checker directory according to --strict-base', {
+  it('handles read-only POSIX permissions on the checker directory according to --strict-base', {
+    // Windows does not enforce these mode bits, and root bypasses them.
     skip: process.platform === 'win32' || process.getuid?.() === 0,
   }, async () => {
     await withGitFixture(async (fixture) => {
