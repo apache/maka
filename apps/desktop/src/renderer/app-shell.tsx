@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import * as WorkHub from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -264,7 +264,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
-              <WorkHub.WorkHubControlOverlay />
+              <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
                   <AppShellContent
@@ -2483,8 +2483,8 @@ function AppShellContent({
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
               <ModuleHub.ModuleHubHost />
-              <WorkHub.WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHub.WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
+              <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -2513,13 +2513,13 @@ function AppShellContent({
                     !isLinkedSubagentSession(activeSessionForView) ? (
                       <AgentGraphPanel
                         rootSessionId={ownerActiveId}
-                        enabled={activeSessionForView.orchestrationMode === 'graph'}
+                        enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
                         locale={uiLocale}
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
                     {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
-                    <WorkHub.WorkHubReturnButton
+                    <WorkHubReturnButton
                       visible={workHubEnabled && Boolean(activeId) && !onboardingComposerHidden}
                       onReturn={openWorkHub}
                     />

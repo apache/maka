@@ -39,8 +39,6 @@
   pointer-events: none;
 }
 
-.maka-prompt-rail-anchor { position: relative; }
-
 .maka-prompt-rail {
   position: absolute;
   /* On macOS the chat scroller's vertical scrollbar is overlay: it takes no

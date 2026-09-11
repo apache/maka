@@ -85,6 +85,7 @@ test('WorkHub prompt rail uses the scrollport edge and the shared reading width'
 });
 
 test('Session keeps a return to WorkHub control when the sidebar is collapsed', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
   await sendPrompts(page, 'Return navigation');
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
