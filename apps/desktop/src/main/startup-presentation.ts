@@ -36,7 +36,12 @@ let handoffUsesStartup = false;
 
 const focus = () => progress?.focus();
 
-function startupRevealMode(): WindowRevealMode {
+/**
+ * The run's reveal mode as it reads before the Runtime Host boot resolves its
+ * own copy. Every input is available pre-ready (`app.isPackaged` included), so
+ * a dialog raised during startup can consult the same answer the windows do.
+ */
+export function startupRevealMode(): WindowRevealMode {
   return resolveWindowRevealMode(
     isIsolatedE2e || Boolean(process.env.MAKA_E2E_FIXTURE),
     process.env.MAKA_E2E_SHOW_WINDOW === '1',
