@@ -87,12 +87,12 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       return;
     }
 
-    const require = createRequire(import.meta.url);
-    const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
-    const { SocketModeClient } =
-      require('@slack/socket-mode') as typeof import('@slack/socket-mode');
-    this.web = new WebClient(botToken);
     try {
+      const require = createRequire(import.meta.url);
+      const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
+      const { SocketModeClient } =
+        require('@slack/socket-mode') as typeof import('@slack/socket-mode');
+      this.web = new WebClient(botToken);
       const identity = await this.web.auth.test();
       if (!identity.ok) throw new Error(identity.error ?? 'Slack auth.test failed');
       this.identity = {

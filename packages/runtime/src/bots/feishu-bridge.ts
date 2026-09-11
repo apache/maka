@@ -94,41 +94,40 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     }
 
     this.explicitlyStopped = false;
-    // Load the SDK only for a configured channel. Keep initialization
-    // synchronous so stop() cannot race a new module-loading await.
-    const { Domain, LoggerLevel, createLarkChannel } = createRequire(import.meta.url)(
-      '@larksuiteoapi/node-sdk',
-    ) as typeof import('@larksuiteoapi/node-sdk');
-    const isLark = this.settings.domain?.trim() === 'larksuite.com';
-    const channel = createLarkChannel({
-      appId,
-      appSecret,
-      domain: isLark ? Domain.Lark : Domain.Feishu,
-      transport: 'websocket',
-      source: 'maka',
-      loggerLevel: LoggerLevel.error,
-      handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
-      policy: {
-        dmMode: this.settings.allowedUserIds?.length ? 'allowlist' : 'open',
-        dmAllowlist: [...(this.settings.allowedUserIds ?? [])],
-        requireMention: false,
-      },
-    });
-    this.channel = channel;
-    this.wire(channel, appId);
-
+    let channel: LarkChannel | undefined;
     try {
+      // Keep lazy loading synchronous so stop() cannot race a module-loading await.
+      const { Domain, LoggerLevel, createLarkChannel } = createRequire(import.meta.url)(
+        '@larksuiteoapi/node-sdk',
+      ) as typeof import('@larksuiteoapi/node-sdk');
+      const isLark = this.settings.domain?.trim() === 'larksuite.com';
+      channel = createLarkChannel({
+        appId,
+        appSecret,
+        domain: isLark ? Domain.Lark : Domain.Feishu,
+        transport: 'websocket',
+        source: 'maka',
+        loggerLevel: LoggerLevel.error,
+        handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+        policy: {
+          dmMode: this.settings.allowedUserIds?.length ? 'allowlist' : 'open',
+          dmAllowlist: [...(this.settings.allowedUserIds ?? [])],
+          requireMention: false,
+        },
+      });
+      this.channel = channel;
+      this.wire(channel, appId);
       await channel.connect();
       if (this.explicitlyStopped || this.channel !== channel) return;
       this.startedAt = Date.now();
       this.markConnected(channel, appId);
     } catch (error) {
-      if (this.explicitlyStopped || this.channel !== channel) return;
+      if (this.explicitlyStopped || (channel && this.channel !== channel)) return;
       this.running = false;
       this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
-      await this.disconnectChannel(channel);
+      if (channel) await this.disconnectChannel(channel);
     }
   }
 
