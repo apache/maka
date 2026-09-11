@@ -7703,7 +7703,7 @@ Slug openai-work<cursor>
       terminal.input('\r');
       await waitFor(() =>
         plainTerminalOutput(terminal.output()).includes(
-          'Safe-boundary resume is not enabled on this runtime',
+          'Safe-boundary resume is disabled by this runtime policy',
         ),
       );
       assert.equal(driver.resumeCalls, 1);

@@ -354,7 +354,7 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
     case 'resume_feature_disabled':
       return {
         level: 'info',
-        text: 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).',
+        text: 'Safe-boundary resume is disabled by this runtime policy.',
       };
     case 'resume_candidate_missing':
       return {
