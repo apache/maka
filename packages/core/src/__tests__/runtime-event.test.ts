@@ -915,7 +915,13 @@ describe('runtimeEventHasModelVisibleContent', () => {
       ),
       true,
     );
-    assert.strictEqual(hasMeaningfulMessageContent({ text: '', directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }] }), true);
+    assert.strictEqual(
+      hasMeaningfulMessageContent({
+        text: '',
+        directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }],
+      }),
+      true,
+    );
   });
 });
 
