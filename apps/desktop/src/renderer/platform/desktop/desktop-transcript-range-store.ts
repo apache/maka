@@ -303,6 +303,7 @@ export class DesktopTranscriptRangeStore {
   readonly #durableOrder: number[] = [];
   readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
+  #mintedEpoch = 0;
   #windowEpoch = 0;
   #navigationEpoch = 0;
   readonly #retiredGenerations = new Set<string>();
@@ -346,8 +347,15 @@ export class DesktopTranscriptRangeStore {
     return this.#navigationEpoch;
   }
 
+  /**
+   * The window a read must name to be spliced onto. A navigation's answer takes
+   * this back to the epoch it was issued under (see `#reset`), so the counter is
+   * kept apart from it: a number, once minted, names one window forever, and a
+   * read still in flight under a later one stays refusable.
+   */
   #mintWindow(): number {
-    this.#windowEpoch += 1;
+    this.#mintedEpoch += 1;
+    this.#windowEpoch = this.#mintedEpoch;
     this.#pending.clear();
     this.#batchChanged = false;
     return this.#windowEpoch;
@@ -543,6 +551,10 @@ export class DesktopTranscriptRangeStore {
       }
       this.#liveGeneration = batch.generation;
     }
+    // The window this navigation was issued under is the window it installs,
+    // however many epochs the band minted while it was outstanding: it discards
+    // the edges those trims were protecting. Its remaining fragments extend it.
+    if (batch.windowEpoch !== undefined) this.#windowEpoch = batch.windowEpoch;
     this.#durable.clear();
     this.#overlay.clear();
     this.#durableOrder.length = 0;

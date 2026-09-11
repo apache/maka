@@ -348,7 +348,7 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, async (replica, isCurrent) => {
+    await this.#runTranscriptRangeOperation(request, targetId, false, async (replica, isCurrent) => {
       const page = await replica.loadBefore(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
@@ -362,7 +362,7 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, async (replica, isCurrent) => {
+    await this.#runTranscriptRangeOperation(request, targetId, false, async (replica, isCurrent) => {
       const page = await replica.loadAfter(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
@@ -380,7 +380,7 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript around request requires an anchor');
     }
     const sequence = request.anchorSequence;
-    await this.#runTranscriptRangeOperation(request, targetId, async (replica, isCurrent) => {
+    await this.#runTranscriptRangeOperation(request, targetId, true, async (replica, isCurrent) => {
       const snapshot = await replica.loadAround(
         sequence,
         requireTranscriptRangeBytes(request.maxBytes),
@@ -397,7 +397,7 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    const { state, consumer } = this.#admitTranscriptNavigation(request, targetId);
+    const { state, consumer } = this.#admitTranscriptNavigation(request, targetId, true);
     if (!consumer) return;
     consumer.resetRequested = true;
     consumer.resetWindowEpoch = request.windowEpoch;
@@ -414,18 +414,25 @@ export class RuntimeHostSessionObserver {
     };
   }
 
+  /**
+   * The Renderer mints a version for every window it can no longer splice onto
+   * — navigating away, and the band trimming an edge out. Only the first of
+   * those abandons a read already in flight: a replacement discards the edges,
+   * so a trim under it leaves it perfectly answerable. So the consumer's
+   * version is what the last replacement named, an extension that names a newer
+   * one is admitted without moving it, and only a version older than the
+   * standing replacement belongs to a window the Renderer has left.
+   */
   #admitTranscriptNavigation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
+    replaces: boolean,
   ): { state: ObservedSessionState; replica: DesktopTranscriptReplica; consumer?: TranscriptConsumer } {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
     const version = request.windowEpoch;
     if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
-    // A window-replacing command mints a new version; a page that extends the
-    // current window reuses it. Anything older belongs to a window the
-    // Renderer already abandoned.
     if (version < consumer.windowEpoch) return { state, replica };
-    if (version > consumer.windowEpoch) {
+    if (replaces && version > consumer.windowEpoch) {
       consumer.windowEpoch = version;
       consumer.pendingPages.splice(0).forEach((page) =>
         this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
@@ -437,6 +444,7 @@ export class RuntimeHostSessionObserver {
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
+    replaces: boolean,
     operation: (
       replica: DesktopTranscriptReplica,
       isCurrent: () => boolean,
@@ -445,12 +453,12 @@ export class RuntimeHostSessionObserver {
       | undefined
     >,
   ): Promise<void> {
-    const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId);
+    const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId, replaces);
     if (!consumer) return;
     const isCurrent = () =>
       state.replica === replica &&
       state.transcriptConsumers.get(request.consumerId) === consumer &&
-      consumer.windowEpoch === request.windowEpoch;
+      consumer.windowEpoch <= request.windowEpoch;
     let answer: Awaited<ReturnType<typeof operation>>;
     try {
       answer = await operation(replica, isCurrent);
@@ -1279,7 +1287,7 @@ export class RuntimeHostSessionObserver {
           if (page) {
             try {
               if (
-                page.windowEpoch === consumer.windowEpoch &&
+                page.windowEpoch >= consumer.windowEpoch &&
                 page.generation === consumer.generation &&
                 state.replica?.generation === consumer.generation
               ) {
@@ -1450,7 +1458,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     const deliveries = new Set<Promise<void>>();
     for (const batch of batches) {
-      if (batch.windowEpoch !== undefined && batch.windowEpoch !== consumer.windowEpoch) break;
+      if (batch.windowEpoch !== undefined && batch.windowEpoch < consumer.windowEpoch) break;
       let delivery!: Promise<void>;
       delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
         deliveries.delete(delivery);
