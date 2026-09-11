@@ -424,9 +424,11 @@ jobs:
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
 
+      # The smoke only launches headless; the full Chrome build was downloaded
+      # and never opened. The headed consumer (perf/storybook.mjs) self-installs.
       - name: Install Playwright Chromium
         if: steps.plan.outputs.storybook == 'true'
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps --only-shell chromium
 
       - name: Build Storybook
         if: steps.plan.outputs.storybook == 'true'
