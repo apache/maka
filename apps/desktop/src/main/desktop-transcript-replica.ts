@@ -74,9 +74,8 @@ export interface DesktopTranscriptReplicaPage {
 
 /**
  * Tail-cache growth broadcast to every consumer. `coversFrom` is the watermark
- * the read that produced these rows started at — the only thing that makes them
- * spliceable, since sequence numbers advance by a stride and cannot show
- * adjacency. `null` means the read started at the beginning of the transcript.
+ * the read that produced these rows started at; `null` means the read started
+ * at the beginning of the transcript.
  */
 export interface DesktopTranscriptReplicaChange {
   readonly coversFrom: number | null;

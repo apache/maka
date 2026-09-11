@@ -1279,8 +1279,6 @@ function transcriptPage(
   };
 }
 
-/** The one-byte read `loadAround` uses to ask whether `sequence` has anything
- *  older than it: only the presence of a fragment answers, not its content. */
 function syntheticLargeTranscript(): Array<{ identity: number; message: StoredMessage }> {
   return Array.from({ length: 8 }, (_, index) => {
     const number = index + 1;

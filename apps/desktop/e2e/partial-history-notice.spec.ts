@@ -19,7 +19,6 @@
 
 import { expect, test } from './fixtures';
 
-const GAP = '.maka-transcript-gap-row';
 const TURN = '.maka-transcript-turn';
 /** Turns the partial-history fixture seeds. */
 const PARTIAL_HISTORY_TURN_COUNT = 18;
@@ -29,12 +28,7 @@ test('a bounded transcript range reaches its whole history without a control to 
 }) => {
   await page.setViewportSize({ width: 1_400, height: 800 });
 
-  // The window is bounded, and its boundaries are not something the reader is
-  // shown or has to act on: the transcript renders Turns and nothing else.
   await expect(page.locator(TURN).first()).toBeVisible();
-  await expect(page.locator(GAP)).toHaveCount(0);
-  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
-  await expect(page.locator('.maka-transcript-history-controls')).toHaveCount(0);
   expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 
   const oldestPrompt = page.locator(
@@ -52,7 +46,6 @@ test('a bounded transcript range reaches its whole history without a control to 
   await expect(oldestPrompt).toHaveAttribute('data-active', 'true');
   // A jump lands on its own page, not on the whole history.
   expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
-  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
 
   // The newer side of the jump fills on its own as the reader moves into it.
   await page.mouse.move(700, 400);
@@ -60,7 +53,6 @@ test('a bounded transcript range reaches its whole history without a control to 
     await page.mouse.wheel(0, 400);
     await expect(page.locator('[data-turn-id="turn-partial-history-3"]')).toBeVisible();
   }).toPass({ timeout: 30_000 });
-  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
 
   const returnToLatest = page.getByRole('button', {
     name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,

@@ -437,7 +437,7 @@ test('a transcript change re-reads the band while the reader stays at the tail',
   assert.equal(requests, 1);
 });
 
-test('the retained window is the band around the reader, and and an unmounted bookmark cannot freeze it', async () => {
+test('the retained window is the band around the reader, and an unmounted bookmark cannot freeze it', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
   );

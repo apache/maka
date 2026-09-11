@@ -55,13 +55,6 @@ export function useChatScroll(input: {
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
-  /**
-   * Fills the window because the reader is running out of it — never because
-   * they asked to go somewhere. It must not consume an outstanding navigation
-   * intent, and it must reject when the read fails so this hook can tell a
-   * filled window from a failed one.
-   */
-  /** Fills an edge the reader is approaching. Safe to call on every frame that wants it. */
   onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
   /** The turns the reader can still reach within the retained band; the rest may go. */
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
@@ -178,11 +171,6 @@ export function useChatScroll(input: {
     };
   }, [authority, input.scrollRef, input.sessionId]);
 
-  // The window is a band of pixels around the reader: fetch when less than two
-  // screens remain in a direction that has history, drop what lies more than
-  // six screens away and keep four. Both are re-evaluated whenever content or
-  // the reader moves, so the tail prefetches its history and a reader who
-  // stops mid-transcript never pins more than a bounded slice in memory.
   const bandCheck = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     const root = input.scrollRef.current;
@@ -195,9 +183,6 @@ export function useChatScroll(input: {
       if (inFlight[direction]) return;
       // The browser anchors the reader against everything that lands above
       // them, with one exception: it declines while the scroller sits at zero.
-      // One pixel is the whole fix — measured in Chromium, an insert of 501px
-      // above the reader moves `scrollTop` by 501 at an offset of 1 and by 0
-      // at an offset of 0.
       if (direction === 'up' && !authority.getSnapshot().pinned && root.scrollTop < 1) {
         root.scrollTop = 1;
       }

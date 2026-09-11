@@ -124,11 +124,11 @@ export function TranscriptReadingPositionController(props: {
       }
     },
     /**
-     * Fills the window at an edge the reader is approaching. Deliberately not
-     * `returnToLatest`: that one cancels restoration and clears the search
-     * target, because a reader who asks to go somewhere has decided where to
-     * be. Filling decides nothing, so it must leave an outstanding jump alone —
-     * the page it is waiting for can still be in flight.
+     * Deliberately not `returnToLatest`: that one cancels restoration and
+     * clears the search target, because a reader who asks to go somewhere has
+     * decided where to be. Filling decides nothing, so it must leave an
+     * outstanding jump alone — the page it is waiting for can still be in
+     * flight.
      *
      * Safe to ask on every frame the geometry wants it: the range controller
      * refuses a read against a window it has already read, and answers whether

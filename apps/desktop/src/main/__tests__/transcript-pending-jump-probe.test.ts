@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import { SESSION_CONTINUITY_SCHEMA_VERSION, type SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
@@ -122,9 +123,4 @@ function continuitySnapshot() {
     session: { sessionId: 'session-1', metadataRevision: 1, status: 'running' as const, createdAt: 1, isArchived: false },
     projectionRevision: 1, rootTurn: null, goal: null,
     queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] }, interactions: { pending: [] } };
-}
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((complete) => { resolve = complete; });
-  return { promise, resolve };
 }

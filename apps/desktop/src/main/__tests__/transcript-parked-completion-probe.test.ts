@@ -21,7 +21,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import { encodeDesktopTranscriptChange, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import {
+  encodeDesktopTranscriptChange,
+  encodeDesktopTranscriptPage,
+  encodeDesktopTranscriptSnapshot,
+} from '../desktop-transcript-ipc.js';
 
 const identity = { sessionId: 'session-1', hostEpoch: 'host-1', generation: 'generation-1' };
 const message = (sequence: number, text = String(sequence)): StoredMessage =>
@@ -43,4 +47,19 @@ test('a Turn completing at the tail does not splice into a window parked far fro
   })) store.accept(batch);
   // 7..20 are not in the window, so 21 cannot join its durable range contiguously.
   assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [5, 6]);
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-5', 'message-6']);
+
+  // Reading forward to the tail is what brings 21 in. It arrives once, as the
+  // completed durable row: seeing that row retired the overlay the jump
+  // installed, even though the window could not keep it at the time.
+  for (const batch of encodeDesktopTranscriptPage(identity, {
+    durableThrough: 21, hasOlder: true, hasNewer: false,
+    durable: Array.from({ length: 15 }, (_, index) => ({
+      sequence: index + 7,
+      message: message(index + 7, index === 14 ? 'partial and completed' : undefined),
+    })),
+  }, { direction: 'newer', anchor: 6 })) store.accept(batch);
+  const ids = store.snapshot().messages.map(({ id }) => id);
+  assert.deepEqual(ids.slice(-2), ['message-20', 'message-21']);
+  assert.equal(ids.length, 17, 'the settled overlay is gone, so 21 is shown once');
 });

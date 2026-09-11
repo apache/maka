@@ -376,7 +376,7 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,
-        this.#bindTranscriptTarget(target),
+        this.#bindTarget(target),
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
@@ -575,7 +575,7 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         registration.sessionId,
         consumerId,
-        this.#bindTranscriptTarget(registration.target),
+        this.#bindTarget(registration.target),
       );
       if (
         this.#source === source &&
@@ -629,10 +629,6 @@ export class RuntimeHostSessionObservationRegistry {
     registration.restore?.resolve();
     registration.target.off('destroyed', registration.destroyedListener);
     registration.ready.reject(error);
-  }
-
-  #bindTranscriptTarget(target: RuntimeHostTranscriptTarget): RuntimeHostTranscriptTarget {
-    return this.#bindTarget(target);
   }
 
   #assertOpen(): void {

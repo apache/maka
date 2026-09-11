@@ -43,15 +43,9 @@ const SCROLLER = '[data-chat-scroll-container="true"]';
 const TURN = '.maka-transcript-turn';
 
 /**
- * The mounted range is now a band of pixels, not a Host constant: useChatScroll
- * keeps the Turns within four screens of the reader and drops what sits beyond
- * six, so what bounds this count is the viewport these tests set (700px) and
- * how tall a fixture Turn is — no number the Main tail cache owns.
- *
- * Generous on purpose. The property worth guarding is that paging through 120
- * Turns stops adding Turns; a range that kept everything it paged in would
- * mount all 120, and a band that quietly doubled would pass no threshold that
- * left this much room.
+ * Generous on purpose: the property worth guarding is that paging through the
+ * whole history stops adding Turns, and a range that kept everything it paged
+ * in would mount all of them.
  */
 const MOUNTED_TURNS_MAX = 40;
 
@@ -61,8 +55,8 @@ const MOUNTED_TURNS_MAX = 40;
  * A boundary both installs a page and drops the far side of the band, and the
  * two settle within the same quiet frame, so what is measurable is their sum.
  * Not a tolerance for "close enough" motion: anchoring holds that sum to a
- * fraction of a Turn — 18px here, unchanged by this work — where a frame that
- * lost the reader lands a Turn away or more.
+ * fraction of a Turn, where a frame that lost the reader lands a Turn away or
+ * more.
  */
 const BOUNDARY_DISPLACEMENT_MAX_PX = 40;
 
@@ -76,7 +70,6 @@ declare global {
     };
     __makaTranscriptDisplacement?: {
       boundaries: TranscriptBoundary[];
-      peakMounted: number;
       record(on: boolean): void;
       stop(): void;
     };
@@ -212,12 +205,10 @@ async function observeDisplacement(page: Page): Promise<void> {
     let recording = false;
     const state: {
       boundaries: unknown[];
-      peakMounted: number;
       record(on: boolean): void;
       stop(): void;
     } = {
       boundaries: [],
-      peakMounted: 0,
       record: (on: boolean) => {
         recording = on;
         previous = read();
@@ -232,12 +223,9 @@ async function observeDisplacement(page: Page): Promise<void> {
     // scroll anchoring corrects after layout, so a reading taken inside the
     // change would report a correction that never reached the screen.
     let settled: ReturnType<typeof read> | null = null;
-    let peakMounted = 0;
     const tick = (): void => {
       if (!running) return;
       const current = read();
-      peakMounted = Math.max(peakMounted, current.tops.size);
-      state.peakMounted = peakMounted;
       if (!recording) {
         settled = null;
         previous = current;
@@ -292,15 +280,12 @@ async function recordDisplacement(page: Page, on: boolean): Promise<void> {
   }, on);
 }
 
-async function displacement(page: Page): Promise<{
-  boundaries: readonly TranscriptBoundary[];
-  peakMounted: number;
-}> {
+async function displacement(page: Page): Promise<readonly TranscriptBoundary[]> {
   return page.evaluate(() => {
     const state = window.__makaTranscriptDisplacement;
     if (!state) throw new Error('the transcript displacement probe is missing');
     state.stop();
-    return { boundaries: state.boundaries, peakMounted: state.peakMounted };
+    return state.boundaries;
   });
 }
 
@@ -336,9 +321,7 @@ async function sample(page: Page): Promise<CostSample> {
  * points at an element the Renderer has already unmounted.
  *
  * Timed out against that ramp rather than the suite's 10s default, which is
- * sized for UI already on screen: how many pages the ramp reads is how tall the
- * viewport happens to be against the fixture, and a loaded CI runner measured
- * past it where this machine finishes in under two seconds.
+ * sized for UI already on screen.
  */
 async function settled(page: Page): Promise<void> {
   const mounted = async (): Promise<string> => page.evaluate(() => {
@@ -535,7 +518,7 @@ test('paging back never moves the reader at a range boundary', async ({
       .not.toBe(firstBefore);
   }
 
-  const { boundaries, peakMounted } = await displacement(page);
+  const boundaries = await displacement(page);
   // The probe has to have seen the thing it measures: a run that paged nothing,
   // or one where every boundary replaced the range wholesale and carried no
   // Turn across, proves nothing about the reader.
@@ -545,8 +528,4 @@ test('paging back never moves the reader at a range boundary', async ({
   const displaced = boundaries.filter((boundary) => boundary.worstPx > BOUNDARY_DISPLACEMENT_MAX_PX);
   expect(displaced, `range boundaries moved the reader: ${JSON.stringify(displaced)}`)
     .toEqual([]);
-  // What the window holds is bounded in pixels, and the tests above already
-  // hold it to that. Reported here only so a boundary that moved the reader can
-  // be read against how much the range was carrying when it did.
-  expect(peakMounted).toBeGreaterThan(0);
 });
