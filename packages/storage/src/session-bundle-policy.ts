@@ -1184,9 +1184,38 @@ async function copyBundleArtifacts(
   return { copied, created };
 }
 
+/**
+ * Compares two files without following a symlink at either path.
+ *
+ * A payload path is content-addressed, so `EEXIST` there is normally the same
+ * bytes arriving twice. A symlink planted at that exact path pointing at
+ * matching content compares equal through an ordinary read, and the import
+ * accepts a payload tree the Context Store will later reject as corrupt --
+ * it refuses to read through a link. Opened no-follow, the planted link is a
+ * different content instead of the same content.
+ */
 async function sameFileContent(left: string, right: string): Promise<boolean> {
-  const [a, b] = await Promise.all([readFile(left), readFile(right)]);
-  return a.equals(b);
+  const [a, b] = await Promise.all([readRegularFile(left), readRegularFile(right)]);
+  return a !== undefined && b !== undefined && a.equals(b);
+}
+
+async function readRegularFile(path: string): Promise<Buffer | undefined> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // A symlink is ELOOP here, or EMLINK on some BSDs. Either way the path does
+    // not name the regular file this comparison is about.
+    if (code === 'ELOOP' || code === 'EMLINK') return undefined;
+    throw error;
+  }
+  try {
+    if (!(await handle.stat()).isFile()) return undefined;
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -1310,6 +1339,7 @@ async function mergeBundleContext(
   // fails is a bundle nobody can use, and importing it publishes a reference to
   // content that cannot be read back.
   await validateContextSnapshot(bundleStateRoot);
+  assertBundleContextClosure(bundleContext, sessionIds);
 
   // Everything below is one turn in the Storage Root's context mutation queue,
   // shared with the Context Store's own publication and collection. Those
@@ -1333,6 +1363,54 @@ async function mergeBundleContext(
   });
 }
 
+/**
+ * Refuses a bundle whose context describes more than the Sessions it carries.
+ *
+ * `validateContextSnapshot` proves the payloads are the bytes their rows claim.
+ * It says nothing about who those rows belong to, and the archive digest
+ * authenticates the archive rather than the state inside it -- so both pass on
+ * a bundle that was assembled rather than exported.
+ *
+ * Two shapes matter, and a fresh target takes the bundle's database as its own,
+ * which is what makes them durable rather than transient:
+ *
+ * - A reference owned by a Session the bundle does not carry can never be
+ *   released, because releasing it happens when its Session is retired and no
+ *   such Session will ever arrive.
+ * - A collection candidate is a decision about a moment that has passed. The
+ *   export clears the queue on its private copy; one that survives names a blob
+ *   the target now references, and collection treats that as corruption and
+ *   fails from then on.
+ */
+function assertBundleContextClosure(bundleContext: string, sessionIds: readonly string[]): void {
+  const database = new DatabaseSync(bundleContext, { readOnly: true });
+  try {
+    const placeholders = sessionIds.map(() => '?').join(', ');
+    const foreign = database
+      .prepare(
+        `SELECT session_id FROM context_refs WHERE session_id NOT IN (${placeholders}) LIMIT 1`,
+      )
+      .get(...sessionIds) as { session_id?: unknown } | undefined;
+    if (foreign) {
+      throw new SessionBundleImportError(
+        'invalid_root',
+        `Bundle context references a Session it does not carry: ${String(foreign.session_id)}`,
+      );
+    }
+    const candidate = database
+      .prepare('SELECT count(*) AS count FROM context_gc_candidates')
+      .get() as { count?: unknown };
+    if (Number(candidate.count ?? 0) > 0) {
+      throw new SessionBundleImportError(
+        'invalid_root',
+        'Bundle context carries collection state from the workspace it left',
+      );
+    }
+  } finally {
+    database.close();
+  }
+}
+
 async function mergeBundleContextDatabase(
   bundleContext: string,
   stateRoot: string,
@@ -1340,7 +1418,18 @@ async function mergeBundleContextDatabase(
 ): Promise<number> {
   const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await pathExists(targetContext))) {
-    await copyFile(bundleContext, targetContext);
+    // `copyFile` fills its destination progressively, and this destination is
+    // the path a Context Store opens to decide whether the workspace has one.
+    // A Store initialising while the copy runs reads a database that is only
+    // partly there. Staged and renamed, it is either absent or complete.
+    const staging = `${targetContext}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await copyFile(bundleContext, staging, constants.COPYFILE_EXCL);
+      await rename(staging, targetContext);
+    } catch (error) {
+      await rm(staging, { force: true }).catch(() => {});
+      throw error;
+    }
     return countContextRefs(targetContext, sessionIds);
   }
   const database = new DatabaseSync(targetContext);
