@@ -41,22 +41,13 @@
 }
 
 .maka-return-workhub {
-  display: block;
+  --_button-radius: var(--radius-chat);
+  display: flex;
   width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
   min-height: var(--space-10);
   margin: 0 auto;
-  padding: var(--space-2) var(--space-4);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-chat);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  font: inherit;
   text-align: center;
-  cursor: pointer;
 }
-
-.maka-return-workhub:hover { background: var(--state-hover-bg); }
-.maka-return-workhub:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-width); }
 
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered

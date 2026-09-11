@@ -17,14 +17,18 @@
  * under the License.
  */
 
+import { Button } from '@astryxdesign/core/Button';
 import { useUiLocale } from '@maka/ui';
 import { getShellCopy } from '../../../locales/shell-copy.js';
 
 export function WorkHubReturnButton({ visible, onReturn }: { visible: boolean; onReturn(): void }) {
   const locale = useUiLocale();
   return visible ? (
-    <button type="button" className="maka-return-workhub" onClick={onReturn}>
-      {getShellCopy(locale).navigation.backToWorkHub}
-    </button>
+    <Button
+      className="maka-return-workhub"
+      label={getShellCopy(locale).navigation.backToWorkHub}
+      variant="secondary"
+      onClick={onReturn}
+    />
   ) : null;
 }

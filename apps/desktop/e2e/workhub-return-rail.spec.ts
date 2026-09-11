@@ -49,7 +49,11 @@ test('WorkHub prompt rail uses the scrollport edge and the shared reading width'
     window.setBounds({ width: 1600, height: 900 });
     return window.getContentSize()[0];
   });
-  await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+  // Startup can restore saved bounds after the first resize request.
+  await expect.poll(async () => {
+    await mainWindow.evaluate((window) => window.setBounds({ width: 1600, height: 900 }));
+    return page.evaluate(() => innerWidth);
+  }).toBe(contentWidth);
   await sendPrompts(page, 'Session navigation');
   const ordinary = await page.locator('.maka-turn').first().evaluate((element) => element.getBoundingClientRect().width);
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
