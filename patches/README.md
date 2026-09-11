@@ -53,6 +53,8 @@ outer allocation during reentrant parsing. Recursive cycles and shared aliases
 still use the existing per-parse memoization.
 
 Delete the patch when upstream releases completed parse state in both ESM and CJS.
+Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle/alias
+identity against the new memoizer and container implementations.
 
 ## `@modelcontextprotocol/client@2.0.0`
 

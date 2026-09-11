@@ -19,6 +19,7 @@
 
 // Match split('\n').slice(offset, end).join('\n'), without creating entries
 // for lines outside the requested window. Empty and trailing lines count too.
+// A missing or zero limit is unbounded: end is the total line count.
 export function readTextLineWindow(content: string, offset?: number, limit?: number): string {
   if (offset === undefined && limit === undefined) return content;
   let lineCount = 1;

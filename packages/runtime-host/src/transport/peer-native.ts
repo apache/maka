@@ -410,7 +410,8 @@ async function readBoundedJsonLine(
       const encoded = buffered.subarray(0, newline);
       return {
         value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(encoded)) as unknown,
-        remainder: buffered.subarray(newline + 1),
+        remainder:
+          newline + 1 === buffered.length ? Buffer.alloc(0) : buffered.subarray(newline + 1),
       };
     }
     if (buffered.byteLength >= maxBytes) {
