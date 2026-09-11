@@ -355,6 +355,7 @@ interface PendingExecutionClaim {
   phase: 'pending' | 'attached' | 'reserved' | 'released' | 'failed';
   run?: AgentRun;
   hostOperation?: true;
+  backendHeaderSnapshot?: { invalidated: boolean };
   backendPreparation?: PreparedBackendActivation;
   stopIntent?: SessionStopIntent;
   finalization?: ExecutionClaimOutcome;
@@ -421,6 +422,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
     };
     return await (this.deps.runBackendActivation?.(activate) ?? activate());
+  }
+
+  private readBackendHeader(execution: PendingExecutionClaim): Promise<SessionHeader> {
+    // Register before the read: even the store may suspend after taking its
+    // snapshot. This covers all preflight work before the policy activation gate.
+    execution.backendHeaderSnapshot = { invalidated: false };
+    return this.deps.store.readHeader(execution.sessionId);
+  }
+
+  private invalidateBackendHeaderSnapshots(sessionId: string): void {
+    for (const execution of this.executionClaims.get(sessionId) ?? []) {
+      if (execution.backendHeaderSnapshot) execution.backendHeaderSnapshot.invalidated = true;
+    }
   }
 
   claimExecution(sessionId: string): RuntimeExecutionClaim {
@@ -656,7 +670,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const execution = this.takeExecutionClaim(sessionId, options.execution);
     try {
       await this.enterExecutionClaim(execution);
-      const header = await this.deps.store.readHeader(sessionId);
+      const header = await this.readBackendHeader(execution);
       let workspaceIdentity: string | undefined;
       if (this.deps.inspectContinuationSafety) {
         try {
@@ -759,7 +773,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error('Cannot continue while another run is active');
     }
 
-    const header = await this.deps.store.readHeader(continuation.sessionId);
+    const header = await this.readBackendHeader(execution);
     const sessionRuns = await this.deps.runtimeEventStore.listSessionInvocations(
       continuation.sessionId,
     );
@@ -1114,7 +1128,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           'Cannot compact while a Turn is running',
         );
       }
-      const header = await this.deps.store.readHeader(sessionId);
+      const header = await this.readBackendHeader(execution);
       await this.requireContextCompactionBackend(sessionId, header, execution);
     } finally {
       this.releaseExecutionClaim(execution);
@@ -1140,7 +1154,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
 
-    const header = await this.deps.store.readHeader(sessionId);
+    const header = await this.readBackendHeader(execution);
     const turnId = input.turnId ?? this.deps.newId();
     const run = new AgentRun({
       sessionId,
@@ -2247,6 +2261,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   async invalidateBackend(sessionId: string): Promise<void> {
+    this.invalidateBackendHeaderSnapshots(sessionId);
     this.ensureBackendInvalidation(sessionId);
     await this.flushBackendInvalidation(sessionId);
   }
@@ -2255,10 +2270,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const sessionIds = new Set(
       [...this.backendGenerations.values()].map((generation) => generation.sessionId),
     );
+    for (const [sessionId, claims] of this.executionClaims) {
+      if ([...claims].some((execution) => execution.backendHeaderSnapshot))
+        sessionIds.add(sessionId);
+    }
     for (const execution of this.backendActivations) sessionIds.add(execution.sessionId);
     for (const sessionId of this.backendInvalidations.keys()) sessionIds.add(sessionId);
     await Promise.all(
       [...sessionIds].map(async (sessionId) => {
+        this.invalidateBackendHeaderSnapshots(sessionId);
         const failedGeneration = this.backendGenerationsFor(sessionId).find(
           (generation) => generation.phase === 'failed',
         );
@@ -2872,6 +2892,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
     }
 
+    await this.waitForBackendDisposal(sessionId);
+    if (execution.backendHeaderSnapshot?.invalidated) {
+      // A refresh must not wait for preflight claims that may themselves be
+      // waiting on the policy mutation gate. Remember their stale snapshots,
+      // then re-arm invalidation inside activation, after any old disposal.
+      this.ensureBackendInvalidation(sessionId);
+    }
     const invalidation = this.backendInvalidations.get(sessionId);
     if (!invalidation) return;
     // This activation was already admitted when the refresh arrived. Let it
