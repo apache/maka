@@ -325,6 +325,11 @@ async function sample(page: Page): Promise<CostSample> {
  * retains, so the mounted rows churn for as long as that runs. Wait for the
  * window to stop moving before touching a row: a locator resolved mid-churn
  * points at an element the Renderer has already unmounted.
+ *
+ * Timed out against that ramp rather than the suite's 10s default, which is
+ * sized for UI already on screen: how many pages the ramp reads is how tall the
+ * viewport happens to be against the fixture, and a loaded CI runner measured
+ * past it where this machine finishes in under two seconds.
  */
 async function settled(page: Page): Promise<void> {
   const mounted = async (): Promise<string> => page.evaluate(() => {
@@ -339,7 +344,7 @@ async function settled(page: Page): Promise<void> {
       const stable = current === previous;
       previous = current;
       return stable;
-    })
+    }, { timeout: 30_000 })
     .toBe(true);
 }
 

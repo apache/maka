@@ -130,7 +130,10 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
+  /** The window the standing replacement installs; what a read must still reach. */
   windowEpoch: number;
+  /** The newest window the Renderer has named, replacing or extending. */
+  newestWindowEpoch: number;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
@@ -161,6 +164,8 @@ interface PendingTranscriptChange {
 
 interface PendingTranscriptPage {
   readonly windowEpoch: number;
+  /** Whether this answer installs its window or splices onto one already there. */
+  readonly replaces: boolean;
   readonly generation: string;
   readonly batches: Iterable<DesktopTranscriptBatchPayload>;
   readonly encodedBytes: number;
@@ -308,6 +313,7 @@ export class RuntimeHostSessionObserver {
       target,
       generation: replica.generation,
       windowEpoch: 0,
+      newestWindowEpoch: 0,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -432,13 +438,29 @@ export class RuntimeHostSessionObserver {
     const version = request.windowEpoch;
     if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
     if (version < consumer.windowEpoch) return { state, replica };
-    if (replaces && version > consumer.windowEpoch) {
-      consumer.windowEpoch = version;
-      consumer.pendingPages.splice(0).forEach((page) =>
-        this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
-      );
-    }
+    if (replaces) consumer.windowEpoch = version;
+    if (version > consumer.newestWindowEpoch) consumer.newestWindowEpoch = version;
+    this.#dropSupersededTranscriptPages(consumer);
     return { state, replica, consumer };
+  }
+
+  /**
+   * Releases the delivery budget held by queued answers the window can no longer
+   * take. An extension is spliceable only onto the window it named, so any newer
+   * one strands it; a replacement installs its own window, so only a newer
+   * replacement does.
+   */
+  #dropSupersededTranscriptPages(consumer: TranscriptConsumer): void {
+    for (let index = consumer.pendingPages.length - 1; index >= 0; index -= 1) {
+      const page = consumer.pendingPages[index]!;
+      if (this.#deliversTranscriptPage(consumer, page)) continue;
+      consumer.pendingPages.splice(index, 1);
+      this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes);
+    }
+  }
+
+  #deliversTranscriptPage(consumer: TranscriptConsumer, page: PendingTranscriptPage): boolean {
+    return page.windowEpoch >= (page.replaces ? consumer.windowEpoch : consumer.newestWindowEpoch);
   }
 
   async #runTranscriptRangeOperation(
@@ -477,6 +499,7 @@ export class RuntimeHostSessionObserver {
     }
     consumer.pendingPages.push({
       windowEpoch: request.windowEpoch,
+      replaces,
       generation: replica.generation,
       batches: answer.batches,
       encodedBytes,
@@ -1287,7 +1310,7 @@ export class RuntimeHostSessionObserver {
           if (page) {
             try {
               if (
-                page.windowEpoch >= consumer.windowEpoch &&
+                this.#deliversTranscriptPage(consumer, page) &&
                 page.generation === consumer.generation &&
                 state.replica?.generation === consumer.generation
               ) {
