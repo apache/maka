@@ -74,7 +74,7 @@ export const LayoutDoesNotCreateReaderIntent: Story = {
       root.scrollTop = root.scrollHeight - root.clientHeight - 30;
       await settled();
       let readerMoves = 0;
-      authority.subscribeToReaderScroll((_direction, phase) => {
+      authority.subscribeToReaderScroll((phase) => {
         if (phase === 'scroll') readerMoves += 1;
       });
       above.style.height = '407.8px';

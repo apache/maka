@@ -197,8 +197,6 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
       scrollBehavior: 'auto' as const,
       hasOlderHistory: true,
       hasNewerHistory: true,
-      onLoadEarlierHistory: () => undefined,
-      onLoadLaterHistory: () => undefined,
       onReadingAnchorChange: (turnId?: string) => {
         anchors.push(turnId);
       },

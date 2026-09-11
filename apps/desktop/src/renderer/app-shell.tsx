@@ -71,7 +71,6 @@ import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import * as Conversation from './features/conversation';
-import type { TranscriptHistoryPending } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -119,7 +118,6 @@ import type {
   DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -418,7 +416,6 @@ function AppShellContent({
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
-  const [historyLoadPending, setHistoryLoadPending] = useState<TranscriptHistoryPending>();
   const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
@@ -2337,8 +2334,6 @@ function AppShellContent({
         turnIndex={transcriptTurnIndex}
         setTurnIndex={setTranscriptTurnIndex}
         listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
-        setHistoryPending={setHistoryLoadPending}
-        historyPageBytes={DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES}
         onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
@@ -2498,7 +2493,7 @@ function AppShellContent({
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
                 onReturnToTail={activeTranscriptRange?.hasNewer
-                  ? () => transcriptReadingCommands.current?.loadHistory('latest')
+                  ? () => transcriptReadingCommands.current?.returnToLatest()
                   : undefined}
                 hidden={workHubActive || !sessionsSelected}
                 composer={
@@ -2688,8 +2683,9 @@ function AppShellContent({
                 activeSessionId={activeId}
                 hasOlderHistory={activeTranscriptRange?.hasOlder}
                 hasNewerHistory={activeTranscriptRange?.hasNewer}
-                historyLoadPending={historyLoadPending}
-                onLoadHistory={(target, anchorTurnId) => transcriptReadingCommands.current?.loadHistory(target, anchorTurnId)}
+                onPrefetchHistory={(edge) =>
+                  transcriptReadingCommands.current?.prefetchHistory(edge) ?? Promise.resolve(false)}
+                onRetainWindow={(band) => transcriptReadingCommands.current?.retainWindow(band)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}

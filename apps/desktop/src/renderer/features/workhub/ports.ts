@@ -41,7 +41,10 @@ export interface WorkHubTranscriptSnapshot {
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  loadOlder(): Promise<void>;
+  /** Fills the window at an edge the reader approaches; resolves to whether a read was issued. */
+  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
+  /** Trims the window to the Turns the reader's band still covers. */
+  retain(window: { firstTurnId: string; lastTurnId: string }): void;
   loadLatest(): Promise<void>;
   close(): Promise<void>;
 }

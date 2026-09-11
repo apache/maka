@@ -88,7 +88,6 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
-  type DesktopTranscriptNavigation,
 } from './transcript-contract.js';
 import {
   adoptTranscriptIdentity,
@@ -2482,7 +2481,6 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
       let cachedIdentity: DesktopTranscriptIdentity | undefined;
-      let navigationVersion = 0;
       const retiredGenerations = new Set<string>();
       let closed = false;
       let requestClose = () => {};
@@ -2502,7 +2500,7 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if ((batch.navigationVersion ?? 0) === navigationVersion && !retiredGenerations.has(batch.generation)) {
+          if (!retiredGenerations.has(batch.generation)) {
             const adopted = adoptTranscriptIdentity(identity, batch);
             if (adopted !== identity) {
               if (identity && identity.generation !== adopted.generation) retiredGenerations.add(identity.generation);
@@ -2568,7 +2566,9 @@ const makaBridge = {
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...cachedIdentity, sessionId, readThroughMessageId: null,
+            acknowledgeTail: unavailable,
             loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
+            loadLatest: unavailable,
             close: async () => {},
           };
         }
@@ -2583,17 +2583,15 @@ const makaBridge = {
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
+        operation:
+          | 'sessions:transcript:load-before'
+          | 'sessions:transcript:load-after'
+          | 'sessions:transcript:load-around'
+          | 'sessions:transcript:load-latest',
         anchorSequence: number | null,
-        maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-        navigation?: DesktopTranscriptNavigation,
+        maxBytes: number,
+        navigation: number,
       ): Promise<void> => {
-        const nextNavigation = navigation ?? {
-          navigationVersion: navigationVersion + 1,
-          intent: 'history' as const,
-        };
-        if (nextNavigation.navigationVersion < navigationVersion) return Promise.resolve();
-        navigationVersion = nextNavigation.navigationVersion;
         const currentIdentity = identity;
         if (!currentIdentity) {
           throw new Error('Desktop transcript identity is unavailable');
@@ -2604,21 +2602,32 @@ const makaBridge = {
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
-          navigationVersion: nextNavigation.navigationVersion,
-          intent: nextNavigation.intent,
-          preserveRange: nextNavigation.preserveRange,
-          readingTurnId: nextNavigation.readingTurnId,
+          navigation,
         }) as Promise<void>;
       };
       return {
         ...opened,
         sessionId,
+        acknowledgeTail: (through) => {
+          const currentIdentity = identity;
+          if (!currentIdentity) {
+            throw new Error('Desktop transcript identity is unavailable');
+          }
+          return ipcRenderer.invoke('sessions:transcript:acknowledge-tail', consumerScope, {
+            consumerId,
+            sessionId: opened.sessionId,
+            hostEpoch: currentIdentity.hostEpoch,
+            through,
+          }) as Promise<void>;
+        },
         loadBefore: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
         loadAfter: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-after', anchorSequence, maxBytes, navigation),
         loadAround: (sequence, maxBytes, navigation) =>
           range('sessions:transcript:load-around', sequence, maxBytes, navigation),
+        loadLatest: (navigation) =>
+          range('sessions:transcript:load-latest', null, DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, navigation),
         async close() {
           if (closed) return;
           requestClose();

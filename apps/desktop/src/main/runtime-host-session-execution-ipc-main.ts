@@ -64,7 +64,10 @@ import {
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
-import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
+import type {
+  DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
+} from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
@@ -178,9 +181,11 @@ export interface RuntimeHostSessionExecutionIpcDeps {
 export interface RuntimeHostSessionObservationIpcDeps {
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
+    | 'acknowledgeTranscriptTail'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'observe'
     | 'openTranscript'
   >;
@@ -233,6 +238,18 @@ export function registerRuntimeHostSessionObservationIpc(
   ipcMain.handle('sessions:transcript:load-after', async (event, input: unknown) => {
     await deps.observations.loadTranscriptAfter(
       normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:load-latest', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptLatest(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
+    await deps.observations.acknowledgeTranscriptTail(
+      normalizeTranscriptTailAcknowledgement(input),
       event.sender.id,
     );
   });
@@ -845,12 +862,7 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     throw new Error('Invalid Desktop transcript range byte limit');
   }
   if (
-    (value.navigationVersion !== undefined &&
-      (!Number.isSafeInteger(value.navigationVersion) || (value.navigationVersion as number) < 0)) ||
-    (value.intent !== undefined && value.intent !== 'history' && value.intent !== 'followTail') ||
-    (value.preserveRange !== undefined && typeof value.preserveRange !== 'boolean') ||
-    (value.readingTurnId !== undefined &&
-      (typeof value.readingTurnId !== 'string' || value.readingTurnId.length === 0))
+    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
   ) {
     throw new Error('Invalid Desktop transcript navigation');
   }
@@ -860,10 +872,25 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
-    navigationVersion: value.navigationVersion as number | undefined,
-    intent: value.intent as DesktopTranscriptRangeRequest['intent'],
-    preserveRange: value.preserveRange as boolean | undefined,
-    readingTurnId: value.readingTurnId as string | undefined,
+    navigation: value.navigation as number,
+  };
+}
+
+function normalizeTranscriptTailAcknowledgement(
+  input: unknown,
+): DesktopTranscriptTailAcknowledgement {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid Desktop transcript tail acknowledgement');
+  }
+  const value = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(value.through) || (value.through as number) < 0) {
+    throw new Error('Invalid Desktop transcript tail watermark');
+  }
+  return {
+    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
+    sessionId: requiredId(value.sessionId, 'Session'),
+    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
+    through: value.through as number,
   };
 }
 
