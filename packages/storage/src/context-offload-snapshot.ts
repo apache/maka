@@ -217,7 +217,26 @@ export async function planContextSnapshotFiles(
 }
 
 /** Verifies both payload integrity and typed ledger/message references before publication. */
-export async function validateContextSnapshot(root: string): Promise<void> {
+/**
+ * Asserts a context tree is the exact shape a snapshot writes.
+ *
+ * `copyContextSnapshot` is the only thing that produces one, and it settles
+ * every transient state before it finishes: the collection queue, the deletion
+ * queue, blobs nothing references, and usage rows that do not match what is
+ * there. Checking the payload hashes without checking those leaves a tree that
+ * decodes but cannot be adopted -- a fresh target takes a snapshot database
+ * whole, so a surviving deletion queue drains bytes the target never had and a
+ * forged usage row fails its next write.
+ *
+ * `sessionIds`, when given, additionally requires every reference to belong to
+ * one of them. A bundle is the case where that matters: a reference owned by a
+ * Session the tree does not carry can never be released, because releasing one
+ * happens when its Session is retired.
+ */
+export async function validateContextSnapshot(
+  root: string,
+  sessionIds?: readonly string[],
+): Promise<void> {
   let context: DatabaseSync | undefined;
   const contextPath = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
   try {
@@ -274,6 +293,48 @@ export async function validateContextSnapshot(root: string): Promise<void> {
           .get()
       )
         throw new Error('Context snapshot Session usage mismatch');
+      // A usage row for a Session with no references is surplus in the other
+      // direction, which the EXCEPT above cannot see.
+      if (
+        context
+          .prepare(`SELECT 1 FROM context_session_usage u
+            WHERE NOT EXISTS (SELECT 1 FROM context_refs r WHERE r.session_id = u.session_id)
+            LIMIT 1`)
+          .get()
+      )
+        throw new Error('Context snapshot carries usage for a Session it does not hold');
+      // Transient state a snapshot settles. Left behind, a fresh target adopts
+      // it: the deletion queue drains bytes that were never there, and a blob
+      // nothing references is quota nothing will reclaim.
+      for (const [table, described] of [
+        ['context_gc_candidates', 'collection state'],
+        ['context_file_deletions', 'a deletion queue'],
+      ] as const) {
+        if (context.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) {
+          throw new Error(`Context snapshot carries ${described} from the workspace it left`);
+        }
+      }
+      if (
+        context
+          .prepare(`SELECT 1 FROM context_blobs b
+            WHERE NOT EXISTS (SELECT 1 FROM context_refs r WHERE r.blob_id = b.blob_id)
+            LIMIT 1`)
+          .get()
+      )
+        throw new Error('Context snapshot carries a payload nothing references');
+      if (sessionIds !== undefined) {
+        const placeholders = sessionIds.map(() => '?').join(', ');
+        const foreign = context
+          .prepare(
+            `SELECT session_id FROM context_refs WHERE session_id NOT IN (${placeholders}) LIMIT 1`,
+          )
+          .get(...sessionIds) as { session_id?: unknown } | undefined;
+        if (foreign) {
+          throw new Error(
+            `Context snapshot references a Session it does not carry: ${String(foreign.session_id)}`,
+          );
+        }
+      }
     }
     validateLedgerContextRefs(root, context);
   } finally {

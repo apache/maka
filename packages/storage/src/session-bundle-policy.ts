@@ -41,7 +41,7 @@ import {
   withArtifactWriterLock,
   withLeaseBoundArtifactWriterLock,
 } from './artifact-writer-lock.js';
-import { syncDirectoryChain } from './stable-storage.js';
+import { readStableBoundedFile, syncDirectoryChain } from './stable-storage.js';
 import {
   prepareArtifactWriterLockAuthorityForLease,
   type StorageRootLease,
@@ -1195,28 +1195,33 @@ async function copyBundleArtifacts(
  * different content instead of the same content.
  */
 async function sameFileContent(left: string, right: string): Promise<boolean> {
-  const [a, b] = await Promise.all([readRegularFile(left), readRegularFile(right)]);
-  return a !== undefined && b !== undefined && a.equals(b);
-}
-
-async function readRegularFile(path: string): Promise<Buffer | undefined> {
-  let handle: Awaited<ReturnType<typeof open>>;
+  const expected = await readFile(left);
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // The repository's reader rather than an open of our own: it is
+    // non-blocking, so a FIFO planted at the path cannot hang the import, and
+    // it compares the opened file against `lstat` of the path, so a path that
+    // stops naming the same file mid-read reads as different content.
+    //
+    // On POSIX that also refuses a symlink, because the open carries
+    // `O_NOFOLLOW`. On Windows the flag is absent and `lstat` does not reliably
+    // report a file symlink as one, so the symlink refusal there rests on what
+    // the platform makes visible -- less than this reader gives on POSIX. Only
+    // `left` is trusted: it is a bundle entry, and the walk that reaches it
+    // admits `isFile()` directory entries, never a link.
+    const actual = await readStableBoundedFile({
+      path: right,
+      maxBytes: expected.length,
+      invalidFile: () => new NotTheSamePayloadError(),
+    });
+    return actual.equals(expected);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // A symlink is ELOOP here, or EMLINK on some BSDs. Either way the path does
-    // not name the regular file this comparison is about.
-    if (code === 'ELOOP' || code === 'EMLINK') return undefined;
+    if (error instanceof NotTheSamePayloadError) return false;
     throw error;
   }
-  try {
-    if (!(await handle.stat()).isFile()) return undefined;
-    return await handle.readFile();
-  } finally {
-    await handle.close();
-  }
 }
+
+/** Internal: the stable reader reports every refusal through one error. */
+class NotTheSamePayloadError extends Error {}
 
 /**
  * Copy every table the bundle has, in one transaction.
@@ -1334,12 +1339,11 @@ async function mergeBundleContext(
 
   // An archive digest authenticates the archive, not the state inside it: it
   // says the bytes arrived as sent, and nothing about whether a row claiming a
-  // hash names a file that actually hashes to it. Validated here, against the
-  // hydrated copy, before anything is written to the target -- a payload that
-  // fails is a bundle nobody can use, and importing it publishes a reference to
-  // content that cannot be read back.
-  await validateContextSnapshot(bundleStateRoot);
-  assertBundleContextClosure(bundleContext, sessionIds);
+  // hash names a file that hashes to it, or whether the tree describes more
+  // than the Sessions it carries. Both are the snapshot's own shape, so one
+  // validator states it, against the hydrated copy, before anything reaches
+  // the target -- a second, bundle-only check could only ever drift from it.
+  await validateContextSnapshot(bundleStateRoot, sessionIds);
 
   // Everything below is one turn in the Storage Root's context mutation queue,
   // shared with the Context Store's own publication and collection. Those
@@ -1352,63 +1356,9 @@ async function mergeBundleContext(
     // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
     // only immediate children saw one directory, skipped it, and reported a
     // successful import whose referenced bytes were all absent.
-    const destination = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
-    await mkdir(destination, { recursive: true, mode: 0o700 });
-    await copyContextValueTree(
-      resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
-      destination,
-      stateRoot,
-    );
+    await copyDeclaredContextValues(bundleContext, bundleStateRoot, stateRoot);
     return mergeBundleContextDatabase(bundleContext, stateRoot, sessionIds);
   });
-}
-
-/**
- * Refuses a bundle whose context describes more than the Sessions it carries.
- *
- * `validateContextSnapshot` proves the payloads are the bytes their rows claim.
- * It says nothing about who those rows belong to, and the archive digest
- * authenticates the archive rather than the state inside it -- so both pass on
- * a bundle that was assembled rather than exported.
- *
- * Two shapes matter, and a fresh target takes the bundle's database as its own,
- * which is what makes them durable rather than transient:
- *
- * - A reference owned by a Session the bundle does not carry can never be
- *   released, because releasing it happens when its Session is retired and no
- *   such Session will ever arrive.
- * - A collection candidate is a decision about a moment that has passed. The
- *   export clears the queue on its private copy; one that survives names a blob
- *   the target now references, and collection treats that as corruption and
- *   fails from then on.
- */
-function assertBundleContextClosure(bundleContext: string, sessionIds: readonly string[]): void {
-  const database = new DatabaseSync(bundleContext, { readOnly: true });
-  try {
-    const placeholders = sessionIds.map(() => '?').join(', ');
-    const foreign = database
-      .prepare(
-        `SELECT session_id FROM context_refs WHERE session_id NOT IN (${placeholders}) LIMIT 1`,
-      )
-      .get(...sessionIds) as { session_id?: unknown } | undefined;
-    if (foreign) {
-      throw new SessionBundleImportError(
-        'invalid_root',
-        `Bundle context references a Session it does not carry: ${String(foreign.session_id)}`,
-      );
-    }
-    const candidate = database
-      .prepare('SELECT count(*) AS count FROM context_gc_candidates')
-      .get() as { count?: unknown };
-    if (Number(candidate.count ?? 0) > 0) {
-      throw new SessionBundleImportError(
-        'invalid_root',
-        'Bundle context carries collection state from the workspace it left',
-      );
-    }
-  } finally {
-    database.close();
-  }
 }
 
 async function mergeBundleContextDatabase(
@@ -1417,19 +1367,41 @@ async function mergeBundleContextDatabase(
   sessionIds: readonly string[],
 ): Promise<number> {
   const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
-  if (!(await pathExists(targetContext))) {
-    // `copyFile` fills its destination progressively, and this destination is
-    // the path a Context Store opens to decide whether the workspace has one.
-    // A Store initialising while the copy runs reads a database that is only
-    // partly there. Staged and renamed, it is either absent or complete.
-    const staging = `${targetContext}.${process.pid}.${randomUUID()}.tmp`;
+  // One publication path, and the filesystem decides which case this is.
+  //
+  // Asking first whether the database exists and branching on the answer is a
+  // decision that can be stale by the time it is acted on: a Context Store
+  // initialising under the same lease creates that file, and an import that
+  // already decided "absent" would then REPLACE it. On POSIX the Store keeps
+  // writing to the now-unlinked inode while every later open reads the new
+  // one, so its writes are invisible and gone at the next restart.
+  //
+  // `copyFile` also fills its destination progressively, and this destination
+  // is the path a Store opens to decide whether the workspace has a store at
+  // all. Staged and linked, it is absent or complete, never partly there.
+  const staging = `${targetContext}.${process.pid}.${randomUUID()}.tmp`;
+  let created = false;
+  try {
+    await copyFile(bundleContext, staging, constants.COPYFILE_EXCL);
+    // Synced before it is named, and the directory synced after: the Session
+    // rows are committed later, and a power loss between the two must not leave
+    // a Session whose context database is a name with nothing behind it, or no
+    // name at all. Same ordering the managed payloads use.
+    const handle = await open(staging, 'r+');
     try {
-      await copyFile(bundleContext, staging, constants.COPYFILE_EXCL);
-      await rename(staging, targetContext);
-    } catch (error) {
-      await rm(staging, { force: true }).catch(() => {});
-      throw error;
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
+    await link(staging, targetContext);
+    created = true;
+    await syncDirectoryChain(dirname(targetContext), stateRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  } finally {
+    await rm(staging, { force: true }).catch(() => {});
+  }
+  if (created) {
     return countContextRefs(targetContext, sessionIds);
   }
   const database = new DatabaseSync(targetContext);
@@ -1512,27 +1484,58 @@ async function mergeBundleContextDatabase(
  * Content-addressed names mean an existing file is the same file, so an
  * already-present payload is left alone rather than treated as a conflict.
  */
-async function copyContextValueTree(
-  source: string,
-  destination: string,
+/**
+ * Publishes exactly the payloads the bundle's database declares.
+ *
+ * Walking the tree and copying every regular file publishes whatever is there,
+ * and the validator only ever looks at rows: a hand-built bundle can carry
+ * bytes no row names, and those arrive charged to nothing and reachable by
+ * nothing -- not by usage, which counts blobs, and not by collection, which
+ * starts from a blob whose references were released. The locators are the one
+ * list both sides agree on, so they are what gets copied.
+ *
+ * Reading them raw is safe because the validator has already run: it derives
+ * each locator from its blob id and refuses anything that is not exactly
+ * `sha256/<first two>/<hash>`, so nothing here can name a path of its own
+ * choosing. Moving this before that check would remove that guarantee.
+ */
+async function copyDeclaredContextValues(
+  bundleContext: string,
+  bundleStateRoot: string,
   stateRoot: string,
 ): Promise<void> {
-  if (!(await pathExists(source))) return;
-  await assertManagedDestinationDirectory(destination, stateRoot);
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    const from = resolveInside(source, entry.name);
-    const to = resolveInside(destination, entry.name);
-    if (entry.isDirectory()) {
-      await mkdir(to, { recursive: true, mode: 0o700 });
-      await copyContextValueTree(from, to, stateRoot);
-      continue;
+  const locators: string[] = [];
+  const database = new DatabaseSync(bundleContext, { readOnly: true });
+  try {
+    for (const row of database
+      .prepare("SELECT payload FROM context_blobs WHERE storage_kind = 'managed_file'")
+      .iterate() as Iterable<{ payload?: unknown }>) {
+      const payload = row.payload;
+      if (!(payload instanceof Uint8Array)) {
+        throw new SessionBundleImportError('invalid_root', 'Bundle context locator is unreadable');
+      }
+      locators.push(Buffer.from(payload).toString('utf8'));
     }
-    if (!entry.isFile()) {
+  } finally {
+    database.close();
+  }
+
+  const sourceRoot = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  const destinationRoot = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  await mkdir(destinationRoot, { recursive: true, mode: 0o700 });
+  await assertManagedDestinationDirectory(destinationRoot, stateRoot);
+  for (const locator of locators) {
+    const from = resolveInside(sourceRoot, locator);
+    const to = resolveInside(destinationRoot, locator);
+    const entry = await lstat(from).catch(() => undefined);
+    if (!entry?.isFile()) {
       throw new SessionBundleImportError(
-        'io_failed',
-        `Bundle context payload is not a regular file: ${entry.name}`,
+        'invalid_root',
+        `Bundle context declares a payload it does not carry: ${locator}`,
       );
     }
+    await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+    await assertManagedDestinationDirectory(dirname(to), stateRoot);
     await publishContextValue(from, to, stateRoot);
   }
 }

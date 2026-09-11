@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -1237,6 +1237,168 @@ test('reports a payload path occupied by a directory as a conflict', async () =>
       () => importState(target.workspaceRoot, source.workspaceRoot),
       /Context payload already names different content/,
     );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses a bundle carrying a payload nothing references', async () => {
+  const source = await makeWorkspace('maka-import-orphan-blob-source');
+  const target = await makeWorkspace('maka-import-orphan-blob-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    // An export drops blobs nothing references. One that survives is quota the
+    // target can never reclaim: collection only ever considers a blob after a
+    // reference releases it, and this one never had a reference to release.
+    const tamper = new DatabaseSync(join(source.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      tamper.exec(`
+        DELETE FROM context_refs;
+        DELETE FROM context_session_usage;
+      `);
+    } finally {
+      tamper.close();
+    }
+
+    await assert.rejects(
+      () => importState(target.workspaceRoot, source.workspaceRoot),
+      /payload nothing references/,
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses a bundle carrying usage for a Session it does not hold', async () => {
+  const source = await makeWorkspace('maka-import-surplus-usage-source');
+  const target = await makeWorkspace('maka-import-surplus-usage-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    // Surplus in the direction the aggregate comparison cannot see: every real
+    // Session's numbers still add up, and this row is simply extra. A fresh
+    // target adopts it, and the next write for that Session fails against a
+    // count that describes a store it never had.
+    const tamper = new DatabaseSync(join(source.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      tamper.prepare('INSERT INTO context_session_usage VALUES (?, 0, 0)').run('a-ghost-session');
+    } finally {
+      tamper.close();
+    }
+
+    await assert.rejects(
+      () => importState(target.workspaceRoot, source.workspaceRoot),
+      /usage for a Session it does not hold/,
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('never replaces a context database that is already there', async () => {
+  const source = await makeWorkspace('maka-import-no-replace-source');
+  const target = await makeWorkspace('maka-import-no-replace-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    const kept = await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+
+    // Publication creates; it never replaces. What it would replace is a
+    // database a Context Store may hold open, and on POSIX that Store then
+    // keeps writing to an unlinked inode -- writes that survive until the next
+    // restart and are then simply gone.
+    const imported = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.equal(imported.contextRefs, 1);
+
+    const after = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'), {
+      readOnly: true,
+    });
+    try {
+      const rows = after
+        .prepare('SELECT session_id FROM context_refs ORDER BY session_id')
+        .all() as Array<{ session_id?: unknown }>;
+      assert.deepEqual(
+        rows.map((row) => String(row.session_id)).sort(),
+        [sessionId, targetSession].sort(),
+        'the Session that was already here keeps its reference',
+      );
+    } finally {
+      after.close();
+    }
+    const values = join(target.workspaceRoot, 'context-offload-values');
+    assert.equal(await readFile(join(values, seeded.relativePath), 'utf8'), 'ABC');
+    assert.equal(await readFile(join(values, kept.relativePath), 'utf8'), 'ZZ');
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('publishes only the payloads the bundle declares', async () => {
+  const source = await makeWorkspace('maka-import-undeclared-source');
+  const target = await makeWorkspace('maka-import-undeclared-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    // Bytes no row names. The validator only ever looks at rows, so a bundle
+    // can be assembled with these and they arrive charged to nothing and
+    // reachable by nothing: usage counts blobs, and collection starts from a
+    // blob whose references were released.
+    const stowaway = join(
+      source.workspaceRoot,
+      'context-offload-values',
+      'sha256',
+      'ff',
+      'f'.repeat(64),
+    );
+    await mkdir(dirname(stowaway), { recursive: true });
+    await writeFile(stowaway, 'NOT DECLARED');
+
+    const imported = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.equal(imported.contextRefs, 1);
+
+    const values = join(target.workspaceRoot, 'context-offload-values');
+    assert.equal(await readFile(join(values, seeded.relativePath), 'utf8'), 'ABC');
+    assert.equal(
+      await readFile(join(values, 'sha256', 'ff', 'f'.repeat(64)), 'utf8').catch(() => undefined),
+      undefined,
+      'the undeclared payload did not travel',
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses a bundle that declares a payload it does not carry', async () => {
+  const source = await makeWorkspace('maka-import-missing-payload-source');
+  const target = await makeWorkspace('maka-import-missing-payload-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    // A row whose bytes are absent. Publishing the rest and committing the
+    // Session would leave a reference to content nobody can read back.
+    await rm(join(source.workspaceRoot, 'context-offload-values', seeded.relativePath));
+
+    await assert.rejects(() => importState(target.workspaceRoot, source.workspaceRoot));
   } finally {
     await rm(source.root, { recursive: true, force: true });
     await rm(target.root, { recursive: true, force: true });
