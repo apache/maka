@@ -274,7 +274,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             </ChatTokenizedText>
           )}
         </ChatMessageBubble>
-      ) : null}
+      ) : (
+        userMetadata
+      )}
     </>
   );
 });
