@@ -1434,14 +1434,14 @@ export class AgentGraphCoordinator {
       const latest = await this.currentGraphEpoch(rootSessionId);
       if (latest.graphId !== current.graphId) {
         selected = latest;
-        if (driver) await this.#retireDriver(driver);
+        if (driver) void this.#retireDriver(driver);
         return;
       }
       if ((await this.#readSessionStateForGraph(rootSessionId, current.graphId)) !== 'terminal') {
         return;
       }
       selected = await this.advanceGraphEpoch(rootSessionId, current);
-      if (driver) await this.#retireDriver(driver);
+      if (driver) void this.#retireDriver(driver);
     });
     return selected;
   }
@@ -1449,6 +1449,7 @@ export class AgentGraphCoordinator {
   async #retireDriver(driver: GraphDriver): Promise<void> {
     // Tool closures can outlive their epoch. Fence them and let already
     // admitted operations finish before releasing their complete snapshots.
+    // Cleanup belongs to the old epoch; its teardown I/O must not block the next.
     driver.closed = true;
     driver.requested = false;
     await Promise.allSettled([driver.task, driver.stopTask]);
