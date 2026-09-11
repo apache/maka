@@ -101,6 +101,7 @@ export function createFakeWorkbarServices(
       subscribeState: noopSubscription,
     },
     artifacts: {
+      readToolResult: async () => ({ ok: false, reason: 'not_found' }),
       list: async () => [],
       readText: async () => ({ ok: false, reason: 'not_found' }),
       readBinary: async () => ({ ok: false, reason: 'not_found' }),

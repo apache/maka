@@ -280,6 +280,7 @@ export const HtmlArtifact: Story = {
   decorators: [
     withWorkbarServices({
       artifacts: {
+        readToolResult: async () => ({ ok: false, reason: 'not_found' }),
         list: listHtmlArtifacts,
         readText: async () => ({
           ok: true,

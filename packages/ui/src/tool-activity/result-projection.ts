@@ -24,7 +24,7 @@ import { formatQuietJsonValue } from './builtin-preview.js';
 import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
 import { redactSecrets } from '../redact.js';
-import { formatBytes, readResultText, webFetchReference } from './preview-utils.js';
+import { countTextLines, formatBytes, readResultText, webFetchReference } from './preview-utils.js';
 
 function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
   if (result?.kind !== 'json' || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return false;
@@ -36,11 +36,19 @@ function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
   );
 }
 
+function hasInspectableArgs(args: unknown): boolean {
+  if (args === undefined || args === null) return false;
+  if (typeof args === 'string') return args.trim().length > 0;
+  if (Array.isArray(args)) return args.length > 0;
+  if (typeof args === 'object') return Object.keys(args).length > 0;
+  return true;
+}
+
 export function toolHasDetail(item: ToolActivityItem): boolean {
   if (item.outputChunks?.length || item.outputTruncated) return true;
   if (item.status !== 'completed' && item.args !== undefined) return true;
-  if (item.status === 'completed' && isSuccessReceipt(item.result)) return false;
-  if (item.result?.kind === 'text') return item.result.text.trim().length > 0;
+  if (item.status === 'completed' && isSuccessReceipt(item.result)) return hasInspectableArgs(item.args);
+  if (item.result?.kind === 'text') return typeof item.result.text === 'string' && item.result.text.trim().length > 0;
   return item.result !== undefined;
 }
 
@@ -50,13 +58,17 @@ export function toolResultStats(item: ToolActivityItem, locale: UiLocale): strin
   const result = item.result;
   if (result?.kind === 'file_write') return formatBytes(result.bytes);
   if (isSuccessReceipt(result)) return copy.result.success;
-  if (item.toolName === 'WebFetch') return webFetchReference(result?.kind === 'text' ? result.text : '', item.args).title;
+  if (item.toolName === 'WebFetch') return webFetchReference(
+    result?.kind === 'text' ? result.text : '',
+    item.args,
+    result?.kind === 'text' ? result.sourceUrl : undefined,
+  ).title;
   if (item.toolName === 'Read' && item.args && typeof item.args === 'object' && 'path' in item.args && typeof item.args.path === 'string') {
     const name = redactSecrets(item.args.path.split(/[\\/]/).pop() ?? item.args.path);
     const text = readResultText(result);
-    return text === undefined ? name : copy.detail.lines(text === '' ? 0 : text.split('\n').length);
+    return text === undefined ? name : copy.detail.lines(countTextLines(text));
   }
-  if (result?.kind === 'web_search') return copy.detail.returned(result.rows.length);
+  if (result?.kind === 'web_search') return copy.detail.returned(Array.isArray(result.rows) ? result.rows.length : 0);
   if (['Grep', 'Glob', 'Find'].includes(item.toolName) && result?.kind === 'json') {
     if (Array.isArray(result.value)) return copy.detail.returned(result.value.length);
     if (result.value && typeof result.value === 'object') {
@@ -99,7 +111,7 @@ export function extractErrorText(result: ToolActivityItem['result'], locale: UiL
 }
 
 export function isPermissionDeniedToolResult(result: ToolActivityItem['result']): boolean {
-  if (result?.kind !== 'text') return false;
+  if (result?.kind !== 'text' || typeof result.text !== 'string') return false;
   return /^(User denied permission(?: request)?|用户已拒绝权限请求)$/.test(result.text.trim());
 }
 

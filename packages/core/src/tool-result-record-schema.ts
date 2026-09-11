@@ -41,7 +41,7 @@ type RiveResult = Result<'rive_workflow'>;
 
 const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
   ['kind', 'text'],
-  ['sandboxDenial', 'sandboxFailure', 'uncertainOutcome', 'truncated'],
+  ['sandboxDenial', 'sandboxFailure', 'sourceUrl', 'uncertainOutcome', 'truncated'],
 );
 const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
   ['reason'],
@@ -203,6 +203,7 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
       return (
         hasExactShape(value, TEXT_SHAPE) &&
         typeof value.text === 'string' &&
+        (value.sourceUrl === undefined || typeof value.sourceUrl === 'string') &&
         (value.truncated === undefined || typeof value.truncated === 'boolean') &&
         (value.sandboxDenial === undefined || isSandboxDenialSignal(value.sandboxDenial)) &&
         (value.sandboxFailure === undefined ||

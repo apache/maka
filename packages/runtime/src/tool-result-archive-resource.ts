@@ -113,6 +113,30 @@ export interface ToolResultArchiveResourceRequest {
   pattern?: string;
 }
 
+export interface UnwrappedArchiveReadPage {
+  content: string;
+  partial: boolean;
+}
+
+/** Projects a successful ArchiveRead body page for human-facing viewers. */
+export function unwrapArchiveReadPage(value: unknown): UnwrappedArchiveReadPage | null {
+  if (
+    !isRecord(value) ||
+    value.kind !== 'tool_result_archive' ||
+    value.ok !== true ||
+    (value.operation !== 'read' && value.operation !== 'query') ||
+    typeof value.content !== 'string'
+  )
+    return null;
+  return {
+    content: value.content,
+    partial:
+      value.hasMore === true ||
+      (typeof value.offset === 'number' && value.offset > 0) ||
+      (typeof value.lineOffset === 'number' && value.lineOffset > 0),
+  };
+}
+
 export function buildToolResultArchiveResourceRef(
   input: ToolResultArchiveResourceIdentity,
 ): string {

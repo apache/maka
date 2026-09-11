@@ -31,7 +31,7 @@ test('local WebFetch decodes the charset declared by the response', async () => 
 
   const result = await executor.fetch({ url: 'https://example.com/legacy', sessionId: 's1' });
 
-  assert.equal(result, 'café – new');
+  assert.deepEqual(result, { content: 'café – new', finalUrl: 'https://example.com/legacy' });
 });
 
 test('local WebFetch extracts readable HTML as Markdown', async () => {
@@ -50,9 +50,9 @@ test('local WebFetch extracts readable HTML as Markdown', async () => {
 
   const result = await executor.fetch({ url: 'https://example.com/page', sessionId: 's1' });
 
-  assert.match(result, /^#{1,2} Readable title/m);
-  assert.match(result, /\[article\]\(https:\/\/example\.com\/details\)/);
-  assert.doesNotMatch(result, /Site navigation/);
+  assert.match(result.content, /^#{1,2} Readable title/m);
+  assert.match(result.content, /\[article\]\(https:\/\/example\.com\/details\)/);
+  assert.doesNotMatch(result.content, /Site navigation/);
 });
 
 test('local WebFetch resolves links against the document base URL', async () => {
@@ -68,7 +68,7 @@ test('local WebFetch resolves links against the document base URL', async () => 
 
   const result = await executor.fetch({ url: 'https://example.com/page', sessionId: 's1' });
 
-  assert.match(result, /\[article link\]\(https:\/\/cdn\.example\/assets\/details\)/);
+  assert.match(result.content, /\[article link\]\(https:\/\/cdn\.example\/assets\/details\)/);
 });
 
 test('local WebFetch rejects pathologically deep HTML before DOM parsing', async () => {
@@ -122,15 +122,29 @@ test('local WebFetch allows localhost and private-network targets', async () => 
     },
   });
 
-  assert.equal(
-    await executor.fetch({ url: 'http://127.0.0.1:3000/status', sessionId: 's1' }),
-    'local body',
-  );
-  assert.equal(
-    await executor.fetch({ url: 'http://192.168.1.10/status', sessionId: 's1' }),
-    'local body',
-  );
+  assert.deepEqual(await executor.fetch({ url: 'http://127.0.0.1:3000/status', sessionId: 's1' }), {
+    content: 'local body',
+    finalUrl: 'http://127.0.0.1:3000/status',
+  });
+  assert.deepEqual(await executor.fetch({ url: 'http://192.168.1.10/status', sessionId: 's1' }), {
+    content: 'local body',
+    finalUrl: 'http://192.168.1.10/status',
+  });
   assert.deepEqual(requested, ['http://127.0.0.1:3000/status', 'http://192.168.1.10/status']);
+});
+
+test('local WebFetch returns the final URL after a successful redirect', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async (url) =>
+      String(url).endsWith('/start')
+        ? new Response(null, { status: 302, headers: { location: 'https://final.example/page' } })
+        : new Response('final body'),
+  });
+
+  assert.deepEqual(await executor.fetch({ url: 'https://short.example/start', sessionId: 's1' }), {
+    content: 'final body',
+    finalUrl: 'https://final.example/page',
+  });
 });
 
 test('local WebFetch revalidates every redirect target', async () => {

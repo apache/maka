@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { type PtyShellOutput, type ShellRunRecord } from '@maka/core/shell-run';
+import { ptyHumanTerminalText, ptyTuiTerminalRows } from '@maka/core/pty-output-view';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -34,6 +35,24 @@ import {
 } from '../shell-run-tool-result.js';
 
 describe('PTY model output projection', () => {
+  test('keeps truncation metadata out of model, human, and TUI text', () => {
+    const projected = projectPtyOutputForModel(
+      ptyOutput({ scrollback: 'old line\n'.repeat(100), screen: 'CURRENT' }),
+      48,
+    );
+
+    assert.equal(projected.truncated, true);
+    assert.doesNotMatch(JSON.stringify(projected), /terminal snapshot truncated|output limit/);
+    assert.doesNotMatch(
+      ptyHumanTerminalText(projected),
+      /terminal snapshot truncated|output limit/,
+    );
+    assert.doesNotMatch(
+      ptyTuiTerminalRows(projected).join('\n'),
+      /terminal snapshot truncated|output limit/,
+    );
+  });
+
   test('shares one UTF-8 budget in screen, alternate, then latest scrollback priority', () => {
     const output = ptyOutput({
       screen: 'SCREEN',

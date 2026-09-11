@@ -39,14 +39,15 @@ test('routes archive reads to the Host and rejects inconsistent reference eviden
   const bytes = Buffer.from(text);
   const identity = { artifactId: 'archive-1', originalBytes: bytes.length,
     bodySha256: createHash('sha256').update(bytes).digest('hex') };
+  const ref = `maka://archive/archive-1/${identity.bodySha256}/${bytes.length}`;
+  const calls: Array<{ sessionId: string; ref: string }> = [];
   registerRuntimeHostArtifactsIpc({
     uiLocale: () => 'zh-CN' as const,
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
     client: {
       hostEpoch: 'host-1',
       async readToolResult(sessionId: string, ref: string) {
-        assert.equal(sessionId, 'session-1');
-        assert.equal(ref, `maka://archive/archive-1/${identity.bodySha256}/${bytes.length}`);
+        calls.push({ sessionId, ref });
         return { ok: true, text };
       },
     } as never,
@@ -56,9 +57,35 @@ test('routes archive reads to the Host and rejects inconsistent reference eviden
   const read = handlers.get('artifacts:readToolResult');
   assert.ok(read);
   assert.deepEqual(await read({}, 'session-1', identity), { ok: true, text });
-  assert.deepEqual(await read({}, 'session-1', { ...identity,
-    resourceRef: `maka://archive/archive-1/${'0'.repeat(64)}/${bytes.length}` }),
-    { ok: false, reason: 'not_allowed' });
+  assert.deepEqual(await read({}, 'session-1', {
+    resourceRef: ref,
+    originalBytes: identity.originalBytes,
+    bodySha256: identity.bodySha256,
+  }), { ok: true, text });
+  assert.deepEqual(calls, [
+    { sessionId: 'session-1', ref },
+    { sessionId: 'session-1', ref },
+  ]);
+
+  const malformed = [
+    undefined,
+    null,
+    [],
+    {},
+    { ...identity, resourceRef: ref },
+    { ...identity, artifactId: 42 },
+    { ...identity, originalBytes: 0 },
+    { ...identity, bodySha256: identity.bodySha256.toUpperCase() },
+    { resourceRef: `maka://archive/archive-1/${'0'.repeat(64)}/${bytes.length}`,
+      originalBytes: bytes.length, bodySha256: identity.bodySha256 },
+  ];
+  for (const candidate of malformed) {
+    assert.deepEqual(
+      await read({}, 'session-1', candidate),
+      { ok: false, reason: 'not_allowed' },
+    );
+  }
+  assert.equal(calls.length, 2, 'malformed identities never reach the Host client');
 });
 
 // Exercise the public Save As result and destination bytes together. Faults

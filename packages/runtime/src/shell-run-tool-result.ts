@@ -32,7 +32,6 @@ import type {
   ToolResultContent,
 } from '@maka/core/events';
 import { encodedTerminalInputActionsByteLength } from '@maka/core/terminal-input';
-import { PTY_TRUNCATED_MARKER } from '@maka/core/pty-output-view';
 
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 
@@ -257,10 +256,7 @@ function takePrioritizedText(text: string, budget: number): { text: string; trun
 function takeTailText(text: string, budget: number): { text: string; truncated: boolean } {
   if (Buffer.byteLength(text, 'utf8') <= budget) return { text, truncated: false };
   if (budget <= 0) return { text: '', truncated: text.length > 0 };
-  const markerBytes = Buffer.byteLength(PTY_TRUNCATED_MARKER, 'utf8');
-  if (budget <= markerBytes) return { text: '', truncated: true };
-  const tail = sliceUtf8Tail(text, budget - markerBytes - 1);
-  return { text: `${PTY_TRUNCATED_MARKER}\n${tail}`, truncated: true };
+  return { text: sliceUtf8Tail(text, budget), truncated: true };
 }
 
 function sliceUtf8Tail(text: string, budget: number): string {
