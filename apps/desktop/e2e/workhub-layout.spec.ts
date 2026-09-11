@@ -368,7 +368,11 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
   await workhub.locator(COMPOSER_INPUT).press('Shift+Enter');
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
-  await expect(workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' })).toHaveCount(1);
+  const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
+  await expect(steered).toHaveCount(1);
+  // A queued message is only ever durable at the tail, so sending one has to
+  // take the window and the reader there.
+  await expect(steered).toBeInViewport();
   await expect(followups).toHaveText(queuedTexts);
   await expect(stop).toBeVisible();
   await stop.click();

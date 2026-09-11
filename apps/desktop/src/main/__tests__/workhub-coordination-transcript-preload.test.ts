@@ -29,6 +29,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
 import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
+import type { WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptPage, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import type { AttachmentRef } from '@maka/core/events';
@@ -524,3 +525,77 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
     }
   });
 }
+
+test('WorkHub fills and trims its transcript window through the reader band', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'coordination' });
+  const identity = { sessionId: 'coordination', generation: 'generation-1', hostEpoch: 'epoch-1' };
+  const row = (sequence: number, turnId: string): { sequence: number; message: StoredMessage } => ({
+    sequence, message: { type: 'user', id: `message-${sequence}`, turnId, ts: sequence, text: `Record ${sequence}` },
+  });
+  let deliverySequence = 0;
+  let newerReads = 0;
+  let olderReads = 0;
+  let snapshots: WorkHubTranscriptSnapshot[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...identity, durableThrough: 4, overlay: [], hasOlder: true, hasNewer: true,
+          durable: [row(2, 'turn-a'), row(3, 'turn-b')],
+        })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+        return {
+          ...identity, durableThrough: 4, hasOlder: true, hasNewer: true, readThroughMessageId: 'message-3',
+          acknowledgeTail: async () => {},
+          loadBefore: async () => { olderReads += 1; },
+          loadAround: async () => {},
+          loadLatest: async () => {},
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigation: number }) {
+            newerReads += 1;
+            assert.equal(anchor, 3);
+            for (const batch of encodeDesktopTranscriptPage(
+              { ...identity, navigation: navigation.navigation },
+              { durableThrough: 4, hasNewer: false, durable: [row(4, 'turn-c')] },
+              { direction: 'newer', anchor },
+            )) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+          },
+          close: async () => undefined,
+        };
+      },
+    } satisfies Pick<MakaBridge['transcripts'], 'open'>,
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const handle = await services.openTranscript(
+    sessionId,
+    (snapshot) => { snapshots.push(snapshot); },
+    new AbortController().signal,
+    (error) => { throw error; },
+  );
+  const latest = () => snapshots.at(-1)!;
+  try {
+    await waitFor(() => latest()?.ready === true, { timeoutMs: 5_000 });
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-a', 'turn-b']);
+    assert.equal(await handle.prefetchHistory('newer'), true);
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-a', 'turn-b', 'turn-c']);
+    assert.equal(latest().hasNewer, false);
+    assert.equal(await handle.prefetchHistory('newer'), false, 'a window at the tail has no newer edge to read');
+    assert.equal(newerReads, 1);
+    assert.equal(await handle.prefetchHistory('older'), true);
+    assert.equal(await handle.prefetchHistory('older'), false, 'the same window answers an older read the same way');
+    assert.equal(olderReads, 1);
+    snapshots = [];
+    handle.retain({ firstTurnId: 'turn-b', lastTurnId: 'turn-c' });
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-b', 'turn-c']);
+    assert.equal(latest().hasOlder, true, 'a trimmed edge becomes history again');
+    // A trim moves the window, so the edge it re-opened is worth asking again.
+    assert.equal(await handle.prefetchHistory('older'), true);
+    assert.equal(olderReads, 2);
+  } finally {
+    await handle.close();
+  }
+});

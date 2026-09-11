@@ -265,7 +265,19 @@ export function createDesktopWorkHubServices(
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        loadOlder: async () => { await controller.loadBefore(); },
+        prefetchHistory: (edge) =>
+          edge === 'older' ? controller.loadBefore() : controller.loadAfter(),
+        retain: ({ firstTurnId, lastTurnId }) => {
+          // A Turn the band named but the window no longer holds yields null,
+          // which leaves that side of the window unbounded rather than empty.
+          const trimmed = controller.store.retain(
+            controller.store.sequenceForTurn(firstTurnId, 'first'),
+            controller.store.sequenceForTurn(lastTurnId, 'last'),
+          );
+          // A trim is the one window change nothing delivers, and the rows it
+          // drops stay mounted until the surface hears about it.
+          if (trimmed && !cancellation.aborted) handler(store.snapshot());
+        },
         loadLatest: () => controller.loadLatest(),
         close: () => { cancellation.removeEventListener('abort', cancel); return controller.close(); },
       };
