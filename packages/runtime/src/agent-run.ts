@@ -26,8 +26,19 @@ import type {
   ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import { isRuntimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
+import { RunHandoffGate, type RunHandoffRequest } from './run-handoff-gate.js';
+import { preserveHandoffOpening } from './runtime-resume.js';
+import type {
+  RequestCompositionSnapshot,
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
+import {
+  createRequestCompositionSnapshot,
+  decodeRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import {
   buildInvocationOpenedEvent,
@@ -47,9 +58,12 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 
+import { stableHash } from './request-shape.js';
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
@@ -59,17 +73,16 @@ import type {
   SessionHeader,
   SessionHeaderPatch,
   SessionStatus,
-  StoredMessage,
-  SystemNoteMessage,
-  TurnRecord,
+  RuntimeSystemNoteKind,
   UserMessage,
+  AssistantMessage,
 } from '@maka/core/session';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
-import { messageContentsEqual, type SessionEvent } from '@maka/core/events';
+import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
@@ -85,6 +98,7 @@ import {
   statusFromEvent,
   turnStatusFromEvent,
 } from './session-projection-helpers.js';
+import { admittedPromptEventId } from './message-authority.js';
 import { commitOrCreateTerminalRunFact } from './terminal-run-commit.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
@@ -92,8 +106,8 @@ import {
   type RuntimeContinuationStartAdmissionProof,
 } from './runtime-continuation-admission.js';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
-import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
+import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -117,12 +131,15 @@ export interface AgentRunHooks {
     blockedReason?: SessionBlockedReason,
     ts?: number,
   ): Promise<void>;
-  appendTurnState(
+  /**
+   * The catalog facts a durable message carries — its time, the Session list's
+   * preview line, and the connection lock a Session takes on its first user
+   * message. The transcript write used to commit these on its way to disk; the
+   * ledger is not that store, so the run commits them here instead.
+   */
+  commitMessageProjection?(
     sessionId: string,
-    turnId: string,
-    status: TurnRecord['status'],
-    lineage?: AgentRunLineage,
-    options?: { ts?: number; errorClass?: string; abortSource?: string },
+    message: UserMessage | AssistantMessage,
   ): Promise<void>;
 }
 
@@ -145,12 +162,11 @@ export interface AgentRunInput {
   header: SessionHeader;
   userInput: UserMessageInput;
   /** Internal lineage for runtime-owned continuations; never accepted by live turn input. */
-  runLineage?: Pick<AgentRunLineage, 'parentRunId'>;
+  runLineage?: AgentRunLineage;
   rootExecutionKind?: 'context_compact';
   runId?: string;
   userMessageId?: string | null;
   durability?: AgentRunDurability;
-  store: AgentRunSessionStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
   newId: () => string;
@@ -159,6 +175,10 @@ export interface AgentRunInput {
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
   /** Exact target opening fact already committed inside the durable continuation claim. */
   claimedOpening?: RuntimeEventInvocationOpenedContent;
+  /** Authenticated source authority is not part of provider-visible replay. */
+  handoffSourceOpening?: RuntimeEventInvocationOpenedContent;
+  /** Durable composition of the authenticated sealed handoff source. */
+  handoffSourceComposition?: RunCompositionSnapshot;
   /** The moment that claim was taken; the target invocation opens at it. */
   claimedOpenedAt?: number;
   /** Commits the claimed continuation provider-call T1 after Run creation. */
@@ -171,11 +191,6 @@ export interface AgentRunInput {
   effectiveToolMode?: ToolMode;
   /** Set only when this run's backend tool path is guarded by canonical T1. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
-}
-
-export interface AgentRunSessionStore {
-  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
 
 export type RuntimeContinuationFailpoint =
@@ -217,6 +232,12 @@ export interface AgentRunContinuationBeginResult {
 const RUNTIME_PARTIAL_FLUSH_INTERVAL_MS = 80;
 const RUNTIME_PARTIAL_BATCH_MAX_BYTES = 8 * 1024;
 
+export interface AgentRunHandoffRequest extends RunHandoffRequest {
+  readonly sealed: Promise<boolean>;
+  /** Hypothetical seal for read-only replay validation while the live gate is held. */
+  preview(): RuntimeEvent;
+}
+
 export class AgentRun {
   readonly runId: string;
   readonly invocationId: string;
@@ -237,6 +258,7 @@ export class AgentRun {
   private runStoreAvailable = true;
   private runtimeEventStoreAvailable = true;
   private runtimeEventStoreFailure: unknown;
+  private lastAssistantPreview: AssistantMessage | undefined;
   private runtimePartialStreamKey: string | undefined;
   private runtimePartialBuffer: RuntimeEvent[] = [];
   private runtimePartialBufferBytes = 0;
@@ -244,6 +266,10 @@ export class AgentRun {
   private traceWriteError: string | undefined;
   private runComposition: RunCompositionSnapshot | undefined;
   private runCompositionWrite: Promise<void> | undefined;
+  private runCompositionCommitted = false;
+  private requestComposition: RequestCompositionSnapshot | undefined;
+  private requestCompositionIndex: Map<string, RequestCompositionSnapshot> | undefined;
+  private requestCompositionIndexRead: Promise<void> | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -251,11 +277,24 @@ export class AgentRun {
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
+  private readonly handoffGate = new RunHandoffGate();
+  private handoffRequest:
+    | {
+        pause: RuntimeHandoffIntent;
+        preview?: RuntimeEvent;
+        committed: boolean;
+        settle(sealed: boolean): void;
+        fail(error: unknown): void;
+      }
+    | undefined;
+  private handoffPaused = false;
   private terminalRunFactCommitted = false;
   private continuationActive = false;
   private providerStateIdentity: `sha256:${string}` | undefined;
   private invocationOpening: RuntimeEventInvocationOpenedContent | undefined;
   private invocationOpeningCommitted = false;
+  /** Set once `begin()` owes this run's prompt, cleared once the ledger has it. */
+  private initialRuntimeEventPending = false;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -271,6 +310,9 @@ export class AgentRun {
       userInput: cloneAndFreezeRuntimeSnapshot(input.userInput),
       ...(input.effectiveOrchestration
         ? { effectiveOrchestration: cloneAndFreezeRuntimeSnapshot(input.effectiveOrchestration) }
+        : {}),
+      ...(input.handoffSourceComposition
+        ? { handoffSourceComposition: decodeRunCompositionSnapshot(input.handoffSourceComposition) }
         : {}),
     };
     this.input = acceptedInput;
@@ -329,12 +371,129 @@ export class AgentRun {
     if (this.terminalClaim) return false;
     this.terminalClaim = { owner: 'stop' };
     this.stopped = true;
+    this.handoffGate.close();
     this.abortSource = abortSource;
     return true;
   }
 
   isStopped(): boolean {
     return this.stopped;
+  }
+
+  requestHandoff(pause: RuntimeHandoffIntent, signal: AbortSignal): AgentRunHandoffRequest {
+    if (
+      this.handoffRequest ||
+      this.finalized ||
+      this.terminalClaim ||
+      this.input.runtimeEventStore?.durability !== 'canonical' ||
+      !this.toolBoundaryProtocol ||
+      Object.hasOwn(pause, 'remainingSteps') ||
+      !isRuntimeHandoffPause({ ...pause, remainingSteps: null }) ||
+      !this.invocationOpening ||
+      pause.rootRunId !==
+        (this.invocationOpening.source.kind === 'handoff'
+          ? this.invocationOpening.source.rootRunId
+          : this.runId)
+    ) {
+      throw new Error('Run cannot reserve a cooperative handoff');
+    }
+    let settle!: (sealed: boolean) => void;
+    let fail!: (error: unknown) => void;
+    const sealed = new Promise<boolean>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    void sealed.catch(() => {});
+    const pending = {
+      pause: cloneAndFreezeRuntimeSnapshot(pause),
+      preview: undefined as RuntimeEvent | undefined,
+      committed: false,
+      settle: (value: boolean) => {
+        signal.removeEventListener('abort', onAbort);
+        settle(value);
+      },
+      fail: (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        fail(error);
+      },
+    };
+    this.handoffRequest = pending;
+    const gate = this.handoffGate.request(signal);
+    const cancel = () => {
+      if (pending.committed || this.handoffRequest !== pending) return;
+      gate.cancel();
+      this.handoffRequest = undefined;
+      pending.settle(false);
+    };
+    const onAbort = () => cancel();
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) cancel();
+    void gate.ready.then((ready) => {
+      if (!ready) cancel();
+    });
+    return {
+      ready: gate.ready,
+      sealed,
+      cancel,
+      preview: () => {
+        if (
+          this.handoffRequest !== pending ||
+          this.stopped ||
+          pending.committed ||
+          !pending.preview
+        ) {
+          throw new Error('Handoff preview requires the currently held Runtime boundary');
+        }
+        this.assertRunCompositionCommitted();
+        return pending.preview;
+      },
+      commit: () => {
+        this.assertRunCompositionCommitted();
+        if (this.handoffRequest !== pending || !gate.commit()) return false;
+        pending.committed = true;
+        return true;
+      },
+    };
+  }
+
+  async reachHandoffBoundary(
+    signal: AbortSignal,
+    remainingSteps: number | null,
+  ): Promise<'continue' | 'pause'> {
+    if (remainingSteps !== null && (!Number.isSafeInteger(remainingSteps) || remainingSteps <= 0)) {
+      throw new Error('Invalid handoff step budget');
+    }
+    const pending = this.handoffRequest;
+    if (pending) {
+      pending.preview = cloneAndFreezeRuntimeSnapshot({
+        id: this.input.newId(),
+        sessionId: this.sessionId,
+        runId: this.runId,
+        invocationId: this.invocationId,
+        turnId: this.turnId,
+        ts: this.input.now(),
+        partial: false,
+        role: 'system',
+        author: 'host',
+        modelVisibility: 'hidden',
+        actions: { endInvocation: true, handoffPause: { ...pending.pause, remainingSteps } },
+      });
+    }
+    const decision = await this.handoffGate.reachBoundary(signal);
+    if (decision === 'pause') {
+      this.handoffPaused = true;
+    }
+    return decision;
+  }
+
+  hasCommittedHandoff(): boolean {
+    return (
+      this.handoffPaused &&
+      this.handoffRequest?.committed === true &&
+      !this.stopped &&
+      !this.failureClass &&
+      !this.terminalClaim
+    );
   }
 
   headerSnapshot(): SessionHeader {
@@ -445,6 +604,17 @@ export class AgentRun {
       return Promise.reject(new Error('AgentRun store is not configured'));
     }
     const normalized = decodeRunCompositionSnapshot(snapshot);
+    const expected = this.input.handoffSourceComposition;
+    if (
+      expected &&
+      (normalized.baseSystemPromptHash !== expected.baseSystemPromptHash ||
+        normalized.toolCatalogHash !== expected.toolCatalogHash ||
+        normalized.toolAvailabilityHash !== expected.toolAvailabilityHash ||
+        normalized.baseProviderOptionsHash !== expected.baseProviderOptionsHash ||
+        normalized.contextWindow !== expected.contextWindow)
+    ) {
+      return Promise.reject(new Error('Handoff Run Composition execution semantics changed'));
+    }
     if (this.runComposition && !isDeepStrictEqual(this.runComposition, normalized)) {
       return Promise.reject(new Error('AgentRun Run Composition changed after resolution'));
     }
@@ -463,14 +633,97 @@ export class AgentRun {
           ts: this.input.now(),
           data: { runComposition: normalized },
         },
-        { durable: this.requiresDurablePersistence() },
+        {
+          durable:
+            this.requiresDurablePersistence() ||
+            this.input.runtimeEventStore?.durability === 'canonical',
+        },
       );
+    }).then(() => {
+      this.runCompositionCommitted = true;
     });
     this.runCompositionWrite = write;
     return write.catch((error: unknown) => {
       if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
       throw error;
     });
+  }
+
+  assertRunCompositionCommitted(): void {
+    if (!this.runCompositionCommitted) {
+      throw new Error('Cooperative handoff requires a durably committed Run Composition');
+    }
+  }
+
+  /**
+   * Durably binds one logical model step to its effective request surface.
+   * Unchanged steps reuse the latest snapshot; a changed surface appends a full
+   * replacement before provider dispatch, matching DSH request/header epochs.
+   */
+  async recordRequestComposition(input: RequestCompositionSnapshotInput): Promise<string> {
+    if (!this.input.runStore) {
+      throw new Error('AgentRun store is not configured');
+    }
+    await this.loadRequestCompositionIndex();
+    const snapshot = createRequestCompositionSnapshot(
+      input,
+      this.requestCompositionIndex?.size ? 'change' : 'initial',
+    );
+    const surfaceHash = requestCompositionSurfaceHash(snapshot);
+    const existing = this.requestCompositionIndex?.get(surfaceHash);
+    if (existing) {
+      if (!sameRequestCompositionSurface(existing, snapshot)) {
+        throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+      }
+      this.requestComposition = existing;
+      return existing.compositionId;
+    }
+    await this.enqueueRequiredRunStoreWrite('append request composition', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: 'request_composition_resolved',
+          id: snapshot.compositionId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: this.input.now(),
+          data: { snapshot },
+        },
+        { durable: true },
+      );
+    });
+    this.requestComposition = snapshot;
+    this.requestCompositionIndex?.set(surfaceHash, snapshot);
+    return snapshot.compositionId;
+  }
+
+  private async loadRequestCompositionIndex(): Promise<void> {
+    if (this.requestCompositionIndex) return;
+    if (this.requestCompositionIndexRead) return await this.requestCompositionIndexRead;
+    const read = (async (): Promise<void> => {
+      const index = new Map<string, RequestCompositionSnapshot>();
+      const events = await this.input.runStore?.readEvents(this.sessionId, this.runId);
+      for (const event of events ?? []) {
+        if (event.type !== 'request_composition_resolved') continue;
+        const snapshot = decodeRequestCompositionSnapshot(event.data?.snapshot);
+        const surfaceHash = requestCompositionSurfaceHash(snapshot);
+        const existing = index.get(surfaceHash);
+        if (existing && !sameRequestCompositionSurface(existing, snapshot)) {
+          throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+        }
+        index.set(surfaceHash, existing ?? snapshot);
+        this.requestComposition = snapshot;
+      }
+      this.requestCompositionIndex = index;
+    })();
+    this.requestCompositionIndexRead = read;
+    try {
+      await read;
+    } finally {
+      if (this.requestCompositionIndexRead === read) this.requestCompositionIndexRead = undefined;
+    }
   }
 
   /**
@@ -617,8 +870,10 @@ export class AgentRun {
         requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
       });
       await this.recordSessionEvent(sessionEvent, options);
+      await this.commitMessageProjection(this.lastAssistantPreview);
       return;
     }
+    this.rememberAssistantPreview(runtimeEvent);
     if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
       // A hosted continuation may resume execution only after its identity-only
       // settlement fact is durable. Session status advances next, and the queue
@@ -645,59 +900,70 @@ export class AgentRun {
       const steering =
         runtimeEvent.content?.kind === 'text' && runtimeEvent.content.steering === true;
       await this.recordRuntimeEvents([runtimeEvent], steering ? { requireDurableWrite: true } : {});
-
-      await materializeRuntimeEventTranscriptProjection(
-        this.input.store,
-        this.sessionId,
-        runtimeEvent,
-      );
+      if (steering) {
+        await this.commitMessageProjection(
+          projectRuntimeEventUserMessage(runtimeEvent, runtimeEvent.id),
+        );
+      }
     }
   }
 
-  async begin(): Promise<AgentRunBeginResult> {
+  /**
+   * A user message is fail-CLOSED: it also takes the Session's connection lock,
+   * and no other path re-derives that latch now that the transcript is not a
+   * second authority. An assistant preview is fail-open — losing it costs a
+   * stale sidebar entry, never the turn.
+   */
+  private async commitMessageProjection(
+    message: UserMessage | AssistantMessage | undefined,
+  ): Promise<void> {
+    const commit = this.input.hooks.commitMessageProjection;
+    if (!commit || !message) return;
+    const committed = commit.call(this.input.hooks, this.sessionId, message);
+    if (message.type === 'user') return committed;
+    await committed.catch(() => {});
+  }
+
+  /**
+   * The assistant text the Session list shows once the Turn ends.
+   *
+   * Kept as the run goes so the catalog costs one write per Turn rather than
+   * one per streamed step, and read only after the terminal fact is durable —
+   * a Turn that never spoke leaves the previous preview standing.
+   */
+  private rememberAssistantPreview(event: RuntimeEvent): void {
+    if (event.role !== 'model' || event.content?.kind !== 'text') return;
+    if (!event.content.text?.trim()) return;
+    this.lastAssistantPreview = {
+      type: 'assistant',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      text: event.content.text,
+      modelId: this.header.model,
+    };
+  }
+
+  private async beginUserTurn(): Promise<RuntimeEvent> {
+    // Owed from here, not from after the opening: `openInvocation` can leave the
+    // invocation open and still throw, and `finalize` reopens what it can.
+    this.initialRuntimeEventPending = true;
     await this.openInvocation();
 
-    let initialRuntimeEventId: string;
+    this.lastTs = this.input.now();
+    const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
-    const userMessageTs = this.input.now();
-    if (this.input.userMessageId === null) {
-      initialRuntimeEventId = this.input.newId();
-    } else {
-      const userMessageId = this.input.userMessageId ?? this.input.newId();
-      initialRuntimeEventId = userMessageId;
-      const userMsg = cloneAndFreezeRuntimeSnapshot<UserMessage>({
-        type: 'user',
-        id: userMessageId,
-        turnId: this.turnId,
-        ts: userMessageTs,
-        text: this.input.userInput.text,
-        ...(this.input.userInput.displayText !== undefined
-          ? { displayText: this.input.userInput.displayText }
-          : {}),
-        ...(this.input.userInput.attachments
-          ? { attachments: this.input.userInput.attachments }
-          : {}),
-        ...(this.input.userInput.directoryReferences
-          ? { directoryReferences: this.input.userInput.directoryReferences }
-          : {}),
-        ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-        ...(this.input.userInput.inlineReferences
-          ? { inlineReferences: this.input.userInput.inlineReferences }
-          : {}),
-        ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
-      });
-      await appendUserMessageOnce(this.input.store, this.sessionId, userMsg);
-    }
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
-    this.lastTs = userMessageTs;
+    return initialRuntimeEvent;
+  }
 
-    const initialRuntimeEvent = cloneAndFreezeRuntimeSnapshot(
-      this.buildInitialRuntimeEvent(initialRuntimeEventId, this.lastTs),
-    );
-    await this.recordRuntimeEvents([initialRuntimeEvent], {
-      requireDurableWrite: this.requiresDurablePersistence(),
-    });
+  /** Host actions share Turn facts and finalization without activating a provider. */
+  async beginCoordination(): Promise<void> {
+    await this.beginUserTurn();
+    await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
+  }
 
+  async begin(): Promise<AgentRunBeginResult> {
+    const initialRuntimeEvent = await this.beginUserTurn();
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
@@ -732,15 +998,30 @@ export class AgentRun {
     };
   }
 
+  /** Say what this run was asked to do. */
+  private async recordInitialRuntimeEvent(ts: number): Promise<RuntimeEvent> {
+    const event = cloneAndFreezeRuntimeSnapshot(
+      this.buildInitialRuntimeEvent(
+        admittedPromptEventId(this.runId, this.input.userMessageId),
+        ts,
+      ),
+    );
+    await this.recordRuntimeEvents([event], {
+      requireDurableWrite: this.requiresDurablePersistence(),
+    });
+    // Owed until the catalog carries it too, not just until the ledger does:
+    // the projection is where the connection lock latches, and re-recording the
+    // event is free because its id is derived and the store dedupes it.
+    await this.commitMessageProjection(projectRuntimeEventUserMessage(event, event.id));
+    this.initialRuntimeEventPending = false;
+    return event;
+  }
+
   async beginOperation(): Promise<AgentRunOperationBeginResult> {
     await this.openInvocation();
 
     const startedAt = this.input.now();
     this.lastTs = startedAt;
-
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-      ts: startedAt,
-    });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
@@ -780,10 +1061,6 @@ export class AgentRun {
       throw new ContinuationStartCommitError(error);
     }
     await this.input.continuationFailpoint?.('after_continuation_start_committed');
-
-    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-      ts: startedAt,
-    });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
@@ -843,10 +1120,29 @@ export class AgentRun {
     };
   }
 
-  async recordStoredSessionEvent(ev: SessionEvent): Promise<void> {
-    if (ev.type === 'token_usage') {
-      await this.input.store.appendMessage(this.sessionId, { ...ev } satisfies StoredMessage);
-    }
+  /**
+   * Record something the runtime needs to tell the reader about this turn.
+   *
+   * It is a fact of the invocation, so it goes where the invocation's facts go.
+   * Never model-visible: the note describes what happened to the conversation,
+   * it is not part of it.
+   */
+  async recordSystemNote(kind: RuntimeSystemNoteKind, data?: unknown): Promise<void> {
+    await this.recordRuntimeEvents([
+      {
+        id: this.input.newId(),
+        invocationId: this.invocationId,
+        runId: this.runId,
+        sessionId: this.sessionId,
+        turnId: this.turnId,
+        ts: this.input.now(),
+        partial: false,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: { kind: 'system_note', note: kind, ...(data !== undefined ? { data } : {}) },
+      },
+    ]);
   }
 
   async recordSessionEvent(
@@ -880,9 +1176,9 @@ export class AgentRun {
         );
       }
     }
-    if (transition && !this.stopped) {
+    if (transition && !this.stopped && ev.type !== 'error') {
       const updateSessionStatus = async (): Promise<void> => {
-        if (terminalSessionEvent || ev.type === 'error') {
+        if (terminalSessionEvent) {
           await this.input.hooks
             .updateStatus(this.sessionId, transition.status, transition.blockedReason, ev.ts)
             .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
@@ -897,42 +1193,12 @@ export class AgentRun {
       };
       await updateSessionStatus();
     }
-    if (turnStatus && !this.stopped) {
-      const appendTurnState = this.input.hooks.appendTurnState(
-        this.sessionId,
-        this.turnId,
-        turnStatus.status,
-        this.lineage,
-        {
-          ts: ev.ts,
-          errorClass: turnStatus.errorClass,
-          ...(turnStatus.status === 'aborted' && this.abortSource
-            ? { abortSource: this.abortSource }
-            : {}),
-        },
-      );
-      if (terminalSessionEvent || ev.type === 'error') {
-        await appendTurnState.catch((error) =>
-          this.enqueueTraceWriteFailure(error, 'terminal session projection'),
-        );
-      } else {
-        await appendTurnState;
-      }
-    }
     if (ev.type === 'error') {
       if (this.stopped) {
         this.finalStatus = { status: 'aborted' };
       } else {
         this.turnFailed = true;
         this.finalStatus = transition ?? { status: 'blocked', blockedReason: 'unknown' };
-
-        await this.input.hooks
-          .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-            ts: ev.ts,
-            errorClass: ev.reason ?? ev.code ?? 'unknown',
-          })
-          .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
-
         this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message);
       }
     }
@@ -1041,25 +1307,56 @@ export class AgentRun {
       return;
     }
     this.finalStatus = { status: 'blocked', blockedReason: 'unknown' };
-
-    await this.input.hooks
-      .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-        errorClass: error instanceof Error ? error.name : 'unknown',
-      })
-      .catch(() => {});
-
-    this.markRunFailed(error instanceof Error ? error.name : 'unknown', errorMessage(error));
+    this.markRunFailed(
+      error instanceof Error ? error.name : 'unknown',
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
+    this.handoffGate.close();
+    const handoff = this.handoffRequest;
+    if (
+      this.handoffPaused &&
+      handoff?.committed &&
+      !this.stopped &&
+      !this.failureClass &&
+      !this.terminalClaim
+    ) {
+      try {
+        await this.flushRuntimePartialBuffer(true);
+        // Stop may have claimed the logical outcome during the flush. Reserving
+        // the pause below is synchronous up to its first write, so only one wins.
+        if (!this.stopped && !this.failureClass && !this.terminalClaim) {
+          this.assertRunCompositionCommitted();
+          await this.recordRuntimeEvents([handoff.preview!], { requireTerminalWrite: true });
+          this.terminalRunFactCommitted = true;
+          if (this.active) await this.input.hooks.unregisterRun(this.active, this);
+          await this.traceQueue;
+          handoff.settle(true);
+          return;
+        }
+      } catch (error) {
+        handoff.fail(error);
+        throw error;
+      }
+    }
+    handoff?.settle(false);
     // A run cannot end without having begun. Finalizing one that never reached
     // its start would otherwise leave a terminal event on an invocation the
     // inventory cannot see, because nothing opened it. A continuation is the
     // exception at both ends: its opening rides the continuation-start event,
     // and a continuation that never committed one has no invocation to end.
     if (!this.input.commitContinuationStart) await this.openInvocation().catch(() => {});
+    // A run also cannot end without saying what it was asked to do. `begin()`
+    // can fail between opening the invocation and recording its prompt, and
+    // the terminal event below seals the run against every later append —
+    // including the one crash recovery would use to repair the same shape.
+    if (this.initialRuntimeEventPending) {
+      await this.recordInitialRuntimeEvent(this.lastTs || this.input.now()).catch(() => {});
+    }
     await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };
@@ -1083,17 +1380,6 @@ export class AgentRun {
       });
     } catch {
       // The user-visible turn already completed; preserve existing behavior.
-    }
-    if (this.sawCompletion) {
-      await this.input.store
-        .appendMessage(this.sessionId, {
-          type: 'system_note',
-          id: this.input.newId(),
-          turnId: this.turnId,
-          ts: lastTs,
-          kind: 'session_resume',
-        } satisfies SystemNoteMessage)
-        .catch(() => {});
     }
     await this.finishRun(this.finalStatus, lastTs);
   }
@@ -1146,7 +1432,7 @@ export class AgentRun {
       ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
       ...(continuation ? { parentRunId: continuation.sourceRunId } : {}),
     };
-    return {
+    const opening: RuntimeEventInvocationOpenedContent = {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
       route:
@@ -1195,6 +1481,9 @@ export class AgentRun {
         : { kind: 'fresh' },
       ...(Object.keys(lineage).length > 0 ? { lineage } : {}),
     };
+    return continuation
+      ? preserveHandoffOpening(continuation, opening, this.input.handoffSourceOpening)
+      : opening;
   }
 
   private invocationRootAuthority(): RuntimeInvocationRootAuthority {
@@ -1264,12 +1553,13 @@ export class AgentRun {
   /**
    * Remember why this run is going to fail.
    *
+   * Preserve diagnostic text without trace redaction, within the byte budget.
    * Nothing is written here: the terminal RuntimeEvent carries the failure, and
    * it is committed once, at the end, by `commitTerminalRun`.
    */
   private markRunFailed(failureClass: string, message: string): void {
     this.failureClass = failureClass;
-    this.failureMessage = redactTraceString(message);
+    this.failureMessage = truncateUtf8(message, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
   }
 
   /**
@@ -1715,25 +2005,36 @@ function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
 }
 
-async function appendUserMessageOnce(
-  store: AgentRunSessionStore,
-  sessionId: string,
-  message: UserMessage,
-): Promise<void> {
-  const existing = (await store.readMessages(sessionId)).find(
-    (candidate) => candidate.id === message.id,
-  );
-  if (!existing) {
-    await store.appendMessage(sessionId, message);
-    return;
-  }
-  if (
-    existing.type !== 'user' ||
-    existing.turnId !== message.turnId ||
-    !messageContentsEqual(existing, message)
-  ) {
-    throw new Error(`Durable UserMessage identity ${message.id} has conflicting content`);
-  }
+function sameRequestCompositionSurface(
+  current: RequestCompositionSnapshot,
+  candidate: RequestCompositionSnapshot,
+): boolean {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...currentSurface
+  } = current;
+  const {
+    schemaVersion: _candidateSchemaVersion,
+    compositionId: _candidateCompositionId,
+    step: _candidateStep,
+    reason: _candidateReason,
+    ...candidateSurface
+  } = candidate;
+  return isDeepStrictEqual(currentSurface, candidateSurface);
+}
+
+function requestCompositionSurfaceHash(snapshot: RequestCompositionSnapshot): string {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...surface
+  } = snapshot;
+  return stableHash(surface);
 }
 
 function isInteractionResumeAck(event: SessionEvent): boolean {

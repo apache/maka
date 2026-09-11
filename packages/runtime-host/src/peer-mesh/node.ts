@@ -185,6 +185,7 @@ export interface PeerMeshNode {
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
   subscribeRoutes(peerId: string, listener: () => void): () => void;
+  peerConnected(peerId: string): void;
   reconcile(signal?: AbortSignal): Promise<void>;
   serve(): Promise<void>;
   close(): Promise<void>;
@@ -989,6 +990,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     });
   }
 
+  peerConnected(peerId: string): void {
+    if (this.#lifetime.signal.aborted) return;
+    const localPeerId = this.#peer.identity().peerId;
+    if (
+      peerId !== localPeerId &&
+      this.#store
+        .read()
+        .meshes.some(
+          (state) =>
+            isActiveMembership(state, localPeerId) && state.roster.roster.members.includes(peerId),
+        )
+    )
+      this.#triggerReconciliation();
+  }
+
   async prepareRoutes(peerId: string, signal: AbortSignal): Promise<void> {
     this.#assertOpen();
     signal.throwIfAborted();
@@ -1188,7 +1204,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       | {
           readonly kind: 'membership';
           readonly meshId: string;
-          readonly target: SignedPeerReachabilityLeaseV1;
+          readonly target: ReturnType<typeof dialTarget>;
           readonly desiredMembership: 'active' | 'left';
           readonly roster: SignedPeerMeshRosterV1;
         }
@@ -1198,14 +1214,22 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const gossipCursor = this.#gossipCursor;
     this.#gossipCursor = (this.#gossipCursor + 1) % PEER_MESH_MAX_MEMBERS;
     const now = this.#now();
+    const targetFor = (peerId: string): ReturnType<typeof dialTarget> | undefined => {
+      const signed = latestReachability(stored.reachability, peerId, now, true);
+      if (signed) return dialTarget(signed);
+      // A fresh Session Share can reconnect an existing member after all of
+      // its stored routes expired. Reuse that authenticated connection to
+      // exchange signed evidence; the connection itself grants no membership.
+      return this.#peer.isConnected(peerId)
+        ? { peerId, routeHints: [], coordinationRelays: [] }
+        : undefined;
+    };
     for (const [index, state] of memberships.entries()) {
       const meshId = state.roster.roster.meshId;
       const desiredMembership = state.role === 'replica' ? state.desiredMembership : 'active';
       const authority =
-        state.role === 'replica'
-          ? currentAuthorityTarget(state, stored.reachability, now)
-          : undefined;
-      if (authority && authority.lease.peerId !== excludedPeerId) {
+        state.role === 'replica' ? targetFor(state.roster.roster.authorityPeerId) : undefined;
+      if (authority && authority.peerId !== excludedPeerId) {
         pending.push({
           kind: 'membership',
           meshId,
@@ -1223,7 +1247,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             (state.role === 'authority' || peerId !== state.roster.roster.authorityPeerId),
         )
         .flatMap((peerId) => {
-          const target = peerTarget(peerId, stored.reachability, now);
+          const target = targetFor(peerId);
           return target ? [target] : [];
         });
       if (rotatingTargets.length === 0) continue;
@@ -1285,13 +1309,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #notifyLeave(
     meshId: string,
-    target: SignedPeerReachabilityLeaseV1,
+    target: ReturnType<typeof dialTarget>,
     roster: SignedPeerMeshRosterV1,
     signal: AbortSignal,
   ): Promise<void> {
     const stream = await this.#peer.connectMeshControl(
       {
-        ...dialTarget(target),
+        ...target,
         directDeadlineMs: CONNECT_DEADLINE_MS,
       },
       signal,
@@ -1314,22 +1338,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #syncPeer(
     meshId: string,
-    target: SignedPeerReachabilityLeaseV1,
+    target: ReturnType<typeof dialTarget>,
     signal: AbortSignal,
   ): Promise<void> {
     const localPeerId = this.#peer.identity().peerId;
-    const targetPeerId = target.lease.peerId;
+    const targetPeerId = target.peerId;
     for (let page = 0; page <= PEER_MESH_MAX_MEMBERS; page += 1) {
       if (!isActiveMeshMember(this.#store.read().meshes, meshId, localPeerId, targetPeerId)) return;
       const discovered = this.resolveRoutes(targetPeerId);
-      const targetRoutes = dialTarget(target);
       const stream = await this.#peer.connectMeshControl(
         {
           peerId: targetPeerId,
-          routeHints: mergeAddresses(discovered?.routeHints ?? [], targetRoutes.routeHints),
+          routeHints: mergeAddresses(discovered?.routeHints ?? [], target.routeHints),
           coordinationRelays: mergeAddresses(
             discovered?.coordinationRelays ?? [],
-            targetRoutes.coordinationRelays,
+            target.coordinationRelays,
           ),
           transitRelayPeerIds: discovered?.transitRelayPeerIds,
           directDeadlineMs: CONNECT_DEADLINE_MS,
@@ -2378,14 +2401,6 @@ function peerMeshStatus(
   });
 }
 
-function currentAuthorityTarget(
-  state: PeerMeshReplicaStateV1,
-  reachability: readonly SignedPeerReachabilityLeaseV1[],
-  now: number,
-): SignedPeerReachabilityLeaseV1 | undefined {
-  return latestReachability(reachability, state.roster.roster.authorityPeerId, now, true);
-}
-
 function rosterAnnouncementTargets(
   memberPeerIds: readonly string[],
   reachability: readonly SignedPeerReachabilityLeaseV1[],
@@ -2776,14 +2791,6 @@ function hasReachabilityRoutes(signed: SignedPeerReachabilityLeaseV1): boolean {
 
 function usableHistoricalReachability(signed: SignedPeerReachabilityLeaseV1, now: number): boolean {
   return signed.lease.expiresAt > now - PEER_REACHABILITY_RECOVERY_HORIZON_MS;
-}
-
-function peerTarget(
-  peerId: string,
-  reachability: readonly SignedPeerReachabilityLeaseV1[],
-  now: number,
-): SignedPeerReachabilityLeaseV1 | undefined {
-  return latestReachability(reachability, peerId, now, true);
 }
 
 function dialTarget(reachability: SignedPeerReachabilityLeaseV1): {

@@ -37,6 +37,27 @@ test('explains why folder-reference messages cannot be edited and resent', () =>
   );
 });
 
+test('labels incomplete transcript boundaries without inventing missing Turn counts', () => {
+  assert.deepEqual(getConversationCopy('zh-CN').chat.transcriptGap, {
+    olderDescription: '上方还有未加载的较早消息',
+    olderAction: '加载较早消息',
+    newerDescription: '下方还有未加载的较新消息',
+    newerAction: '加载较新消息',
+  });
+  assert.deepEqual(getConversationCopy('zh-TW').chat.transcriptGap, {
+    olderDescription: '上方還有未載入的較早訊息',
+    olderAction: '載入較早訊息',
+    newerDescription: '下方還有未載入的較新訊息',
+    newerAction: '載入較新訊息',
+  });
+  assert.deepEqual(getConversationCopy('en').chat.transcriptGap, {
+    olderDescription: 'Earlier messages above are not loaded.',
+    olderAction: 'Load earlier messages',
+    newerDescription: 'Newer messages below are not loaded.',
+    newerAction: 'Load newer messages',
+  });
+});
+
 test('context usage explains missing data without exposing provider internals', () => {
   assert.equal(
     getConversationCopy('zh-CN').messages.systemNotes.contextUsageUnavailable,

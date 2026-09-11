@@ -106,7 +106,7 @@ export interface DeepResearchArtifactStore {
   get(artifactId: string): Promise<ArtifactRecord | null>;
   readText(
     artifactId: string,
-    options?: { maxBytes?: number; includeDeleted?: boolean },
+    options?: { maxBytes?: number },
   ): Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
   delete(artifactId: string): Promise<void>;
 }
@@ -114,12 +114,6 @@ export interface DeepResearchArtifactStore {
 export interface BuildDeepResearchToolsDeps {
   store: DeepResearchStore;
   artifactStore: DeepResearchArtifactStore;
-  onArtifactCreated?: (event: {
-    reason: 'created';
-    artifactId: string;
-    sessionId: string;
-    ts: number;
-  }) => void | Promise<void>;
 }
 
 export function buildDeepResearchTools(deps: BuildDeepResearchToolsDeps): MakaTool[] {
@@ -219,12 +213,7 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       const ref = run.artifacts.find((artifact) => artifact.artifactId === input.artifact_id);
       if (!ref) throw new Error('Research artifact is not part of this session workspace');
       const record = await deps.artifactStore.get(input.artifact_id);
-      if (
-        !record ||
-        record.sessionId !== ctx.sessionId ||
-        record.source !== 'deep_research' ||
-        record.status !== 'live'
-      ) {
+      if (!record || record.sessionId !== ctx.sessionId || record.source !== 'deep_research') {
         throw new Error('Research artifact is missing, deleted, or belongs to another session');
       }
       const read = await deps.artifactStore.readText(input.artifact_id, {
@@ -432,16 +421,6 @@ function buildSaveArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       } catch (error) {
         await deps.artifactStore.delete(artifactId).catch(() => undefined);
         throw error;
-      }
-      try {
-        await deps.onArtifactCreated?.({
-          reason: 'created',
-          artifactId,
-          sessionId: ctx.sessionId,
-          ts: artifact.createdAt,
-        });
-      } catch {
-        // Renderer notification is best effort; both durable authorities already committed.
       }
       return `Saved ${input.role} artifact ${artifactId}.\n${renderRunStatus(run)}`;
     },
@@ -872,7 +851,7 @@ async function validateArtifactIntegrity(
   ref: DeepResearchArtifactRef,
 ): Promise<void> {
   const record = await artifactStore.get(ref.artifactId);
-  if (!record || record.status !== 'live') {
+  if (!record) {
     throw new Error(`Deep Research artifact ${ref.artifactId} is missing or deleted`);
   }
   if (record.sessionId !== sessionId || record.source !== 'deep_research') {

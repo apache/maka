@@ -154,7 +154,7 @@ describe('shell run sandbox denial projection', () => {
         content,
       });
 
-      const messages = await store.readMessagesForRecovery(session.id);
+      const messages = await store.readMessages(session.id);
       const result = messages.find((message) => message.id === 'tool-result-1');
       assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, content);
     } finally {

@@ -147,6 +147,13 @@
   max-width: var(--settings-row-end-cap);
 }
 
+/* The default-project badge replaces the neighboring "set as default"
+   action in the same slot. Keep its label on the action type tier so the
+   settled state does not visually shrink after the user clicks the button. */
+.settingsProjectDefaultBadge {
+  font: var(--maka-text-label);
+}
+
 /* A Selector layer is min-width: anchor-size(width), but its intrinsic option
    width may still make it wider than the right-aligned end slot. The selected
    font decides that intrinsic width, so a label that fits on macOS can push

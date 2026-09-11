@@ -2088,11 +2088,11 @@ function choiceFor(
 }
 
 function settledTurn(turnId: string): TurnRecord {
-  return { turnId, status: 'completed', partialOutputRetained: false };
+  return { turnId, status: 'completed' };
 }
 
 function runningTurn(turnId: string): TurnRecord {
-  return { turnId, status: 'running', partialOutputRetained: false };
+  return { turnId, status: 'running' };
 }
 
 async function waitUntil(predicate: () => boolean, diagnostics?: () => string): Promise<void> {

@@ -66,11 +66,20 @@ export interface RuntimeBoundaryCursorV1 {
   manifestDigest: RuntimeBoundaryDigest;
 }
 
+/** V2 permits consecutive physical attempts of the same logical Turn.
+ * Segment digests identify the facts; the authority must authenticate every edge.
+ */
+export interface RuntimeBoundaryCursorV2 extends Omit<RuntimeBoundaryCursorV1, 'protocol'> {
+  protocol: 'runtime_boundary_cursor_v2';
+}
+
+export type RuntimeBoundaryCursor = RuntimeBoundaryCursorV1 | RuntimeBoundaryCursorV2;
+
 export interface ContinuationClaimV1 {
   protocol: 'continuation_claim_v1';
   claimId: string;
   boundaryDigest: RuntimeBoundaryDigest;
-  boundary: RuntimeBoundaryCursorV1;
+  boundary: RuntimeBoundaryCursor;
   providerProjectionVersion: 1 | 2;
   providerReplayDigest: RuntimeBoundaryDigest;
   target: {
@@ -143,7 +152,7 @@ export function runtimePrefixSegment(prefix: ImmutableRuntimePrefixV1): RuntimeP
 
 export function createRuntimeBoundaryCursor(
   segments: readonly [RuntimePrefixSegmentV1, ...RuntimePrefixSegmentV1[]],
-): RuntimeBoundaryCursorV1 {
+): RuntimeBoundaryCursor {
   const canonicalSegments = segments.map(decodeRuntimePrefixSegment) as [
     RuntimePrefixSegmentV1,
     ...RuntimePrefixSegmentV1[],
@@ -152,6 +161,8 @@ export function createRuntimeBoundaryCursor(
   const invocationIds = new Set<string>();
   const runIds = new Set<string>();
   const turnIds = new Set<string>();
+  let previousTurnId: string | undefined;
+  let protocol: RuntimeBoundaryCursor['protocol'] = 'runtime_boundary_cursor_v1';
   for (const segment of canonicalSegments) {
     if (segment.identity.sessionId !== sessionId) {
       throw new Error('Runtime boundary segments must belong to the same session');
@@ -165,27 +176,40 @@ export function createRuntimeBoundaryCursor(
     }
     invocationIds.add(segment.identity.invocationId);
     if (turnIds.has(segment.identity.turnId)) {
-      throw new Error('Runtime boundary lineage contains a duplicate turnId');
+      if (previousTurnId !== segment.identity.turnId) {
+        throw new Error('Runtime boundary lineage returns to a previous turnId');
+      }
+      protocol = 'runtime_boundary_cursor_v2';
     }
     turnIds.add(segment.identity.turnId);
+    previousTurnId = segment.identity.turnId;
   }
   return {
-    protocol: 'runtime_boundary_cursor_v1',
+    protocol,
     segments: canonicalSegments,
-    manifestDigest: digestRuntimeBoundaryManifest(canonicalSegments),
+    manifestDigest: digestRuntimeBoundaryManifest(canonicalSegments, protocol),
   };
 }
 
 export function digestRuntimeBoundaryManifest(
   segments: readonly [RuntimePrefixSegmentV1, ...RuntimePrefixSegmentV1[]],
+  protocol: RuntimeBoundaryCursor['protocol'] = 'runtime_boundary_cursor_v1',
 ): RuntimeBoundaryDigest {
   const canonicalSegments = segments.map(decodeRuntimePrefixSegment);
   const json = stableJsonStringify({
-    protocol: 'runtime_boundary_cursor_v1',
+    protocol,
     segments: canonicalSegments,
   });
   const hash = nodeCrypto.createHash('sha256');
-  updateLengthPrefixed(hash, Buffer.from('maka.runtime-boundary-manifest.v1', 'utf8'));
+  updateLengthPrefixed(
+    hash,
+    Buffer.from(
+      protocol === 'runtime_boundary_cursor_v1'
+        ? 'maka.runtime-boundary-manifest.v1'
+        : 'maka.runtime-boundary-manifest.v2',
+      'utf8',
+    ),
+  );
   updateLengthPrefixed(hash, Buffer.from(json, 'utf8'));
   return `sha256:${hash.digest('hex')}`;
 }
@@ -206,11 +230,12 @@ export function decodeRuntimePrefixSegment(value: unknown): RuntimePrefixSegment
   };
 }
 
-export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCursorV1 {
+export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCursor {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ['protocol', 'segments', 'manifestDigest']) ||
-    value.protocol !== 'runtime_boundary_cursor_v1' ||
+    (value.protocol !== 'runtime_boundary_cursor_v1' &&
+      value.protocol !== 'runtime_boundary_cursor_v2') ||
     !Array.isArray(value.segments) ||
     value.segments.length === 0
   ) {
@@ -221,6 +246,8 @@ export function decodeRuntimeBoundaryCursor(value: unknown): RuntimeBoundaryCurs
     ...RuntimePrefixSegmentV1[],
   ];
   const cursor = createRuntimeBoundaryCursor(segments);
+  if (cursor.protocol !== value.protocol)
+    throw new Error('RuntimeEvent boundary cursor version mismatch');
   const manifestDigest = decodeBoundaryDigest(value.manifestDigest);
   if (cursor.manifestDigest !== manifestDigest) {
     throw new Error('RuntimeEvent boundary manifest digest mismatch');
@@ -275,13 +302,21 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
     throw new Error('Continuation claim target invocationId reuses source identity');
   }
   const targetTurnId = value.target.turnId;
-  if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
-    throw new Error('Continuation claim target turnId reuses source identity');
-  }
   const targetOpening = decodeRuntimeInvocationOpened(value.targetOpening);
   const openSource = targetOpening.source;
+  if (openSource.kind === 'handoff') {
+    if (targetTurnId !== source.identity.turnId) {
+      throw new Error('Handoff claim must preserve the logical turnId');
+    }
+    const root = boundary.segments.find((segment) => segment.identity.turnId === targetTurnId);
+    if (root?.identity.runId !== openSource.rootRunId) {
+      throw new Error('Handoff claim logical root mismatch');
+    }
+  } else if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
+    throw new Error('Continuation claim target turnId reuses source identity');
+  }
   if (
-    openSource.kind !== 'continuation' ||
+    (openSource.kind !== 'continuation' && openSource.kind !== 'handoff') ||
     openSource.claimId !== value.claimId ||
     openSource.boundaryDigest !== boundaryDigest ||
     openSource.sourceInvocationId !== source.identity.invocationId ||

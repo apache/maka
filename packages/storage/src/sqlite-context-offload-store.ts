@@ -103,7 +103,6 @@ interface GarbageCandidateRow {
   blob_id: unknown;
   size_bytes: unknown;
   storage_kind: unknown;
-  payload: unknown;
 }
 
 interface ManagedFilePublication {
@@ -387,7 +386,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     return this.#runManagedValueMutation(async () => {
       this.#assertOpen();
       if (this.#hasPendingFileDeletions()) {
-        await this.#drainPendingFileDeletions(input.maxBlobs);
+        await this.#drainPendingFileDeletions(input.maxBlobs, input.maxBytes);
         return {
           deletedBlobs: 0,
           deletedBytes: 0,
@@ -397,7 +396,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       const collected = this.#writeTransaction(() => {
         const rows = this.#database
           .prepare(
-            `SELECT c.blob_id, b.size_bytes, b.storage_kind, b.payload
+            `SELECT c.blob_id, b.size_bytes, b.storage_kind
            FROM context_gc_candidates c INDEXED BY context_gc_candidates_eligible
            JOIN context_blobs b ON b.blob_id = c.blob_id
            WHERE c.unreferenced_at < ?
@@ -412,14 +411,16 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         }> = [];
         let deletedBytes = 0;
         let inlineDeletedBytes = 0;
+        // Admit by metadata before SQLite materializes legacy inline BLOBs.
+        const readValue = this.#database.prepare(
+          'SELECT storage_kind, size_bytes, payload FROM context_blobs WHERE blob_id = ?',
+        );
         for (const row of rows) {
           if (selected.length === input.maxBlobs) break;
           const blobId = decodeBlobId(row.blob_id);
           if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
             throw new Error('Invalid context garbage candidate');
           }
-          const value = decodeBlobValue(row, Buffer.from(blobId).toString('hex'));
-          if (!value) throw new Error('Invalid context garbage candidate value');
           if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) {
             if (selected.length === 0) {
               throw new Error(
@@ -428,6 +429,16 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
             }
             break;
           }
+          const stored = readValue.get(blobId) as unknown as ContextBlobRow | undefined;
+          if (
+            !stored ||
+            stored.size_bytes !== row.size_bytes ||
+            stored.storage_kind !== row.storage_kind
+          ) {
+            throw new Error('Invalid context garbage candidate metadata');
+          }
+          const value = decodeBlobValue(stored, Buffer.from(blobId).toString('hex'));
+          if (!value) throw new Error('Invalid context garbage candidate value');
           deletedBytes = addSafeInteger(deletedBytes, row.size_bytes, 'Collected context bytes');
           selected.push({
             blobId,
@@ -482,7 +493,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
           hasMore: rows.length > selected.length,
         };
       });
-      await this.#drainPendingFileDeletions(input.maxBlobs);
+      await this.#drainPendingFileDeletions(input.maxBlobs, input.maxBytes);
       return {
         ...collected,
         hasMore: collected.hasMore || this.#hasPendingFileDeletions(),
@@ -1001,11 +1012,20 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     });
   }
 
-  async #drainPendingFileDeletions(limit: number): Promise<void> {
+  async #drainPendingFileDeletions(limit: number, maxBytes: number): Promise<void> {
     const rows = this.#database
-      .prepare('SELECT locator FROM context_file_deletions ORDER BY enqueued_at, locator LIMIT ?')
-      .all(limit) as Array<{ locator?: unknown }>;
+      .prepare(
+        'SELECT locator, size_bytes FROM context_file_deletions ORDER BY enqueued_at, locator LIMIT ?',
+      )
+      .all(limit) as Array<{ locator?: unknown; size_bytes: number }>;
+    let bytes = 0;
     for (const row of rows) {
+      const size = readNonNegativeInteger(row.size_bytes, 'Pending context file deletion bytes');
+      if (exceedsLimit(bytes, size, maxBytes)) {
+        if (bytes === 0) throw new Error('Context garbage byte limit cannot fit pending file');
+        break;
+      }
+      bytes += size;
       const locator = decodeManagedFileLocator(row.locator);
       if (!locator) throw new Error('Invalid pending context file deletion locator');
       await this.#drainFileDeletion(locator);

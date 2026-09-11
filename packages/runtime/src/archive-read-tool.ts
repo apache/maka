@@ -35,7 +35,9 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
       .object({
         ref: z
           .string()
-          .describe('A maka://archive/... ref returned in an archived tool-result placeholder'),
+          .describe(
+            'The exact resourceRef returned in an archived tool-result placeholder (ledger or legacy archive)',
+          ),
         operation: z
           .enum(['inspect', 'read', 'query', 'search'])
           .default('inspect')
@@ -100,7 +102,7 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
     displayName: 'Read archived result',
     activityKind: 'read',
     description:
-      'Inspect, search, or page through a tool-result archive returned as a maka://archive/... ref. Start with inspect for a preview and the char/line coordinate space. Use operation "search" with a pattern to locate text, operation "read" with unit "line" for line-oriented terminal output, or operation "query" with an itemId for one agent_swarm item. Results are strictly bounded so reading an archive cannot immediately trigger another archive.',
+      'Inspect, search, or page through a tool-result archive using its exact resourceRef. Both ledger and legacy archive references are supported. Start with inspect for a preview and the char/line coordinate space. Use operation "search" with a pattern to locate text, operation "read" with unit "line" for line-oriented terminal output, or operation "query" with an itemId for one agent_swarm item. Results are strictly bounded so reading an archive cannot immediately trigger another archive.',
     parameters: jsonSchema(async () => await providerSchema.jsonSchema, {
       validate: async (value) => {
         const result = await parameters.safeParseAsync(value);

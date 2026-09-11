@@ -46,7 +46,7 @@ describe('BotRegistry', () => {
 
     assert.equal(registry.getStatus('telegram').reason, 'disabled');
     assert.equal(registry.getStatus('telegram').readiness, 'scaffolded');
-    assert.equal(registry.getStatus('wecom').reason, 'no-credentials');
+    assert.equal(registry.getStatus('wecom').reason, 'wecom_credentials_missing');
     assert.equal(registry.getStatus('wecom').running, false);
     assert.equal(registry.getStatus('wecom').readiness, 'scaffolded');
     assert.equal(
@@ -85,7 +85,7 @@ describe('BotRegistry', () => {
     ]);
 
     assert.equal(registry.getStatus('wecom').running, false);
-    assert.equal(registry.getStatus('wecom').reason, 'no-credentials');
+    assert.equal(registry.getStatus('wecom').reason, 'wecom_credentials_missing');
     assert.equal(registry.getStatus('wecom').readiness, 'scaffolded');
   });
 

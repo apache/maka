@@ -45,15 +45,54 @@ const MAX_SEARCH_PATTERN_CHARS = 256;
 /** Preview length surfaced by inspect for text/object payloads. */
 const INSPECT_PREVIEW_CHARS = 600;
 
-export interface ToolResultArchiveResourceIdentity {
+export interface LegacyArchiveResourceIdentity {
   artifactId: string;
+  storage?: never;
   bodySha256: string;
   originalBytes: number;
 }
 
-export interface ToolResultArchiveResourceReadInput extends ToolResultArchiveResourceIdentity {
+export interface LedgerArchiveResourceIdentity {
+  storage: 'ledger';
+  artifactId?: never;
+  runtimeEventId: string;
+  toolCallId: string;
+  toolName: string;
+  sourceProjectionDigest: `sha256:${string}`;
+  previousTransitionId?: string;
+  bodySha256: string;
+  originalBytes: number;
+}
+
+export type ToolResultArchiveResourceIdentity =
+  | LegacyArchiveResourceIdentity
+  | LedgerArchiveResourceIdentity;
+export type ToolResultArchiveResourceReadInput = ToolResultArchiveResourceIdentity & {
   sessionId: string;
   maxBytes: number;
+};
+
+export function isLedgerArchiveIdentity(value: unknown): value is LedgerArchiveResourceIdentity {
+  if (!isRecord(value)) return false;
+  return (
+    value.storage === 'ledger' &&
+    value.artifactId === undefined &&
+    ['runtimeEventId', 'toolCallId', 'toolName'].every(
+      (key) =>
+        typeof value[key] === 'string' &&
+        (value[key] as string).length > 0 &&
+        (value[key] as string).length <= 512,
+    ) &&
+    typeof value.sourceProjectionDigest === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(value.sourceProjectionDigest) &&
+    (value.previousTransitionId === undefined ||
+      (typeof value.previousTransitionId === 'string' &&
+        /^mptransition-[a-f0-9]{32}$/.test(value.previousTransitionId))) &&
+    typeof value.bodySha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(value.bodySha256) &&
+    Number.isSafeInteger(value.originalBytes) &&
+    Number(value.originalBytes) > 0
+  );
 }
 
 export interface ToolResultArchiveResourceReader {
@@ -77,6 +116,19 @@ export interface ToolResultArchiveResourceRequest {
 export function buildToolResultArchiveResourceRef(
   input: ToolResultArchiveResourceIdentity,
 ): string {
+  if (input.storage === 'ledger') {
+    if (!isLedgerArchiveIdentity(input)) throw new Error('Invalid ledger archive identity');
+    const value = [
+      input.runtimeEventId,
+      input.toolCallId,
+      input.toolName,
+      input.sourceProjectionDigest,
+      input.previousTransitionId ?? null,
+      input.bodySha256,
+      input.originalBytes,
+    ];
+    return `maka://archive-ledger/v1/${encodeURIComponent(JSON.stringify(value))}`;
+  }
   const artifactId = encodeURIComponent(input.artifactId);
   const sha256 = encodeURIComponent(input.bodySha256);
   return `maka://archive/${artifactId}/${sha256}/${input.originalBytes}`;
@@ -85,6 +137,39 @@ export function buildToolResultArchiveResourceRef(
 export function parseToolResultArchiveResourceRef(
   ref: string,
 ): ToolResultArchiveResourceIdentity | null {
+  if (ref.startsWith('maka://archive-ledger/')) {
+    try {
+      const prefix = 'maka://archive-ledger/v1/';
+      if (!ref.startsWith(prefix) || ref.length > 16384) return null;
+      const values = JSON.parse(decodeURIComponent(ref.slice(prefix.length)));
+      if (!Array.isArray(values) || values.length !== 7) return null;
+      const [
+        runtimeEventId,
+        toolCallId,
+        toolName,
+        sourceProjectionDigest,
+        previous,
+        bodySha256,
+        originalBytes,
+      ] = values;
+      const identity = {
+        storage: 'ledger' as const,
+        runtimeEventId,
+        toolCallId,
+        toolName,
+        sourceProjectionDigest,
+        ...(previous === null ? {} : { previousTransitionId: previous }),
+        bodySha256,
+        originalBytes,
+      };
+      return isLedgerArchiveIdentity(identity) &&
+        buildToolResultArchiveResourceRef(identity) === ref
+        ? identity
+        : null;
+    } catch {
+      return null;
+    }
+  }
   let url: URL;
   try {
     url = new URL(ref);
@@ -229,7 +314,9 @@ function inspectArchive(
     kind: 'tool_result_archive',
     operation: 'inspect',
     ref,
-    artifactId: identity.artifactId,
+    ...(identity.storage === 'ledger'
+      ? { storage: 'ledger', runtimeEventId: identity.runtimeEventId }
+      : { artifactId: identity.artifactId }),
     originalBytes: identity.originalBytes,
   };
   const readHint =

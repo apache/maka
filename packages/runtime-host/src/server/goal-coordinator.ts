@@ -58,6 +58,7 @@ import type {
   OperationOutcome,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
 import {
@@ -75,6 +76,8 @@ type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'a
 export interface HostGoalCoordinatorOptions {
   readonly store: InteractiveGoalAuthorityWriter;
   readonly stores: GoalStores;
+  /** The Session transcript as its ledger projects it; the Goal reads its tail. */
+  readonly readSessionMessages: (sessionId: string) => Promise<readonly StoredMessage[]>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
   readonly executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
@@ -84,7 +87,7 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly now?: () => number;
@@ -114,7 +117,7 @@ export class HostGoalCoordinator {
   readonly #onProjectionChanged: (sessionId: string) => void;
   readonly #newId: () => string;
   readonly #requestDrain: () => void;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostGoalCoordinatorOptions['acquireResidency'];
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
   /**
@@ -154,9 +157,10 @@ export class HostGoalCoordinator {
     const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
+      acquireActivity: () => this.#acquireResidency(),
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
-        const messages = await this.#stores.sessionStore.readMessagesSnapshot(sessionId);
+        const messages = await options.readSessionMessages(sessionId);
         tokenCache.set(sessionId, tokenCount(messages));
         return recentContext(messages);
       },
@@ -309,6 +313,51 @@ export class HostGoalCoordinator {
     for (const sessionId of new Set(sessionIds)) {
       this.continuation.unarchiveSession(sessionId);
     }
+  }
+
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(
+          executions: readonly { sessionId: string; turnId: string; runId: string }[],
+        ): Promise<readonly RuntimeHostResidency[] | undefined>;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining) return undefined;
+    const hold = this.continuation.holdForHandoff();
+    if (!hold) return undefined;
+    const settled = async () => {
+      await hold.settled();
+      await this.#flushGoalState();
+    };
+    return {
+      settled,
+      release: hold.release,
+      residencies: async (executions) => {
+        await settled();
+        if (this.#draining) return undefined;
+        for (const [sessionId] of this.#residencies) {
+          const authority = this.#authorityBySession.get(sessionId);
+          if (!authority) return undefined;
+          const current = authority.record.currentExecution;
+          const paused = executions.find((execution) => execution.sessionId === sessionId);
+          // An observed external turn is not a durable Goal execution. Its
+          // in-memory completion registration cannot be silently discarded.
+          if (
+            paused &&
+            (!current ||
+              current.execution.turnId !== paused.turnId ||
+              current.execution.runId !== paused.runId)
+          )
+            return undefined;
+          if (current && !paused) return undefined;
+          if (current && !this.matchesActive(sessionId, current.checkpoint, current.controlLease))
+            return undefined;
+        }
+        return [...this.#residencies.values()];
+      },
+    };
   }
 
   beginDrain(): void {
@@ -532,6 +581,7 @@ export class HostGoalCoordinator {
         record,
       });
     }
+    const residency = this.#acquireResidency();
     const commit = this.#persistenceLane.then(async () => {
       let result;
       try {
@@ -560,10 +610,12 @@ export class HostGoalCoordinator {
         throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
       }
     });
-    this.#persistenceLane = commit.catch((error) => {
-      this.#persistenceFailure ??= error;
-      this.#requestDrain();
-    });
+    this.#persistenceLane = commit
+      .catch((error) => {
+        this.#persistenceFailure ??= error;
+        this.#requestDrain();
+      })
+      .finally(() => residency.release());
   }
 
   async #deleteOrphanedAuthority(snapshot: GoalAuthoritySnapshot): Promise<void> {
@@ -584,10 +636,10 @@ export class HostGoalCoordinator {
     if (this.#persistenceFailure !== undefined) throw this.#persistenceFailure;
   }
 
-  #syncResidency(goal: GoalState, acquire: () => RuntimeHostResidency): void {
+  #syncResidency(goal: GoalState, acquire: HostGoalCoordinatorOptions['acquireResidency']): void {
     const retained = this.#residencies.get(goal.sessionId);
     if (!TERMINAL_GOAL_STATUSES.has(goal.status)) {
-      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire());
+      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire('idle'));
       return;
     }
     retained?.release();

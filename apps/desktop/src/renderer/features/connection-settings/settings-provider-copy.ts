@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
+import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+
+type SubscriptionResultCode = SubscriptionActionCode | Extract<SubscriptionActionFailureReason, 'experimental_disabled'>;
 
 type WidenCopy<T> = T extends string
   ? string
@@ -183,6 +187,7 @@ const zhCopy = {
     modelKeyAria: (name: string) => `${name} 模型密钥`,
   },
   shared: {
+    connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
@@ -191,12 +196,7 @@ const zhCopy = {
     filterMatches: (count: number) => (count === 0 ? '没有匹配的结果' : `${count} 个匹配结果`),
     connectionStatuses: { retired: '已停用 · 请删除', reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
     lastTest: {
-      '连接已验证': '连接已验证', '鉴权失败': '鉴权失败', '请求超时': '请求超时', '网络错误': '网络错误', '模型服务返回错误': '模型服务返回错误', '连接测试失败': '连接测试失败',
-      'connection verified': '连接已验证', 'authentication failed': '鉴权失败', 'request timed out': '请求超时', 'network error': '网络错误', 'provider returned an error': '模型服务返回错误', 'connection test failed': '连接测试失败',
-      'claude oauth 未登录。': 'Claude OAuth 未登录。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地凭据读取失败。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登录。', 'claude oauth 已登录。': 'Claude OAuth 已登录。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登录。',
-      'codex oauth 未登录。': 'Codex OAuth 未登录。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地凭据读取失败。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登录。', 'codex oauth 已登录。': 'Codex OAuth 已登录。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登录。',
-      '当前账号无可用 codex 模型。': '当前账号无可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表获取失败。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新导入 GitHub CLI 登录。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 无法读取当前账号可用模型，请重新验证登录。', 'github copilot 登录已导入。': 'GitHub Copilot 登录已导入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 连接未能保存，请重新导入登录。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登录。',
+      auth: '鉴权失败', timeout: '请求超时', provider_unavailable: '模型服务返回错误', network: '网络错误', invalid_response: '模型服务返回错误', unknown: '连接测试失败',
     },
   },
   panel: {
@@ -219,7 +219,7 @@ const zhCopy = {
     cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
+    slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
@@ -249,6 +249,20 @@ const zhCopy = {
     loggedOut: '已退出登录', credentialsCleared: '本地凭据已清除。', logoutFailed: '退出失败', logoutFailedRetry: '退出登录失败，请稍后重试。',
     serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
+    loginConflict: '上一轮浏览器登录仍在进行或已切换，请再点一次登录，或稍后再试。',
+    browserPresentFailed: '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。',
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot 不支持 classic PAT；请使用兼容 OAuth 登录或具有 Copilot Requests 权限的 fine-grained PAT。',
+      copilot_credential_type_unsupported: '当前 GitHub 凭据类型不受支持；请使用兼容 OAuth 登录或 fine-grained PAT。',
+      copilot_local_credential_missing: '未找到可导入的 GitHub 凭据；请先使用 gh 登录或配置兼容凭据。',
+      copilot_import_no_credential: 'GitHub Copilot 登录没有产生可用凭据。',
+      copilot_import_superseded: 'GitHub Copilot 账号在导入期间发生变化，请重试。',
+      copilot_subscription_unavailable: '当前 GitHub 账号没有可用的 Copilot 订阅权限。',
+      copilot_credential_import_rejected: '当前 GitHub 凭据无法导入，请检查凭据后重试。',
+      copilot_subscription_check_failed: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
+      copilot_import_commit_failed: 'GitHub Copilot 登录未能写入 Runtime Host。',
+      experimental_disabled: '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。',
+    } satisfies Record<SubscriptionResultCode, string>,
   },
   oauthSection: {
     signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。',
@@ -354,18 +368,14 @@ const zhTwCopy = {
     modelKeyAria: (name: string) => `${name} 模型金鑰`,
   },
   shared: {
+    connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
     network: '網路錯誤，請檢查服務地址或代理設定後重試。', statusUnavailable: '連線測試狀態暫時無法顯示，請重新測試。',
     filterMatches: (count: number) => (count === 0 ? '沒有符合的結果' : `${count} 個符合結果`),
     connectionStatuses: { retired: '已停用 · 請刪除', reauth: '需要重新登入', disabledFailed: '暫不可用 · 上次連線失敗', disabled: '暫不可用', failed: '上次連線失敗' },
     lastTest: {
-      '连接已验证': '連線已驗證', '鉴权失败': '鑑權失敗', '请求超时': '請求超時', '网络错误': '網路錯誤', '模型服务返回错误': '模型服務回傳錯誤', '连接测试失败': '連線測試失敗',
-      'connection verified': '連線已驗證', 'authentication failed': '鑑權失敗', 'request timed out': '請求超時', 'network error': '網路錯誤', 'provider returned an error': '模型服務回傳錯誤', 'connection test failed': '連線測試失敗',
-      'claude oauth 未登录。': 'Claude OAuth 未登入。', 'claude oauth 本地凭据读取失败。': 'Claude OAuth 本地憑據讀取失敗。', 'claude oauth 需要重新登录。': 'Claude OAuth 需要重新登入。', 'claude oauth 已登录。': 'Claude OAuth 已登入。', 'claude oauth 已退出登录。': 'Claude OAuth 已退出登入。',
-      'codex oauth 未登录。': 'Codex OAuth 未登入。', 'codex oauth 本地凭据读取失败。': 'Codex OAuth 本地憑據讀取失敗。', 'codex oauth 需要重新登录。': 'Codex OAuth 需要重新登入。', 'codex oauth 已登录。': 'Codex OAuth 已登入。', 'codex oauth 已退出登录。': 'Codex OAuth 已退出登入。',
-      '当前账号无可用 codex 模型。': '目前帳號無可用 Codex 模型。', 'codex 模型列表获取失败。': 'Codex 模型列表取得失敗。',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot 需要重新匯入 GitHub CLI 登入。', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot 無法讀取目前帳號可用模型，請重新驗證登入。', 'github copilot 登录已导入。': 'GitHub Copilot 登入已匯入。', 'github copilot 连接未能保存，请重新导入登录。': 'GitHub Copilot 連線未能儲存，請重新匯入登入。', 'github copilot 已移除本地登录。': 'GitHub Copilot 已移除本地登入。',
+      auth: '鑑權失敗', timeout: '請求超時', provider_unavailable: '模型服務回傳錯誤', network: '網路錯誤', invalid_response: '模型服務回傳錯誤', unknown: '連線測試失敗',
     },
   },
   panel: {
@@ -388,7 +398,7 @@ const zhTwCopy = {
     cardAria: (name: string, description: string) => `新增模型供應商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '連線標識格式不正確', duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
+    slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
@@ -417,6 +427,20 @@ const zhTwCopy = {
     logoutDescription: '將刪除本機儲存的訂閱憑據，之後需要重新登入才能繼續使用這些 OAuth 模型。', logout: '退出登入', cancel: '取消',
     loggedOut: '已退出登入', credentialsCleared: '本地憑據已清除。', logoutFailed: '退出失敗', logoutFailedRetry: '退出登入失敗，請稍後重試。',
     serviceUnavailable: '登入服務暫時不可用，請檢查網路後重試。',
+    loginConflict: '上一輪瀏覽器登入仍在進行或已切換，請再按一次登入，或稍後再試。',
+    browserPresentFailed: '無法開啟系統瀏覽器完成登入，請檢查是否封鎖了彈出式視窗後再試。',
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot 不支援 classic PAT；請使用相容 OAuth 登入或具有 Copilot Requests 權限的 fine-grained PAT。',
+      copilot_credential_type_unsupported: '目前的 GitHub 憑據類型不受支援；請使用相容 OAuth 登入或 fine-grained PAT。',
+      copilot_local_credential_missing: '找不到可匯入的 GitHub 憑據；請先使用 gh 登入或設定相容憑據。',
+      copilot_import_no_credential: 'GitHub Copilot 登入沒有產生可用憑據。',
+      copilot_import_superseded: 'GitHub Copilot 帳號在匯入期間發生變化，請重試。',
+      copilot_subscription_unavailable: '目前的 GitHub 帳號沒有可用的 Copilot 訂閱權限。',
+      copilot_credential_import_rejected: '目前的 GitHub 憑據無法匯入，請檢查憑據後重試。',
+      copilot_subscription_check_failed: '暫時無法驗證 GitHub Copilot 訂閱狀態，請稍後重試。',
+      copilot_import_commit_failed: 'GitHub Copilot 登入未能寫入 Runtime Host。',
+      experimental_disabled: '本機未啟用該帳號登入方式；可改用匯入相容憑據，或由管理員啟用後重試。',
+    },
     logoutTitle: (name: string) => `退出 ${name} 登入？`,
   },
   oauthSection: {
@@ -524,18 +548,14 @@ const enCopy: ProviderSettingsCopy = {
     modelKeyAria: (name: string) => `${name} model key`,
   },
   shared: {
+    connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
     filterMatches: (count: number) => (count === 0 ? 'No matches' : count === 1 ? '1 match' : `${count} matches`),
     connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
     lastTest: {
-      '连接已验证': 'Connection verified', '鉴权失败': 'Authentication failed', '请求超时': 'Request timed out', '网络错误': 'Network error', '模型服务返回错误': 'Model service returned an error', '连接测试失败': 'Connection test failed',
-      'connection verified': 'Connection verified', 'authentication failed': 'Authentication failed', 'request timed out': 'Request timed out', 'network error': 'Network error', 'provider returned an error': 'Model service returned an error', 'connection test failed': 'Connection test failed',
-      'claude oauth 未登录。': 'Claude OAuth is signed out.', 'claude oauth 本地凭据读取失败。': 'Could not read local Claude OAuth credentials.', 'claude oauth 需要重新登录。': 'Claude OAuth requires sign-in.', 'claude oauth 已登录。': 'Claude OAuth is signed in.', 'claude oauth 已退出登录。': 'Claude OAuth signed out.',
-      'codex oauth 未登录。': 'Codex OAuth is signed out.', 'codex oauth 本地凭据读取失败。': 'Could not read local Codex OAuth credentials.', 'codex oauth 需要重新登录。': 'Codex OAuth requires sign-in.', 'codex oauth 已登录。': 'Codex OAuth is signed in.', 'codex oauth 已退出登录。': 'Codex OAuth signed out.',
-      '当前账号无可用 codex 模型。': 'No Codex models are available for this account.', 'codex 模型列表获取失败。': 'Failed to fetch the Codex model list.',
-      'github copilot 需要重新导入 github cli 登录。': 'GitHub Copilot requires the GitHub CLI sign-in to be imported again.', 'github copilot 无法读取当前账号可用模型，请重新验证登录。': 'GitHub Copilot could not read models available to this account. Verify sign-in again.', 'github copilot 登录已导入。': 'GitHub Copilot sign-in imported.', 'github copilot 连接未能保存，请重新导入登录。': 'The GitHub Copilot connection could not be saved. Import sign-in again.', 'github copilot 已移除本地登录。': 'Local GitHub Copilot sign-in removed.',
+      auth: 'Authentication failed', timeout: 'Request timed out', provider_unavailable: 'Model service returned an error', network: 'Network error', invalid_response: 'Model service returned an error', unknown: 'Connection test failed',
     },
   },
   panel: {
@@ -558,7 +578,7 @@ const enCopy: ProviderSettingsCopy = {
     cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
-    invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
+    slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
@@ -588,6 +608,20 @@ const enCopy: ProviderSettingsCopy = {
     loggedOut: 'Signed out', credentialsCleared: 'Local credentials cleared.', logoutFailed: 'Sign-out failed', logoutFailedRetry: 'Sign-out failed. Try again later.',
     serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     logoutTitle: (name: string) => `Sign out of ${name}?`,
+    loginConflict: 'A previous browser login is still running or was superseded. Try logging in again shortly.',
+    browserPresentFailed: 'Could not open the system browser for login. Check popup blockers and try again.',
+    resultCodes: {
+      copilot_classic_pat_unsupported: 'GitHub Copilot does not accept classic PATs. Use a compatible OAuth login or a fine-grained PAT with the Copilot Requests permission.',
+      copilot_credential_type_unsupported: 'This GitHub credential type is not supported. Use a compatible OAuth login or a fine-grained PAT.',
+      copilot_local_credential_missing: 'No importable GitHub credential was found. Sign in with gh or configure a compatible credential first.',
+      copilot_import_no_credential: 'The GitHub Copilot login produced no usable credential.',
+      copilot_import_superseded: 'The GitHub Copilot account changed during import. Try again.',
+      copilot_subscription_unavailable: 'This GitHub account has no usable Copilot subscription.',
+      copilot_credential_import_rejected: 'This GitHub credential could not be imported. Check it and try again.',
+      copilot_subscription_check_failed: 'Could not verify the GitHub Copilot subscription right now. Try again later.',
+      copilot_import_commit_failed: 'The GitHub Copilot login could not be committed to Runtime Host.',
+      experimental_disabled: 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.',
+    },
   },
   oauthSection: {
     signedIn: 'Signed in', codexDescription: 'Use a ChatGPT Plus / Pro account to add a connection.', xaiDescription: 'Use a SuperGrok or X Premium account to add a connection.',
@@ -617,4 +651,36 @@ const PROVIDER_SETTINGS_COPY = {
 
 export function getProviderSettingsCopy(locale: UiLocale): ProviderSettingsCopy {
   return PROVIDER_SETTINGS_COPY[locale];
+}
+
+export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale): string {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : '';
+  return subscriptionResultMessage(message, getProviderSettingsCopy(locale).oauthFlow.serviceUnavailable, locale);
+}
+
+export type SubscriptionResultInput =
+  // `code`/`reason` stay `string` on the wire: a newer host may send a code
+  // this client does not know yet, and the guard below maps only known codes.
+  | string
+  | undefined
+  | { readonly code?: string; readonly reason?: string; readonly message?: string };
+
+export function subscriptionResultMessage(input: SubscriptionResultInput, fallback: string, locale: UiLocale): string {
+  const { code, reason, message } = typeof input === 'object' && input !== null ? input : { message: input };
+  const copy = getProviderSettingsCopy(locale).oauthFlow;
+  const mapped = lookupCopy(copy.resultCodes, code) ?? lookupCopy(copy.resultCodes, reason);
+  if (mapped) return mapped;
+  const raw = redactSecrets(message ?? '').trim();
+  if (!raw) return fallback;
+  // Stable Host messages, matched before the coarse keyword classifier turns
+  // "authorization" into a generic auth failure that does not tell the user what to do.
+  if (/enrollment is disabled for this provider/i.test(raw)) return copy.resultCodes.experimental_disabled;
+  if (/already in progress|superseded by a new attempt/i.test(raw)) return copy.loginConflict;
+  if (/did not present OAuth|no matching OAuth presentation/i.test(raw)) return copy.browserPresentFailed;
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  return classified || fallback;
 }

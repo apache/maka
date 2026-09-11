@@ -119,26 +119,11 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
     });
-    const session = await deps.client.createSession({
-      sessionId: newId(),
-      workspace,
-      ...(request.mode === undefined ? {} : { mode: request.mode }),
-      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
-      name: request.name,
-      ...(request.labels === undefined ? {} : { labels: request.labels }),
-      modelTarget: normalizeModelTarget(input),
-      ...normalizeCreateThinkingLevel(input?.thinkingLevel),
-      ...(request.mode !== undefined || request.permissionMode === undefined
-        ? {}
-        : { permissionMode: request.permissionMode }),
-      collaborationMode: request.collaborationMode,
-      orchestrationMode: request.orchestrationMode,
-    });
+    const session = await deps.client.createSession(resolveDesktopSessionCreateInput(input, newId(), workspace));
     deps.emitSessionsChanged('created', session.id);
     return toDesktopHostSessionSummary(session);
   });
@@ -302,6 +287,21 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
             record.subagentParentSessionId,
           ),
         }),
+  };
+}
+
+export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
+  const request = resolveCreateSessionRequest(input);
+  return {
+    sessionId, workspace,
+    ...(request.mode === undefined ? {} : { mode: request.mode }),
+    name: request.name,
+    ...(request.labels === undefined ? {} : { labels: request.labels }),
+    modelTarget: normalizeModelTarget(input),
+    ...normalizeCreateThinkingLevel(input?.thinkingLevel),
+    ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
+    collaborationMode: request.collaborationMode,
+    orchestrationMode: request.orchestrationMode,
   };
 }
 

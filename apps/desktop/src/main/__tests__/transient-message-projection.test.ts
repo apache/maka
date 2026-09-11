@@ -23,7 +23,6 @@ import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
   reconcileTransientMessages,
 } from '../../renderer/transient-message-projection.js';
 
@@ -115,29 +114,6 @@ test('keeps a transient message out of a sparse historical range', () => {
 
   assert.deepEqual(projected, []);
   assert.equal(pending.has('message-live'), true);
-});
-
-test('uses the Host queue snapshot order for already-present transient messages', () => {
-  const localSecond = {
-    ...transient,
-    id: 'message-2',
-    turnId: 'message-2',
-    text: 'second',
-  };
-  const remoteFirst = {
-    ...transient,
-    id: 'message-1',
-    turnId: 'message-1',
-    text: 'first',
-  };
-  const pending = new Map([[localSecond.id, localSecond]]);
-
-  projectQueuedTransientMessages(pending, [remoteFirst, localSecond]);
-
-  assert.deepEqual(
-    reconcileTransientMessages(pending, []).map((message) => message.id),
-    ['message-1', 'message-2'],
-  );
 });
 
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {

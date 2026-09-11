@@ -82,12 +82,15 @@ export async function runRuntimeHostLocalSourceRetirement(
 
 export function launchRuntimeHostLocalSourceRetirement(input: {
   readonly sourceCliPath: string;
+  readonly sourceNodePath?: string;
   readonly rootPath: string;
   readonly expectedRootId: string;
   readonly expectedHostEpoch: string;
   readonly activeWorkPolicy: 'refuse_active_work' | 'interrupt_active_work';
   readonly inheritableAuthorityLeaseFd: number;
+  readonly signal?: AbortSignal;
 }): Promise<'prepared' | 'active_work' | 'operator_required'> {
+  input.signal?.throwIfAborted();
   const args = [
     input.sourceCliPath,
     'runtime-host',
@@ -103,7 +106,7 @@ export function launchRuntimeHostLocalSourceRetirement(input: {
       : []),
   ];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
+    const child = spawn(input.sourceNodePath ?? process.execPath, args, {
       // fd 4 inherits the existing owner-authority lease. The source helper
       // holds it only while the authenticated retirement request is in flight.
       stdio: ['ignore', 'ignore', 'inherit', 'ignore', input.inheritableAuthorityLeaseFd],
@@ -111,9 +114,22 @@ export function launchRuntimeHostLocalSourceRetirement(input: {
       killSignal: 'SIGKILL',
       windowsHide: false,
     });
-    child.once('error', reject);
+    // Only this retirement client is stopped, never the parent that owns the
+    // durable deployment transaction. Wait for its fd/connection to close.
+    const cancel = () => {
+      child.kill('SIGKILL');
+    };
+    input.signal?.addEventListener('abort', cancel, { once: true });
+    if (input.signal?.aborted) cancel();
+    let spawnError: Error | undefined;
+    child.once('error', (error) => {
+      spawnError = error;
+    });
     child.once('close', (code, signal) => {
-      if (signal) {
+      input.signal?.removeEventListener('abort', cancel);
+      if (spawnError) {
+        reject(spawnError);
+      } else if (signal) {
         reject(new Error(`Maka source retirement helper exited on ${signal}`));
       } else if (code === 0) {
         resolve('prepared');

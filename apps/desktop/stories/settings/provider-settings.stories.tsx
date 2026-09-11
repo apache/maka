@@ -38,8 +38,10 @@ import type {
   ApiKeyOnboardingBridge,
   ConnectionOAuthBridge,
 } from '../../src/renderer/features/connection-settings';
+import { getProviderSettingsCopy } from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
+const detailCopy = getProviderSettingsCopy('zh-CN').detail;
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -841,6 +843,30 @@ export const RelayConnectionDetail: Story = {
     await expect(none).toHaveAttribute('aria-checked', 'false');
     await expect(partial).toHaveAttribute('aria-description', '1/4 个模型');
     await expect(none).toHaveAttribute('aria-description', '全部未声明');
+
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(
+      body.getByRole('button', {
+        name: `${detailCopy.edit}: ${detailCopy.requestHeaders}`,
+      }),
+    );
+    await userEvent.click(body.getByRole('button', { name: detailCopy.addHeader }));
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('.requestHeaderRow')).toHaveLength(1);
+    });
+    const row = canvasElement.querySelector<HTMLElement>('.requestHeaderRow');
+    const field = row?.querySelector<HTMLElement>('.requestHeaderName');
+    const cell = row?.querySelector<HTMLElement>('.requestHeaderRemove');
+    const button = cell?.querySelector<HTMLButtonElement>('button');
+    if (!field || !cell || !button) throw new Error('Request header row is incomplete');
+    const centre = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return box.top + box.height / 2;
+    };
+    expect(Math.abs(centre(button) - centre(field))).toBeLessThanOrEqual(1);
+    expect(cell.getBoundingClientRect().height).toBeLessThanOrEqual(
+      field.getBoundingClientRect().height + 1,
+    );
   },
 };
 

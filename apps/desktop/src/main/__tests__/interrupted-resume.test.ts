@@ -83,7 +83,6 @@ describe('latest interrupted resume candidate', () => {
         ts: 2,
         status: 'failed',
         errorClass: 'timeout',
-        partialOutputRetained: false,
       },
       { type: 'tool_call', id: 'call-1', turnId: 'turn-1', ts: 3, toolName: 'Read', args: {} },
       {
@@ -96,7 +95,7 @@ describe('latest interrupted resume candidate', () => {
         content: { kind: 'text', text: 'ok' },
       },
       { type: 'tool_call', id: 'call-2', turnId: 'turn-1', ts: 5, toolName: 'Read', args: {} },
-    ]);
+    ], 'en');
 
     assert.deepEqual(turn?.tools.map((tool) => tool.status), ['completed', 'interrupted']);
     assert.equal(latestInterruptedResumeTurnId(turn ? [turn] : []), undefined);

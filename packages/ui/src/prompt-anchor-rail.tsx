@@ -212,6 +212,9 @@ export function observeActivePromptRailVisibility(
 }
 
 export interface PromptAnchorRailTurn {
+  /** Optional host identity color; ordinary Session ticks remain neutral. */
+  accentColor?: string;
+  highlighted?: boolean;
   turnId: string;
   label: string;
   reply?: string;
@@ -240,6 +243,8 @@ export function mergePromptAnchorRailTurns(
 }
 
 export interface PromptAnchorRailProps {
+  /** Presentation-only hover/focus linkage; never navigates the transcript. */
+  onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
   /** When the indexed Turn is outside the Host's active transcript range. */
@@ -376,7 +381,7 @@ export function selectPromptRailTickForMountedTurn(input: {
 }
 
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeSelection, setActiveSelection] = useState<{
     turnId: string;
@@ -743,7 +748,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => setHoveredIndex(null)}
+        onPointerLeave={() => { setHoveredIndex(null); onHighlightTurn?.(undefined); }}
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
@@ -775,12 +780,16 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 label={copy.jumpToPrompt(preview)}
                 className="maka-prompt-rail-tick"
                 data-prompt-turn-id={turn.turnId}
+                data-highlighted={turn.highlighted || undefined}
                 data-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'true' : undefined}
                 onClick={() => jumpTo(turn)}
-                onPointerEnter={() => setHoveredIndex(index)}
+                onPointerEnter={() => { setHoveredIndex(index); onHighlightTurn?.(turn); }}
+                onFocus={() => onHighlightTurn?.(turn)}
+                onBlur={() => onHighlightTurn?.(undefined)}
                 style={
                   {
+                    color: turn.accentColor,
                     '--maka-prompt-rail-index': index,
                     '--maka-prompt-rail-scale': scale,
                   } as CSSProperties

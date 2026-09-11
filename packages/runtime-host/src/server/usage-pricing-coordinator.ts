@@ -62,7 +62,11 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage } from './canonical-usage-reader.js';
+import {
+  readCanonicalUsageBuckets,
+  readCanonicalUsageLogs,
+  readCanonicalUsageSummary,
+} from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -125,27 +129,13 @@ export class HostUsagePricingCoordinator {
     return titles;
   }
 
-  /**
-   * Reads the canonical ledger for the window a query addresses (#1679). The
-   * range is resolved once here so both sources answer the same window.
-   */
-  async #canonicalUsage(
-    query: UsageQuery,
-    now: number,
-    repair = true,
-  ): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, repair);
-  }
-
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
       const now = Date.now();
       if (input.kind === 'summary') {
         const merged = mergeUsageSummary(
           await this.#stores.telemetry.summary(input.query),
-          await this.#canonicalUsage(input.query, now),
-          input.query,
-          now,
+          await readCanonicalUsageSummary(this.#stores, input.query, now),
         );
         // Tool executions are in their own ledger, not the model-call one, so
         // their totals ride beside the merged summary rather than inside it —
@@ -180,10 +170,13 @@ export class HostUsagePricingCoordinator {
             : mergeUsageBuckets(
                 legacy,
                 // Only the first page repairs; later pages reuse it.
-                await this.#canonicalUsage(input.query, now, offset === 0),
-                input.query,
-                input.groupBy,
-                now,
+                await readCanonicalUsageBuckets(
+                  this.#stores,
+                  input.query,
+                  input.groupBy,
+                  now,
+                  offset === 0,
+                ),
               );
         if (offset > merged.buckets.length) return invalidUsageOffset();
         return {
@@ -225,9 +218,7 @@ export class HostUsagePricingCoordinator {
       const merged = mergeUsageLogs(
         legacy,
         // Only the first page repairs; later pages reuse it.
-        await this.#canonicalUsage(input.query, now, offset === 0),
-        input.query,
-        now,
+        await readCanonicalUsageLogs(this.#stores, input.query, now, offset + limit, offset === 0),
         offset,
         limit,
       );

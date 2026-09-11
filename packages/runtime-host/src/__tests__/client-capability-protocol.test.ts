@@ -344,6 +344,26 @@ describe('Client Capability protocol', () => {
         ),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
     for (const inputSchema of [
       { type: 'string' },
       { type: 'object', unsupportedKeyword: true },
@@ -390,6 +410,52 @@ describe('Client Capability protocol', () => {
           },
         ]),
       ),
+    );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    prefix: { type: 'string', pattern: '^[a-z]+$' },
+                  },
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame(
+          replaceFrame([
+            {
+              ...offer('bad_pattern_property', 'tool'),
+              tools: [
+                {
+                  ...offer('bad_pattern_property', 'tool').tools[0],
+                  inputSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'string' } },
+                    patternProperties: { '(': { type: 'string' } },
+                  },
+                },
+              ],
+            },
+          ]),
+        ),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError &&
+        /patternProperties key is not a valid pattern/u.test(error.message),
     );
     assert.doesNotThrow(() =>
       decodeClientFrame(

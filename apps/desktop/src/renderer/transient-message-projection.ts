@@ -23,23 +23,6 @@ import type { TransientUserMessageProjection } from '@maka/ui';
 type TransientUserMessage = TransientUserMessageProjection;
 
 /**
- * Replace the queue-backed subset in the exact order supplied by the Host.
- * Other local intents keep their relative position because queue absence is
- * not cancellation or delivery proof.
- */
-export function projectQueuedTransientMessages(
-  transient: Map<string, TransientUserMessage>,
-  queued: readonly TransientUserMessage[],
-): void {
-  if (queued.length === 0) return;
-  const queuedIds = new Set(queued.map((message) => message.id));
-  const retained = [...transient.entries()].filter(([id]) => !queuedIds.has(id));
-  transient.clear();
-  for (const [id, message] of retained) transient.set(id, message);
-  for (const message of queued) transient.set(message.id, message);
-}
-
-/**
  * A Host-named Turn outranks a later local update that still has none: the
  * IPC reply can land after the Host event that already bound this Message.
  */
@@ -47,6 +30,13 @@ export function mergeTransientMessageProjection(
   current: TransientUserMessage,
   update: TransientUserMessage,
 ): TransientUserMessage {
+  update = {
+    ...update,
+    ...(update.pendingSteering === undefined && current.pendingSteering !== undefined ? { pendingSteering: current.pendingSteering } : {}),
+    ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
+    ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
+    ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
+  };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
     ? { ...update, hostTurnId: current.hostTurnId }
     : update;

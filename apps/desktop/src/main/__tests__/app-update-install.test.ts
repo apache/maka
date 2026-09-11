@@ -19,14 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type {
-  AppUpdateInstallRequest,
-  AppUpdateInstallResult,
-} from '../../preload/bridge-contract.js';
 import {
   isAppUpdateInstallFailure,
   requestDownloadedAppUpdate,
-} from '../../renderer/app-update-install.js';
+  type AppUpdateInstallRequest,
+  type AppUpdateInstallResult,
+} from '../../renderer/features/app-update/testing.js';
 
 describe('requestDownloadedAppUpdate', () => {
   test('identifies asynchronous install failures from update status', () => {

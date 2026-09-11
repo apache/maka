@@ -34,6 +34,7 @@ import {
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
+  validateSlug,
   type IdentifiedLlmConnection,
   type ProviderType,
 } from '../llm-connections.js';
@@ -57,6 +58,17 @@ function chatModelChoicesFor(
     })),
   );
 }
+
+test('slug validation returns stable issues and preserves format and length boundaries', () => {
+  for (const slug of ['', '  ']) assert.equal(validateSlug(slug), 'required');
+  for (const slug of ['A-slug', 'with space', '-slug', 'slug-', 'a']) {
+    assert.equal(validateSlug(slug), 'format', slug);
+  }
+  assert.equal(validateSlug('a'.repeat(65)), 'too_long');
+  for (const slug of ['ab', 'valid-slug-1', 'a'.repeat(64)]) {
+    assert.equal(validateSlug(slug), null, slug);
+  }
+});
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -123,6 +135,52 @@ test('a fetch never deletes a choice the user made', () => {
   assert.deepEqual(
     reconcileConnectionAfterModelFetch({ defaultModel: 'saved', enabledModelIds: ['saved'] }, []),
     { defaultModel: 'saved', enabledModelIds: ['saved'] },
+  );
+});
+
+test('an authoritative account catalog removes unavailable bootstrap and stale models', () => {
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'fallback-unavailable',
+        enabledModelIds: ['fallback-unavailable', 'account-available'],
+        hasModelInventory: false,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    {
+      defaultModel: 'account-available',
+      enabledModelIds: ['account-available', 'newly-available'],
+    },
+  );
+  // Once an account inventory exists, a refresh removes withdrawn selections
+  // without automatically opting the user into newly introduced models.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'account-available',
+        enabledModelIds: ['account-available', 'withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    { defaultModel: 'account-available', enabledModelIds: ['account-available'] },
+  );
+  // Losing every selected model does not silently opt the user into the first
+  // catalogue entry. A model that later returns remains available but opt-in.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'withdrawn',
+        enabledModelIds: ['withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'replacement' }],
+      { authoritative: true },
+    ),
+    { defaultModel: '', enabledModelIds: [] },
   );
 });
 

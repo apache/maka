@@ -18,17 +18,28 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { fetchProviderModels, runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
 import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
 import { testConnection } from '../test-connection.js';
+import { ModelAdapter } from '../model-adapter.js';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+  resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
+} from '@maka/storage/root-authority';
 import {
   closeAllJsonServers,
   readBody,
@@ -40,6 +51,260 @@ import {
 after(closeAllJsonServers);
 
 describe('models.dev provider conformance', () => {
+  test('mixed discovery survives persistence and user overrides through both SDK tool loops', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-mixed-routing-'));
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const calls = new Map<string, number>();
+    const paths: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.headers.authorization, 'Bearer routing-key');
+      if (request.url === '/provider/v1/models') {
+        respondJson(response, 200, { data: [{ id: 'claude-route' }, { id: 'new-route' }] });
+        return;
+      }
+      const body = JSON.parse(await readBody(request));
+      const messages = request.url === '/provider/v1/messages';
+      assert.ok(messages || request.url === '/provider/v1/chat/completions');
+      const key = `${request.url}:${body.model}`;
+      const count = (calls.get(key) ?? 0) + 1;
+      calls.set(key, count);
+      paths.push(key);
+      if (messages) {
+        if (count === 2) {
+          assert.ok(
+            body.messages.some((item: { content: Array<{ type: string; signature?: string }> }) =>
+              item.content.some((part) => part.type === 'tool_result'),
+            ),
+          );
+          assert.ok(JSON.stringify(body.messages).includes('signature-route'));
+        }
+        respondJson(response, 200, {
+          id: `msg_${count}`,
+          type: 'message',
+          role: 'assistant',
+          model: body.model,
+          content:
+            count === 1
+              ? [
+                  { type: 'thinking', thinking: 'Use echo.', signature: 'signature-route' },
+                  { type: 'tool_use', id: 'tool_route', name: 'echo', input: { text: 'hello' } },
+                ]
+              : [{ type: 'text', text: 'Done.' }],
+          stop_reason: count === 1 ? 'tool_use' : 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 3 },
+        });
+      } else {
+        if (count === 2) {
+          assert.ok(body.messages.some((item: { role: string }) => item.role === 'tool'));
+          assert.equal(
+            body.messages.find((item: { role: string }) => item.role === 'assistant')
+              .reasoning_content,
+            'Use echo.',
+          );
+        }
+        respondJson(response, 200, {
+          id: `chat_${count}`,
+          object: 'chat.completion',
+          created: 0,
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              message:
+                count === 1
+                  ? {
+                      role: 'assistant',
+                      content: null,
+                      reasoning_content: 'Use echo.',
+                      tool_calls: [
+                        {
+                          id: 'tool_route',
+                          type: 'function',
+                          function: { name: 'echo', arguments: '{"text":"hello"}' },
+                        },
+                      ],
+                    }
+                  : { role: 'assistant', content: 'Done.' },
+              finish_reason: count === 1 ? 'tool_calls' : 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+        });
+      }
+    });
+    try {
+      const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'mixed',
+          name: 'Mixed',
+          providerType: 'commandcode',
+          baseUrl: `${server.url}/provider/v1`,
+          enabled: true,
+          enabledModelIds: ['claude-route', 'new-route'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') throw new Error('Connection was not created');
+      const connectionId = created.snapshot.connections[0]!.connectionId;
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: { scope: 'connection', connectionId, kind: 'api_key' },
+            expected: null,
+            secret: 'routing-key',
+          })
+        ).kind,
+        'committed',
+      );
+      const discover = async () => {
+        const prepared = await stores.operations.beginModelFetch(connectionId);
+        assert.equal(prepared.kind, 'ready');
+        if (prepared.kind !== 'ready') throw new Error('Discovery was not admitted');
+        const discovery = await runConnectionModelDiscoveryEffect(
+          prepared.connection,
+          'routing-key',
+          { fetch: globalThis.fetch },
+        );
+        assert.equal(discovery.ok, true);
+        if (!discovery.ok) throw new Error('Discovery failed');
+        assert.deepEqual(
+          discovery.models.map(({ id, apiProtocol }) => ({ id, apiProtocol })),
+          [
+            { id: 'claude-route', apiProtocol: 'anthropic-messages' },
+            { id: 'new-route', apiProtocol: undefined },
+          ],
+        );
+        assert.equal(
+          (
+            await stores.operations.completeModelFetch(prepared.ticket, {
+              models: discovery.models,
+              source: 'fetched',
+              fetchedAt: Date.now(),
+            })
+          ).kind,
+          'committed',
+        );
+      };
+      const send = async (modelId: string) => {
+        const prepared = await stores.operations.resolveExecutionConnection({
+          kind: 'catalog_slug',
+          connectionSlug: 'mixed',
+        });
+        assert.equal(prepared.kind, 'ready');
+        if (prepared.kind !== 'ready') throw new Error('Execution was not admitted');
+        const adapter = new ModelAdapter({
+          connection: {
+            slug: prepared.connection.slug,
+            providerType: prepared.connection.providerType,
+            baseUrl: prepared.connection.baseUrl,
+            models: [...prepared.connection.models],
+            defaultModel: modelId,
+          },
+          modelId,
+          apiKey: 'routing-key',
+          modelFactory: getAIModel,
+          newId: () => 'route',
+          now: Date.now,
+        });
+        const result = await generateText({
+          model: adapter.resolveModel() as ReturnType<typeof getAIModel>,
+          prompt: 'Echo hello',
+          maxRetries: 0,
+          maxOutputTokens: 128,
+          stopWhen: isStepCount(2),
+          tools: {
+            echo: tool({
+              inputSchema: z.object({ text: z.string() }),
+              execute: ({ text }) => text,
+            }),
+          },
+        });
+        assert.equal(result.text, 'Done.');
+      };
+      await discover();
+      await send('claude-route');
+      await send('new-route');
+      await writeFile(
+        join(root, 'model-facts.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          overrides: { 'commandcode:new-route': { apiProtocol: 'anthropic-messages' } },
+        }),
+      );
+      await discover();
+      await send('new-route');
+      await writeFile(
+        join(root, 'model-facts.json'),
+        JSON.stringify({ schemaVersion: 1, overrides: {} }),
+      );
+      await send('new-route');
+      assert.deepEqual(paths, [
+        '/provider/v1/messages:claude-route',
+        '/provider/v1/messages:claude-route',
+        '/provider/v1/chat/completions:new-route',
+        '/provider/v1/chat/completions:new-route',
+        '/provider/v1/messages:new-route',
+        '/provider/v1/messages:new-route',
+        '/provider/v1/chat/completions:new-route',
+      ]);
+    } finally {
+      await owner.close();
+      await rm(root, { recursive: true, force: true });
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true });
+    }
+  });
+
+  test('an explicit model protocol overrides the provider default and a static SDK override', async () => {
+    const paths: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      paths.push(request.url ?? '');
+      const body = JSON.parse(await readBody(request));
+      if (request.url !== '/v1/messages') {
+        respondJson(response, 400, { error: { message: 'This model requires Messages' } });
+        return;
+      }
+      assert.equal(request.headers['x-api-key'], 'routing-key');
+      respondJson(response, 200, {
+        id: 'msg_route',
+        type: 'message',
+        role: 'assistant',
+        model: body.model,
+        content: [{ type: 'text', text: 'Routed.' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 2, output_tokens: 1 },
+      });
+    });
+    for (const modelId of ['new-model', 'gpt-5.5']) {
+      const result = await generateText({
+        model: getAIModel({
+          connection: {
+            slug: 'mixed',
+            providerType: 'opencode',
+            defaultModel: modelId,
+            baseUrl: `${server.url}/v1`,
+            models: [{ id: modelId, apiProtocol: 'anthropic-messages' }],
+          },
+          apiKey: 'routing-key',
+          modelId,
+        }),
+        prompt: 'Hello',
+        maxRetries: 0,
+      });
+      assert.equal(result.text, 'Routed.');
+    }
+    assert.deepEqual(paths, ['/v1/messages', '/v1/messages']);
+  });
+
   test('native Anthropic sends automatic prompt caching on the Messages wire', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
@@ -525,24 +790,35 @@ describe('models.dev provider conformance', () => {
             policy: { state: 'enabled' },
             capabilities: { supports: { tool_calls: true } },
           },
+          {
+            id: 'claude-sonnet-4.6',
+            model_picker_enabled: true,
+            supported_endpoints: ['/v1/messages'],
+            policy: { state: 'enabled' },
+            capabilities: { supports: { tool_calls: true } },
+          },
         ],
       });
     });
-    const result = await testConnection(
-      {
-        slug: 'github-copilot',
-        name: 'GitHub Copilot',
-        providerType: 'github-copilot',
-        baseUrl: server.url,
-        defaultModel: 'gpt-5.4',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'github-account-token',
-    );
-
-    assert.deepEqual(result, { ok: true, latencyMs: result.latencyMs, modelTested: 'gpt-5.4' });
+    const connection: LlmConnection = {
+      slug: 'github-copilot',
+      name: 'GitHub Copilot',
+      providerType: 'github-copilot',
+      baseUrl: server.url,
+      defaultModel: 'gpt-5.4',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    connection.models = await fetchProviderModels(connection, 'github-account-token');
+    assert.deepEqual(connection.models.map((model) => model.id).sort(), [
+      'claude-sonnet-4.6',
+      'gpt-5.4',
+    ]);
+    for (const model of connection.models) {
+      const result = await testConnection(connection, 'github-account-token', model.id);
+      assert.deepEqual(result, { ok: true, latencyMs: result.latencyMs, modelTested: model.id });
+    }
   });
 
   test('GitHub Copilot connection probe rejects an account that cannot discover models', async () => {
@@ -960,6 +1236,36 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[1]?.body.messages, [{ role: 'user', content: 'Hi' }]);
     assert.equal(requests[2]?.headers['x-goog-api-key'], 'opencode-test-key');
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
+  });
+
+  test('OpenCode Free probes reuse identity across candidates and renew it per operation', async () => {
+    const sessions: Array<string | undefined> = [];
+    const server = await startJsonServer(async (request, response) => {
+      sessions.push(request.headers['x-opencode-session'] as string | undefined);
+      respondJson(response, sessions.length % 2 === 1 ? 429 : 200, {
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      baseUrl: `${server.url}/zen/v1`,
+      defaultModel: 'nemotron-3-ultra-free',
+      enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    assert.equal((await testConnection(connection, '')).ok, true);
+    assert.equal((await testConnection(connection, '')).ok, true);
+    assert.equal(sessions.length, 4);
+    for (const session of sessions) {
+      assert.match(session ?? '', /^[0-9a-f-]{36}$/);
+    }
+    assert.equal(sessions[0], sessions[1]);
+    assert.equal(sessions[2], sessions[3]);
+    assert.notEqual(sessions[0], sessions[2]);
   });
 
   test('OpenCode Go connection probes identify every supported wire request', async () => {

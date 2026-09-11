@@ -62,12 +62,12 @@ export * from './form-interaction-prompt.js';
 export * from './form-interaction-prompt-state.js';
 export * from './redact.js';
 export * from './thinking-stream.js';
-export * from './session-todo-panel.js';
 export * from './toast.js';
 export * from './tool-output-stream.js';
 export * from './ui.js';
 export * from './utils.js';
 export * from './platform-shortcut-text.js';
+export * from './transcript-viewport-navigation.js';
 
 // Maka-owned product assets and compositions remain public only where they do
 // not duplicate a published Astryx component authority.
@@ -188,3 +188,5 @@ export {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+
+export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';

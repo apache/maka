@@ -44,6 +44,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - [Log Is the Runtime: How Maka Uses an Append-Only Log to Manage Agent State and Context](./blogs/log-is-the-runtime.md) ([中文](./blogs/log-is-the-runtime.zh-CN.md))
 - [From Copy-on-Write to Mailboxes: Two Paths for Multi-Agent Scheduling](./blogs/multi-agent-scheduling.md) ([中文](./blogs/multi-agent-scheduling.zh-CN.md))
+- [From Stateless Functions to Agent Runtimes: The Serverless Scheduling Unit Is Growing](./blogs/serverless-agent-runtime.md) ([中文](./blogs/serverless-agent-runtime.zh-CN.md))
 
 ## Current contracts
 
@@ -58,6 +59,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
+- [Peer Mesh architecture](./architecture/peer-mesh-architecture.md) ([中文](./architecture/peer-mesh-architecture.zh-CN.md))
 - [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
 - [Runtime resume Phase 3–4 implementation route](./architecture/runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)

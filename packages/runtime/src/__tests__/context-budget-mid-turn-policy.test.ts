@@ -139,7 +139,7 @@ describe('declared relay context window', () => {
     // catalog codec refuses to persist on another provider.
     const other: LlmConnection = {
       slug: 'other',
-      name: 'Other',
+      name: 'unknown',
       providerType: 'openai',
       defaultModel: 'reasoner-32k',
       enabled: true,

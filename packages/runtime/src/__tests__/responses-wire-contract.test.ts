@@ -193,7 +193,7 @@ describe('responses wire contract', () => {
     assert.deepEqual(sessionHeaders, ['session-opencode-go']);
   });
 
-  test('sends the OpenCode Go session identity through Chat and Messages adapters', async () => {
+  test('sends OpenCode Go and Free session identities through their model adapters', async () => {
     const requests: Array<{ url: string; sessionHeader: string | null }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const request = new Request(url, init);
@@ -229,13 +229,18 @@ describe('responses wire contract', () => {
       });
     }) as typeof globalThis.fetch;
 
-    for (const modelId of ['kimi-k2.7-code', 'minimax-m3']) {
+    for (const [providerType, modelId] of [
+      ['opencode-go', 'kimi-k2.7-code'],
+      ['opencode-go', 'minimax-m3'],
+      ['opencode-free', 'nemotron-3-ultra-free'],
+      ['opencode-free', 'nemotron-3-ultra-free'],
+    ] as const) {
       const model = getAIModel({
-        connection: conn('opencode-go'),
+        connection: conn(providerType),
         apiKey: '[redacted]',
         modelId,
         fetch,
-        sessionId: 'session-opencode-go',
+        sessionId: `session-${providerType}`,
       });
       await model.doGenerate({
         prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
@@ -250,6 +255,14 @@ describe('responses wire contract', () => {
       {
         url: 'https://opencode.ai/zen/go/v1/messages',
         sessionHeader: 'session-opencode-go',
+      },
+      {
+        url: 'https://opencode.ai/zen/v1/chat/completions',
+        sessionHeader: 'session-opencode-free',
+      },
+      {
+        url: 'https://opencode.ai/zen/v1/chat/completions',
+        sessionHeader: 'session-opencode-free',
       },
     ]);
   });

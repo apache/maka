@@ -78,6 +78,7 @@ import { worstCaseFailedTurnSnapshot } from './canonical-turn-snapshot.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
+import type { LogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 
 type MessageOperationErrorCode =
   | 'host_draining'
@@ -104,6 +105,8 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 export interface HostMessageSessionHeader {
   readonly isArchived: boolean;
   readonly unavailableReason?: string;
+  /** A reserved Session accepts queued messages only while its dedicated root is active. */
+  readonly activeTurnOnly?: boolean;
 }
 
 export type HostMessageRootState =
@@ -194,6 +197,11 @@ export type HostMessageExecutionDisposition =
 
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
+  readLatestRootTurnLineage(identity: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }): Promise<{ turnId: string; runId: string }>;
   readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
   readRootState(sessionId: string): Promise<HostMessageRootState> | HostMessageRootState;
   claimStopFence(
@@ -212,7 +220,9 @@ export interface HostMessageRootPort {
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<
+    { readonly turnId: string } | { readonly error: string } | { readonly deferred: true }
+  >;
   prepareMessage(input: HostMessagePreparationInput): Promise<HostMessagePreparationOutcome>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
@@ -223,6 +233,9 @@ export interface HostMessageRootPort {
 
 /** Existing durable facts used only to prove an earlier Host Epoch's submit disposition. */
 export interface HostMessageDurableProofReader {
+  readLogicalExecution(
+    identity: RuntimeMessageRunIdentity,
+  ): Promise<LogicalRuntimeExecution | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     messageId: string,
@@ -293,7 +306,7 @@ type QueuedMutationKind = 'retract' | 'retract_entry' | 'promote' | 'update_entr
 type MessageOperationKind = QueuedMutationKind | 'submit' | 'interrupt';
 
 interface PendingQueuedMutation {
-  readonly payload: object;
+  readonly payload: { readonly sessionId: string };
   readonly result: Promise<MessageOutcome<unknown>>;
 }
 
@@ -334,7 +347,7 @@ interface SessionState {
   steering: LiveEntry[];
   inFlight: Map<string, LiveEntry>;
   followup: LiveEntry[];
-  reservedRoot?: RuntimeMessageRunIdentity;
+  reservedRoot?: RuntimeMessageRunIdentity & { expectedRunId: string };
   run?: BoundRun;
   transition?: TerminalTransition;
   stopFence?: {
@@ -470,11 +483,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     for (const messageId of input.messageIds) {
       const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
       if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
+        // This read projects current execution, including safe-boundary
+        // continuations. The Message's durable admission ownership is unchanged.
+        const latest = await this.#root.readLatestRootTurnLineage({
+          sessionId: input.sessionId,
+          turnId: disposition.turnId,
+          runId: disposition.runId,
+        });
         resolutions.push({
           messageId,
           state: 'owned',
-          turnId: disposition.turnId,
-          runId: disposition.runId,
+          turnId: latest.turnId,
+          runId: latest.runId,
         });
         continue;
       }
@@ -566,6 +586,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     );
   }
 
+  readMessageExecutionDispositionAdmitted(
+    sessionId: string,
+    messageId: string,
+    admission: SessionAdmissionLease,
+  ): Promise<HostMessageExecutionDisposition> {
+    return this.#sessionAdmission.runAdmitted(sessionId, admission, () =>
+      this.#resolveMessageExecution(sessionId, messageId),
+    );
+  }
+
   async #resolveMessageExecution(
     sessionId: string,
     messageId: string,
@@ -632,13 +662,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   bindRun(identity: RuntimeMessageRunIdentity): RuntimeMessageRunOwner {
     const state = this.#state(identity.sessionId);
     const exactPreStartStop =
-      state.stopFence !== undefined && sameRun(state.stopFence.identity, identity);
+      state.stopFence !== undefined &&
+      state.reservedRoot !== undefined &&
+      sameRun(state.stopFence.identity, state.reservedRoot);
     if (state.phase !== 'open' && !exactPreStartStop) {
       throw new RuntimeMessageAuthorityInvariantError(
         'Message Run bound while admission was closed',
       );
     }
-    if (!state.reservedRoot || !sameRun(state.reservedRoot, identity) || state.run) {
+    if (
+      !state.reservedRoot ||
+      state.reservedRoot.turnId !== identity.turnId ||
+      state.reservedRoot.expectedRunId !== identity.runId ||
+      state.run
+    ) {
       throw new RuntimeMessageAuthorityInvariantError(
         `Message Run ${identity.runId} was not the exact reserved root identity`,
       );
@@ -665,8 +702,90 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         'Cannot reserve a root Turn during live ownership',
       );
     }
-    state.reservedRoot = { ...identity };
+    state.reservedRoot = { ...identity, expectedRunId: identity.runId };
     state.phase = 'open';
+  }
+
+  /** Change physical ownership, not the logical queue generation or Stop identity. */
+  async advanceHandoffRun(
+    identity: RuntimeMessageRunIdentity,
+    successorRunId: string,
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    await this.#sessionAdmission.runAdmitted(identity.sessionId, admission, async () => {
+      const logical = await this.#durableProof.readLogicalExecution(identity);
+      const state = this.#requireState(identity.sessionId);
+      if (
+        !logical?.pendingHandoff ||
+        logical.pendingHandoff.successorRunId !== successorRunId ||
+        !state.reservedRoot ||
+        !sameRun(state.reservedRoot, identity) ||
+        state.transition ||
+        (state.phase !== 'open' && !state.stopFence) ||
+        state.inFlight.size !== 0 ||
+        (state.run
+          ? !state.run.released || state.run.runId !== logical.tip.runId
+          : state.reservedRoot.expectedRunId !== identity.runId)
+      ) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Physical handoff lacks a sealed released root owner',
+        );
+      }
+      state.run = undefined;
+      state.reservedRoot.expectedRunId = successorRunId;
+    });
+  }
+
+  async #readDetachableHandoff(
+    identity: RuntimeMessageRunIdentity,
+  ): Promise<SessionState | undefined> {
+    const logical = await this.#durableProof.readLogicalExecution(identity);
+    const state = this.#requireState(identity.sessionId);
+    if (state.stopFence || state.pendingInterrupts.size !== 0) return undefined;
+    if (
+      !logical?.pendingHandoff ||
+      !state.reservedRoot ||
+      !sameRun(state.reservedRoot, identity) ||
+      !state.run?.released ||
+      state.run.runId !== logical.tip.runId ||
+      state.inFlight.size !== 0 ||
+      state.transition
+    ) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Handoff cannot detach unsettled Message ownership',
+      );
+    }
+    return state;
+  }
+
+  async handoffResidencies(
+    identity: RuntimeMessageRunIdentity,
+    admission: SessionAdmissionLease,
+  ): Promise<readonly RuntimeHostResidency[] | undefined> {
+    return this.#sessionAdmission.runAdmitted(identity.sessionId, admission, async () => {
+      const state = await this.#readDetachableHandoff(identity);
+      return state && allLiveEntries(state).map((entry) => entry.residency);
+    });
+  }
+
+  async detachHandoffRoot(
+    identity: RuntimeMessageRunIdentity,
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    await this.#sessionAdmission.runAdmitted(identity.sessionId, admission, async () => {
+      const state = await this.#readDetachableHandoff(identity);
+      if (!state)
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Stop took ownership before handoff detach',
+        );
+      // Confirmed admissions remain durable for the next Host. Only local leases
+      // and handles retire; do not write cancellation receipts or a queue fence.
+      this.#retractQueued(state);
+      state.run = undefined;
+      state.reservedRoot = undefined;
+      state.phase = 'closed';
+      this.#maybeReclaim(identity.sessionId, state);
+    });
   }
 
   abandonRootReservation(identity: RuntimeMessageRunIdentity): void {
@@ -693,7 +812,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       !state.reservedRoot ||
       !sameRun(state.reservedRoot, identity) ||
       !run ||
-      !sameRun(run, identity) ||
+      run.turnId !== identity.turnId ||
+      run.runId !== state.reservedRoot.expectedRunId ||
       !run.released
     ) {
       throw new RuntimeMessageAuthorityInvariantError(
@@ -747,7 +867,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#commitTransition(state);
     state.generation += 1;
     for (const entry of allLiveEntries(state)) entry.generation = state.generation;
-    state.reservedRoot = { ...identity };
+    state.reservedRoot = { ...identity, expectedRunId: identity.runId };
     state.phase = 'open';
     this.#mutated(state);
   }
@@ -810,6 +930,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       NonNullable<MarkMessagesHandedOffInput['provenSteeringMessages']>[number]
     > = [];
     const admissions = await this.#admissions.listMessageAdmissions(input.sessionId);
+    let logicalRunIds: readonly string[] | undefined;
     for (const messageId of new Set(input.messageIds)) {
       messageIds.add(messageId);
       provenRootMessages.push(await this.#readProvenRootMessage(input, messageId));
@@ -822,7 +943,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         input.sessionId,
         admission.messageId,
       );
-      if (proof?.event.turnId === input.turnId && proof.event.runId === input.runId) {
+      if (
+        proof?.event.turnId === input.turnId &&
+        proof.event.runId !== input.runId &&
+        !logicalRunIds
+      ) {
+        logicalRunIds = (await this.#durableProof.readLogicalExecution(input))?.runIds ?? [];
+      }
+      if (
+        proof?.event.turnId === input.turnId &&
+        (proof.event.runId === input.runId || logicalRunIds?.includes(proof.event.runId))
+      ) {
         messageIds.add(admission.messageId);
         provenSteeringMessages.push({
           messageId: admission.messageId,
@@ -961,6 +1092,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         },
         admissionLease,
       );
+      if ('deferred' in started) return;
       if ('error' in started) {
         throw new RuntimeMessageAuthorityInvariantError(
           `Durable Message recovery failed: ${started.error}`,
@@ -1132,6 +1264,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
+        }
+        if (header.activeTurnOnly && rootState.kind !== 'active') {
+          return failure('operation_unavailable', 'No active Turn can accept queued messages');
         }
         if (rootState.kind === 'idle') {
           const existingState = this.#sessions.get(input.sessionId);
@@ -1857,7 +1992,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (state.transition) {
       return failure('operation_conflict', 'Message queue is draining into the next Turn');
     }
-    const current = state.followup;
+    const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
+    const current = steering ? state.steering : state.followup;
     if (input.entryIds.length !== current.length) {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
@@ -1868,14 +2004,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!entry) {
         return failure('operation_conflict', 'Message queue changed since the reorder was issued');
       }
+      byId.delete(entryId);
       reordered.push(entry);
     }
     if (reordered.some((entry, index) => current[index] !== entry)) {
       await this.#admissions.reorderMessageAdmissions(
         input.sessionId,
         reordered.map((entry) => entry.messageId),
+        steering ? 'steering' : 'followup',
       );
-      state.followup = reordered;
+      if (steering) state.steering = reordered;
+      else state.followup = reordered;
       this.#mutated(state);
     }
     const result = { queueRevision: state.revision };
@@ -2190,7 +2329,22 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  #pull(run: BoundRun): readonly SteeringLease[] {
+  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+    // A provider boundary must observe steering admission and queue mutations,
+    // not mistake an unfinished durable write for an empty queue.
+    for (;;) {
+      const pending = [
+        ...[...this.#pendingSubmits.values()].filter(
+          ({ payload }) =>
+            payload.sessionId === run.sessionId && payload.placement === 'current_turn',
+        ),
+        ...[...this.#pendingQueuedMutations.values()].filter(
+          ({ payload }) => payload.sessionId === run.sessionId,
+        ),
+      ];
+      if (pending.length === 0) break;
+      await Promise.all(pending.map(({ result }) => result));
+    }
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];

@@ -291,7 +291,11 @@ export function ProjectsSettingsPage(props: {
               const endCluster = (
                     <>
                       {capabilities.setLocalDefault && isDefault ? (
-                        <Badge variant="neutral" label={copy.defaultBadge} />
+                        <Badge
+                          className="settingsProjectDefaultBadge"
+                          variant="neutral"
+                          label={copy.defaultBadge}
+                        />
                       ) : capabilities.setLocalDefault ? (
                         <Button
                           variant="secondary"

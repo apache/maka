@@ -458,6 +458,11 @@ export function reconcileConnectionAfterModelFetch(
      * caller that knows the provider's naming supplies the table.
      */
     readonly aliases?: Readonly<Record<string, string>>;
+    /**
+     * The provider guarantees this is the account's complete usable catalog.
+     * Missing ids are therefore unavailable, unlike ordinary partial snapshots.
+     */
+    readonly authoritative?: boolean;
   },
 ): {
   defaultModel: string;
@@ -490,6 +495,19 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
+  if (options?.authoritative) {
+    // The first account-scoped fetch replaces the provider fallback guess: no
+    // user chose those bootstrap ids, and every usable model should be offered.
+    // Later refreshes preserve explicit user choices only while they remain in
+    // the account catalog; newly introduced models stay opt-in.
+    const enabledModelIds = connection.hasModelInventory
+      ? previousEnabled.filter((id) => live.has(id))
+      : liveIds;
+    const defaultModel = enabledModelIds.includes(previousDefault)
+      ? previousDefault
+      : (enabledModelIds[0] ?? '');
+    return { defaultModel, enabledModelIds };
+  }
   // Seed a first choice only for a connection that has never had a list to
   // pick from: four providers ship no `fallbackModels`, so for them discovery
   // is the only place a first default can come from.
@@ -567,12 +585,12 @@ export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUr
   return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
 }
 
-export function validateSlug(slug: string): string | null {
-  if (!slug.trim()) return 'Slug is required';
-  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) {
-    return 'Slug must be lowercase letters, digits, and hyphens';
-  }
-  if (slug.length > 64) return 'Slug must be 64 characters or fewer';
+export type SlugValidationIssue = 'required' | 'format' | 'too_long';
+
+export function validateSlug(slug: string): SlugValidationIssue | null {
+  if (!slug.trim()) return 'required';
+  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) return 'format';
+  if (slug.length > 64) return 'too_long';
   return null;
 }
 

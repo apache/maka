@@ -654,7 +654,6 @@ function makeRuntime(
     header: header(),
     connection: connection(),
     modelId: 'model-1',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

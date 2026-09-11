@@ -86,6 +86,8 @@ export class RuntimeHostSessionSubscriptionOwner {
   #refreshTask?: Promise<void>;
   #started = false;
   #closed = false;
+  #ptyInterests: readonly string[] = [];
+  #ptyUpdate: Promise<void> = Promise.resolve();
 
   constructor(deps: RuntimeHostSessionSubscriptionOwnerDeps) {
     this.#deps = deps;
@@ -103,6 +105,17 @@ export class RuntimeHostSessionSubscriptionOwner {
       await task;
       if (task === this.#readyTask) return;
     }
+  }
+
+  setPtyInterests(refs: readonly string[]): Promise<void> {
+    if (refs.length === this.#ptyInterests.length && refs.every((ref, index) => ref === this.#ptyInterests[index])) return this.#ptyUpdate;
+    this.#ptyInterests = [...refs];
+    const update = this.#ptyUpdate.catch(() => undefined).then(async () => {
+      await this.waitUntilReady();
+      if (!this.#closed) await this.#attempt?.handle.setPtyInterests?.(this.#ptyInterests);
+    });
+    this.#ptyUpdate = update;
+    return update;
   }
 
   refresh(): Promise<void> {
@@ -290,6 +303,10 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw new Error('Runtime Host Session replacement is already preparing');
     }
     this.#candidate = attempt;
+    handle.subscribePtyData?.((frame) => {
+      if (this.#closed || attempt.failure || (this.#candidate !== attempt && this.#attempt !== attempt)) return;
+      void Promise.resolve(this.#deps.acceptFrame(frame)).catch(() => undefined);
+    });
     void this.#pump(attempt);
 
     const replicaPreparation = DesktopTranscriptReplica.prepare(
@@ -297,6 +314,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#deps.transcriptReplicaOptions,
     );
     try {
+      if (this.#ptyInterests.length > 0) await handle.setPtyInterests?.(this.#ptyInterests);
       const loaded = await Promise.race([
         replicaPreparation.then(
           (replica) => ({ kind: "replica" as const, replica }),

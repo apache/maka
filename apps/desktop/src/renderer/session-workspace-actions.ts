@@ -37,10 +37,9 @@ import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 import { clearNewTaskReloadIntent, markNewTaskReloadIntent } from './new-task-reload-intent.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages as applyQueuedTransientProjection,
   reconcileTransientMessages,
 } from './transient-message-projection.js';
 
@@ -59,10 +58,6 @@ export interface SessionWorkspaceActions {
   setMessages: MessageListUpdater;
   addTransientMessage(sessionId: string, message: TransientUserMessage): void;
   updateTransientMessage(sessionId: string, message: TransientUserMessage): void;
-  projectQueuedTransientMessages(
-    sessionId: string,
-    messages: readonly TransientUserMessage[],
-  ): void;
   retireCancelledTransientMessages(sessionId: string): Promise<void>;
   removeTransientMessage(sessionId: string, messageId: string): void;
 }
@@ -133,7 +128,8 @@ export function createSessionWorkspaceActions(deps: {
       pending = new Map();
       transientMessagesBySessionRef.current.set(sessionId, pending);
     }
-    pending.set(message.id, message);
+    const current = pending.get(message.id);
+    pending.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
     reprojectActiveTransients(sessionId);
   }
 
@@ -145,19 +141,6 @@ export function createSessionWorkspaceActions(deps: {
     reprojectActiveTransients(sessionId);
   }
 
-  function projectQueuedTransientMessages(
-    sessionId: string,
-    messages: readonly TransientUserMessage[],
-  ): void {
-    let pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending && messages.length === 0) return;
-    if (!pending) {
-      pending = new Map();
-      transientMessagesBySessionRef.current.set(sessionId, pending);
-    }
-    applyQueuedTransientProjection(pending, messages);
-    reprojectActiveTransients(sessionId);
-  }
 
   async function retireCancelledTransientMessages(sessionId: string): Promise<void> {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
@@ -230,7 +213,6 @@ export function createSessionWorkspaceActions(deps: {
     setMessages,
     addTransientMessage,
     updateTransientMessage,
-    projectQueuedTransientMessages,
     retireCancelledTransientMessages,
     removeTransientMessage,
   };

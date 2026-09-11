@@ -20,6 +20,8 @@
 export { SessionCollaborationServicesProvider } from './services-context';
 export { useSessionCollaborationDialog } from './controller/use-session-collaboration-dialog';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
+export { SessionCollaborationNavigation } from './ui/session-collaboration-navigation';
+export { SessionGuestAliasAction } from './ui/session-collaboration-alias-action';
 export { SessionGuestTurnActionBoundary } from './ui/session-guest-turn-actions';
 export { SessionTurnRequestComposer } from './ui/session-turn-request-composer';
 export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';

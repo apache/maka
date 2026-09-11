@@ -18,7 +18,6 @@
  */
 
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
@@ -82,7 +81,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
     if (!botToken || !appToken) {
       this.running = false;
       this.readiness = botReadinessFromSettings(this.settings);
-      this.reason = 'missing-slack-tokens';
+      this.reason = 'slack_tokens_missing';
       this.emitStatusChange();
       return;
     }
@@ -130,7 +129,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
     } catch (error) {
       this.running = false;
       this.readiness = 'degraded';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.emitStatusChange();
       await this.stopTransport();
       throw error;
@@ -160,7 +159,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       return typeof result.ts === 'string' ? result.ts : null;
     } catch (error) {
       this.readiness = 'degraded';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }

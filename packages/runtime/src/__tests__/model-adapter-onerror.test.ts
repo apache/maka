@@ -75,7 +75,7 @@ describe('settleModelStepOutcome', () => {
     const failure = {
       type: 'model_failure' as const,
       kind: 'rate_limit' as const,
-      message: 'Rate limit exceeded',
+      message: 'rate limited (status=429)',
       retryable: true,
     };
 
@@ -89,8 +89,7 @@ describe('settleModelStepOutcome', () => {
       hasResponseEvidence: false,
     });
 
-    assert.equal(outcome.kind, 'retryable-failure');
-    if (outcome.kind !== 'retryable-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.equal(outcome.failure, failure);
   });
 
@@ -120,8 +119,7 @@ describe('settleModelStepOutcome', () => {
       hasResponseEvidence: false,
     });
 
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.equal(outcome.failure.kind, 'provider_unavailable');
     assert.equal(outcome.failure.code, '503');
     assert.equal(outcome.failure.retryable, false);
@@ -181,14 +179,13 @@ describe('ModelAdapter.startStream onError', () => {
         type: 'model_failure',
         kind: 'rate_limit',
         code: '429',
-        message: 'Rate limit exceeded',
+        message: 'rate limited (status=429)',
         retryable: true,
         retryAfterMs: 2500,
       },
     ]);
     const outcome = await requireAlreadySettled(result.outcome);
-    assert.equal(outcome.kind, 'retryable-failure');
-    if (outcome.kind !== 'retryable-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.deepEqual(outcome.failure, failures[0]);
   });
 
@@ -237,8 +234,7 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
     const outcome = await requireAlreadySettled(result.outcome);
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.deepEqual(outcome.failure, failures[0]);
   });
 
@@ -271,13 +267,12 @@ describe('ModelAdapter.startStream onError', () => {
     for await (const _event of result.events) void _event;
     const outcome = await result.outcome;
 
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.deepEqual(outcome.failure, {
       type: 'model_failure',
       kind: 'rate_limit',
       retryable: false,
-      message: 'Rate limit exceeded',
+      message: 'Provider stopped the stream with an error (code=rate_limit_exceeded)',
       code: 'rate_limit_exceeded',
     });
     assert.equal(outcome.usage?.rawFinishReason, 'rate_limit_exceeded');
@@ -315,13 +310,13 @@ describe('ModelAdapter.startStream onError', () => {
         type: 'model_failure',
         kind: 'rate_limit',
         code: '429',
-        message: 'Rate limit exceeded',
+        message: 'rate limited (status=429)',
         retryable: true,
         retryAfterMs: 2500,
       },
     ]);
     assert.deepEqual(await result.outcome, {
-      kind: 'retryable-failure',
+      kind: 'failed',
       failure: failures[0],
       request: { messages: [{ role: 'user', content: 'hi' }] },
       continuation: 'none',
@@ -439,7 +434,7 @@ describe('ModelAdapter.startStream onError', () => {
     if (outcome.kind !== 'truncated') return;
     assert.deepEqual(outcome.failure, {
       type: 'model_failure',
-      kind: 'provider_unavailable',
+      kind: 'stream_truncated',
       message: 'Provider returned an empty stop without output or usable usage',
       retryable: false,
     });
@@ -496,6 +491,30 @@ describe('ModelAdapter.startStream onError', () => {
     ]);
   });
 
+  test('counts redacted thinking at its start boundary as response evidence', async () => {
+    const { events, outcome } = await observe([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'reasoning-start',
+        id: 'redacted-1',
+        providerMetadata: { anthropic: { redactedData: 'opaque-reasoning' } },
+      },
+      { type: 'reasoning-end', id: 'redacted-1' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    assert.equal(outcome.hasResponseEvidence, true);
+    assert.deepEqual(boundaryDispositions(events), [
+      { kind: 'step-finish', disposition: 'authoritative' },
+      { kind: 'finish', disposition: 'authoritative' },
+    ]);
+  });
+
   test('settles an explicit provider network_error finish as retryable', async () => {
     const { events, outcome } = await observe([
       { type: 'stream-start', warnings: [] },
@@ -506,8 +525,8 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
 
-    assert.equal(outcome.kind, 'retryable-failure');
-    if (outcome.kind !== 'retryable-failure') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
     assert.deepEqual(outcome.failure, {
       type: 'model_failure',
       kind: 'network',
@@ -550,8 +569,7 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
 
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
+    assert.ok(outcome.kind === 'failed');
     assert.equal(outcome.failure.kind, 'unknown');
     assert.equal(outcome.failure.message, 'Provider stopped the stream on a content filter');
   });
@@ -567,8 +585,8 @@ describe('ModelAdapter.startStream onError', () => {
     ]);
 
     assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'error');
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
     assert.equal(outcome.failure.kind, 'provider_unavailable');
     assert.equal(outcome.failure.message, 'Provider stopped the stream with an error');
   });
@@ -631,7 +649,8 @@ describe('ModelAdapter.startStream onError', () => {
         {
           type: 'model_failure',
           kind: 'network',
-          message: 'Network error',
+          message:
+            'Client network socket disconnected before secure TLS connection was established',
           retryable: true,
         },
       ]);

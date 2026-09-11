@@ -81,7 +81,9 @@ export function registerRuntimeHostShellRunsIpc(
         sessionId: string,
         observerId: string,
         target: RuntimeHostSessionObserverTarget,
-      ): Promise<void>;
+        messageAdmissions?: boolean,
+        ptyRef?: string,
+      ): Promise<unknown>;
       unobserve(observerId: string): Promise<void>;
     };
   },
@@ -167,7 +169,9 @@ class RuntimeResourceControllers {
       sessionId: string,
       observerId: string,
       target: RuntimeHostSessionObserverTarget,
-    ): Promise<void>;
+      messageAdmissions?: boolean,
+      ptyRef?: string,
+    ): Promise<unknown>;
     unobserve(observerId: string): Promise<void>;
   };
   readonly #states = new Map<string, RuntimeResourceControllerState>();
@@ -181,7 +185,9 @@ class RuntimeResourceControllers {
         sessionId: string,
         observerId: string,
         target: RuntimeHostSessionObserverTarget,
-      ): Promise<void>;
+        messageAdmissions?: boolean,
+        ptyRef?: string,
+      ): Promise<unknown>;
       unobserve(observerId: string): Promise<void>;
     },
   ) {
@@ -196,7 +202,7 @@ class RuntimeResourceControllers {
   ): Promise<ShellRunPtySnapshot> {
     return this.#run(input, async () => {
       const state = this.#state(input);
-      await this.#sessionObserver.observe(input.sessionId, state.observerId, target);
+      await this.#sessionObserver.observe(input.sessionId, state.observerId, target, false, input.ref);
       return this.#acquire(input, state);
     });
   }

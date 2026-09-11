@@ -768,22 +768,22 @@ describe('getAIModel: models.dev registry providers', () => {
           apiKey: 'test-key',
           modelId: 'k3',
         }),
-      /Kimi Coding Plan.*openai-chat.*anthropic-messages/,
+      /Kimi Coding Plan does not support openai-responses/,
     );
   });
 
-  test('routes OpenCode Zen and Go models through their registry-owned protocol overrides', () => {
-    const cases = [
-      ['opencode', 'gpt-5.5', 'openai.responses'],
-      ['opencode', 'claude-opus-4-8', 'anthropic.messages'],
-      ['opencode', 'gemini-3.5-flash', 'google.generative-ai'],
-      ['opencode-go', 'kimi-k2.7-code', 'opencode-go.chat'],
-      ['opencode-go', 'minimax-m3', 'anthropic.messages'],
-    ] as const;
-
-    for (const [providerType, modelId, expectedProvider] of cases) {
-      const model = getAIModel({ connection: conn(providerType), apiKey: 'test-key', modelId });
-      assert.equal(model.provider, expectedProvider, `${providerType}/${modelId}`);
+  test('OpenCode Go accepts explicit protocols without a static model entry', () => {
+    for (const [apiProtocol, expectedProvider] of [
+      ['openai-responses', 'openai.responses'],
+      ['anthropic-messages', 'anthropic.messages'],
+    ] as const) {
+      const modelId = 'unlisted-model';
+      const model = getAIModel({
+        connection: { ...conn('opencode-go'), models: [{ id: modelId, apiProtocol }] },
+        apiKey: 'test-key',
+        modelId,
+      });
+      assert.equal(model.provider, expectedProvider);
       assert.equal(model.modelId, modelId);
     }
   });
@@ -1132,4 +1132,59 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       JSON.stringify(result.warnings),
     );
   });
+});
+
+test('explicit Chat selection keeps Grok thinking options on the Chat wire', () => {
+  const connection = {
+    slug: 'xai',
+    defaultModel: 'grok-4.5',
+    providerType: 'xai' as const,
+    models: [{ id: 'grok-4.5', apiProtocol: 'openai-chat' as const }],
+  };
+  assert.deepEqual(buildProviderOptions(connection, 'grok-4.5', 'high'), {
+    xai: { reasoningEffort: 'high' },
+  });
+});
+
+test('Copilot Messages preserves bearer auth without the generic Anthropic beta opt-ins', async () => {
+  for (const providerType of ['github-copilot', 'anthropic'] as const) {
+    let headers = new Headers();
+    const model = getAIModel({
+      connection: {
+        ...conn(providerType),
+        models: [{ id: 'claude-test', apiProtocol: 'anthropic-messages' }],
+      },
+      apiKey: 'test-key',
+      modelId: 'claude-test',
+      fetch: async (_input, init) => {
+        headers = new Headers(init?.headers);
+        return new Response(
+          JSON.stringify({
+            id: 'msg-test',
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    });
+    assert.equal(
+      headers.get('anthropic-beta'),
+      providerType === 'github-copilot'
+        ? null
+        : 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14',
+    );
+    if (providerType === 'github-copilot') {
+      assert.equal(headers.get('authorization'), 'Bearer test-key');
+      assert.equal(headers.get('x-api-key'), null);
+    }
+  }
 });

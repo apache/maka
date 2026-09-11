@@ -96,7 +96,6 @@ function runtime(events: SessionEvent[]) {
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,
     modelId: 'm',
-    appendMessage: async () => {},
     newId: () => `id-${++id}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -212,7 +211,6 @@ describe('ToolRuntime form Interaction', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,
       modelId: 'm',
-      appendMessage: async () => {},
       newId: (() => {
         let id = 0;
         return () => `id-${++id}`;
@@ -270,7 +268,6 @@ describe('ToolRuntime form Interaction', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,
       modelId: 'm',
-      appendMessage: async () => {},
       newId: (() => {
         let id = 0;
         return () => `id-${++id}`;

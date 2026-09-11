@@ -30,9 +30,9 @@
  * in `shared-ui-copy.ts` instead and are referenced from the override map, so
  * shared wording keeps one home.
  *
- * `zh` only: `astryxMessageOverrides` returns `undefined` for `en`, which
- * resolves Astryx's shipped defaults — an `en` mirror here would be dead
- * config drifting against upstream.
+ * `zh` only: for `en`, `astryxMessageOverrides` overrides two drawer tooltips
+ * and otherwise resolves Astryx's shipped defaults — an `en` mirror here would
+ * be dead config drifting against upstream.
  */
 export interface AstryxCopy {
   appShell: { mobileNavigation: string; skipToContent: string };

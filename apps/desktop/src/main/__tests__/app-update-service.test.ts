@@ -435,6 +435,100 @@ describe('AppUpdateService', () => {
     assert.equal(updater.checkCalls, 1);
   });
 
+  test('recovers from a transient check failure on the built-in retry', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      if (updater.checkCalls === 1) {
+        // electron-updater both emits 'error' and rejects the promise on a
+        // failed check; the feed can 406 transiently (#4790).
+        updater.emit('error', new Error('Cannot parse releases feed: HttpError: 406'));
+        throw new Error('Cannot parse releases feed: HttpError: 406');
+      }
+      updater.emit('update-not-available', updateInfo('1.0.0'));
+      return { isUpdateAvailable: false };
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 2);
+    assert.deepEqual(status, {
+      state: 'not-available',
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.0',
+    });
+    assert.equal(statuses.some((entry) => entry.state === 'error'), false);
+  });
+
+  test('surfaces the check error only after the retry has also failed', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('error', new Error('Unable to find latest version on GitHub'));
+      throw new Error('Unable to find latest version on GitHub');
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 2);
+    assert.equal(status.state, 'error');
+    assert.equal(
+      status.state === 'error' ? status.operation : undefined,
+      'check',
+    );
+    assert.equal(
+      status.state === 'error' ? status.message : undefined,
+      'Unable to find latest version on GitHub',
+    );
+    assert.equal(statuses.filter((entry) => entry.state === 'error').length, 1);
+  });
+
+  test('settles an in-flight retry when disposed during its backoff', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('error', new Error('Cannot parse releases feed'));
+      throw new Error('Cannot parse releases feed');
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    service.dispose();
+    // The retry timer is intentionally allowed to fire after dispose so the
+    // in-flight promise settles instead of dangling; it must not retry.
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 1);
+    assert.equal(status.state === 'error', false);
+    assert.equal(status.state, 'checking');
+    assert.equal(statuses.some((entry) => entry.state === 'error'), false);
+  });
+
   test('requires explicit authority before interrupting active tasks', async () => {
     const { service, updater } = createHarness({
       activeTasks: true,

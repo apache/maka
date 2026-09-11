@@ -692,6 +692,14 @@ export type SettingsTestResultCode =
   | 'bot_token_missing'
   | 'bot_token_invalid'
   | 'bot_app_credentials_missing'
+  | 'slack_tokens_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete'
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{

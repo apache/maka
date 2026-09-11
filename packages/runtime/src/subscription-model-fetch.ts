@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { redactSecrets } from '@maka/core/redaction';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
   GITHUB_COPILOT_API_VERSION,
@@ -381,7 +380,7 @@ function codexInstructionsFromBody(body: Record<string, unknown>): string {
 }
 
 function formatOpenAiCodexHttpError(statusCode: number, detail: string): string {
-  const compact = redactSecrets(detail).replace(/\s+/g, ' ').trim().slice(0, 240);
+  const compact = detail.replace(/\s+/g, ' ').trim().slice(0, 240);
   return compact
     ? `Codex OAuth request failed: HTTP ${statusCode} ${compact}`
     : `Codex OAuth request failed: HTTP ${statusCode}`;
@@ -396,7 +395,7 @@ function openAiCodexHttpError(
     ? 'openai_codex_edge_rejection'
     : openAiCodexProviderCode(detail);
   const rawRequestId = response.headers.get('x-request-id')?.trim();
-  const requestId = rawRequestId ? redactSecrets(rawRequestId).slice(0, 256) : undefined;
+  const requestId = rawRequestId ? rawRequestId.slice(0, 256) : undefined;
   return Object.assign(new Error(formatOpenAiCodexHttpError(response.status, detail)), {
     name: exhaustedEdgeRejection ? 'OpenAiCodexEdgeRejectionError' : 'OpenAiCodexHttpError',
     ...(exhaustedEdgeRejection ? { code: 'openai_codex_edge_rejection' } : {}),
@@ -417,7 +416,7 @@ function openAiCodexProviderCode(detail: string): string | undefined {
         : root;
     const value = error.code ?? error.type;
     if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-    const normalized = redactSecrets(String(value).trim()).slice(0, 256);
+    const normalized = String(value).trim().slice(0, 256);
     return normalized || undefined;
   } catch {
     return undefined;

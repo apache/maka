@@ -22,6 +22,8 @@ import { createHash } from 'node:crypto';
 import {
   buildToolResultArchiveResourceRef,
   TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+  isLedgerArchiveIdentity,
+  type LedgerArchiveResourceIdentity,
 } from './tool-result-archive-resource.js';
 import type { ActiveToolResultSupersession } from './active-tool-result-working-set.js';
 
@@ -50,7 +52,7 @@ export const ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND = 'maka.archived_tool_result'
 
 export const ARCHIVED_TOOL_RESULT_REWRITE_VERSION = 1;
 
-export interface ArchivedToolResultPlaceholder {
+export interface LegacyArchivedToolResultPlaceholder {
   kind: typeof ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND;
   rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
   artifactId: string;
@@ -67,6 +69,40 @@ export interface ArchivedToolResultPlaceholder {
   reason: ArchivedToolResultReason;
   /** Why a newer completed step made this provider-visible result redundant. */
   supersession?: ActiveToolResultSupersession;
+}
+
+export type LedgerArchivedToolResultPlaceholder = Omit<
+  LegacyArchivedToolResultPlaceholder,
+  'artifactId' | 'rewriteVersion'
+> &
+  LedgerArchiveResourceIdentity & { rewriteVersion: 2 };
+export type ArchivedToolResultPlaceholder =
+  | LegacyArchivedToolResultPlaceholder
+  | LedgerArchivedToolResultPlaceholder;
+
+export function buildLedgerArchivedToolResultPlaceholder(
+  input: Omit<
+    LedgerArchivedToolResultPlaceholder,
+    'kind' | 'rewriteVersion' | 'resourceRef' | 'readInstructions'
+  >,
+): LedgerArchivedToolResultPlaceholder {
+  return {
+    storage: 'ledger',
+    runtimeEventId: input.runtimeEventId,
+    toolCallId: input.toolCallId,
+    toolName: input.toolName,
+    sourceProjectionDigest: input.sourceProjectionDigest,
+    ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
+    bodySha256: input.bodySha256,
+    originalBytes: input.originalBytes,
+    originalEstimatedTokens: input.originalEstimatedTokens,
+    reason: input.reason,
+    ...(input.supersession ? { supersession: input.supersession } : {}),
+    kind: ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
+    rewriteVersion: 2,
+    resourceRef: buildToolResultArchiveResourceRef(input),
+    readInstructions: TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+  };
 }
 
 export interface StaleToolResultArchiveCandidate {
@@ -95,10 +131,10 @@ export type ToolResultArchiveReadFailureReason =
   | 'size_mismatch'
   | 'corrupt';
 
-export interface ToolResultArchiveReaderInput extends ArchivedToolResultPlaceholder {
+export type ToolResultArchiveReaderInput = ArchivedToolResultPlaceholder & {
   sessionId: string;
   maxBytes?: number;
-}
+};
 
 export type ToolResultArchiveReadResult =
   | { ok: true; serializedResult: string }
@@ -153,12 +189,14 @@ export function isArchivedToolResultPlaceholder(
   value: unknown,
 ): value is ArchivedToolResultPlaceholder {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<ArchivedToolResultPlaceholder>;
+  const candidate = value as Record<string, unknown>;
+  const ledgerIdentity = isLedgerArchiveIdentity(value);
   return (
     candidate.kind === ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND &&
-    candidate.rewriteVersion === ARCHIVED_TOOL_RESULT_REWRITE_VERSION &&
-    typeof candidate.artifactId === 'string' &&
-    candidate.artifactId.length > 0 &&
+    ((candidate.rewriteVersion === 1 &&
+      typeof candidate.artifactId === 'string' &&
+      candidate.artifactId.length > 0) ||
+      (candidate.rewriteVersion === 2 && ledgerIdentity)) &&
     typeof candidate.runtimeEventId === 'string' &&
     candidate.runtimeEventId.length > 0 &&
     typeof candidate.toolCallId === 'string' &&
@@ -200,6 +238,7 @@ function isValidSupersession(value: unknown): boolean {
 /** Add the canonical ArchiveRead address to persisted v1 placeholders. */
 export function withToolResultArchiveResourceRef(value: unknown): unknown {
   if (!isArchivedToolResultPlaceholder(value)) return value;
+  if (value.rewriteVersion === 2) return buildLedgerArchivedToolResultPlaceholder(value);
   return {
     ...value,
     resourceRef: buildToolResultArchiveResourceRef({
@@ -221,7 +260,7 @@ export function buildArchivedToolResultPlaceholder(input: {
   originalBytes: number;
   reason: ArchivedToolResultReason;
   supersession?: ActiveToolResultSupersession;
-}): ArchivedToolResultPlaceholder {
+}): LegacyArchivedToolResultPlaceholder {
   return {
     kind: ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
     rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,

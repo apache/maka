@@ -50,7 +50,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: '数据', description: '本地工作区路径、备份与恢复。' },
       permissions: { label: '权限与能力', description: '系统权限授予状态与 Maka 能力运行时检查。' },
       health: { label: '健康', description: '运行时连接、模型探针与本地健康状态。' },
-      about: { label: '关于', description: '版本、更新与隐私承诺。' },
+      about: { label: '关于', description: '版本、更新与支持。' },
     },
   },
   'zh-TW': {
@@ -76,7 +76,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: '資料', description: '本地工作區路徑、備份與恢復。' },
       permissions: { label: '權限與能力', description: '系統權限授予狀態與 Maka 能力執行時檢查。' },
       health: { label: '健康', description: '執行時連線、模型探針與本地健康狀態。' },
-      about: { label: '關於', description: '版本、執行環境與隱私承諾。' },
+      about: { label: '關於', description: '版本、更新與支援。' },
     },
   },
   en: {
@@ -102,7 +102,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: 'Data', description: 'Local workspace paths, backup, and restore.' },
       permissions: { label: 'Permissions & Capabilities', description: 'System grants and runtime checks for Maka capabilities.' },
       health: { label: 'Health', description: 'Runtime connections, model probes, and local health status.' },
-      about: { label: 'About', description: 'Version, updates, and privacy commitments.' },
+      about: { label: 'About', description: 'Version, updates, and support.' },
     },
   },
 } satisfies UiCatalog<SettingsNavigationCopy>;

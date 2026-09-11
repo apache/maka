@@ -635,7 +635,23 @@ function statementBindingIdentifier(statement, name, includeVar = true) {
   return undefined;
 }
 
+// WeakMap so entries go with the tree; a Map would retain every parsed file.
+const hoistedVarBindings = new WeakMap();
+
 function hoistedVarBindingIdentifier(root, name) {
+  if (!root) return undefined;
+  let byName = hoistedVarBindings.get(root);
+  if (!byName) {
+    byName = new Map();
+    hoistedVarBindings.set(root, byName);
+  }
+  if (byName.has(name)) return byName.get(name);
+  const binding = findHoistedVarBinding(root, name);
+  byName.set(name, binding);
+  return binding;
+}
+
+function findHoistedVarBinding(root, name) {
   let found;
   function visit(node, isRoot = false) {
     if (!node || found) return;
@@ -1249,6 +1265,8 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
   const moduleReexports = [];
   let importDeclarations = 0;
   let importSpecifiers = 0;
+  const importDeclarationsBySource = {};
+  const importSpecifiersBySource = {};
   let unresolvedDependencies = 0;
 
   function recordBridgePath(path) {
@@ -1261,9 +1279,14 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
 
   function visit(node, parent) {
     if (node.type === 'ImportDeclaration' && !typeOnlySourceDependency(node)) {
+      const specifierCount = node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
       importDeclarations += 1;
-      importSpecifiers += node.specifiers.filter((specifier) => specifier.importKind !== 'type').length;
+      importSpecifiers += specifierCount;
       const source = staticString(node.source);
+      if (source !== undefined) {
+        importDeclarationsBySource[source] = (importDeclarationsBySource[source] ?? 0) + 1;
+        importSpecifiersBySource[source] = (importSpecifiersBySource[source] ?? 0) + specifierCount;
+      }
       if (source !== undefined && node.importKind !== 'type') {
         for (const specifier of node.specifiers) {
           if (specifier.importKind === 'type') continue;
@@ -1544,7 +1567,9 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
     environmentCapabilities: sortedObject(environmentCapabilities),
     hookCalls: sortedObject(hookCalls),
     importDeclarations,
+    importDeclarationsBySource: sortedObject(importDeclarationsBySource),
     importSpecifiers,
+    importSpecifiersBySource: sortedObject(importSpecifiersBySource),
     lifecycleMethods: sortedObject(lifecycleMethods),
     moduleImports: moduleImports.map((entry, index) => ({
       ...entry,
@@ -1651,11 +1676,20 @@ function capabilityDebtMetrics(analysis) {
   };
 }
 
-function debtMetrics(analysis) {
+// Imports from a sanctioned target (a validated copy catalog, or for AppShell
+// files a shell / public application / public feature module) are the edges
+// the migration wants a legacy file to take on; they cost no import debt, so
+// a legacy file is never pushed to inline a helper it could import.
+function debtMetrics(analysis, isSanctionedSource) {
+  const unsanctioned = (bySource) =>
+    Object.entries(bySource).reduce(
+      (total, [source, count]) => (isSanctionedSource(source) ? total : total + count),
+      0,
+    );
   return {
-    importDeclarations: analysis.importDeclarations,
+    importDeclarations: unsanctioned(analysis.importDeclarationsBySource),
     ...capabilityDebtMetrics(analysis),
-    importSpecifiers: analysis.importSpecifiers,
+    importSpecifiers: unsanctioned(analysis.importSpecifiersBySource),
     nonTriviaTokens: analysis.nonTriviaTokens,
   };
 }
@@ -2247,15 +2281,15 @@ function validateMetric(path, metric, actual, expected, violations) {
   }
 }
 
-function validateDebtFile(desktopRoot, path, expected, violations, metrics = ROOT_DEBT_METRICS) {
-  const absolutePath = resolve(desktopRoot, path);
-  if (!existsSync(absolutePath)) {
+function validateDebtFile(desktopRoot, path, expected, violations, section) {
+  if (!existsSync(resolve(desktopRoot, path))) {
     violations.push(`${path}: debt ledger entry points to a missing file`);
     return;
   }
-  const analysis = analyzeRendererSource(readFileSync(absolutePath, 'utf8'), path);
-  for (const metric of metrics) {
-    validateMetric(path, metric, analysis[metric], expected[metric], violations);
+  const rootSection = section === 'legacyAppShell' || section === 'rootDebt';
+  const actual = rootSection ? debtForPath(desktopRoot, path, section) : capabilityDebtForPath(desktopRoot, path);
+  for (const metric of rootSection ? ROOT_DEBT_METRICS : CAPABILITY_DEBT_METRICS) {
+    validateMetric(path, metric, actual[metric], expected[metric], violations);
   }
 }
 
@@ -2282,7 +2316,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
   }
 
   for (const [path, expected] of Object.entries(config.legacyAppShell.files)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShell');
   }
   const actualClosure = collectRootDependencyClosure(desktopRoot, expectedFiles, violations, 'AppShell');
   const expectedClosure = Object.keys(config.legacyAppShell.closure).sort();
@@ -2299,10 +2333,10 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: AppShell closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'legacyAppShellClosure');
   }
   for (const [path, expected] of Object.entries(config.rootDebt)) {
-    validateDebtFile(desktopRoot, path, expected, violations);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...expectedFiles, ...expectedClosure]);
   const rootDebtPaths = Object.keys(config.rootDebt).sort();
@@ -2322,7 +2356,7 @@ function validateLegacyLedger(desktopRoot, config, violations) {
     if (!isRootClosureDebtSource(path) || DECLARATION_FILE.test(path)) {
       violations.push(`${path}: renderer root closure debt must point to a non-owner Desktop source`);
     }
-    validateDebtFile(desktopRoot, path, expected, violations, CAPABILITY_DEBT_METRICS);
+    validateDebtFile(desktopRoot, path, expected, violations, 'rootDebtClosure');
   }
 
   const ownedPaths = new Map();
@@ -2589,7 +2623,41 @@ function validateMainRendererLoader(desktopRoot, violations) {
   const [loaderFunction] = loaderFunctions;
   const [resolverFunction] = resolverFunctions;
   const ifStatements = loaderFunction ? nodesIn(loaderFunction.body).filter((node) => node.type === 'IfStatement') : [];
-  const [loadBranch] = ifStatements;
+  const hasWorkHubSurface = loaderFunction?.params.length === 3;
+  const loadBranch = ifStatements[hasWorkHubSurface ? 1 : 0];
+  const surfaceBranch = ifStatements[0];
+  const surfaceStatements = surfaceBranch?.consequent?.body ?? [];
+  const surfaceUrl = surfaceStatements[0]?.declarations?.[0];
+  const surfaceQuery = surfaceStatements[1]?.expression;
+  const surfaceParameter = loaderFunction?.params[2];
+  const validWorkHubSurface =
+    !hasWorkHubSurface || (
+      isIdentifier(surfaceParameter, 'surface') &&
+      surfaceParameter.optional === true &&
+      surfaceParameter.typeAnnotation?.typeAnnotation?.type === 'TSLiteralType' &&
+      staticString(surfaceParameter.typeAnnotation.typeAnnotation.literal) === 'workhub' &&
+      isIdentifier(surfaceBranch.test, 'surface') &&
+      !surfaceBranch.alternate &&
+      surfaceStatements.length === 4 &&
+      surfaceStatements[0].kind === 'const' &&
+      surfaceStatements[0].declarations.length === 1 &&
+      isIdentifier(surfaceUrl?.id, 'url') &&
+      surfaceUrl.init?.type === 'NewExpression' &&
+      isIdentifier(surfaceUrl.init.callee, 'URL') &&
+      surfaceUrl.init.arguments.length === 1 &&
+      isNamedMember(surfaceUrl.init.arguments[0], 'rendererEntry', 'url') &&
+      surfaceQuery?.type === 'CallExpression' &&
+      isMemberExpression(surfaceQuery.callee) &&
+      isNamedMember(surfaceQuery.callee.object, 'url', 'searchParams') &&
+      memberPropertyName(surfaceQuery.callee) === 'set' &&
+      surfaceQuery.arguments.length === 2 &&
+      staticString(surfaceQuery.arguments[0]) === 'surface' &&
+      isIdentifier(surfaceQuery.arguments[1], 'surface') &&
+      isOnlyAwaitedMemberCall({ type: 'BlockStatement', body: [surfaceStatements[2]] }, 'mainWindow', 'loadURL', 'url', 'href') &&
+      surfaceStatements[3].type === 'ReturnStatement' &&
+      !surfaceStatements[3].argument &&
+      !program.body.some((statement) => statementBindings(statement).includes('URL'))
+    );
   const resolverReturns = resolverFunction
     ? nodesIn(resolverFunction.body).filter((node) => node.type === 'ReturnStatement')
     : [];
@@ -2619,17 +2687,18 @@ function validateMainRendererLoader(desktopRoot, violations) {
     loaderFunctions.length === 1 &&
     loaderFunction.async === true &&
     JSON.stringify(loaderFunction.params.map((parameter) => parameter.type === 'Identifier' ? parameter.name : undefined)) ===
-      JSON.stringify(['mainWindow', 'rendererEntry']) &&
-    loaderFunction.body.body.length === 1 &&
+      JSON.stringify(hasWorkHubSurface ? ['mainWindow', 'rendererEntry', 'surface'] : ['mainWindow', 'rendererEntry']) &&
+    validWorkHubSurface &&
+    loaderFunction.body.body.length === (hasWorkHubSurface ? 2 : 1) &&
     entryPaths.length === 1 &&
     isRendererEntryPathInitializer(entryPaths[0].init) &&
     entryUrls.length === 1 &&
     isRendererEntryUrlInitializer(entryUrls[0].init) &&
-    loadCalls.length === 2 &&
+    loadCalls.length === (hasWorkHubSurface ? 3 : 2) &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath')).length === 1 &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadURL', 'rendererEntry', 'url')).length === 1 &&
-    navigationTokens.length === 4 &&
-    ifStatements.length === 1 &&
+    navigationTokens.length === (hasWorkHubSurface ? 5 : 4) &&
+    ifStatements.length === (hasWorkHubSurface ? 2 : 1) &&
     isNamedMember(loadBranch.test, 'rendererEntry', 'useDevServer') &&
     isOnlyAwaitedMemberCall(loadBranch.consequent, 'mainWindow', 'loadURL', 'rendererEntry', 'url') &&
     isOnlyAwaitedMemberCall(loadBranch.alternate, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath');
@@ -2695,6 +2764,8 @@ function validateMainWindowEntryContract(desktopRoot, violations) {
 
   const allowedNavigationFiles = new Set([
     'src/main/browser-message-box.ts',
+    // Self-contained, sandboxed startup status document without the app preload.
+    'src/main/startup-progress-window.ts',
     'src/main/browser/controller.ts',
     'src/main/computer-use/cursor-overlay-window.ts',
     'src/main/computer-use/pip-electron.ts',
@@ -2981,7 +3052,7 @@ function validateCopyCatalog(desktopRoot, relativePath) {
     if (metricTotal(value) > 0) return `catalog carries ${metric} (${describeMetric(value)})`;
   }
   const forbidden = inspection.runtimeDependencies.find(
-    (dependency) => dependency.startsWith('.') || dependency.startsWith(DESKTOP_SELF_PREFIX),
+    (dependency) => !isBarePackageSpecifier(dependency),
   );
   if (forbidden !== undefined) {
     return `runtime import ${forbidden} is not a bare package specifier`;
@@ -3008,9 +3079,17 @@ function validateCopyCatalogFiles(desktopRoot, violations) {
   }
 }
 
+function isBarePackageSpecifier(dependency) {
+  return !dependency.startsWith('.') && !dependency.startsWith(DESKTOP_SELF_PREFIX);
+}
+
 function withoutSanctionedDependencies(desktopRoot, section, importerPath, dependencyPaths) {
+  // A validated catalog is already restricted to bare package runtime imports;
+  // pricing them again would push copy helpers back inline into the catalog.
+  const importerIsCatalog = isValidatedCopyCatalog(desktopRoot, importerPath);
   const filtered = {};
   for (const [dependency, count] of Object.entries(dependencyPaths)) {
+    if (importerIsCatalog && isBarePackageSpecifier(dependency)) continue;
     if (isSanctionedDependencyTarget(desktopRoot, section, importerPath, dependency)) continue;
     filtered[dependency] = count;
   }
@@ -3030,6 +3109,8 @@ function isSanctionedDependencyTarget(desktopRoot, section, importerPath, depend
 }
 
 const MIGRATION_SWAP_ZONES = {
+  legacyAppShell: ['platform'],
+  legacyAppShellClosure: ['platform'],
   rootDebt: ['bootstrap', 'composition'],
   rootDebtClosure: ['application', 'bootstrap', 'composition', 'platform'],
 };
@@ -3043,8 +3124,11 @@ function allowsMigrationDependency({ base, current, dependency, desktopRoot, pat
   return swapZones.includes(zoneFor(normalizePath(relative(desktopRoot, target))).kind);
 }
 
-function debtForPath(desktopRoot, path) {
-  return debtMetrics(analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path));
+function debtForPath(desktopRoot, path, section) {
+  return debtMetrics(
+    analyzeRendererSource(readFileSync(resolve(desktopRoot, path), 'utf8'), path),
+    (source) => isSanctionedDependencyTarget(desktopRoot, section, path, source),
+  );
 }
 
 function capabilityDebtForPath(desktopRoot, path) {
@@ -3091,7 +3175,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
   const imports = collectLegacyImportEdges(desktopRoot);
   const rootDebt = {};
   for (const path of Object.keys(config.rootDebt ?? {}).sort()) {
-    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path);
+    if (existsSync(resolve(desktopRoot, path))) rootDebt[path] = debtForPath(desktopRoot, path, 'rootDebt');
   }
   const appShellDebtPaths = new Set([...appShellFiles, ...closureFiles]);
   const rootDebtClosureFiles = collectRootDependencyClosure(
@@ -3111,7 +3195,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
     legacyPlatformImports: imports.platform,
     controllerOwners: controllerOwnersOf(config),
     legacyAppShell: {
-      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path)])),
+      files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path, 'legacyAppShell')])),
       closure: Object.fromEntries(closureFiles.map((path) => [path, capabilityDebtForPath(desktopRoot, path)])),
     },
     rootDebt,

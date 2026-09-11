@@ -44,7 +44,7 @@ import {
   type ToolActivityItem,
   type ToolOutputChunk,
 } from './materialize.js';
-import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
+import { isConnectorTool, resolveToolDisplayName, workHubControlStatus } from './tool-activity/display-name.js';
 import {
   computerActionLabel,
   computerActionLabelIncludesTarget,
@@ -352,6 +352,7 @@ export function ToolTrow({
         <ChatToolCalls
           key={segment.key}
           className="maka-tool-activity-card"
+          data-maka-transcript-boundary="large"
           calls={segment.calls}
         />
       ) : (
@@ -429,7 +430,7 @@ function LinkedAgentList(props: {
   const activityCopy = getToolActivityCopy(props.locale);
   const copy = activityCopy.agent;
   return (
-    <List density="compact">
+    <List density="compact" data-maka-transcript-boundary="large">
       {props.rows.map((row) => {
         const childSessionId = row.childSessionId;
         const open = childSessionId && props.onOpenLinkedSession
@@ -524,6 +525,7 @@ function collapsedToolTarget(
   locale: UiLocale,
   preferred?: string,
 ): string | undefined {
+  if (workHubControlStatus(item)) return undefined;
   if (item.intent) return formatToolIntent(item.intent);
   const line = preferred ?? formatToolInvocationLine(item, locale);
   if (!line) return undefined;
@@ -649,10 +651,7 @@ function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
 function toolCallErrorMessage(item: ToolActivityItem, locale: UiLocale): string | undefined {
   if (item.status !== 'errored') return undefined;
   if (isRequiresBypassToolResult(item.result)) {
-    const copy = getToolActivityCopy(locale).requiresBypass;
-    return locale !== 'en'
-      ? `${copy.title}。${copy.description}`
-      : `${copy.title}. ${copy.description}`;
+    return getToolActivityCopy(locale).requiresBypass.errorMessage;
   }
   return summarizeErrorText(formatUserVisibleToolText(
     redactSecrets(extractErrorText(item.result, locale)),

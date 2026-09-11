@@ -179,11 +179,7 @@ export function AddProviderForm(props: {
   // a locale in the assertion.
   function issueMessage(issue: AddProviderIssue): string {
     if (issue.field === 'slug') {
-      return issue.reason === 'duplicate'
-        ? copy.duplicateSlug
-        : locale === 'zh-CN'
-          ? issue.detail
-          : copy.invalidSlug;
+      return issue.reason === 'duplicate' ? copy.duplicateSlug : copy.slugIssues[issue.detail];
     }
     if (issue.field === 'apiKey') return copy.keyRequired(display.name);
     if (issue.field === 'accountId') return copy.cloudflareAccount;

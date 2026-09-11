@@ -22,6 +22,7 @@ import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import type { TaskSubmissionReadinessDimension, TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
 
 import type { UiLocale } from '@maka/core/ui-locale';
+import { getTaskReadinessCopy } from '../../../locales/task-readiness-copy.js';
 
 /** Selects the stored model target for the renderer's readiness probe. */
 export function resolveTaskReadinessModelTarget(
@@ -85,57 +86,22 @@ function noticeForBlocker(
   blocker: TaskSubmissionReadinessDimension,
   locale: UiLocale,
 ): TaskReadinessNotice {
+  const copy = getTaskReadinessCopy(locale);
   if (blocker.id === 'runtime') {
-    if (locale === 'zh-CN') {
-      return {
-        tone: 'destructive',
-        title: 'Maka 运行服务暂时不可用。',
-        description: '任务尚未提交。重新检测运行服务后再试。',
-        actionLabel: '重新检测',
-        action: 'retry',
-      };
-    }
-    if (locale === 'zh-TW') {
-      return {
-        tone: 'destructive',
-        title: 'Maka 執行服務暫時無法使用。',
-        description: '任務尚未送出。重新檢查執行服務後再試。',
-        actionLabel: '重新檢查',
-        action: 'retry',
-      };
-    }
     return {
       tone: 'destructive',
-      title: 'The Maka runtime is unavailable.',
-      description: 'The task was not submitted. Check the runtime again before retrying.',
-      actionLabel: 'Check again',
+      title: copy.runtime.title,
+      description: copy.runtime.description,
+      actionLabel: copy.runtime.actionLabel,
       action: 'retry',
     };
   }
   const action = blocker.repairTarget?.kind === 'workspace_picker' ? 'workspace_picker' : 'retry';
-  if (locale === 'zh-CN') {
-    return {
-      tone: 'destructive',
-      title: '当前任务的工作区不可用。',
-      description: '原目录可能已移动、删除或无法访问。请选择可用工作区。',
-      actionLabel: action === 'workspace_picker' ? '选择工作区' : '重新检测',
-      action,
-    };
-  }
-  if (locale === 'zh-TW') {
-    return {
-      tone: 'destructive',
-      title: '目前任務的工作區無法使用。',
-      description: '原始資料夾可能已移動、刪除或無法存取。請選擇可用的工作區。',
-      actionLabel: action === 'workspace_picker' ? '選擇工作區' : '重新檢查',
-      action,
-    };
-  }
   return {
     tone: 'destructive',
-    title: 'This task workspace is unavailable.',
-    description: 'The folder may have moved, been deleted, or become inaccessible. Choose an available workspace.',
-    actionLabel: action === 'workspace_picker' ? 'Choose workspace' : 'Check again',
+    title: copy.workspace.title,
+    description: copy.workspace.description,
+    actionLabel: copy.workspace.actionLabel[action],
     action,
   };
 }

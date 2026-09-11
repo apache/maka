@@ -37,6 +37,7 @@
  */
 
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
+import type { ModelFailureKind } from '@maka/core/model-failure';
 
 // ---------------------------------------------------------------------------
 // JSON value contract
@@ -331,17 +332,7 @@ export type ModelFinishDisposition = 'authoritative' | 'incomplete' | 'retryable
  * error objects and AI SDK wrappers are classified inside `ModelAdapter` and
  * never cross the boundary.
  */
-export type ModelFailureKind =
-  | 'abort'
-  | 'auth'
-  | 'context_overflow'
-  | 'network'
-  | 'provider_capacity'
-  | 'provider_billing'
-  | 'provider_unavailable'
-  | 'rate_limit'
-  | 'timeout'
-  | 'unknown';
+export type { ModelFailureKind } from '@maka/core/model-failure';
 
 export interface ModelFailure {
   type: 'model_failure';
@@ -383,8 +374,9 @@ export interface ModelRequestMetadata {
  *   reason plus the adapter's authoritative disposition. The backend owns
  *   step counting, the per-step `AssistantMessage` flush, and messageId
  *   rotation, but does not reclassify the boundary.
- * - `finish`: the terminal stream boundary, carrying normalized total usage,
- *   finish reason, and the same adapter-owned disposition.
+ * - `finish`: the terminal stream boundary, carrying the finish reason and
+ *   the same adapter-owned disposition. Usage belongs to `step-finish` and
+ *   the authoritative request outcome, not this terminal marker.
  * - `error`: a request-level provider failure, already classified and scrubbed
  *   by the adapter. The backend uses its stable kind for overflow/transport
  *   recovery and terminal error emission.
@@ -437,7 +429,6 @@ export type ModelStreamEvent =
     }
   | {
       kind: 'finish';
-      usage?: NormalizedUsage;
       finishReason?: ModelFinishReason;
       disposition: ModelFinishDisposition;
     }
@@ -458,7 +449,7 @@ export type ModelStepOutcome =
       hasResponseEvidence: boolean;
     }
   | {
-      kind: 'truncated' | 'retryable-failure' | 'terminal-failure' | 'aborted';
+      kind: 'truncated' | 'failed' | 'aborted';
       failure: ModelFailure;
       usage?: NormalizedUsage;
       request: ModelRequestMetadata;

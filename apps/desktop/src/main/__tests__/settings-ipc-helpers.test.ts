@@ -101,7 +101,6 @@ describe("settings IPC helpers", () => {
     const result = toSettingsTestResult("telegram", {
       ok: true,
       identity: { id: "42", username: "maka_bot", displayName: "Maka" },
-      hint: "ready",
     });
 
     assert.equal(result.ok, true);
@@ -115,20 +114,16 @@ describe("settings IPC helpers", () => {
       username: "maka_bot",
       displayName: "Maka",
     });
-    assert.equal(result.details?.hint, "ready");
   });
 
-  test("redacts and generalizes bot test errors before returning SettingsTestResult", () => {
+  test("redacts bot test error diagnostics before returning SettingsTestResult", () => {
     const result = toSettingsTestResult("telegram", {
       ok: false,
+      errorCode: "connection_failed",
       error: "401 Authorization: Bearer sk-live-secret-token-value",
     });
 
     assert.equal(result.code, "bot_connection_failed");
-    assert.equal(
-      result.message,
-      "Telegram connection test failed: Authentication failed.",
-    );
     assert.equal(
       JSON.stringify(result).includes("sk-live-secret-token-value"),
       false,

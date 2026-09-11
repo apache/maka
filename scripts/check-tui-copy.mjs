@@ -37,10 +37,13 @@ export const COVERED_FILES = [
   'packages/cli/src/tui-session-status.ts',
   'packages/cli/src/runtime-host-onboarding.ts',
   'packages/cli/src/runtime-host-tui-command.ts',
+  'packages/cli/src/runtime-host-tui-owner.ts',
+  'packages/cli/src/tui-host-owner-copy.ts',
   'packages/cli/src/tui-attention.ts',
   'packages/cli/src/tui-copy-command.ts',
   'packages/cli/src/tui-shortcut-copy.ts',
   'packages/cli/src/pi-tui-layout.ts',
+  'packages/cli/src/pi-tui-todo.ts',
 ];
 
 export const EXCLUDED_TUI_FILES = [
@@ -52,6 +55,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-context-refresh.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
+  'packages/cli/src/tui-editor-render.ts',
   'packages/cli/src/tui-mcp-control.ts',
   'packages/cli/src/tui-mcp-remote-publication.ts',
 ];
@@ -99,8 +103,6 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Recap: ${…}',
     'Compacting context…',
     'Resuming from the latest safe boundary…',
-    'Resume Session',
-    'Tab scope · ↑↓ move · Enter select · Esc close',
     'Permissions: ${…}',
     'Keep Auto',
     'Turn on full access',
@@ -167,14 +169,7 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'unchanged',
   ],
   'packages/cli/src/pi-tui-pickers.ts': ['/skill:${…}', '/skill:${…}', 'Auto', 'Full access'],
-  'packages/cli/src/runtime-host-tui-command.ts': [
-    'Maka',
-    'Maka — ${…}',
-    'Maka',
-    'Restart this local Host if it is idle, wait for it to exit, or cancel? [r/w/C] ',
-    'Wait only if the existing Host is expected to exit, or cancel? [w/C] ',
-    'The existing Runtime Host still owns active or durable work and was not interrupted.\n',
-  ],
+  'packages/cli/src/runtime-host-tui-command.ts': ['Maka', 'Maka — ${…}', 'Maka'],
 };
 
 function staticText(node) {

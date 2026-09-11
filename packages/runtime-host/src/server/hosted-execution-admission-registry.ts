@@ -174,7 +174,9 @@ export class HostedExecutionAdmissionRegistry {
 
   waitForSettledAdmissions(): Promise<void> {
     return Promise.all(
-      [...this.#bySession.values()].map((value) => value.admissionSettled.promise),
+      [...this.#bySession.values()]
+        .filter((value) => value.kind === 'pending')
+        .map((value) => value.admissionSettled.promise),
     ).then(() => undefined);
   }
 }

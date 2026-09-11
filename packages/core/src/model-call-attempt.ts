@@ -198,6 +198,8 @@ export interface ModelCallAttempt {
 
   /** Runtime tool-loop step index within the turn. */
   step: number;
+  /** Logical request-composition snapshot used by this step and all of its retries. */
+  requestCompositionId?: string;
   /** Retry ordinal within the logical call; 0 is the first dispatch. */
   attempt: number;
 
@@ -276,6 +278,7 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
   [
     'connectionSlug',
     'historyCompactRoute',
+    'requestCompositionId',
     'contextWindow',
     'captureArtifactId',
     'promptComposition',
@@ -553,6 +556,7 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
     isNonEmptyString(value.runId) &&
     isNonEmptyString(value.turnId) &&
     isNonNegativeInteger(value.step) &&
+    isOptionalString(value.requestCompositionId) &&
     isNonNegativeInteger(value.attempt) &&
     (MODEL_CALL_KINDS as readonly unknown[]).includes(value.callKind) &&
     (value.historyCompactRoute === undefined ||
@@ -609,15 +613,6 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   return value as unknown as ModelCallAttempt;
 }
 
-export function isModelCallAttempt(value: unknown): value is ModelCallAttempt {
-  try {
-    decodeModelCallAttempt(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Collapses re-appended records by `attemptId`, keeping the last occurrence.
  *
@@ -656,42 +651,6 @@ export function groupModelCallAttempts(attempts: readonly ModelCallAttempt[]): M
 }
 
 /**
- * The attempt that settled a logical call: the highest `attempt` ordinal that
- * reached a provider outcome. Terminality is a projection concern, not a stored
- * field, so it is derived rather than recorded.
- */
-export function settledAttempt(group: ModelCallGroup): ModelCallAttempt | undefined {
-  let settled: ModelCallAttempt | undefined;
-  for (const attempt of group.attempts) {
-    if (!settled || attempt.attempt > settled.attempt) settled = attempt;
-  }
-  return settled;
-}
-
-/**
- * Extracts the canonical attempts a run committed, from that run's AgentRun
- * events. This is the projection the Usage read model is rebuilt through, so it
- * has to be total: an event that cannot be decoded is counted, not thrown, or
- * one bad record would block every later one in the same run from ever being
- * projected.
- */
-export function modelCallAttemptsFromRunEvents(
-  events: readonly { readonly type: string; readonly data?: Record<string, unknown> }[],
-): { attempts: ModelCallAttempt[]; unreadableEvents: number } {
-  const attempts: ModelCallAttempt[] = [];
-  let unreadableEvents = 0;
-  for (const event of events) {
-    if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
-    try {
-      attempts.push(decodeModelCallAttempt(event.data));
-    } catch {
-      unreadableEvents += 1;
-    }
-  }
-  return { attempts, unreadableEvents };
-}
-
-/**
  * Classification of the records present in a set.
  *
  * This is not a completeness proof and must never be presented as one. Nothing
@@ -708,43 +667,4 @@ export interface ModelCallCoverage {
   usagePartialAttempts: number;
   /** Dispatched calls the provider never reported usage for. */
   usageMissingAttempts: number;
-}
-
-export function summarizeModelCallCoverage(
-  attempts: readonly ModelCallAttempt[],
-): ModelCallCoverage {
-  const unique = dedupeModelCallAttempts(attempts);
-  const coverage: ModelCallCoverage = {
-    attempts: unique.length,
-    pricedAttempts: 0,
-    unpricedAttempts: 0,
-    usageReportedAttempts: 0,
-    usagePartialAttempts: 0,
-    usageMissingAttempts: 0,
-  };
-  for (const attempt of unique) {
-    if (attempt.costBasis === 'priced') coverage.pricedAttempts += 1;
-    else coverage.unpricedAttempts += 1;
-    if (attempt.usageBasis === 'reported') coverage.usageReportedAttempts += 1;
-    else if (attempt.usageBasis === 'partial') coverage.usagePartialAttempts += 1;
-    else coverage.usageMissingAttempts += 1;
-  }
-  return coverage;
-}
-
-/**
- * Sums cost across attempts. Returns the total alongside the coverage that
- * qualifies it, because a bare number cannot express "plus an unknown amount
- * from unpriced calls".
- */
-export function sumModelCallCostUsd(attempts: readonly ModelCallAttempt[]): {
-  costUsd: number;
-  coverage: ModelCallCoverage;
-} {
-  const unique = dedupeModelCallAttempts(attempts);
-  let costUsd = 0;
-  for (const attempt of unique) {
-    if (attempt.costBasis === 'priced' && attempt.costUsd !== undefined) costUsd += attempt.costUsd;
-  }
-  return { costUsd, coverage: summarizeModelCallCoverage(unique) };
 }

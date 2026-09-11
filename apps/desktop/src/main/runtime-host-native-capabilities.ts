@@ -32,6 +32,7 @@ import {
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityToolDescriptor,
+  projectToolInputSchema,
   type ClientCapabilityCallFrame,
   type ClientCapabilityCallResult,
   type ClientCapabilityContentBlock,
@@ -106,11 +107,11 @@ export interface DesktopNativeCapabilityProviderInput {
   }) => string | Promise<string>;
   readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
-  readonly releaseComputerUseSession: (
+  readonly releaseDesktopInteractionSession: (
     sessionId: string,
   ) => void | Promise<void>;
   readonly oauthPresentation?: OAuthPresentationBackend;
-  readonly additionalGroups?: () => readonly DesktopCapabilityGroup[];
+  readonly additionalGroups?: (scope?: DesktopTargetScope) => readonly DesktopCapabilityGroup[];
   readonly additionalServices?: (
     scope: DesktopTargetScope,
   ) => readonly DesktopCapabilityService[];
@@ -136,7 +137,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly clientCwd?: string;
   readonly isTargetValid?: () => boolean;
   readonly onSessionUsed?: (sessionId: string) => void;
-  readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
+  readonly onDesktopInteractionTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
   /** Reports a visible degradation while assembling the published manifest. */
   readonly onDiagnostic?: (diagnostic: string) => void;
@@ -163,7 +164,7 @@ export function createDesktopNativeCapabilityProvider(
     ),
   );
   const groups = fitDesktopCapabilityManifest(
-    prepareCapabilityGroups(capabilityGroups(input), providerOptions.onDiagnostic),
+    prepareCapabilityGroups(capabilityGroups(input, providerOptions.targetScope), providerOptions.onDiagnostic),
     serviceOffers,
     hostPathAccess,
     providerOptions.onDiagnostic,
@@ -184,7 +185,7 @@ export function createDesktopNativeCapabilityProvider(
   const bindings = indexBindings(groups);
   const releaseSessionResources = [
     input.releaseBrowserSession,
-    input.releaseComputerUseSession,
+    input.releaseDesktopInteractionSession,
   ] as const;
   const activeInvocations = new Map<
     AbortController,
@@ -345,6 +346,7 @@ async function settleSessionReleases(
 
 function capabilityGroups(
   input: DesktopNativeCapabilityProviderInput,
+  scope?: DesktopTargetScope,
 ): DesktopCapabilityGroup[] {
   return [
     ...(input.browserTools.length > 0
@@ -369,7 +371,7 @@ function capabilityGroups(
           },
         ]
       : []),
-    ...(input.additionalGroups?.() ?? []),
+    ...(input.additionalGroups?.(scope) ?? []),
   ];
 }
 
@@ -394,7 +396,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const args = await parseToolArguments(binding.tool, frame.arguments);
+  const args = await parseNativeToolArguments(binding.tool.parameters, frame.arguments);
   signal.throwIfAborted();
   const sessionId =
     frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
@@ -429,8 +431,8 @@ async function invokeNativeTool(
   signal.throwIfAborted();
   usedSessionIds.add(frame.sessionId);
   providerOptions.onSessionUsed?.(frame.sessionId);
-  if (frame.offerId === COMPUTER_USE_OFFER_ID) {
-    providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
+  if (frame.offerId === COMPUTER_USE_OFFER_ID || frame.offerId === "desktop_workhub") {
+    providerOptions.onDesktopInteractionTurnUsed?.(frame.sessionId, frame.turnId);
   }
   const execute = () =>
     binding.tool.impl(args, {
@@ -440,6 +442,7 @@ async function invokeNativeTool(
       toolCallId: frame.toolCallId,
       abortSignal: signal,
       emitOutput() {},
+      requestUserForm: options.requestInteraction,
       ...(options.progress ? { emitProgress: options.progress } : {}),
     });
   const output = await (admissionEvidence.kind === "browser_url"
@@ -502,16 +505,17 @@ function prepareCapabilityGroups(
       const identity = isIdentifiedEntry(entry)
         ? { serverId: entry.serverId, toolName: entry.toolName }
         : undefined;
-      const declaredSchema = declaredToolInputSchema(tool);
       let descriptor: ClientCapabilityToolDescriptor;
       try {
+        const declaredSchema = declaredToolInputSchema(tool);
         descriptor = Object.freeze(
           decodeClientCapabilityToolDescriptor(
             capabilityToolDescriptor(group.offerId, tool, declaredSchema, identity),
           ),
         );
       } catch (error) {
-        if (!group.dynamic) throw error;
+        const dynamic = group.dynamic || group.offerId === 'desktop_mcp';
+        if (!dynamic) throw error;
         onDiagnostic?.(
           `Desktop omitted ${group.offerId} tool ${tool.name}: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -658,7 +662,7 @@ function declaredToolInputSchema(tool: MakaTool): Record<string, unknown> {
       })
     : cloneDeclaredJsonSchema(tool);
   delete schema.$schema;
-  return schema;
+  return Object.freeze(projectToolInputSchema(schema));
 }
 
 function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
@@ -669,16 +673,20 @@ function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return structuredClone(schema);
+  const projected = Object.hasOwn(schema, 'type')
+    ? schema
+    : { ...schema, type: 'object' };
+  return structuredClone(projected);
 }
 
-async function parseToolArguments(tool: MakaTool, args: unknown): Promise<unknown> {
-  if (tool.parameters instanceof z.ZodType) {
-    return tool.parameters.parseAsync(args);
+async function parseNativeToolArguments(parameters: unknown, args: unknown): Promise<unknown> {
+  if (parameters instanceof z.ZodType) {
+    return parameters.parseAsync(args);
   }
-  // The only non-Zod parameters are JSON-Schema declarations (MCP tools via
-  // jsonSchema()), which carry no client-side validator: validation is the
-  // producing server's responsibility.
+  // MCP servers remain the authority for their full JSON Schema. The Client
+  // Capability publication is a deliberately smaller protocol projection, so
+  // compiling the external schema again here would duplicate that authority
+  // and execute untrusted regular expressions on the main thread.
   return args;
 }
 

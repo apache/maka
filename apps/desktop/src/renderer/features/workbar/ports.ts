@@ -24,7 +24,6 @@ import type {
 } from '@maka/core/events';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -42,7 +41,6 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
-import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
@@ -96,13 +94,6 @@ export interface WorkbarTerminalService {
   ): WorkbarUnsubscribe;
 }
 
-export interface WorkbarTodoService {
-  read(sessionId: string): Promise<SessionTodoItem[]>;
-  subscribeChanges(
-    handler: (event: { sessionId: string; at: number }) => void,
-  ): WorkbarUnsubscribe;
-}
-
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
@@ -134,10 +125,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
-  list(
-    sessionId: string,
-    options?: { includeDeleted?: boolean },
-  ): Promise<ArtifactDescriptor[]>;
+  list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,
     artifactId: string,
@@ -147,9 +135,6 @@ export interface WorkbarArtifactsService {
     artifactId: string,
   ): Promise<ArtifactBinaryReadResult>;
   delete(sessionId: string, artifactId: string): Promise<void>;
-  subscribeChanges(
-    handler: (event: ArtifactChangedEvent) => void,
-  ): WorkbarUnsubscribe;
   openPath(
     sessionId: string,
     artifactId: string,
@@ -286,7 +271,6 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
-  readonly todo: WorkbarTodoService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;

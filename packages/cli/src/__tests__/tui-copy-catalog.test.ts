@@ -24,6 +24,17 @@ import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
 const MESSAGE_VALUES = {
+  action: 'stop',
+  name: 'Local',
+  owner: 'npm-global:test',
+  root: 'root-id',
+  epoch: 'epoch-id',
+  composition: 'interactive',
+  revision: 'revision-id',
+  connections: 2,
+  operations: 1,
+  residencies: 0,
+  state: 'ready',
   count: 2,
   detail: 'HTTP 401',
   hasDetail: true,
@@ -118,6 +129,12 @@ describe('TUI copy resources', () => {
       ),
       '/skill:nope（未找到）',
     );
+  });
+
+  test('localizes current Todo indicator and overlay copy', () => {
+    assert.equal(TUI_COPY_RESOURCES.todo.en.open, '/todo to view');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-CN'].open, '/todo 查看');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-TW'].unavailable, '待辦不可用');
   });
 
   test('localizes stable onboarding failure codes at the TUI boundary', () => {

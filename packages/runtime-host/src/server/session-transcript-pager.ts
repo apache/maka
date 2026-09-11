@@ -140,7 +140,6 @@ export async function createSessionTranscriptBootstrap(input: {
     });
     const bootstrap: SessionTranscriptBootstrap = {
       throughSequence: input.throughSequence,
-      durableCoverage: projection === 'shared' ? 'projected' : 'complete',
       overlayMessageCount: overlayMessages.length,
       durable: pageFromSelection(
         state,

@@ -136,20 +136,10 @@ export function collectWorkspaceClosure({ workspaceName, manifestPath }) {
 }
 
 /**
- * Every package name that may legitimately appear under the workspace's
- * packaged `node_modules` — the production closure, workspace packages
- * included. electron-builder walks exactly this graph, so anything in the
- * archive outside it is a leak regardless of how it got there.
- */
-export function collectProductionNames(workspaceName) {
-  return new Set(collectProductionClosure(workspaceName).keys());
-}
-
-/**
- * The same closure as `collectProductionNames`, keyed by name with the exact
- * versions npm resolved. Verifying by name alone accepted an archive carrying
- * a different version of a permitted package, which is the shape a
- * substitution attack takes: a name that belongs, at a version that does not.
+ * The production closure, keyed by name with the exact versions npm resolved.
+ * Verifying by name alone accepted an archive carrying a different version of
+ * a permitted package, which is the shape a substitution attack takes: a name
+ * that belongs, at a version that does not.
  *
  * A workspace package has no version in the tree; it maps to `undefined`, and
  * the archive's own manifest is compared against that the same way.

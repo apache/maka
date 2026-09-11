@@ -18,9 +18,8 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
-import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
+import { ICON_SIZE, Ban, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -45,6 +44,7 @@ import {
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { Icon } from '@astryxdesign/core/Icon';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
   type AttachmentRef,
@@ -162,6 +162,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   onEditUserMessage?: () => void;
   editDisabled?: boolean;
   editDisabledReason?: string;
+  delivery?: TransientUserMessageProjection;
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
@@ -170,19 +171,28 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   const editActionLabel = props.editDisabled
     ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
     : copyText.editMessage;
+  // Time and delivery status ride in the footer slot beside the actions rather
+  // than in Astryx's `timestamp` slot: that slot draws a `·` before the footer,
+  // and a separator between always-visible text and hover-revealed buttons
+  // reads as a stray mark at rest.
   const userMetadata = (
     <ChatMessageMetadata
       className="maka-message-meta"
-      timestamp={
-        props.ts !== undefined ? (
-          /* `value` takes ms directly: Timestamp's own parseValue reads
-             anything past 1e12 as milliseconds (2001-09-09 onward), and a
-             chat message never predates that. */
-          (<Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />)
-        ) : undefined
-      }
       footer={
         <>
+          {props.delivery?.deliveryStatus ? (
+            <span className="maka-message-delivery" role="status" title={props.delivery.deliveryDetail}>
+              {props.delivery.deliveryStatus}
+            </span>
+          ) : props.ts !== undefined ? (
+            /* `value` takes ms directly: Timestamp's own parseValue reads
+               anything past 1e12 as milliseconds (2001-09-09 onward), and a
+               chat message never predates that. */
+            <Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />
+          ) : null}
+          {props.delivery?.deliveryActions?.map((action) => (
+            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+          ))}
           <MessageCopyButton
             messageId={props.messageId}
             text={props.text}
@@ -195,17 +205,14 @@ const UserMessageBody = memo(function UserMessageBody(props: {
                 accessibleActionContext(props.text, props.ts, locale),
               )}
               tooltip={editActionLabel}
-              icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
+              icon={<Icon icon={Pencil} size="sm" />}
               variant="ghost"
               size="sm"
               className={markerVariants({ variant: 'footer-action' })}
-              aria-disabled={props.editDisabled === true ? 'true' : undefined}
+              isDisabled={props.editDisabled === true}
               data-action="edit"
               data-message-id={props.messageId}
-              onClick={() => {
-                if (props.editDisabled) return;
-                props.onEditUserMessage?.();
-              }}
+              onClick={() => props.onEditUserMessage?.()}
             />
           ) : null}
         </>
@@ -287,6 +294,7 @@ export function TransientUserMessage(props: {
           quotes={message.quotes}
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
+          delivery={message}
         />
       </LocalizedChatMessage>
     </div>
@@ -332,10 +340,6 @@ function MessageCopyButton(props: {
       : copyPhase === 'failed'
         ? copyText.copyFailed
         : baseLabel;
-  const icon = copied
-    ? <Check size={ICON_SIZE.control} aria-hidden="true" />
-    : <Copy size={ICON_SIZE.control} aria-hidden="true" />;
-
   return (
     <UiIconButton
       label={copyText.messageActionAriaLabel(
@@ -344,15 +348,12 @@ function MessageCopyButton(props: {
       )}
       data-message-id={props.messageId}
       tooltip={actionLabel}
-      icon={icon}
+      icon={<Icon icon={copied ? 'check' : 'copy'} size="sm" />}
       variant="ghost"
       size="sm"
       className={markerVariants({ variant: 'footer-action' })}
-      aria-busy={copyPending ? 'true' : undefined}
-      isDisabled={copyPending}
-      data-copied={copied}
+      isLoading={copyPending}
       data-copy-feedback={copyPhase ?? undefined}
-      data-pending={copyPending ? 'true' : undefined}
       onClick={() => void copy()}
     />
   );
@@ -367,6 +368,7 @@ function MessageCopyButton(props: {
  */
 export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
+  transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
   /**
    * PR109d-b: footer actions derived from `TurnStatus` + lineage map
@@ -427,10 +429,8 @@ export const TurnView = memo(function TurnView(props: {
    * present, the assistant `ChatMessage` renders the live 深度思考 + answer bubble as
    * the trailing entries of its timeline — the SAME node the committed turn
    * will settle into, so live→settled is a data-source swap (no unmount/mount).
-   * While live the footer is a reserved-height placeholder, not the real
-   * `TurnFooterActions`: the tail turn's derived status is `completed` (a live
-   * turn has no `turn_state`), so rendering the real footer would offer a
-   * clickable regenerate/branch on a still-streaming answer.
+   * While live the footer shows activity in the same slot as completed
+   * actions, without exposing actions against a still-streaming answer.
    */
   liveStreaming?: {
     onStreamingSettled?: (messageId?: string) => void;
@@ -547,6 +547,9 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.agentGraphTriggered}</span>
         </Marker>
       )}
+      {props.transientMessages?.map((message) => (
+        <TransientUserMessage key={message.id} message={message} />
+      ))}
       {turn.user && (
         <LocalizedChatMessage
           accessibleLabel={
@@ -601,9 +604,17 @@ export const TurnView = memo(function TurnView(props: {
         <ChatSystemMessage
           key={note.id}
           className="maka-chat-system-message"
-          aria-label={copy.systemAriaLabel}
+          variant={note.compactionState === "running" || note.compactionState === "compacted" ? "divider" : "default"}
+          data-compaction-state={note.compactionState}
+          aria-label={note.compactionState === "running" ? note.text : copy.systemAriaLabel}
         >
-          {note.text}
+          {note.compactionState ? (
+            <span className="maka-compaction-status">
+              {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              <span>{note.text}</span>
+              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
+            </span>
+          ) : note.text}
         </ChatSystemMessage>
       ))}
       {conversationSegments.map((segment, segmentIndex) => {
@@ -688,12 +699,12 @@ export const TurnView = memo(function TurnView(props: {
                   container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
-                    ? {
-                        description:
-                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
-                      }
-                    : {})}
+                  description={
+                    <>
+                      {props.safeResumeAction?.detail ?? props.failedExecutionStateLabel}
+                      {!turn.failureMessage && <span className="maka-turn-failure-unavailable">{copy.failureDetailsUnavailable}</span>}
+                    </>
+                  }
                   {...(props.safeResumeAction
                     ? {
                         endContent: (
@@ -711,22 +722,11 @@ export const TurnView = memo(function TurnView(props: {
                         ),
                       }
                     : {})}
-                />
-              )}
-              {ownsTurnChrome && props.liveStreaming && (
-                <>
-                  {props.liveStreaming.providerRetry ? (
-                    <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                  ) : (
-                    props.liveStreaming.runningStatus && (
-                      <TurnRunningStatus
-                        startedAt={turn.startedAt}
-                        showSpinner={!toolSurfaceOwnsSpinner}
-                        activityLabel={runningToolLabel}
-                      />
-                    )
+                >
+                  {turn.failureMessage && (
+                    <pre className="maka-turn-failure-detail">{turn.failureMessage}</pre>
                   )}
-                </>
+                </Banner>
               )}
             </div>
             {ownsTurnChrome && reverseBadges.length > 0 && (
@@ -746,34 +746,33 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome &&
-              (props.liveStreaming ? (
-                /* #642: reserved-height footer placeholder while streaming — same
-                   `mt-0.5 h-8` box the real footer occupies, so the live→settled
-                   swap is height-neutral (the footer slot never grows/shrinks). No
-                   actionable footer here: the live tail's derived status is
-                   `completed`, so a real `TurnFooterActions` would render a
-                   clickable regenerate/branch on a still-streaming answer. */
-                <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
-              ) : (
-                props.footerActions &&
-                props.footerActions.length > 0 && (
-                  <TurnFooterActions
-                    actions={props.footerActions}
-                    context={accessibleActionContext(
-                      turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
-                      turn.startedAt,
-                      locale,
-                    )}
-                    onAction={
-                      props.onFooterAction
-                        ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
-                        : undefined
-                    }
-                    assistantText={finalAssistantReplyText(turn)}
+            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
+              <TurnFooter
+                actions={props.liveStreaming ? [] : props.footerActions ?? []}
+                meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
+                live={!!props.liveStreaming}
+                activity={props.liveStreaming?.providerRetry ? (
+                  <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
+                ) : props.liveStreaming?.runningStatus ? (
+                  <TurnRunningStatus
+                    startedAt={turn.startedAt}
+                    showSpinner={!toolSurfaceOwnsSpinner}
+                    activityLabel={runningToolLabel}
                   />
-                )
-              ))}
+                ) : undefined}
+                context={accessibleActionContext(
+                  turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+                  turn.startedAt,
+                  locale,
+                )}
+                onAction={
+                  props.onFooterAction
+                    ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
+                    : undefined
+                }
+                assistantText={finalAssistantReplyText(turn)}
+              />
+            ) : null}
             </LocalizedChatMessage>
             {/* An abort is a short, settled status change rather than sender
                 content or a recovery error. Keep Astryx's system notice as a
@@ -836,7 +835,7 @@ function splitTimelineAtUserMessages(
 }
 
 export interface TurnFooterActionMeta {
-  id: 'regenerate' | 'branch' | 'copy' | 'info';
+  id: 'regenerate' | 'branch' | 'copy';
   label: string;
   enabled: boolean;
   tooltip?: string;
@@ -881,77 +880,39 @@ export interface TurnPresentation {
 
 export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
 
-function TurnFooterActions(props: {
+export function TurnFooter(props: {
   actions: ReadonlyArray<TurnFooterActionMeta>;
+  /** One-line turn meta (model · duration · cost) shown beside the actions. */
+  meta?: string;
+  live?: boolean;
+  activity?: ReactNode;
   context: string;
   onAction?: (actionId: TurnFooterActionMeta['id']) => void;
   /** Assistant text used by the inline copy action. */
   assistantText?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const [copyPhase, setCopyPhase] = useState<ClipboardCopyPhase | null>(null);
-  const copyPendingRef = useRef(false);
-  const copyResetTimerRef = useRef<number | null>(null);
-  const copyMountedRef = useMountedRef();
-
-  function clearCopyResetTimer() {
-    if (copyResetTimerRef.current === null) return;
-    window.clearTimeout(copyResetTimerRef.current);
-    copyResetTimerRef.current = null;
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCopyResetTimer();
-    };
-  }, []);
-
-  function settleCopy(phase: Exclude<ClipboardCopyPhase, 'pending'>) {
-    if (!copyMountedRef.current) return;
-    setCopyPhase(phase);
-    copyResetTimerRef.current = window.setTimeout(() => {
-      if (!copyMountedRef.current) return;
-      setCopyPhase(null);
-      copyResetTimerRef.current = null;
-    }, 1400);
-  }
-
-  async function copyAssistantText() {
-    if (!props.assistantText || copyPendingRef.current) return;
-    copyPendingRef.current = true;
-    clearCopyResetTimer();
-    setCopyPhase('pending');
-    try {
-      await navigator.clipboard.writeText(props.assistantText);
-      settleCopy('copied');
-    } catch {
-      settleCopy('failed');
-    } finally {
-      copyPendingRef.current = false;
-    }
-  }
+  const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
+  const copyPhase = copyFeedback.phaseFor('answer');
 
   async function handleClick(action: TurnFooterActionMeta) {
-    if (!action.enabled) return;
     if (action.id === 'copy') {
-      await copyAssistantText();
+      await copyFeedback.copy('answer', props.assistantText ?? '');
       return;
     }
-    if (action.id === 'info') return; // tooltip-only meta display, no action
     props.onAction?.(action.id);
   }
   return (
     <ChatMessageMetadata
       className={markerVariants({ variant: 'footer' })}
-      role="toolbar"
-      aria-label={copy.answerActionsAriaLabel(props.context)}
+      data-live-streaming={props.live ? 'true' : undefined}
+      role={props.live ? undefined : 'toolbar'}
+      aria-label={props.live ? undefined : copy.answerActionsAriaLabel(props.context)}
       footer={
-        <>
+        props.activity ?? <>
+          {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
           {props.actions.map((action) => {
-            // Keep the action label under pending (a11y); do not swap to spinner-only.
-            const isPending = action.tooltip === copy.processing;
             const isCopyAction = action.id === 'copy';
-            const copyIsPending = isCopyAction && copyPhase === 'pending';
             const copyFeedbackLabel = copyPhase === 'pending'
               ? `${copy.copying}…`
               : copyPhase === 'copied'
@@ -959,12 +920,11 @@ function TurnFooterActions(props: {
                 : copyPhase === 'failed'
                   ? copy.copyFailed
                   : action.label;
-            const isActionPending = isPending || copyIsPending;
             const tooltipText = isCopyAction
               ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
               : (action.tooltip ?? action.label);
             const icon = isCopyAction && copyPhase === 'copied'
-              ? <Check size={ICON_SIZE.control} aria-hidden="true" />
+              ? <Icon icon="check" size="sm" />
               : STATUS_FOOTER_ICON[action.id];
             return (
               <UiIconButton
@@ -979,10 +939,11 @@ function TurnFooterActions(props: {
                 size="sm"
                 className={markerVariants({ variant: 'footer-action' })}
                 data-action={action.id}
-                data-pending={isActionPending || undefined}
                 data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                aria-disabled={!action.enabled || copyIsPending}
-                aria-busy={isActionPending || undefined}
+                isDisabled={!action.enabled}
+                isLoading={
+                  isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
+                }
                 onClick={() => void handleClick(action)}
               />
             );
@@ -993,11 +954,20 @@ function TurnFooterActions(props: {
   );
 }
 
+/** "model · duration · cost" for a settled turn; undefined when there is nothing to say. */
+function turnMetaSummary(turn: TurnViewModel): string | undefined {
+  const parts: string[] = [];
+  if (turn.modelId) parts.push(turn.modelId);
+  // Duration counts whole seconds, so anything under one would read「0s」.
+  if (turn.durationMs && turn.durationMs >= 1_000) parts.push(formatTurnDuration(turn.durationMs));
+  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />,
-  branch: <GitBranch size={ICON_SIZE.control} aria-hidden="true" />,
-  copy: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
-  info: <Info size={ICON_SIZE.control} aria-hidden="true" />,
+  regenerate: <Icon icon={RefreshCcw} size="sm" />,
+  branch: <Icon icon={GitBranch} size="sm" />,
+  copy: <Icon icon="copy" size="sm" />,
 };
 
 const ELAPSED_TICK_MS = 1_000;
@@ -1024,8 +994,30 @@ export function TurnRunningStatus(props: {
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+
+  return (
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
+    >
+      {props.showSpinner !== false && (
+        <Spinner size="md" shade="subtle" aria-hidden="true" />
+      )}
+      {/* Name the activity once; the clock must not announce each second. */}
+      <span className="maka-turn-indicator-text" aria-hidden="true">
+        <span className="maka-turn-status-label">
+          {props.activityLabel ?? copy.awaitingModelOutput}
+        </span>
+        <TurnElapsedTime startedAt={props.startedAt} separator />
+      </span>
+    </div>
+  );
+}
+
+function TurnElapsedTime(props: { startedAt?: number; separator?: boolean }) {
   const { startedAt } = props;
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLSpanElement>(null);
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
@@ -1045,30 +1037,12 @@ export function TurnRunningStatus(props: {
   }, [startedAt]);
 
   return (
-    <div
-      className="maka-turn-processing"
-      role="status"
-      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
-      ref={rootRef}
-    >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
-      {/* Every visible token here moves on the clock. Announcing either would
-          talk over the answer being streamed beside it, so the row's label is
-          its whole accessible name and the text is decoration. */}
-      <span className="maka-turn-indicator-text" aria-hidden="true">
-        <span className="maka-turn-status-label">
-          {props.activityLabel ?? copy.awaitingModelOutput}
-        </span>
-        {elapsedMs !== undefined && (
-          <>
-            <span className="maka-turn-status-separator">·</span>
-            <span className="maka-turn-elapsed">{formatTurnDuration(elapsedMs)}</span>
-          </>
-        )}
-      </span>
-    </div>
+    <span className="maka-turn-elapsed" aria-hidden="true" ref={rootRef}>
+      {elapsedMs !== undefined && <>
+        {props.separator && <span className="maka-turn-status-separator">·</span>}
+        {formatTurnDuration(elapsedMs)}
+      </>}
+    </span>
   );
 }
 
@@ -1189,6 +1163,8 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      data-maka-transcript-boundary="default"
+      data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1293,7 +1269,10 @@ function ProcessingBlock(props: {
 }) {
   const { entries } = props;
   return (
-    <div className="maka-processing-sequence">
+    <div
+      className="maka-processing-sequence"
+      data-maka-transcript-boundary="large"
+    >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
@@ -1313,6 +1292,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
+      data-maka-transcript-boundary="large"
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}

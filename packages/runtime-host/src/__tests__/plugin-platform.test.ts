@@ -23,7 +23,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { waitFor } from '@maka/core/test-only/async-primitives';
+import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
+import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
+import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
+import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { PluginLlmService } from '@maka/runtime/plugin-llm-service';
+import { PluginShellService } from '@maka/runtime/plugin-shell-service';
+import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
+import { PluginToolService } from '@maka/runtime/plugin-tool-service';
+import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
+import { PluginWebService } from '@maka/runtime/plugin-web-service';
+import { PluginCommandService } from '@maka/runtime/plugin-command-service';
+import {
+  PluginAuthorizationService,
+  PluginCredentialService,
+  PluginSettingsService,
+  PluginStorageService,
+} from '@maka/runtime/plugin-data-services';
+import { PluginGoalService } from '@maka/runtime/plugin-goal-service';
+import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
+import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
+import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
+import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
+import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   decodePluginCompositionApplyInput,
   decodeRequestFrame,
@@ -40,6 +64,7 @@ import { HostPluginPlatformCoordinator } from '../server/plugin-platform-coordin
 import { TrustedPluginPackageLoader } from '../server/plugin-package-loader.js';
 import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { HostPluginPlatform, type HostPluginPlatformOptions } from '../server/plugin-platform.js';
+import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 
 interface TestPlatformInternals {
   readonly composition: MakaCompositionLoader;
@@ -63,6 +88,9 @@ function createPlatform(
     packages,
     packageLoader,
     store,
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+    ...(options.commands ? { commands: options.commands } : {}),
   });
   testPlatformInternals.set(platform, { composition, packages, store });
   return platform;
@@ -128,6 +156,381 @@ test('Plugin Platform installs, activates, persists, and recovers a generic pack
   }
 });
 
+test('a real package publishes an executable Tool and removes it on uninstall', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-tool-lifecycle-'));
+  try {
+    const pluginRoot = new Context();
+    const tools = new PluginToolService(pluginRoot);
+    const composition = new MakaCompositionLoader({ root: pluginRoot });
+    const source = await writeFixturePackage(root, 'inventory-package', 'inventory', {
+      tool: {
+        name: 'lookup_inventory',
+        result: { sku: 'SKU-42', available: 7 },
+      },
+      composition: [
+        {
+          type: 'insert',
+          rootId: 'profile',
+          entry: { id: 'inventory-entry', packageId: 'inventory-package' },
+        },
+      ],
+    });
+    const platform = createPlatform(join(root, 'control'), {
+      composition,
+      tools,
+    });
+    await platform.recover();
+
+    const installed = await platform.installPackage(source);
+    assert.equal(installed.convergence, 'converged');
+    const published = tools.resolve('shopping-session', []).tools;
+    assert.deepEqual(
+      published.map(({ name }) => name),
+      ['lookup_inventory'],
+    );
+    assert.deepEqual(await published[0]!.impl({}, {} as never), {
+      sku: 'SKU-42',
+      available: 7,
+    });
+
+    const uninstalled = await platform.uninstallPackage('inventory-package');
+    assert.equal(uninstalled.convergence, 'converged');
+    assert.deepEqual(tools.resolve('shopping-session', []).tools, []);
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a real package reaches every scoped ctx service through one Agent Tool invocation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-context-services-e2e-'));
+  const pluginRoot = new Context();
+  const calls: string[] = [];
+  try {
+    const agents = new PluginAgentService(pluginRoot);
+    const attachments = new PluginAttachmentService(pluginRoot, agents);
+    new PluginApprovalService(pluginRoot, agents);
+    new PluginUserQuestionService(pluginRoot, agents);
+    const filesystem = new PluginFilesystemService(pluginRoot, agents);
+    const llm = new PluginLlmService(pluginRoot, agents);
+    const shellEnv = new PluginShellEnvService(pluginRoot);
+    const shell = new PluginShellService(pluginRoot, agents, shellEnv);
+    const web = new PluginWebService(pluginRoot, agents);
+    const sessionQuery = new PluginSessionQueryService(pluginRoot, agents);
+    const goals = new PluginGoalService(pluginRoot, agents);
+    new PluginSkillService(pluginRoot);
+    const commands = new PluginCommandService(pluginRoot);
+    new PluginLspService(pluginRoot);
+    const settings = new PluginSettingsService(pluginRoot);
+    const storage = new PluginStorageService(pluginRoot);
+    const credentials = new PluginCredentialService(pluginRoot);
+    new PluginAuthorizationService(pluginRoot, credentials);
+    const data = new HostPluginDataRuntime(join(root, 'control'));
+    settings.bindRuntime(data);
+    storage.bindRuntime(data);
+    credentials.bindRuntime(data);
+    const tools = new PluginToolService(pluginRoot, { agents });
+    const systemPrompt = new PluginSystemPromptService(pluginRoot);
+    const composition = new MakaCompositionLoader({ root: pluginRoot });
+
+    const descriptor = (id: string, rootAgent = false) => ({
+      id,
+      sessionId: id,
+      root: rootAgent,
+      status: 'idle',
+      ...(rootAgent ? {} : { ownerId: 'session-e2e' }),
+    });
+    agents.bindRuntime({
+      create: async (_options, invocation) => {
+        calls.push(`agents.create:${invocation?.sessionId}`);
+        return descriptor('child-e2e');
+      },
+      resume: async (options, invocation) => {
+        calls.push(`agents.resume:${options.sessionId}:${invocation?.turnId}`);
+        return descriptor(options.sessionId);
+      },
+      get: async (id, invocation) => {
+        calls.push(`agents.get:${id}:${invocation?.sessionId}`);
+        return descriptor(id, id === 'session-e2e');
+      },
+      list: async (invocation) => {
+        calls.push(`agents.list:${invocation?.sessionId}`);
+        return [descriptor('session-e2e', true)];
+      },
+      roots: async (invocation) => {
+        calls.push(`agents.roots:${invocation?.sessionId}`);
+        return [descriptor('session-e2e', true)];
+      },
+      followup: async (id, _message, invocation) => {
+        calls.push(`agent.followup:${id}:${invocation?.sessionId}`);
+        return { accepted: true };
+      },
+      steer: async (id, _message, invocation) => {
+        calls.push(`agent.steer:${id}:${invocation?.sessionId}`);
+        return { accepted: true };
+      },
+      inject: async (id, _message, invocation) => {
+        calls.push(`agent.inject:${id}:${invocation?.sessionId}`);
+        return { accepted: true };
+      },
+      cancel: async (id, invocation) => {
+        calls.push(`agent.cancel:${id}:${invocation?.sessionId}`);
+      },
+      whenIdle: async (id, signal) => {
+        calls.push(`agent.whenIdle:${id}:${signal?.aborted ?? false}`);
+      },
+      snapshot: async (id, invocation) => {
+        calls.push(`agent.snapshot:${id}:${invocation?.turnId}`);
+        return { id, status: 'idle' };
+      },
+      inbox: async (id, invocation) => {
+        calls.push(`agent.inbox:${id}:${invocation?.sessionId}`);
+        return [];
+      },
+      result: async (id, invocation) => {
+        calls.push(`agent.result:${id}:${invocation?.sessionId}`);
+        return { id, text: 'done' };
+      },
+      artifacts: async (id, invocation) => {
+        calls.push(`agent.artifacts:${id}:${invocation?.sessionId}`);
+        return [];
+      },
+      transcript: async (id, invocation) => {
+        calls.push(`agent.transcript:${id}:${invocation?.sessionId}`);
+        return [];
+      },
+      dispose: async (id, invocation) => {
+        calls.push(`agent.dispose:${id}:${invocation?.sessionId}`);
+      },
+    });
+    filesystem.bindRuntime({
+      execute: async (operation, invocation) => {
+        calls.push(`fs.${operation.kind}:${invocation.sessionId}`);
+        return operation;
+      },
+    });
+    shell.bindRuntime({
+      run: async (options, invocation) => {
+        calls.push(`shell.run:${invocation.turnId}:${options.environment?.MAKA_PLUGIN_PROBE}`);
+        return { ref: 'pty-e2e' };
+      },
+      read: async (ref, invocation) => {
+        calls.push(`shell.read:${ref}:${invocation.sessionId}`);
+        return { output: 'ready' };
+      },
+      write: async (ref, input, invocation) => {
+        calls.push(`shell.write:${ref}:${input}:${invocation.sessionId}`);
+        return { written: true };
+      },
+      stop: async (ref, invocation) => {
+        calls.push(`shell.stop:${ref}:${invocation.sessionId}`);
+        return { stopped: true };
+      },
+    });
+    web.bindRuntime({
+      search: async (input) => {
+        calls.push(`web.search:${input.query}:${input.sessionId}`);
+        return { ok: true, provider: 'tavily', results: [] };
+      },
+      fetch: async (input) => {
+        calls.push(`web.fetch:${input.url}:${input.sessionId}`);
+        return 'fixture body';
+      },
+    });
+    const attachment = {
+      kind: 'other' as const,
+      name: 'probe.txt',
+      mimeType: 'text/plain',
+      bytes: 3,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: 'session-e2e',
+        relativePath: 'probe.txt',
+      },
+    };
+    attachments.bindRuntime({
+      create: async (input, invocation) => {
+        calls.push(`attachments.create:${input.name}:${invocation.turnId}`);
+        return attachment;
+      },
+      read: async (_ref, invocation) => {
+        calls.push(`attachments.read:${invocation.sessionId}`);
+        return new Uint8Array([65, 66, 67]);
+      },
+      list: async (invocation) => {
+        calls.push(`attachments.list:${invocation.sessionId}`);
+        return [attachment];
+      },
+    });
+    llm.bindRuntime({
+      generate: async (input, invocation) => {
+        calls.push(`llm.generate:${input.prompt}:${invocation.sessionId}`);
+        return { text: 'nested answer', modelId: 'host-e2e' };
+      },
+    });
+    sessionQuery.bindRuntime({
+      list: async (caller) => {
+        calls.push(`sessionQuery.list:${caller.invocation?.sessionId}`);
+        return [{ id: 'session-e2e', title: 'E2E' }];
+      },
+      read: async (sessionId, caller) => {
+        calls.push(`sessionQuery.read:${sessionId}:${caller.invocation?.sessionId}`);
+        return {
+          session: { id: sessionId, title: 'E2E' },
+          messages: [{ role: 'user', content: 'needle' }],
+        };
+      },
+      search: async (request, caller) => {
+        calls.push(`sessionQuery.search:${request.query}:${caller.invocation?.sessionId}`);
+        return { items: [{ id: 'session-e2e', title: 'E2E' }] };
+      },
+    });
+    goals.bindRuntime({
+      execute: async (operation, invocation) => {
+        calls.push(`goals.${operation.kind}:${invocation.sessionId}`);
+        return { kind: operation.kind };
+      },
+    });
+
+    const source = await writeContextServicesFixturePackage(root);
+    const platform = createPlatform(join(root, 'control'), {
+      composition,
+      tools,
+      systemPrompt,
+      commands,
+    });
+    await platform.recover();
+    assert.equal((await platform.installPackage(source)).convergence, 'converged');
+    assert.deepEqual(platform.inspectCommands('profile'), [
+      {
+        entryId: 'context-services-entry',
+        scopeId: 'profile',
+        extensionId: 'context-services-package',
+        generation: 1,
+        name: 'probe-command',
+        description: 'Command probe',
+        aliases: ['pc'],
+      },
+    ]);
+
+    const prompt = await systemPrompt.assemble(
+      { sessionId: 'session-e2e', turnId: 'turn-e2e', cwd: root },
+      'base',
+    );
+    assert.deepEqual(prompt.contexts, [
+      {
+        name: 'plugin:e2e-context',
+        text: 'context:session-e2e:turn-e2e',
+      },
+    ]);
+
+    const context: MakaToolContext = {
+      sessionId: 'session-e2e',
+      runId: 'run-e2e',
+      turnId: 'turn-e2e',
+      cwd: root,
+      toolCallId: 'tool-call-e2e',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => undefined,
+      askUserQuestion: async (questions) => {
+        calls.push(`userQuestions.ask:${questions[0]?.question}`);
+        return {
+          answers: [{ question: questions[0]?.question ?? '', answer: 'yes' }],
+        };
+      },
+      requestUserForm: async (form) => {
+        calls.push(`userQuestions.requestForm:${form.message}`);
+        return { action: 'accept', values: { choice: 'yes' } };
+      },
+      requestSandboxBoundary: async (expansion, justification) => {
+        calls.push(`approval.request:${justification}`);
+        return {
+          request: {
+            sessionId: 'session-e2e',
+            requestId: 'approval-e2e',
+            status: 'approved',
+            baseRevision: 0,
+            expansion,
+            justification,
+            createdAt: 1,
+            settledAt: 2,
+          },
+          boundary: { kind: 'bypass', revision: 1 },
+          changed: true,
+        };
+      },
+    };
+    const tool = tools.resolve('session-e2e', []).tools.find(({ name }) => name === 'ctx_e2e');
+    assert.ok(tool);
+    const result = await tool.impl({}, context);
+    assert.deepEqual(result, {
+      currentAgent: 'session-e2e',
+      childAgent: 'child-e2e',
+      attachmentBytes: [65, 66, 67],
+      attachmentCount: 1,
+      llmText: 'nested answer',
+      sessionCount: 1,
+      skillCount: 1,
+      command: { command: 'a:b' },
+      initialSetting: 'default',
+      savedSetting: 'strict',
+      stored: 2,
+      credential: 'e2e',
+      lsp: { operation: 'hover', languageId: 'typescript' },
+    });
+
+    assert.deepEqual(calls, [
+      'agents.list:session-e2e',
+      'agents.roots:session-e2e',
+      'agents.get:session-e2e:session-e2e',
+      'agents.create:session-e2e',
+      'agents.resume:child-e2e:turn-e2e',
+      'agent.followup:child-e2e:session-e2e',
+      'agent.steer:child-e2e:session-e2e',
+      'agent.inject:child-e2e:session-e2e',
+      'agent.whenIdle:child-e2e:false',
+      'agent.snapshot:child-e2e:turn-e2e',
+      'agent.inbox:child-e2e:session-e2e',
+      'agent.result:child-e2e:session-e2e',
+      'agent.artifacts:child-e2e:session-e2e',
+      'agent.transcript:child-e2e:session-e2e',
+      'agent.cancel:child-e2e:session-e2e',
+      'agent.dispose:child-e2e:session-e2e',
+      'fs.read:session-e2e',
+      'fs.write:session-e2e',
+      'fs.edit:session-e2e',
+      'fs.glob:session-e2e',
+      'fs.grep:session-e2e',
+      'fs.apply_patch:session-e2e',
+      'shell.run:turn-e2e:enabled',
+      'shell.read:pty-e2e:session-e2e',
+      'shell.write:pty-e2e:ping:session-e2e',
+      'shell.stop:pty-e2e:session-e2e',
+      'web.search:maka:session-e2e',
+      'web.fetch:https://example.test/resource:session-e2e',
+      'attachments.create:probe.txt:turn-e2e',
+      'attachments.read:session-e2e',
+      'attachments.list:session-e2e',
+      'userQuestions.ask:Continue?',
+      'userQuestions.requestForm:Choose',
+      'approval.request:write output',
+      'llm.generate:nested prompt:session-e2e',
+      'sessionQuery.list:session-e2e',
+      'sessionQuery.read:session-e2e:session-e2e',
+      'sessionQuery.search:needle:session-e2e',
+      'goals.get:session-e2e',
+      'goals.create:session-e2e',
+      'goals.pause:session-e2e',
+      'goals.resume:session-e2e',
+      'goals.clear:session-e2e',
+    ]);
+    await platform.close();
+  } finally {
+    await pluginRoot.fiber.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Plugin Platform coordinator keeps package and composition operations generic', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-plugin-protocol-'));
   try {
@@ -182,6 +585,109 @@ test('Plugin Platform coordinator keeps package and composition operations gener
       null as never,
     );
     assert.equal(reloaded.ok && reloaded.result.convergence, 'converged');
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query exposes bounded Tool contribution inspection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-tool-inspection-'));
+  try {
+    const platform = createPlatform(join(root, 'control'), {
+      tools: {
+        inspect: (rootId) =>
+          rootId === undefined || rootId === 'session:alpha'
+            ? [
+                {
+                  entryId: 'tool-entry',
+                  scopeId: 'session:alpha',
+                  extensionId: 'tool-package',
+                  generation: 3,
+                  toolName: 'fixture_tool',
+                  activeCalls: 1,
+                  retired: false,
+                },
+              ]
+            : [],
+      },
+    });
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+
+    const queried = await coordinator.handlers['plugin.platform.query'](
+      { view: 'tools', rootId: 'session:alpha' },
+      null as never,
+    );
+
+    assert.deepEqual(queried, {
+      ok: true,
+      result: {
+        view: 'tools',
+        items: [
+          {
+            entryId: 'tool-entry',
+            scopeId: 'session:alpha',
+            extensionId: 'tool-package',
+            generation: 3,
+            toolName: 'fixture_tool',
+            activeCalls: 1,
+            retired: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query projects scoped Command contributions for clients', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-command-inspection-'));
+  try {
+    const platform = createPlatform(join(root, 'control'), {
+      commands: {
+        inspect: () => [
+          {
+            entryId: 'command-entry',
+            scopeId: 'profile',
+            extensionId: 'command-package',
+            generation: 2,
+            name: 'review',
+            description: 'Review the current change',
+            aliases: ['rv'],
+          },
+        ],
+      },
+    });
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+    assert.deepEqual(
+      await coordinator.handlers['plugin.platform.query'](
+        { view: 'commands', rootId: 'profile' },
+        null as never,
+      ),
+      {
+        ok: true,
+        result: {
+          view: 'commands',
+          items: [
+            {
+              entryId: 'command-entry',
+              scopeId: 'profile',
+              extensionId: 'command-package',
+              generation: 2,
+              name: 'review',
+              description: 'Review the current change',
+              aliases: ['rv'],
+            },
+          ],
+          nextCursor: null,
+        },
+      },
+    );
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -276,7 +782,9 @@ test('Plugin Platform cursors reject a changed query snapshot', async () => {
     if (!first.ok || first.result.view !== 'entries' || !first.result.nextCursor) {
       throw new Error('Expected a paged Entry snapshot');
     }
-    await platform.apply({ operations: [{ type: 'insert', entry: { id: 'cursor-three' } }] });
+    await platform.apply({
+      operations: [{ type: 'insert', entry: { id: 'cursor-three' } }],
+    });
     const stale = await coordinator.handlers['plugin.platform.query'](
       { view: 'entries', limit: 1, cursor: first.result.nextCursor },
       null as never,
@@ -363,7 +871,10 @@ test('Package replacement releases a single-provider Service before activating i
       await writeFixturePackage(root, 'service-package', 'first', {
         provideService: 'replacementService',
         composition: [
-          { type: 'insert', entry: { id: 'service-entry', packageId: 'service-package' } },
+          {
+            type: 'insert',
+            entry: { id: 'service-entry', packageId: 'service-package' },
+          },
         ],
       }),
     );
@@ -371,7 +882,10 @@ test('Package replacement releases a single-provider Service before activating i
       directorySuffix: 'replacement',
       provideService: 'replacementService',
       composition: [
-        { type: 'insert', entry: { id: 'service-entry', packageId: 'service-package' } },
+        {
+          type: 'insert',
+          entry: { id: 'service-entry', packageId: 'service-package' },
+        },
       ],
     });
     const receipt = await platform.installPackage(replacement);
@@ -380,6 +894,61 @@ test('Package replacement releases a single-provider Service before activating i
     assert.deepEqual(internals(platform).composition.root.get('replacementService'), {
       source: 'second',
     });
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Package lifecycle publishes and retires scoped System Prompt contributions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-system-prompt-'));
+  try {
+    const pluginRoot = new Context();
+    const systemPrompt = new PluginSystemPromptService(pluginRoot);
+    const composition = new MakaCompositionLoader({ root: pluginRoot });
+    const platform = createPlatform(join(root, 'control'), {
+      composition,
+      systemPrompt,
+    });
+    await platform.recover();
+    await platform.installPackage(
+      await writeFixturePackage(root, 'prompt-package', 'prompt', {
+        systemPrompt: {
+          name: 'plugin:fixture',
+          order: 10,
+          text: 'fixture prompt',
+        },
+        composition: [
+          {
+            type: 'insert',
+            entry: { id: 'prompt-entry', packageId: 'prompt-package' },
+          },
+        ],
+      }),
+    );
+
+    assert.equal(
+      (
+        await systemPrompt.assemble(
+          { sessionId: 'alpha', turnId: 'turn-1', cwd: '/workspace' },
+          'base',
+        )
+      ).text,
+      'base\n\nfixture prompt',
+    );
+    assert.equal(platform.inspectSystemPrompt('profile')[0]?.name, 'plugin:fixture');
+
+    await platform.uninstallPackage('prompt-package');
+    assert.equal(
+      (
+        await systemPrompt.assemble(
+          { sessionId: 'alpha', turnId: 'turn-2', cwd: '/workspace' },
+          'base',
+        )
+      ).text,
+      'base',
+    );
+    assert.deepEqual(platform.inspectSystemPrompt('profile'), []);
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -413,14 +982,22 @@ test('package Composition layers override in install order and unwind on uninsta
     const overrideSource = await writeFixturePackage(root, 'layer-override', 'override', {
       structuralDependencies: ['layer-base'],
       composition: [
-        { type: 'update', entryId: 'layer-entry', patch: { config: { theme: 'override' } } },
+        {
+          type: 'update',
+          entryId: 'layer-entry',
+          patch: { config: { theme: 'override' } },
+        },
       ],
     });
     await platform.installPackage(overrideSource);
     const tailSource = await writeFixturePackage(root, 'layer-tail', 'tail', {
       structuralDependencies: ['layer-base'],
       composition: [
-        { type: 'update', entryId: 'layer-entry', patch: { config: { theme: 'tail' } } },
+        {
+          type: 'update',
+          entryId: 'layer-entry',
+          patch: { config: { theme: 'tail' } },
+        },
       ],
     });
     await platform.installPackage(tailSource);
@@ -429,19 +1006,31 @@ test('package Composition layers override in install order and unwind on uninsta
       theme: 'tail',
     });
     await platform.installPackage(overrideSource);
-    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, { theme: 'tail' });
+    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, {
+      theme: 'tail',
+    });
     await platform.uninstallPackage('layer-tail');
     await platform.uninstallPackage('layer-override');
-    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, { theme: 'base' });
+    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, {
+      theme: 'base',
+    });
     await platform.installPackage(overrideSource);
     await platform.apply({
       operations: [
-        { type: 'update', entryId: 'layer-entry', patch: { config: { theme: 'user' } } },
+        {
+          type: 'update',
+          entryId: 'layer-entry',
+          patch: { config: { theme: 'user' } },
+        },
       ],
     });
-    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, { theme: 'user' });
+    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, {
+      theme: 'user',
+    });
     await platform.uninstallPackage('layer-override');
-    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, { theme: 'user' });
+    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, {
+      theme: 'user',
+    });
     assert.deepEqual((await internals(platform).store.read())?.packageLayers, ['layer-base']);
     await platform.close();
   } finally {
@@ -465,7 +1054,10 @@ test('invalid package Composition patch is rejected before package publication',
       composition: [
         {
           type: 'insert',
-          entry: { id: 'missing-package-entry', packageId: 'missing-package' },
+          entry: {
+            id: 'missing-package-entry',
+            packageId: 'missing-package',
+          },
         },
       ],
     });
@@ -704,6 +1296,36 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
     }).operation,
     'plugin.composition.apply',
   );
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-tools',
+      operation: 'plugin.platform.query',
+      input: { view: 'tools', rootId: 'session:one' },
+    }).operation,
+    'plugin.platform.query',
+  );
+  assert.doesNotThrow(() =>
+    decodeResponseFrame({
+      requestId: 'plugin-tools',
+      operation: 'plugin.platform.query',
+      ok: true,
+      result: {
+        view: 'tools',
+        items: [
+          {
+            entryId: 'tool-entry',
+            scopeId: 'session:one',
+            extensionId: 'tool-package',
+            generation: 1,
+            toolName: 'fixture_tool',
+            activeCalls: 0,
+            retired: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    }),
+  );
   assert.throws(() =>
     decodeRequestFrame({
       requestId: 'plugin-request',
@@ -796,7 +1418,13 @@ test('failed desired-state persistence leaves Runtime composition unchanged', as
       () =>
         platform.apply({
           baseGeneration: before.generation,
-          operations: [{ type: 'update', entryId: 'persistent-entry', patch: { disabled: true } }],
+          operations: [
+            {
+              type: 'update',
+              entryId: 'persistent-entry',
+              patch: { disabled: true },
+            },
+          ],
         }),
       /Runtime state was not changed/u,
     );
@@ -821,7 +1449,12 @@ test('recovery loads installed packages that do not yet have an Entry', async ()
     const recovered = createPlatform(control);
     await recovered.recover();
     await recovered.apply({
-      operations: [{ type: 'insert', entry: { id: 'later-entry', packageId: 'unused-package' } }],
+      operations: [
+        {
+          type: 'insert',
+          entry: { id: 'later-entry', packageId: 'unused-package' },
+        },
+      ],
     });
     assert.equal(recovered.inspect('profile')[0]?.status, 'active');
     await recovered.close();
@@ -839,18 +1472,28 @@ test('immutable package generation is owned by package lifetime across repeated 
     await platform.installPackage(await writeFixturePackage(root, 'shared-package', 'shared'));
     await platform.apply({
       operations: [
-        { type: 'insert', entry: { id: 'shared-one', packageId: 'shared-package' } },
-        { type: 'insert', entry: { id: 'shared-two', packageId: 'shared-package' } },
+        {
+          type: 'insert',
+          entry: { id: 'shared-one', packageId: 'shared-package' },
+        },
+        {
+          type: 'insert',
+          entry: { id: 'shared-two', packageId: 'shared-package' },
+        },
       ],
     });
     const generations = join(control, 'plugin-generations-v1');
     assert.equal((await readdir(generations)).length, 1);
 
-    await platform.apply({ operations: [{ type: 'remove', entryId: 'shared-one' }] });
+    await platform.apply({
+      operations: [{ type: 'remove', entryId: 'shared-one' }],
+    });
     assert.equal((await readdir(generations)).length, 1);
     assert.equal(internals(platform).composition.inspect('shared-two').status, 'active');
 
-    await platform.apply({ operations: [{ type: 'remove', entryId: 'shared-two' }] });
+    await platform.apply({
+      operations: [{ type: 'remove', entryId: 'shared-two' }],
+    });
     await platform.uninstallPackage('shared-package');
     assert.deepEqual(await readdir(generations).catch(() => []), []);
     await platform.close();
@@ -869,12 +1512,18 @@ test('unknown desired-state commit outcome fences mutation without inventing a r
     store.fail = true;
 
     await assert.rejects(
-      () => platform.apply({ operations: [{ type: 'insert', entry: { id: 'uncertain-entry' } }] }),
+      () =>
+        platform.apply({
+          operations: [{ type: 'insert', entry: { id: 'uncertain-entry' } }],
+        }),
       /commit outcome is unknown/u,
     );
     assert.deepEqual(internals(platform).composition.compositionState().roots.profile, []);
     await assert.rejects(
-      () => platform.apply({ operations: [{ type: 'remove', entryId: 'uncertain-entry' }] }),
+      () =>
+        platform.apply({
+          operations: [{ type: 'remove', entryId: 'uncertain-entry' }],
+        }),
       /fenced/u,
     );
     await platform.close();
@@ -927,7 +1576,12 @@ test('failed uninstall keeps Package layers and desired state unchanged', async 
       }),
     );
     await platform.apply({
-      operations: [{ type: 'insert', entry: { id: 'user-entry', packageId: 'uninstall-plan' } }],
+      operations: [
+        {
+          type: 'insert',
+          entry: { id: 'user-entry', packageId: 'uninstall-plan' },
+        },
+      ],
     });
     const authority = await internals(platform).store.read();
     const desired = platform.desiredComposition();
@@ -984,12 +1638,17 @@ test('composition authority commits before Runtime convergence and exposes diver
     const coordinator = new HostPluginPlatformCoordinator(platform);
     await platform.recover();
     await platform.installPackage(
-      await writeFixturePackage(root, 'failing-package', 'failing', { throwOnApply: true }),
+      await writeFixturePackage(root, 'failing-package', 'failing', {
+        throwOnApply: true,
+      }),
     );
 
     const receipt = await platform.apply({
       operations: [
-        { type: 'insert', entry: { id: 'desired-failure', packageId: 'failing-package' } },
+        {
+          type: 'insert',
+          entry: { id: 'desired-failure', packageId: 'failing-package' },
+        },
       ],
     });
     assert.equal(receipt.durability, 'committed');
@@ -1025,11 +1684,19 @@ test('recovery is fail-open for Host and isolates a broken desired Entry', async
       overlays: [
         {
           type: 'insert',
-          entry: { id: 'healthy-entry', packageId: 'healthy-package', config: {} },
+          entry: {
+            id: 'healthy-entry',
+            packageId: 'healthy-package',
+            config: {},
+          },
         },
         {
           type: 'insert',
-          entry: { id: 'broken-entry', packageId: 'missing-package', config: {} },
+          entry: {
+            id: 'broken-entry',
+            packageId: 'missing-package',
+            config: {},
+          },
         },
       ],
     });
@@ -1126,7 +1793,13 @@ test('Manifest configuration is enforced before desired state is committed', asy
       () =>
         platform.apply({
           operations: [
-            { type: 'insert', entry: { id: 'configured-entry', packageId: 'configured-package' } },
+            {
+              type: 'insert',
+              entry: {
+                id: 'configured-entry',
+                packageId: 'configured-package',
+              },
+            },
           ],
         }),
       (error: unknown) =>
@@ -1159,10 +1832,15 @@ test('Manifest configuration defaults are committed to desired and live Entries'
 
     await platform.apply({
       operations: [
-        { type: 'insert', entry: { id: 'defaulted-entry', packageId: 'defaulted-package' } },
+        {
+          type: 'insert',
+          entry: { id: 'defaulted-entry', packageId: 'defaulted-package' },
+        },
       ],
     });
-    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, { enabled: true });
+    assert.deepEqual(platform.desiredComposition().roots.profile[0]?.config, {
+      enabled: true,
+    });
     assert.deepEqual(internals(platform).composition.compositionState().roots.profile[0]?.config, {
       enabled: true,
     });
@@ -1244,7 +1922,10 @@ test('Manifest dependencies gate activation and protect required packages', asyn
       () =>
         platform.apply({
           operations: [
-            { type: 'insert', entry: { id: 'dependent-entry', packageId: 'dependent-package' } },
+            {
+              type: 'insert',
+              entry: { id: 'dependent-entry', packageId: 'dependent-package' },
+            },
           ],
         }),
       /Plugin composition mutation failed/u,
@@ -1254,8 +1935,14 @@ test('Manifest dependencies gate activation and protect required packages', asyn
     await platform.installPackage(await writeFixturePackage(root, 'required-package', 'required'));
     await platform.apply({
       operations: [
-        { type: 'insert', entry: { id: 'required-entry', packageId: 'required-package' } },
-        { type: 'insert', entry: { id: 'dependent-entry', packageId: 'dependent-package' } },
+        {
+          type: 'insert',
+          entry: { id: 'required-entry', packageId: 'required-package' },
+        },
+        {
+          type: 'insert',
+          entry: { id: 'dependent-entry', packageId: 'dependent-package' },
+        },
       ],
     });
     await assert.rejects(
@@ -1355,7 +2042,11 @@ test('package storage retains a Package committed by the authority generation', 
 test('package storage discards journal-less transaction remnants', async () => {
   const cases = [
     { name: 'abandoned preparation', target: 'old', candidate: 'new' },
-    { name: 'partially removed committed transaction', target: 'new', previous: 'old' },
+    {
+      name: 'partially removed committed transaction',
+      target: 'new',
+      previous: 'old',
+    },
   ] as const;
   for (const state of cases) {
     const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-journal-less-'));
@@ -1394,7 +2085,11 @@ test('Plugin Platform close aggregates every resource failure', async () => {
     const packages = new PluginPackageStore(control);
     const composition = new FailingCloseCompositionLoader();
     const packageLoader = new FailingClosePackageLoader(control, packages);
-    const platform = createPlatform(control, { composition, packages, packageLoader });
+    const platform = createPlatform(control, {
+      composition,
+      packages,
+      packageLoader,
+    });
     await platform.recover();
     await assert.rejects(
       () => platform.close(),
@@ -1468,6 +2163,12 @@ async function writeFixturePackage(
     readonly structuralDependencies?: readonly string[];
     readonly manifest?: Readonly<Record<string, unknown>>;
     readonly composition?: readonly unknown[];
+    readonly tool?: { readonly name: string; readonly result: unknown };
+    readonly systemPrompt?: {
+      readonly name: string;
+      readonly order: number;
+      readonly text: string;
+    };
   } = {},
 ): Promise<string> {
   const source = join(
@@ -1503,7 +2204,212 @@ async function writeFixturePackage(
       host: Object.freeze({ apply(ctx) {
         ${options.throwOnApply ? "throw new Error('fixture activation failed');" : ''}
         ${options.provideService ? `ctx.provide(${JSON.stringify(options.provideService)}, { source: ${JSON.stringify(contributionId)} });` : ''}
+        ${options.tool ? `ctx.tools.register(Object.freeze({ name: ${JSON.stringify(options.tool.name)}, description: 'fixture tool', parameters: {}, impl: async () => (${JSON.stringify(options.tool.result)}) }));` : ''}
+        ${options.systemPrompt ? `ctx.systemPrompt.section(${JSON.stringify(options.systemPrompt)});` : ''}
         ctx.effect(() => () => undefined, 'fixture');
+      } }),
+    });\n`,
+  );
+  return source;
+}
+
+async function writeContextServicesFixturePackage(root: string): Promise<string> {
+  const source = join(root, 'source-context-services-package');
+  await mkdir(source, { recursive: true });
+  await writeFile(
+    join(source, 'maka.extension.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'context-services-package',
+      runtime: { entry: 'index.mjs' },
+      composition: {
+        patch: 'maka.composition.yml',
+        structuralDependencies: [],
+      },
+    }),
+  );
+  await writeFile(
+    join(source, 'maka.composition.yml'),
+    JSON.stringify([
+      {
+        type: 'insert',
+        rootId: 'profile',
+        entry: {
+          id: 'context-services-entry',
+          packageId: 'context-services-package',
+        },
+      },
+    ]),
+  );
+  await writeFile(
+    join(source, 'index.mjs'),
+    `export default Object.freeze({
+      packageId: 'context-services-package',
+      host: Object.freeze({ apply(ctx) {
+        ctx.skills.register({
+          name: 'plugin-probe',
+          description: 'Plugin skill probe',
+          instructions: '# Probe\\nUse the probe.',
+          declaredTools: ['ctx_e2e'],
+        });
+        ctx.commands.register({
+          name: 'probe-command',
+          description: 'Command probe',
+          aliases: ['pc'],
+          execute: ({ args }) => ({ command: args.join(':') }),
+        });
+        ctx.settings.define({
+          key: 'mode',
+          title: 'Mode',
+          defaultValue: 'default',
+          validate: value => typeof value === 'string',
+        });
+        ctx.credentials.declare({ name: 'api-token', label: 'API token' });
+        ctx.authorization.register({
+          slot: 'api-token',
+          label: 'Authorize probe',
+          methods: [{ id: 'paste', label: 'Paste' }],
+          run: async ({ commit }) => {
+            await commit('secret-e2e', { provider: 'fixture' });
+            return 'authorized';
+          },
+        });
+        ctx.lsp.registerProvider({
+          id: 'fixture-lsp',
+          extensionToLanguage: { '.ts': 'typescript' },
+          query: async request => ({ operation: request.operation, languageId: request.languageId }),
+        });
+        ctx.shellEnv.register({
+          name: 'fixture-env',
+          variables: { MAKA_PLUGIN_PROBE: { description: 'Fixture marker' } },
+          resolve: () => ({ MAKA_PLUGIN_PROBE: 'enabled' }),
+        });
+        ctx.systemPrompt.context(Object.freeze({
+          name: 'plugin:e2e-context',
+          order: 7,
+          text: ({ sessionId, turnId }) => \`context:\${sessionId}:\${turnId}\`,
+        }));
+        ctx.tools.register(Object.freeze({
+          name: 'ctx_e2e',
+          description: 'Exercise every public scoped context service',
+          parameters: {},
+          impl: async () => {
+            const current = ctx.agent;
+            if (!current) throw new Error('ctx.agent is missing');
+            await ctx.agents.list();
+            await ctx.agents.roots();
+            await ctx.agents.get(current.id);
+            const child = await ctx.agents.create({ prompt: 'child task' });
+            await ctx.agents.resume({ sessionId: child.sessionId, prompt: 'resume task' });
+            await child.followup('followup');
+            await child.steer('steer');
+            await child.inject('inject');
+            await child.whenIdle();
+            await child.snapshot();
+            await child.inbox();
+            await child.result();
+            await child.artifacts();
+            await child.transcript();
+            await child.cancel();
+            await child.dispose();
+
+            await ctx.fs.read('input.txt');
+            await ctx.fs.write('output.txt', 'first');
+            await ctx.fs.edit('output.txt', 'first', 'second');
+            await ctx.fs.glob('*.txt');
+            await ctx.fs.grep('second', { glob: '*.txt' });
+            await ctx.fs.applyPatch('*** Begin Patch\\n*** End Patch');
+
+            const launched = await ctx.shell.run({
+              command: 'fixture',
+              background: true,
+              pty: true,
+            });
+            const ref = launched.ref;
+            await ctx.shell.read(ref);
+            await ctx.shell.write(ref, 'ping');
+            await ctx.shell.stop(ref);
+
+            await ctx.web.search('  maka  ', { limit: 3 });
+            await ctx.web.fetch('https://example.test/resource');
+
+            const attachment = await ctx.attachments.create({
+              name: 'probe.txt',
+              mimeType: 'text/plain',
+              content: 'ABC',
+            });
+            const attachmentBytes = [...await ctx.attachments.read(attachment)];
+            const attachmentCount = (await ctx.attachments.list()).length;
+
+            await ctx.userQuestions.ask([
+              { question: 'Continue?', options: [{ label: 'yes' }, { label: 'no' }] },
+            ]);
+            await ctx.userQuestions.requestForm({
+              message: 'Choose',
+              requester: { name: 'fixture' },
+              fields: [{
+                kind: 'single_select',
+                name: 'choice',
+                label: 'Choice',
+                required: true,
+                options: [{ value: 'yes', label: 'Yes' }],
+              }],
+            });
+            await ctx.approval.request({
+              expansion: { kind: 'workspace_write', paths: ['.'] },
+              justification: 'write output',
+            });
+            const generated = await ctx.llm.generate({ prompt: 'nested prompt' });
+
+            const sessionCount = (await ctx.sessionQuery.list()).length;
+            await ctx.sessionQuery.read(current.sessionId);
+            await ctx.sessionQuery.search({ query: 'needle', limit: 5 });
+            await ctx.goals.get();
+            await ctx.goals.create({ objective: 'finish probe' });
+            await ctx.goals.pause();
+            await ctx.goals.resume();
+            await ctx.goals.clear();
+
+            const skillCount = ctx.skills.resolve(current.sessionId).length;
+            const command = await ctx.commands.execute('pc', {
+              sessionId: current.sessionId,
+              args: ['a', 'b'],
+            });
+            const initialSetting = await ctx.settings.get('mode');
+            const savedSetting = await ctx.settings.set('mode', 'strict', {
+              expectedRevision: initialSetting.revision,
+            });
+            await ctx.storage.set('state/count', 1);
+            await ctx.storage.transaction([
+              { key: 'state/count', value: 2, expectedRevision: 1 },
+              { key: 'state/name', value: 'probe' },
+            ]);
+            const stored = await ctx.storage.get('state/count');
+            await ctx.authorization.begin('api-token', 'paste');
+            const credential = await ctx.credentials.use('api-token', secret => secret.slice(-3));
+            const lsp = await ctx.lsp.query({
+              sessionId: current.sessionId,
+              filePath: 'src/index.ts',
+              position: { line: 0, character: 0 },
+              operation: 'hover',
+            });
+            return {
+              currentAgent: current.id,
+              childAgent: child.id,
+              attachmentBytes,
+              attachmentCount,
+              llmText: generated.text,
+              sessionCount,
+              skillCount,
+              command,
+              initialSetting: initialSetting.value,
+              savedSetting: savedSetting.value,
+              stored: stored.value,
+              credential,
+              lsp,
+            };
+          },
+        }));
       } }),
     });\n`,
   );

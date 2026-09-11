@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -39,8 +39,13 @@ import {
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import {
+  decodeRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { messageContentDigest } from '@maka/core/events';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
@@ -94,6 +99,7 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
@@ -116,6 +122,7 @@ import {
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
@@ -145,7 +152,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
+  // ArchiveRead now describes both ledger and legacy resource references.
+  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -647,7 +655,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   let runtime = createSqliteRuntimeStore(runtimePath);
   try {
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     await runtime.appendRuntimeEvent(sessionId, runId, head);
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -737,7 +744,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     assert.ok(owner);
     if (!owner) return;
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     runtime = createSqliteRuntimeStore(runtimePath);
     const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
     backend = await createHostAiSdkBackend(
@@ -772,6 +778,65 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   }
 });
 
+test('handoff composition preparation commits the provider composition without dispatch', async () => {
+  const provider = await startProvider();
+  const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          snapshots.push(decodeRunCompositionSnapshot(snapshot));
+        },
+      }),
+    );
+    await backend.prepareRunComposition({ runId: 'prepared-run', turnId: 'prepared-turn' });
+    assert.equal(snapshots.length, 1);
+    assert.equal(provider.requests.length, 0);
+    for await (const _event of backend.send({
+      invocationId: 'prepared-invocation',
+      runId: 'prepared-run',
+      turnId: 'prepared-turn',
+      text: 'Use the prepared composition.',
+      context: [],
+    })) {
+      // The provider gate reuses the durably prepared immutable baseline.
+    }
+    assert.ok(provider.requests.length > 0);
+    assert.equal(snapshots.length, 1);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('handoff composition preparation fails closed without a durable recorder', async () => {
+  const provider = await startProvider();
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+      }),
+    );
+    await assert.rejects(
+      backend.prepareRunComposition({ runId: 'unrecorded-run', turnId: 'unrecorded-turn' }),
+      /no durable Run Composition preparation authority/,
+    );
+    assert.equal(provider.requests.length, 0);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;
@@ -795,6 +860,153 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
       invocationId: 'composition-invocation',
       runId: 'composition-run',
       turnId: 'composition-turn',
+      text: 'This request must not reach the provider.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(commits, 1);
+    assert.equal(provider.requests.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('a failed Run Composition commit can recover on a later dispatch', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          commits += 1;
+          decodeRunCompositionSnapshot(snapshot);
+          if (commits === 1) throw new Error('transient Run Composition failure');
+        },
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-1',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-1',
+      text: 'The first request must fail closed.',
+      context: [],
+    })) {
+      // Drain the failed attempt.
+    }
+    assert.equal(provider.requests.length, 0);
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-2',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-2',
+      text: 'Retry after the authority recovers.',
+      context: [],
+    })) {
+      // Drain the successful retry.
+    }
+
+    assert.equal(commits, 2);
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('Run Composition keeps the immutable composer Tool baseline', async () => {
+  const provider = await startProvider();
+  const makeTool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => name,
+  });
+  const initial = makeTool('initial_tool');
+  const dynamic = makeTool('dynamic_tool');
+  let currentTools: readonly MakaTool[] = [initial];
+  let committedToolNames: readonly string[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        createRunComposer: async () => ({
+          composerId: 'test.dynamic-tools',
+          composerRevision: '1',
+          tools: [initial],
+          resolveTools: () => currentTools,
+          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+        }),
+        recordRunComposition: async (_runId, snapshot) => {
+          committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
+        },
+      }),
+    );
+    currentTools = [dynamic];
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-baseline-invocation',
+      runId: 'composition-baseline-run',
+      turnId: 'composition-baseline-turn',
+      text: 'Use the current Tool surface.',
+      context: [],
+    })) {
+      // Drain the request.
+    }
+
+    assert.deepEqual(committedToolNames, ['initial_tool']);
+    const requestTools = provider.requests[0]?.body.tools as Array<{
+      function?: { name?: string };
+    }>;
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'dynamic_tool'),
+      true,
+    );
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'initial_tool'),
+      false,
+    );
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('provider dispatch fails closed when the Request Composition epoch commit fails', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async () => undefined,
+        recordRequestComposition: async () => {
+          commits += 1;
+          throw new Error('Request Composition store unavailable');
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'request-composition-invocation',
+      runId: 'request-composition-run',
+      turnId: 'request-composition-turn',
       text: 'This request must not reach the provider.',
       context: [],
     })) {
@@ -1142,7 +1354,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
-    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.errorClass, 'request_rejected');
     assert.equal(attempts[0]?.httpStatus, 400);
     assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
@@ -1578,6 +1790,332 @@ test('production backend preserves coordinator Client Capability semantics acros
   }
 });
 
+test('cold WorkHub recovery waits for Desktop tools across pending-message and admitted-root crash cuts', {
+  timeout: 30_000,
+}, async () => {
+  for (const crashCut of ['pending-message', 'admitted-root'] as const) {
+    const base = await mkdtemp(join(tmpdir(), 'maka-workhub-cold-recovery-'));
+    const root = join(base, 'interactive');
+    const provider = await startProvider();
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    let owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const residencies = new HostResidencyRegistry();
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    const context: ConnectionContext = {
+      hostEpoch: 'workhub-recovery-epoch',
+      connectionId: 'desktop',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('operation'),
+    };
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+    let drained = false;
+    const routingInputs: Array<{ turnId: string; userText: string }> = [];
+    const createComposition = () =>
+      createExecutionRuntimeHostComposition(
+        {
+          owner: owner!,
+          hostEpoch: context.hostEpoch,
+          acquireResidency: (label) => residencies.acquire(label),
+          retainUntilProcessExit: () => undefined,
+          requestDrain: () => {
+            drained = true;
+            composition?.beginDrain();
+          },
+          waitForResidencies: () => residencies.waitForEmpty(),
+          waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+        },
+        { bootstrapRuntimePolicy: false },
+        {
+          workHubRoutingModel: {
+            decide: async ({ turnId, userText }) => {
+              routingInputs.push({ turnId, userText });
+              return { kind: 'routing', disposition: 'answer_here' };
+            },
+          },
+        },
+      );
+    const registerDesktop = async (
+      registrationId: string,
+      names: string[],
+      connectionId = context.connectionId,
+      handlers: Pick<
+        HostClientCapabilityCoordinator['handlers'],
+        'client.capability.replace'
+      > = composition!.handlers,
+    ) => {
+      const result = await handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'desktop-workhub',
+              version: '0',
+              affinity: 'session',
+              hostPathAccess: 'none',
+              label: 'Desktop WorkHub',
+              tools: names.map((name) => ({
+                serverId: 'desktop_workhub',
+                name,
+                inputSchema: { type: 'object', additionalProperties: false },
+              })),
+            },
+          ],
+        },
+        { ...context, connectionId },
+      );
+      assert.ok(result.ok, JSON.stringify(result));
+    };
+    try {
+      const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'recovery-deepseek',
+          name: 'Recovery DeepSeek',
+          providerType: 'deepseek',
+          baseUrl: provider.baseUrl,
+          enabled: true,
+          enabledModelIds: ['deepseek-v4-flash'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') throw new Error('Connection creation failed');
+      const connectionId = created.snapshot.connections[0]!.connectionId;
+      await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId, kind: 'api_key' },
+        expected: null,
+        secret: API_KEY,
+      });
+      await publishConnectionModel(policy, connectionId, 'deepseek-v4-flash');
+      const catalog = await policy.connectionCatalog.getSnapshot();
+      const selected = await policy.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId, modelId: 'deepseek-v4-flash' },
+      });
+      assert.equal(selected.kind, 'committed');
+      composition = await createComposition();
+      await composition.recover();
+      const capabilities = composition.clientCapabilities;
+      assert.ok(capabilities instanceof HostClientCapabilityCoordinator);
+      const desktop = capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+        send: async () => {},
+      });
+      await registerDesktop('before-crash', ['control', 'tasks']);
+      // Disconnect after binding succeeds, before its caller can admit the root.
+      // Reconnect only after admission, before the real backend composes tools.
+      const bindSession = capabilities.bindSession.bind(capabilities);
+      let disconnected = false;
+      capabilities.bindSession = async (...args) => {
+        const result = await bindSession(...args);
+        if (args[0] === sessionId && !disconnected) {
+          assert.ok(result.ok);
+          await desktop.close();
+          assert.equal(capabilities.snapshotForSession(sessionId), undefined);
+          disconnected = true;
+        }
+        return result;
+      };
+      const bindDurableRoot = capabilities.bindDurableRoot.bind(capabilities);
+      let reconnected = false;
+      capabilities.bindDurableRoot = async (input) => {
+        if (input.sessionId === sessionId && disconnected && !reconnected) {
+          capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+            send: async () => {},
+          });
+          // Avoid the public replacement handler's pending-admission retry while
+          // this admission is still preparing its backend.
+          await registerDesktop(
+            'reconnected',
+            ['control', 'tasks'],
+            'desktop',
+            capabilities.handlers,
+          );
+          reconnected = true;
+        }
+        await bindDurableRoot(input);
+      };
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.ok(resolved.ok, JSON.stringify(resolved));
+      const initialTurnId = randomUUID();
+      const started = await composition.handlers['workhub.coordination.answer'](
+        { turnId: initialTurnId, text: 'Initial request' },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      const initial = await composition.handlers['turn.query'](
+        { sessionId, turnId: initialTurnId },
+        context,
+      );
+      assert.ok(initial.ok, JSON.stringify(initial));
+      const terminal = await waitForTerminal(
+        composition,
+        sessionId,
+        initialTurnId,
+        initial.result,
+        context,
+      );
+      assert.equal(terminal.status, 'completed');
+      assert.equal(disconnected && reconnected, true);
+      await composition.close();
+      composition = undefined;
+      await owner.close();
+      owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+
+      // The terminal root is durable; the successor may or may not have
+      // committed its root admission when the process stops.
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const prior = await stores.agentRunStore.readRootTurnAdmission(sessionId, initialTurnId);
+      assert.ok(
+        prior?.execution.kind === 'workhub_coordination' && prior.execution.capabilityBinding,
+      );
+      const capabilityBinding = prior.execution.capabilityBinding;
+      const content = { text: 'Recovered follow-up' };
+      const messageId = randomUUID();
+      const digest = messageContentDigest(content);
+      await stores.sessionStore.commitMessageAdmission({
+        sessionId,
+        turnId: initialTurnId,
+        runId: terminal.runId,
+        messageId,
+        content,
+        submittedContentDigest: digest,
+        placement: 'next_turn',
+        submittedPlacement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: Date.now(),
+      });
+      if (crashCut === 'admitted-root') {
+        await stores.agentRunStore.admitRootTurn({
+          sessionId,
+          turnId: randomUUID(),
+          proposedRunId: randomUUID(),
+          previousRootTurnId: initialTurnId,
+          proposedUserMessageId: messageId,
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: digest,
+            capabilityBinding,
+            routingDecision: { kind: 'routing', disposition: 'answer_here' },
+          },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId,
+              content,
+              submittedContentDigest: digest,
+              submittedPlacement: 'next_turn',
+              placement: 'next_turn',
+              disposition: 'followup',
+            },
+          ],
+          admittedAt: Date.now(),
+        });
+      }
+      routingInputs.length = 0;
+      const requestsBeforeRecovery = provider.requests.length;
+      composition = await createComposition();
+      await composition.recover();
+      assert.equal(drained, false, 'Host recovery reaches ready without a Desktop');
+      assert.equal(provider.requests.length, requestsBeforeRecovery);
+      const recoveredCapabilities = composition.clientCapabilities;
+      assert.ok(recoveredCapabilities instanceof HostClientCapabilityCoordinator);
+      const hostileFrames: ClientCapabilityHostFrame[] = [];
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(
+          'hostile',
+          'unrelated-client',
+          'unrelated-principal',
+          'capability_provider',
+          { principalId: 'unrelated-owner', clientInstanceId: 'unrelated-desktop' },
+        ),
+        {
+          send: async (frame) => {
+            hostileFrames.push(frame);
+          },
+        },
+      );
+      await registerDesktop('hostile-reg', ['control', 'tasks'], 'hostile');
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'an unrelated provider cannot activate the recovered Turn',
+      );
+      assert.equal(recoveredCapabilities.snapshotForSession(sessionId), undefined);
+
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity('desktop'),
+        { send: async () => {} },
+      );
+      await registerDesktop('incomplete-desktop', ['control']);
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'one missing required tool keeps the successor durable and pending',
+      );
+      await registerDesktop('capable-desktop', ['control', 'tasks']);
+      const recoveredStores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(
+        async () => {
+          const admissions =
+            await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+          const successor = admissions.at(-1);
+          if (!successor || successor.turnId === initialTurnId) return false;
+          const query = await composition!.handlers['turn.query'](
+            { sessionId, turnId: successor.turnId },
+            context,
+          );
+          return query.ok && query.result.status === 'completed';
+        },
+        { timeoutMs: 5_000, pollMs: 10 },
+      );
+      const requests = provider.requests
+        .slice(requestsBeforeRecovery)
+        .filter((request) => Array.isArray(request.body.tools));
+      assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      for (const name of ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks']) {
+        assert.ok(responsesToolNames(requests[0]?.body).includes(name));
+      }
+      const users = (await readLedgerMessages(recoveredStores.runtimeEventStore, sessionId)).filter(
+        (message) => message.type === 'user',
+      );
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['Initial request', 'Recovered follow-up'],
+      );
+      assert.equal(
+        hostileFrames.some((frame) => frame.kind === 'client.capability.call'),
+        false,
+      );
+      const snapshot = recoveredCapabilities.snapshotForSession(sessionId);
+      assert.deepEqual(snapshot?.registrationIds, ['capable-desktop']);
+      snapshot?.release();
+      const admissions =
+        await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+      const successor = admissions.at(-1)!;
+      assert.ok(successor.execution.kind === 'workhub_coordination');
+      assert.equal(successor.execution.capabilityBinding, capabilityBinding);
+      assert.deepEqual(
+        routingInputs.map(({ userText }) => userText),
+        crashCut === 'pending-message' ? ['Recovered follow-up'] : [],
+        'only a not-yet-admitted recovered Message receives a fresh routing decision',
+      );
+      assert.deepEqual(successor.execution.routingDecision, {
+        kind: 'routing',
+        disposition: 'answer_here',
+      });
+      assert.equal(drained, false);
+    } finally {
+      await composition?.close();
+      await owner?.close();
+      await provider.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  }
+});
+
 test('hosted execution freezes the headless coding provider wire contract', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-hosted-profile-wire-'));
   const root = join(base, 'interactive');
@@ -1981,7 +2519,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
-    const messages = await execution.sessionStore.readMessagesSnapshot(session.id);
+    const messages = await readLedgerMessages(execution.runtimeEventStore, session.id);
     const assistant = messages.find(
       (message) => message.type === 'assistant' && message.turnId === turnIds[0],
     );
@@ -2027,9 +2565,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
-    assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.promptComposition));
+    assert.equal(
+      await waitForCanonicalRequests(usageStores, session.id, capturedRequestCount),
+      capturedRequestCount,
+    );
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -2208,24 +2747,47 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.equal(initialTerminal.status, 'completed');
 
     graphStore = createAgentGraphControlStore(root);
+    const graph = graphStore;
     const graphId = agentGraphIdForRootSession(session.id);
-    let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+    let updates = await graph.listAgentGraphScheduleUpdates(graphId);
     let runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const wakeRuns = runs.filter(
-        (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+    try {
+      await waitFor(
+        async () => {
+          const wakeRuns = runs.filter(
+            (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+          );
+          if (
+            updates.at(-1)?.finish &&
+            wakeRuns.length > 0 &&
+            wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
+            liveResidencies === 0
+          ) {
+            return true;
+          }
+          [updates, runs] = await Promise.all([
+            graph.listAgentGraphScheduleUpdates(graphId),
+            execution.runtimeEventStore.listSessionInvocations(session.id),
+          ]);
+          return false;
+        },
+        { timeoutMs: 30_000, pollMs: 10, message: 'graph wake runs did not settle' },
       );
-      if (
-        updates.at(-1)?.finish &&
-        wakeRuns.length > 0 &&
-        wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
-        liveResidencies === 0
-      ) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-      runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
+    } catch (error) {
+      assert.ok(
+        updates.at(-1)?.finish,
+        JSON.stringify({
+          updateCount: updates.length,
+          lastUpdate: updates.at(-1),
+          runs: runs.map((run) => ({
+            runId: run.runId,
+            status: runtimeInvocationOutcome(run) ?? 'running',
+            root: run.opening.root,
+          })),
+          requests: providerRequestTrace(provider.requests),
+        }),
+      );
+      throw error;
     }
 
     const finish = updates.at(-1)?.finish;
@@ -2253,6 +2815,32 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
     assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
+    const rootRunEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      initialTerminal.runId,
+    );
+    const requestCompositions = rootRunEvents
+      .filter((event) => event.type === 'request_composition_resolved')
+      .map((event) => decodeRequestCompositionSnapshot(event.data?.snapshot));
+    assert.ok(requestCompositions.length > 0);
+    assert.match(requestCompositions[0]?.systemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(
+      requestCompositions.some((snapshot) => snapshot.toolNames.includes('view_agent_graph')),
+    );
+    const requestCompositionIds = new Set(
+      requestCompositions.map((snapshot) => snapshot.compositionId),
+    );
+    const modelAttempts = rootRunEvents.filter(
+      (event) => event.type === 'model_call_attempt_recorded',
+    );
+    assert.ok(modelAttempts.length > 0);
+    assert.ok(
+      modelAttempts.every(
+        (event) =>
+          typeof event.data?.requestCompositionId === 'string' &&
+          requestCompositionIds.has(event.data.requestCompositionId),
+      ),
+    );
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
     assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
@@ -2446,7 +3034,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
@@ -2662,7 +3250,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
@@ -2835,6 +3423,102 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     assert.equal(request.url, '/v1/responses');
     assert.equal(request.authorization, `Bearer ${API_KEY}`);
     assert.deepEqual(request.body.reasoning, { effort: 'high' });
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('WorkHub routing reuses the saved Session model and calls Intent before bounded Recall', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-workhub-routing-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'workhub-routing-provider',
+        name: 'WorkHub routing provider',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0]!;
+    await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const model = createHostWorkHubRoutingModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('WorkHub routing telemetry must not drain the Host'),
+    });
+    let candidateReads = 0;
+    const decision = await model.decide({
+      turnId: 'routing-turn',
+      header: session,
+      userText: '继续支付重试的工作',
+      transcript: [{ role: 'assistant', text: '上一轮已定位支付重试。' }],
+      resolveCandidates: async () => {
+        candidateReads += 1;
+        return {
+          candidateSetId: `sha256:${'a'.repeat(64)}`,
+          candidates: [
+            {
+              candidateRef: 'whc_payments',
+              sessionName: 'Payments',
+              workspaceName: 'payments',
+              state: 'active',
+              recency: 'today',
+            },
+          ],
+        };
+      },
+      abortSignal: new AbortController().signal,
+    });
+    assert.deepEqual(decision, {
+      kind: 'routing',
+      disposition: 'delegate_existing',
+      candidateSetId: `sha256:${'a'.repeat(64)}`,
+      candidateRef: 'whc_payments',
+    });
+    assert.equal(candidateReads, 1);
+    const requests = provider.requests.slice(-2);
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((request) => request.authorization === `Bearer ${API_KEY}`));
+    assert.ok(
+      requests.every((request) => JSON.stringify(request.body).includes('deepseek-v4-flash')),
+    );
+    const outbound = JSON.stringify(requests);
+    assert.doesNotMatch(outbound, /session-secret|\/Users\/a404/u);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_intent'));
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_recall'));
   } finally {
     await owner.close();
     await provider.close();
@@ -3800,19 +4484,28 @@ async function startTurn(
   text: string,
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const input = { sessionId, turnId, content: { text } };
-    const started = await composition.handlers['turn.start'](input, context);
-    if (started.ok) {
-      if (started.result.kind === 'started') return started.result.turn;
-      throw new Error(`Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`);
-    }
-    if (started.error.code !== 'session_busy') {
-      throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Hosted real-model Session did not become idle');
+  let turn: TurnSnapshot | undefined;
+  await waitFor(
+    async () => {
+      const input = { sessionId, turnId, content: { text } };
+      const started = await composition.handlers['turn.start'](input, context);
+      if (started.ok) {
+        if (started.result.kind === 'started') {
+          turn = started.result.turn;
+          return true;
+        }
+        throw new Error(
+          `Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`,
+        );
+      }
+      if (started.error.code !== 'session_busy') {
+        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+      }
+      return false;
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Session did not become idle' },
+  );
+  return turn as TurnSnapshot;
 }
 
 async function waitForTerminal(
@@ -3823,14 +4516,17 @@ async function waitForTerminal(
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
   let snapshot = initial;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (isTerminal(snapshot)) return snapshot;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
-    assert.equal(queried.ok, true);
-    snapshot = queried.result;
-  }
-  throw new Error('Hosted real-model Turn did not become terminal');
+  await waitFor(
+    async () => {
+      if (isTerminal(snapshot)) return true;
+      const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+      assert.equal(queried.ok, true);
+      snapshot = queried.result;
+      return isTerminal(snapshot);
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Turn did not become terminal' },
+  );
+  return snapshot;
 }
 
 async function waitForUsage(
@@ -3839,49 +4535,74 @@ async function waitForUsage(
   connectionSlug: string,
   callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const queried = await composition.handlers['usage.query'](
-      { kind: 'logs', source: 'llm', query: { range: 'all' } },
-      context,
-    );
-    assert.equal(queried.ok, true);
-    if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
-      const row = queried.result.rows.find(
-        (candidate) =>
-          candidate.connectionSlug === connectionSlug &&
-          (candidate.callKind ?? 'main') === callKind,
+  let row: Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number] | undefined;
+  await waitFor(
+    async () => {
+      const queried = await composition.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' } },
+        context,
       );
-      if (row) return row;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      assert.equal(queried.ok, true);
+      if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
+        row = queried.result.rows.find(
+          (candidate) =>
+            candidate.connectionSlug === connectionSlug &&
+            (candidate.callKind ?? 'main') === callKind,
+        );
+      }
+      return row !== undefined;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Hosted real-model usage attribution was not persisted',
+    },
+  );
+  if (row === undefined) {
+    throw new Error('Hosted real-model usage attribution was not persisted');
   }
-  throw new Error('Hosted real-model usage attribution was not persisted');
+  return row;
 }
 
-async function waitForCanonicalAttempts(
+async function waitForCanonicalRequests(
   usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<readonly ModelCallAttempt[]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await usage.modelCalls.modelCallAttempts(
-      { from: 0, to: Number.MAX_SAFE_INTEGER },
-      sessionId,
+): Promise<number> {
+  const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
+  let totalRequests = -1;
+  try {
+    await waitFor(
+      async () => {
+        const { projection } = await ask();
+        totalRequests = projection.totalRequests;
+        return totalRequests >= expectedRequests;
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: `Hosted model call attempts did not reach ${expectedRequests}`,
+      },
     );
-    if (page.attempts.length >= expectedRequests) return page.attempts;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  } catch (cause) {
+    // The diagnostic re-read must not swallow the original failure: if the
+    // summary read itself threw, re-throw that instead of the payload dump.
+    let diagnostic: string;
+    try {
+      const { projection, unreadableRecords } = await ask();
+      diagnostic = JSON.stringify({
+        expectedRequests,
+        totalRequests: projection.totalRequests,
+        unreadableRecords,
+      });
+    } catch (readError) {
+      diagnostic = `diagnostic read failed: ${readError instanceof Error ? readError.message : String(readError)}`;
+    }
+    throw new Error(`Hosted canonical model-call attempts were not persisted: ${diagnostic}`, {
+      cause,
+    });
   }
-  const page = await usage.modelCalls.modelCallAttempts(
-    { from: 0, to: Number.MAX_SAFE_INTEGER },
-    sessionId,
-  );
-  throw new Error(
-    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
-      expectedRequests,
-      attempts: page.attempts.length,
-      unreadableRecords: page.unreadableRecords,
-    })}`,
-  );
+  return totalRequests;
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(
@@ -3889,27 +4610,34 @@ async function waitForAutomaticMemoryRequestsToSettle(
 ): Promise<void> {
   let stablePolls = 0;
   let previousCount = -1;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const memoryCount = requests.filter((request) =>
-      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
-    ).length;
-    if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
-    else stablePolls = 0;
-    if (stablePolls >= 5) return;
-    previousCount = requests.length;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  try {
+    await waitFor(
+      () => {
+        const memoryCount = requests.filter((request) =>
+          /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        ).length;
+        if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
+        else stablePolls = 0;
+        previousCount = requests.length;
+        return stablePolls >= 5;
+      },
+      { timeoutMs: 5_000, pollMs: 10, message: 'memory extraction requests did not settle' },
+    );
+  } catch {
+    throw new Error(
+      `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
+        requests.map((request) => ({
+          stream: request.body.stream,
+          summary: /context summarization assistant/.test(JSON.stringify(request.body)),
+          memory: /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        })),
+      )}`,
+    );
   }
-  throw new Error(
-    `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
-      requests.map((request) => ({
-        stream: request.body.stream,
-        summary: /context summarization assistant/.test(JSON.stringify(request.body)),
-        memory: /Perform the first stage of long-term-memory extraction/.test(
-          JSON.stringify(request.body),
-        ),
-      })),
-    )}`,
-  );
 }
 
 function isTerminal(snapshot: TurnSnapshot): boolean {
@@ -3959,6 +4687,7 @@ function backendCreationFixture(input: {
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
+  recordRequestComposition?: BackendFactoryContext['recordRequestComposition'];
   recordHistoryCompactCheckpoint?: BackendFactoryContext['recordHistoryCompactCheckpoint'];
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
@@ -4022,6 +4751,9 @@ function backendCreationFixture(input: {
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
       ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
+      ...(input.recordRequestComposition
+        ? { recordRequestComposition: input.recordRequestComposition }
+        : {}),
       ...(input.recordHistoryCompactCheckpoint
         ? { recordHistoryCompactCheckpoint: input.recordHistoryCompactCheckpoint }
         : {}),
@@ -4455,7 +5187,20 @@ async function handleProviderRequest(
     body,
   });
   if (request.url === '/v1/responses') {
-    respondProviderResponsesText(response, RESPONSE_TEXT);
+    const serialized = JSON.stringify(body);
+    if (serialized.includes('Classify one WorkHub request')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'routing', mode: 'continue' }),
+      );
+    } else if (serialized.includes('Rank the supplied opaque WorkHub candidates')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'ranked', candidateRefs: ['whc_payments'] }),
+      );
+    } else {
+      respondProviderResponsesText(response, RESPONSE_TEXT);
+    }
     return;
   }
   if (body.stream !== true) {
@@ -4750,6 +5495,29 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   ];
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
+}
+
+function respondProviderResponsesJsonText(response: ServerResponse, text: string): void {
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(
+    JSON.stringify({
+      id: 'resp-workhub-routing',
+      object: 'response',
+      created_at: 1,
+      status: 'completed',
+      model: 'deepseek-v4-flash',
+      output: [
+        {
+          type: 'message',
+          id: 'msg-workhub-routing',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text, annotations: [], logprobs: [] }],
+        },
+      ],
+      usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+    }),
+  );
 }
 
 function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {

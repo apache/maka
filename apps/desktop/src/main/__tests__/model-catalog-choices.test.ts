@@ -186,6 +186,7 @@ describe('model catalog picker helpers', () => {
         }),
       ],
       '',
+      'zh-CN',
     );
     const keys = options.map(([key]) => key);
     assert.ok(
@@ -197,5 +198,10 @@ describe('model catalog picker helpers', () => {
       false,
       `unsupported Codex model was offered: ${JSON.stringify(keys)}`,
     );
+  });
+
+  it('labels a saved-but-unavailable selection in the UI locale', () => {
+    const [, label] = buildCatalogDailyReviewModelOptions([], 'codex::gone', 'en').at(-1)!;
+    assert.equal(label, 'gone · codex · Currently unavailable');
   });
 });

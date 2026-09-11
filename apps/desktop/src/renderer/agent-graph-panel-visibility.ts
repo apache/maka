@@ -40,6 +40,17 @@ export function isAgentGraphPanelDismissible(
   return status !== undefined && DISMISSIBLE_STATUSES.has(status);
 }
 
+const LIVE_STATUSES = new Set<AgentGraphPanelStatus>([
+  'active',
+  'waiting',
+  'closing',
+]);
+
+/** A graph in one of these statuses can be stopped and must keep signaling liveness. */
+export function isAgentGraphLive(status: AgentGraphPanelStatus | undefined): boolean {
+  return status !== undefined && LIVE_STATUSES.has(status);
+}
+
 export function dismissAgentGraphPanel(
   dismissedBySession: AgentGraphPanelDismissals,
   sessionId: string,
@@ -71,7 +82,6 @@ export function reconcileAgentGraphPanelDismissals(
 export function shouldShowAgentGraphPanel(input: {
   enabled: boolean;
   hasGraphActivity: boolean;
-  error: boolean;
   sessionId: string;
   graphId?: string;
   status?: AgentGraphPanelStatus;
@@ -84,5 +94,5 @@ export function shouldShowAgentGraphPanel(input: {
   ) {
     return false;
   }
-  return input.enabled || input.hasGraphActivity || input.error;
+  return input.enabled || input.hasGraphActivity;
 }

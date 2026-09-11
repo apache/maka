@@ -912,3 +912,128 @@ test('live tool_start keeps intent and argsPreview, and never fabricates args', 
   assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
   assert.equal(event.args, undefined);
 });
+
+test('seeds a context-compaction-started event for a running compaction Turn', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const seeded = projector.seedActive(true);
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0]?.type, 'context_compaction_started');
+  assert.equal(seeded[0]?.turnId, 'turn-compact');
+});
+
+test('emits a context-compaction-started event when a compaction Turn starts', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.ok(
+    events.some(
+      (event) => event.type === 'context_compaction_started' && event.turnId === 'turn-compact',
+    ),
+  );
+});
+
+test('emits context-compaction-started on the admitted → running transition at one runId', () => {
+  // The real lifecycle keeps the same runId: `admitted` (no rootExecutionKind)
+  // then `running` / context_compact. Gating on a runId change would miss this
+  // and only surface the row on reconnect.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'admitted',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.equal(events.filter((event) => event.type === 'context_compaction_started').length, 1);
+});
+
+test('projects the typed context-compaction outcome onto the completed Turn event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+        contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+      },
+    }),
+  }).events;
+  const complete = events.find((event) => event.type === 'complete');
+  assert.ok(complete);
+  assert.deepEqual(
+    complete && 'contextCompactionOutcome' in complete
+      ? complete.contextCompactionOutcome
+      : undefined,
+    { kind: 'compacted', checkpointId: 'checkpoint-1' },
+  );
+});

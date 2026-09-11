@@ -19,7 +19,14 @@
 
 import { EventEmitter } from 'node:events';
 import { hasBotChannelCredentials, type BotChannelSettings } from '@maka/core/bot-chat-settings';
-import type { BotBridge, BotIncomingMessage, BotPlatform, BotStatus } from './types.js';
+import { classifyGeneralizedError, redactSecrets } from '@maka/core/redaction';
+import type {
+  BotBridge,
+  BotIncomingMessage,
+  BotPlatform,
+  BotStatus,
+  BotStatusReason,
+} from './types.js';
 
 export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
   readonly platform: BotPlatform;
@@ -27,7 +34,7 @@ export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
   protected running = false;
   protected startedAt?: number;
   protected lastEventAt?: number;
-  protected reason?: string;
+  protected reason?: BotStatusReason;
   protected readiness: BotStatus['readiness'];
   protected identity: BotStatus['identity'];
 
@@ -74,9 +81,26 @@ export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
     this.emit('statusChange', this.getStatus());
   }
 
+  protected recordFailure(error: unknown, code?: BotStatusReason): void {
+    const diagnostic = botDiagnosticMessage(this.settings, error);
+    this.reason = code ?? classifyGeneralizedError(diagnostic) ?? 'connection_failed';
+    console.warn(`[bots:${this.platform}] ${this.reason}: ${diagnostic}`);
+  }
+
   protected connectionKind(): BotStatus['connection'] {
     return 'none';
   }
+}
+
+export function botDiagnosticMessage(settings: BotChannelSettings, error: unknown): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const secret of [settings.token.trim(), settings.appSecret?.trim()]) {
+    if (!secret) continue;
+    message = message
+      .replaceAll(secret, '[redacted]')
+      .replaceAll(encodeURIComponent(secret), '[redacted]');
+  }
+  return redactSecrets(message);
 }
 
 export function botReadinessFromSettings(settings: BotChannelSettings): BotStatus['readiness'] {

@@ -250,6 +250,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'collaboration.grant.revoke',
   'collaboration.invitation.prepare',
   'collaboration.principal.revoke',
+  'collaboration.principal.rename',
   'collaboration.turn-request.decide',
   'collaboration.turn-request.query',
   'connection.catalog.create',
@@ -338,6 +339,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.query',
   'subscription.close',
   'subscription.open',
+  'subscription.pty_interest.set',
   'session.todo.query',
   'turn.interrupt',
   'turn.message.execution.query',
@@ -352,9 +354,10 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'usage.query',
   'web-search.execute',
   'workhub.coordination.answer',
-  'workhub.coordination.act',
+  'workhub.coordination.actFromTurn',
   'workhub.coordination.candidates',
-  'workhub.coordination.record',
+  'workhub.coordination.configureModel',
+  'workhub.coordination.query',
   'workhub.coordination.resolve',
 ] as const satisfies readonly OperationKey[]);
 
