@@ -55,6 +55,7 @@ still use the existing per-parse memoization.
 Delete the patch when upstream releases completed parse state in both ESM and CJS.
 Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle/alias
 identity against the new memoizer and container implementations.
+The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
 ## `@modelcontextprotocol/client@2.0.0`
 

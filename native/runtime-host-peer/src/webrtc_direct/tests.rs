@@ -128,6 +128,48 @@ async fn a_slow_reader_backpressures_without_losing_bytes() {
 }
 
 #[tokio::test]
+async fn connection_teardown_releases_a_backpressured_writer() {
+    for explicit_close in [true, false] {
+        let (mut connection_a, mut connection_b) = connected_pair().await;
+        let (outbound, inbound) = tokio::join!(
+            poll_fn(|cx| Pin::new(&mut connection_a).poll_outbound(cx)),
+            poll_fn(|cx| Pin::new(&mut connection_b).poll_inbound(cx)),
+        );
+        let mut outbound = outbound.expect("outbound stream");
+        let inbound = inbound.expect("inbound stream");
+        // Keep the application reader alive but idle so both queues fill.
+        let payload = vec![0x5a; 4 * 1024 * 1024];
+        let writing = outbound.write_all(&payload);
+        tokio::pin!(writing);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut writing)
+                .await
+                .is_err()
+        );
+        if explicit_close {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (a, b) = tokio::join!(
+                    poll_fn(|cx| Pin::new(&mut connection_a).poll_close(cx)),
+                    poll_fn(|cx| Pin::new(&mut connection_b).poll_close(cx)),
+                );
+                a.expect("close offerer");
+                b.expect("close answerer");
+            })
+            .await
+            .expect("connection close timeout");
+        }
+        drop((connection_a, connection_b));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), &mut writing)
+                .await
+                .expect("teardown must release the writer")
+                .is_err()
+        );
+        drop(inbound);
+    }
+}
+
+#[tokio::test]
 async fn inbound_substreams_are_bounded_per_connection() {
     let (mut connection_a, mut connection_b) = connected_pair().await;
     let mut outbound = Vec::new();
