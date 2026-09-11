@@ -65,9 +65,10 @@ test('CLI validation qualifies exact published State Roots without weakening art
     workflow,
     /release_predecessor_source_commit:[\s\S]*?jobs\.state-root-qualification\.outputs\.release_predecessor_source_commit/u,
   );
+  assert.match(workflow, /fence_predecessor:[\s\S]*?type: boolean[\s\S]*?default: true/u);
   assert.match(
     workflow,
-    /id: predecessor\n\s+run: node scripts\/release-cli-publication\.mjs resolve-nightly-predecessor "\$GITHUB_OUTPUT" HEAD/u,
+    /id: predecessor\n\s+run: node scripts\/release-cli-publication\.mjs resolve-nightly-predecessor "\$GITHUB_OUTPUT" "\$\{\{ \(github\.event_name == 'pull_request' \|\| inputs\.fence_predecessor\) && 'fence' \|\| 'unfenced' \}\}"/u,
   );
   assert.match(workflow, /state-root-qualification:\n[\s\S]*?needs: build\n/u);
   assert.doesNotMatch(workflow, /needs\.build\.outputs\.release_predecessor/u);
@@ -166,8 +167,14 @@ test('CLI validation qualifies exact published State Roots without weakening art
 
 test('forward-roll CI fences the registry predecessor to the checked-out commit', () => {
   const workflow = readWorkflow('ci.yml');
-  assert.match(workflow, /resolve-nightly-predecessor "\$GITHUB_OUTPUT" HEAD/u);
+  assert.match(workflow, /resolve-nightly-predecessor "\$GITHUB_OUTPUT" fence/u);
   assert.match(workflow, /fetch-depth: 0/u);
+});
+
+test('formal and ASF candidate workflows opt out of ancestor fencing', () => {
+  assert.match(readWorkflow('release-cli-stage.yml'), /fence_predecessor: false/u);
+  assert.match(readWorkflow('asf-npm-candidate.yml'), /fence_predecessor: false/u);
+  assert.match(readWorkflow('npm-publication.yml'), /fence_predecessor: true/u);
 });
 
 test('both supported Node versions validate the tarball even when the first fails', () => {
@@ -211,6 +218,7 @@ test('npm mutations revalidate the exact qualified Nightly predecessor', () => {
   assert.match(submit, /needs\.validate\.outputs\.release_predecessor_source_commit/u);
   assert.match(submit, /assert-nightly-predecessor/u);
   assert.ok(submit.indexOf('assert-nightly-predecessor') < submit.indexOf('npm stage publish'));
+  assert.match(stage, /fence_predecessor: false/u);
 });
 
 test('stage consumes the validated artifact and makes provenance staging the final step', () => {

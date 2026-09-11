@@ -93,6 +93,7 @@ jobs:
     with:
       source_commit: ${{ needs.identity.outputs.source_commit }}
       package_version: ${{ needs.identity.outputs.version }}
+      fence_predecessor: true
 
   publish:
     name: Publish npm Nightly

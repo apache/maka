@@ -285,7 +285,9 @@ export function parseRegistryNightlySourceCommit({ version, attestations }) {
     );
   });
   const sourceCommit = statement?.predicate?.buildDefinition?.resolvedDependencies?.find(
-    (dependency) => dependency?.uri === expectedSourceUri,
+    (dependency) =>
+      dependency?.uri === expectedSourceUri &&
+      /^[0-9a-f]{40}$/iu.test(dependency?.digest?.gitCommit ?? ''),
   )?.digest?.gitCommit;
   if (!sourceCommit) {
     throw new Error(
@@ -305,13 +307,23 @@ async function fetchRegistryNightlySourceCommit({ version, fetchImpl }) {
   return parseRegistryNightlySourceCommit({ version, attestations: attestations.attestations });
 }
 
+export function parseNightlyPredecessorMode(mode) {
+  if (mode === 'fence') {
+    return { fencedAncestorHead: 'HEAD', includeSourceCommit: true };
+  }
+  if (mode === 'unfenced') {
+    return { includeSourceCommit: true };
+  }
+  throw new Error('Nightly predecessor mode must be either fence or unfenced');
+}
+
 export async function resolveRegistryNightlyPredecessor({
   fetchImpl = fetch,
-  fencedAncestorHead,
-  includeSourceCommit = fencedAncestorHead !== undefined,
+  mode,
   repoRoot = DEFAULT_REPO_ROOT,
   exec = execFileSync,
 } = {}) {
+  const { fencedAncestorHead, includeSourceCommit } = parseNightlyPredecessorMode(mode);
   const packageMetadata = await fetchJson(
     fetchImpl,
     `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`,
@@ -361,9 +373,12 @@ export async function assertRegistryNightlyPredecessor({
   expectedSourceCommit,
   fetchImpl = fetch,
 }) {
+  if (typeof expectedSourceCommit !== 'string' || !/^[0-9a-f]{40}$/iu.test(expectedSourceCommit)) {
+    throw new Error('Qualified npm Nightly predecessor requires a valid source commit');
+  }
   const current = await resolveRegistryNightlyPredecessor({
     fetchImpl,
-    includeSourceCommit: expectedSourceCommit !== undefined,
+    mode: 'unfenced',
   });
   if (
     current.version !== expectedVersion ||
@@ -733,9 +748,9 @@ async function main() {
     });
     return;
   }
-  if (command === 'resolve-nightly-predecessor' && (args.length === 1 || args.length === 2)) {
-    const [output, fencedAncestorHead] = args;
-    const predecessor = await resolveRegistryNightlyPredecessor({ fencedAncestorHead });
+  if (command === 'resolve-nightly-predecessor' && args.length === 2) {
+    const [output, mode] = args;
+    const predecessor = await resolveRegistryNightlyPredecessor({ mode });
     appendOutputs(output, {
       version: predecessor.version,
       tarball_url: predecessor.tarballUrl,
@@ -744,7 +759,7 @@ async function main() {
     });
     return;
   }
-  if (command === 'assert-nightly-predecessor' && (args.length === 3 || args.length === 4)) {
+  if (command === 'assert-nightly-predecessor' && args.length === 4) {
     const [expectedVersion, expectedTarballUrl, expectedIntegrity, expectedSourceCommit] = args;
     await assertRegistryNightlyPredecessor({
       expectedVersion,
@@ -763,7 +778,7 @@ async function main() {
     return;
   }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|resolve-nightly-predecessor|assert-nightly-predecessor|validate-audit> ...`,
+    'Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ... | resolve-nightly-predecessor <output> <fence|unfenced> | assert-nightly-predecessor <version> <tarball-url> <integrity> <source-commit>',
   );
 }
 

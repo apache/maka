@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: ''
+      fence_predecessor:
+        description: Require the Nightly source commit to be an ancestor of the validation checkout
+        required: false
+        type: boolean
+        default: true
     outputs:
       release_candidate_artifact_id:
         description: Immutable artifact produced by the build job
@@ -83,6 +88,12 @@ on:
         description: Source commit proven for the npm Nightly predecessor
         value: ${{ jobs.state-root-qualification.outputs.release_predecessor_source_commit }}
   workflow_dispatch:
+    inputs:
+      fence_predecessor:
+        description: Require the Nightly source commit to precede the validation checkout
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -374,7 +385,7 @@ jobs:
       # is now this job's output.
       - name: Resolve the current npm Nightly as immutable evidence
         id: predecessor
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT" HEAD
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT" "${{ (github.event_name == 'pull_request' || inputs.fence_predecessor) && 'fence' || 'unfenced' }}"
       # Three runs of one script against one sandbox, not three runners. Two of
       # these transitions are between tarballs that were published and frozen,
       # so nothing in a pull request can change their outcome except the

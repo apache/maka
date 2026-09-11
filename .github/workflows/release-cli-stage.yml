@@ -89,6 +89,9 @@ jobs:
     uses: ./.github/workflows/cli-package-validation.yml
     with:
       source_commit: ${{ needs.authorize.outputs.source_commit }}
+      # The formal candidate is a frozen tag; the live Nightly may be newer,
+      # so this lane keeps provenance identity without applying PR ancestry fencing.
+      fence_predecessor: false
 
   stage:
     name: Stage maka-agent on npm
