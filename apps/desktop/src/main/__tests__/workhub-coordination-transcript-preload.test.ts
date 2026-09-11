@@ -220,16 +220,16 @@ test('WorkHub proves a long historical Turn tail before caching its final result
           sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
           durableThrough: 4, hasOlder: true, hasNewer: false, readThroughMessageId: 'tail',
           loadBefore: async () => undefined,
-          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: { navigation: number }) {
-            emit(navigation.navigation, [{ sequence: 1, message: intermediate }], false, true);
+          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: number) {
+            emit(navigation, [{ sequence: 1, message: intermediate }], false, true);
           },
-          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigation: number }) {
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: number) {
             loadAfters += 1;
             assert.equal(anchor, 1);
             // An extension splices onto the window; only a navigation replaces it.
             for (const batch of encodeDesktopTranscriptPage({
               sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-              navigation: navigation.navigation,
+              navigation,
             }, {
               durableThrough: 4, hasNewer: true,
               durable: [
@@ -500,7 +500,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
             ...snapshot, readThroughMessageId: null,
             acknowledgeTail: async () => {},
             loadBefore: unavailable, loadAfter: unavailable, loadLatest: unavailable,
-            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigation),
+            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation),
             close: async () => { closedCount++; },
           };
         },
@@ -556,11 +556,11 @@ test('WorkHub fills and trims its transcript window through the reader band', as
           loadBefore: async () => { olderReads += 1; },
           loadAround: async () => {},
           loadLatest: async () => {},
-          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigation: number }) {
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: number) {
             newerReads += 1;
             assert.equal(anchor, 3);
             for (const batch of encodeDesktopTranscriptPage(
-              { ...identity, navigation: navigation.navigation },
+              { ...identity, navigation },
               { durableThrough: 4, hasNewer: false, durable: [row(4, 'turn-c')] },
               { direction: 'newer', anchor },
             )) onBatch({ ...batch, deliverySequence: ++deliverySequence });

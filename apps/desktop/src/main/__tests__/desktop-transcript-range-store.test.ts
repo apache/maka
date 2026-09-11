@@ -235,10 +235,10 @@ test('cached reload snapshots allow the same live transcript generation to resum
       async loadBefore() {},
       async loadAfter() {},
       async loadAround(_sequence, _maxBytes, navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.navigation);
+        publish(identity.generation, `live-${opens}`, navigation);
       },
       async loadLatest(navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.navigation);
+        publish(identity.generation, `live-${opens}`, navigation);
       },
       async close() {},
     };

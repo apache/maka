@@ -22,7 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act, createElement, createRef, type ComponentProps } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
-import type { DesktopTranscriptHandle, DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
+import type { DesktopTranscriptHandle } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import {
@@ -46,8 +46,8 @@ test('sending before transcript open completes supersedes the queued bookmark wi
   const opening = deferred<DesktopTranscriptHandle>();
   const controller = createDesktopTranscriptRangeController(store, () => opening.promise);
   const lifecycle = createTranscriptRestoreLifecycle();
-  const requests: Array<{ sequence: number | null; navigation?: DesktopTranscriptNavigation }> = [];
-  const publish = (sequence: number | null, navigation: DesktopTranscriptNavigation) => {
+  const requests: Array<{ sequence: number | null; navigation: number }> = [];
+  const publish = (sequence: number | null, navigation: number) => {
     requests.push({ sequence, navigation });
     const turnId = sequence === null ? 'b' : 'a';
     for (const batch of encodeDesktopTranscriptSnapshot({
@@ -56,7 +56,7 @@ test('sending before transcript open completes supersedes the queued bookmark wi
       durable: [{ sequence: sequence ?? 20, message: {
         type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
       } }], overlay: [], hasOlder: true, hasNewer: sequence !== null,
-    }, navigation.navigation)) store.accept(batch);
+    }, navigation)) store.accept(batch);
   };
   const handle: DesktopTranscriptHandle = {
     sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
@@ -86,7 +86,7 @@ test('sending before transcript open completes supersedes the queued bookmark wi
     restore();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(requests.map(({ sequence, navigation }) =>
-      [sequence, navigation?.navigation]), [[null, 2]]);
+      [sequence, navigation]), [[null, 2]]);
     assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['answer-b']);
     const latest = store.snapshot();
     for (const batch of encodeDesktopTranscriptSnapshot({

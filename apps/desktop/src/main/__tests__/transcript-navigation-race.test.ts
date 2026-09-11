@@ -259,7 +259,7 @@ test('a fill landing under a pending jump joins the window it was anchored on', 
     async loadAfter() { assert.fail('unexpected'); },
     async loadAround(_anchor, _bytes, navigation) {
       await arrive.promise;
-      acceptSnapshot(store, navigation.navigation, 'generation-1', [record(9)]);
+      acceptSnapshot(store, navigation, 'generation-1', [record(9)]);
     },
     async loadLatest() { assert.fail('unexpected'); },
     async close() {},
@@ -369,12 +369,12 @@ test('follow latest invalidates an in-flight history navigation before open reso
     async loadBefore() { assert.fail('an obsolete history request was replayed'); },
     async loadAfter() { assert.fail('an obsolete newer request was replayed'); },
     async loadAround(anchor, _bytes, navigation) {
-      requests.push({ command: 'around', anchor, navigation: navigation.navigation });
-      acceptSnapshot(store, navigation.navigation, generation, [record(0)]);
+      requests.push({ command: 'around', anchor, navigation });
+      acceptSnapshot(store, navigation, generation, [record(0)]);
     },
     async loadLatest(navigation) {
-      requests.push({ command: 'latest', anchor: null, navigation: navigation.navigation });
-      acceptSnapshot(store, navigation.navigation, generation, [record(1)]);
+      requests.push({ command: 'latest', anchor: null, navigation });
+      acceptSnapshot(store, navigation, generation, [record(1)]);
     },
     async close() {},
   });
@@ -402,7 +402,7 @@ test('a rejected older navigation cannot fail the newer latest command', async (
       await historyResult;
     },
     async loadLatest(navigation) {
-      acceptSnapshot(store, navigation.navigation, identity.generation, [record(1)]);
+      acceptSnapshot(store, navigation, identity.generation, [record(1)]);
     },
     async close() {},
   }));

@@ -30,10 +30,6 @@ export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE = 'DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED';
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
-export interface DesktopTranscriptNavigation {
-  readonly navigation: number;
-}
-
 export interface DesktopTranscriptFragment {
   readonly source: 'durable' | 'overlay';
   readonly identity: number | string;
@@ -108,10 +104,10 @@ export interface DesktopTranscriptTailAcknowledgement {
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
   acknowledgeTail(through: number): Promise<void>;
-  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadLatest(navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: number): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: number): Promise<void>;
+  loadAround(sequence: number, maxBytes: number, navigation: number): Promise<void>;
+  loadLatest(navigation: number): Promise<void>;
   close(): Promise<void>;
 }
 

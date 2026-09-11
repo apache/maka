@@ -26,7 +26,6 @@ import {
   type DesktopTranscriptExtension,
   type DesktopTranscriptFragment,
   type DesktopTranscriptHandle,
-  type DesktopTranscriptNavigation,
 } from '../../../preload/transcript-contract.js';
 import { TranscriptReadSupersededError } from '../../features/conversation/index.js';
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
@@ -70,7 +69,7 @@ export function createDesktopTranscriptRangeController(
   };
   const command = async (
     replace: boolean,
-    run: (value: DesktopTranscriptHandle, navigation: DesktopTranscriptNavigation) => Promise<void>,
+    run: (value: DesktopTranscriptHandle, navigation: number) => Promise<void>,
   ) => {
     // Mint before awaiting an open handle or any in-flight page. Main uses the
     // number only to cancel work a newer navigation has made pointless, so an
@@ -83,7 +82,7 @@ export function createDesktopTranscriptRangeController(
     try {
       const value = await current();
       if (!isCurrent()) return;
-      await run(value, { navigation });
+      await run(value, navigation);
     } catch (error) {
       if (isCurrent()) throw error;
     }

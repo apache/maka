@@ -62,7 +62,9 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurn'
   | 'shellRunUpdates'
   | 'goalIndicator'
-> {
+  | 'onPrefetchHistory'
+  | 'onRetainWindow'
+>, Required<Pick<ComponentProps<typeof ChatView>, 'onPrefetchHistory' | 'onRetainWindow'>> {
   /**
    * #1985: the live projection and the shell-run records are the only session
    * UI state that changes per streamed token, and this surface is their only
@@ -89,10 +91,6 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  hasOlderHistory?: boolean;
-  hasNewerHistory?: boolean;
-  onPrefetchHistory: (edge: 'older' | 'newer') => Promise<boolean>;
-  onRetainWindow: (window: { firstTurnId: string; lastTurnId: string }) => void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -125,10 +123,6 @@ export function ChatMessageSurface({
   connections,
   onRefreshConnections,
   onSkip,
-  hasOlderHistory,
-  hasNewerHistory,
-  onPrefetchHistory,
-  onRetainWindow,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
@@ -245,10 +239,6 @@ export function ChatMessageSurface({
             deepResearchRun={deepResearchRun}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-            hasOlderHistory={hasOlderHistory}
-            hasNewerHistory={hasNewerHistory}
-            onPrefetchHistory={onPrefetchHistory}
-            onRetainWindow={onRetainWindow}
           />
         )}
       </ChatViewGoalProjectionConsumer>
