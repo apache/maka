@@ -64,12 +64,73 @@ describe('pickDingTalkSendRoute', () => {
     assert.equal(pickDingTalkSendRoute('oto:', 'app-key-1', 'hi'), null);
   });
 
-  it('fails closed on unstamped ids instead of guessing prefixes (#5111)', () => {
-    // A bare real 1:1 conversationId starts with `cid` — the old
-    // startsWith('cid') guess routed it to the group endpoint and DingTalk
-    // rejected every direct reply. Both shapes below are unstamped.
-    assert.equal(pickDingTalkSendRoute('cidZz9wYq==', 'app-key-1', 'hi'), null);
-    assert.equal(pickDingTalkSendRoute('cidp-group', 'app-key-1', 'hi'), null);
+  it('keeps legacy routing for bare ids that predate stamping (#5116)', () => {
+    // A bare id is persisted state a user typed by hand (a scheduled
+    // task's chatId, for example). The pre-stamping discriminator was
+    // correct for those values — a bare group `cid…` delivered fine — so
+    // both legacy shapes keep routing instead of failing closed.
+    assert.deepEqual(pickDingTalkSendRoute('cidZz9wYq==', 'app-key-1', 'hi'), {
+      path: '/v1.0/robot/groupMessages/send',
+      body: {
+        robotCode: 'app-key-1',
+        openConversationId: 'cidZz9wYq==',
+        msgKey: 'sampleText',
+        msgParam: '{"content":"hi"}',
+      },
+    });
+    assert.deepEqual(pickDingTalkSendRoute('01234567890123456789', 'app-key-1', 'hi'), {
+      path: '/v1.0/robot/oToMessages/batchSend',
+      body: {
+        robotCode: 'app-key-1',
+        userIds: ['01234567890123456789'],
+        msgKey: 'sampleText',
+        msgParam: '{"content":"hi"}',
+      },
+    });
+  });
+
+  it('round-trips the stamp: payload in, chatId out, back into the router (#5116)', () => {
+    // The stamp/decode contract spans two helpers; this drives a real
+    // payload through both ends and asserts the endpoint the route lands
+    // on, which is the observable contract.
+    const cases: ReadonlyArray<{
+      name: string;
+      payload: Record<string, unknown>;
+      chatId: string;
+      path: string;
+    }> = [
+      {
+        name: 'group',
+        payload: {
+          senderId: 'u1',
+          conversationId: 'cidZz9wYq==',
+          conversationType: '2',
+          text: { content: 'hi' },
+        },
+        chatId: 'group:cidZz9wYq==',
+        path: '/v1.0/robot/groupMessages/send',
+      },
+      {
+        name: '1:1 with a staff id',
+        payload: {
+          senderId: 'u1',
+          senderStaffId: '01234567890123456789',
+          conversationId: 'cidZz9wYq==',
+          conversationType: '1',
+          text: { content: 'hi' },
+        },
+        chatId: 'oto:01234567890123456789',
+        path: '/v1.0/robot/oToMessages/batchSend',
+      },
+    ];
+    for (const { name, payload, chatId, path } of cases) {
+      const event = dingTalkPayloadToEvent(payload as never, 1);
+      assert.ok(event, name);
+      assert.equal(event.chatId, chatId, name);
+      const route = pickDingTalkSendRoute(event.chatId, 'app-key-1', 'hi');
+      assert.ok(route, name);
+      assert.equal(route.path, path, name);
+    }
   });
 });
 
@@ -128,7 +189,10 @@ describe('dingTalkPayloadToEvent', () => {
     assert.equal(direct.chatId, 'oto:01234567890123456789');
     assert.equal(direct.isGroup, false);
     assert.equal(direct.text, 'hello');
-    assert.equal(direct.sourceMessageId, 'oto:01234567890123456789:1700000000000');
+    // The synthetic key carries the raw conversationId, not the stamped
+    // chatId — the route prefix would otherwise be baked into every
+    // downstream dedupe key.
+    assert.equal(direct.sourceMessageId, 'cidZz9wYq==:1700000000000');
 
     const group = dingTalkPayloadToEvent(
       {
