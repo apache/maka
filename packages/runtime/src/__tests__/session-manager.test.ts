@@ -4564,6 +4564,123 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
+  for (const route of ['direct', 'legacy'] as const) {
+    test(`serializes concurrent ${route} boundary commits before they can become narrowing`, {
+      timeout: 10_000,
+    }, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-boundary-commit-race-'));
+      const store = createSessionStore(root);
+      // Hide optional capabilities from Runtime, without changing SQLite's own
+      // internal method calls, to exercise the legacy SessionStore contract.
+      const runtimeStore =
+        route === 'legacy'
+          ? new Proxy(store, {
+              get(target, key) {
+                if (key === 'readHeaderRecordSnapshot' || key === 'updateSessionConfiguration')
+                  return undefined;
+                const value = Reflect.get(target, key, target);
+                return typeof value === 'function' ? value.bind(target) : value;
+              },
+            })
+          : store;
+      const gate = makeGate();
+      t.after(async () => {
+        gate.release();
+        await store.close?.();
+        await rm(root, { recursive: true, force: true });
+      });
+      const calls: string[] = [];
+      const backends = new BackendRegistry();
+      let backend: TestBackend | undefined;
+      backends.register('ai-sdk', (ctx) => (backend = new TestBackend(ctx, gate)));
+      const manager = new SessionManager({
+        store: runtimeStore,
+        backends,
+        newId: nextId(),
+        now: nextNow(979),
+        shellRuns: {
+          async terminateSession(sessionId: string) {
+            calls.push(`terminate:${sessionId}`);
+            return { sessionId, token: Symbol('test') };
+          },
+          async commitSessionClose() {
+            calls.push('commit');
+          },
+          rollbackSessionClose() {
+            calls.push('rollback');
+          },
+          resumeSession(sessionId: string) {
+            calls.push(`resume:${sessionId}`);
+          },
+        } as never,
+      });
+      const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+      const update = (bypass: boolean) =>
+        route === 'direct'
+          ? manager.setExecutionBoundaryKind(session.id, bypass ? 'bypass' : 'managed')
+          : manager.setPermissionMode(session.id, bypass ? 'bypass' : 'ask');
+      const turn = manager
+        .sendMessage(session.id, { turnId: 'turn-racing', text: 'keep running' })
+        [Symbol.asyncIterator]();
+      try {
+        await turn.next();
+        // Both requests initially observe Explore. The second must not reuse
+        // that classification after the first has committed Bypass.
+        const results = await Promise.allSettled([update(true), update(false)]);
+        assert.deepStrictEqual(
+          results.map((result) => result.status),
+          ['fulfilled', 'rejected'],
+        );
+        const conflict = results[1];
+        assert.ok(conflict?.status === 'rejected');
+        assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(conflict.reason.code, 'operation_conflict');
+        assert.deepStrictEqual(await store.readExecutionBoundary(session.id), {
+          kind: 'bypass',
+          revision: 1,
+        });
+        assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
+        assert.deepStrictEqual(manager.runningTurnIds(session.id), ['turn-racing']);
+        assert.strictEqual(backend?.stopCalls, 0);
+        assert.deepStrictEqual(calls, []);
+        // A fresh retry is now correctly classified as narrowing.
+        await assert.rejects(update(false), /当前任务正在运行|linked Turn is active/);
+      } finally {
+        gate.release();
+        while (!(await turn.next()).done) {}
+      }
+      // The conflict released the mutation lane; idle narrowing still revokes shells.
+      await update(false);
+      assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+      assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    });
+  }
+
+  test('rejects unprotected boundary commits when admission mutation authority is unavailable', async () => {
+    const store = new MemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    Object.defineProperty(kernel, 'runSessionAdmissionMutation', { value: undefined });
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      runtimeKernel: kernel,
+      newId: nextId(),
+      now: nextNow(979),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    await assert.rejects(
+      manager.setExecutionBoundaryKind(session.id, 'bypass'),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'operation_unavailable');
+        return true;
+      },
+    );
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'managed');
+    assert.deepStrictEqual(kernel.disposed, []);
+  });
+
   for (const checkpoint of [
     'header',
     'safety',

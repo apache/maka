@@ -1735,8 +1735,19 @@ export class SessionManager {
       // check only gets easier — so the grant is just written. Waiting for the
       // Session to go idle is what let a running Turn, or a Goal's continuation
       // holding a claim near-continuously, keep the user's own grant out.
-      const commit = await prepareBoundaryCommit();
-      const result = await commit();
+      if (!this.runtimeKernel.runSessionAdmissionMutation) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session boundary changes require Runtime admission mutation authority',
+        );
+      }
+      // Serialize the revision check through commit without requiring an idle
+      // Turn. Otherwise two unversioned writes can both pass the check, then
+      // the later write can narrow the first grant using its stale classification.
+      const result = await this.runtimeKernel.runSessionAdmissionMutation([sessionId], async () => {
+        const commit = await prepareBoundaryCommit();
+        return commit();
+      });
       // Not `disposeBackend`: disposing a live Turn's backend stops that Turn.
       // Invalidation refreshes it now when the Session is idle, and otherwise
       // defers to the next activation, which disposes before it starts.
