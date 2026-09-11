@@ -2615,6 +2615,35 @@ export const Performance45Tools: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
 };
 
+// Fixed membership: geometry probes must not mistake history paging for lazy
+// layout. Mixed prose and long 100+ line CodeBlocks exercise all three
+// skipping boundaries (Turn, timeline block, Astryx line chunk).
+export const GeometryMixed24Turns: Story = {
+  render: () => <ComposedShell chat={{ messages: Array.from({ length: 24 }, (_, i) => {
+    const turnId = `geometry-${i}`;
+    const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
+      `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
+    ).join('\n\n');
+    const code = i % 6 === 0
+      ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
+          `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+        ).join('\n') + '\n```'
+      : '';
+    return [user(`geometry-u-${i}`, turnId, 50 - i, `检查第 ${i + 1} 组。`),
+      assistant(`geometry-a-${i}`, turnId, 50 - i, prose + code)];
+  }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
+};
+
+export const GeometryLongCode: Story = {
+  render: () => <ComposedShell chat={{ messages: [
+    user('geometry-code-u', 'geometry-code', 2, '检查完整长代码块的滚动尺寸。'),
+    assistant('geometry-code-a', 'geometry-code', 1, '```text\n' +
+      Array.from({ length: 1200 }, (_, line) =>
+        `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+      ).join('\n') + '\n```'),
+  ], hasOlderHistory: false, hasNewerHistory: false }} />,
+};
+
 export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,
   play: async () => {
