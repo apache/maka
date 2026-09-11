@@ -107,6 +107,7 @@ import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import {
   continuationSafetyDigest,
   RootTurnCoordinator,
+  type HostWorkHubRoutingDecisionPreparation,
   type TurnStartOutcome,
 } from '../server/root-turn-coordinator.js';
 import {
@@ -3733,6 +3734,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
     const sent: BackendSendInput[] = [];
     const successorReady = [deferred<void>(), deferred<void>()];
     const successorRelease = [deferred<void>(), deferred<void>()];
+    const preparedRouting: Array<{ turnId: string; text: string }> = [];
     const capabilities = new HostClientCapabilityCoordinator({
       ...clientCapabilityCoordinatorTestAdmission(),
       activation: new RuntimePolicyActivationGate(),
@@ -3743,6 +3745,14 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
     });
     const fixture = await createFailureFixture({
       clientCapabilities: capabilities,
+      ...(toolProfile === 'workhub-coordination-v2'
+        ? {
+            prepareWorkHubRoutingDecision: async (input: HostWorkHubRoutingDecisionPreparation) => {
+              preparedRouting.push({ turnId: input.turnId, text: input.content.text });
+              return { kind: 'routing' as const, disposition: 'answer_here' as const };
+            },
+          }
+        : {}),
       registerBackend: (backends) => {
         backends.register(
           'ai-sdk',
@@ -3851,6 +3861,12 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
         await fixture.coordinator.readActiveWorkHubRequest(turnId),
         toolProfile === 'workhub-coordination-v2' ? content : undefined,
       );
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRoutingRequest(turnId),
+        toolProfile === 'workhub-coordination-v2'
+          ? { content, decision: { kind: 'routing', disposition: 'answer_here' } }
+          : undefined,
+      );
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
       const submitted = await submit('workhub-steering');
       assert.equal(
@@ -3876,6 +3892,13 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           text: 'workhub-followup',
         });
         assert.deepEqual(
+          await fixture.coordinator.readActiveWorkHubRoutingRequest(sent[1]!.turnId),
+          {
+            content: { text: 'workhub-followup' },
+            decision: { kind: 'routing', disposition: 'answer_here' },
+          },
+        );
+        assert.deepEqual(
           fixture.messages
             .projection(WORKHUB_COORDINATION_SESSION_ID)
             .followup.map((entry) => entry.messageId),
@@ -3892,6 +3915,11 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
         assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[2]!.turnId), {
           text: 'workhub-followup-second',
         });
+        assert.deepEqual(preparedRouting, [
+          { turnId, text: content.text },
+          { turnId: sent[1]!.turnId, text: 'workhub-followup' },
+          { turnId: sent[2]!.turnId, text: 'workhub-followup-second' },
+        ]);
         successorRelease[1]!.resolve();
         await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
         assert.deepEqual(consumed, ['workhub-steering']);
@@ -6119,6 +6147,9 @@ async function createFailureFixture(options: {
     admission: RootTurnAdmission,
     state: 'pending_fire_required' | 'run_recorded',
   ): Promise<void>;
+  prepareWorkHubRoutingDecision?(
+    input: HostWorkHubRoutingDecisionPreparation,
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -6325,6 +6356,7 @@ async function createFailureFixture(options: {
       options.agentGraphEpochs,
       undefined,
       options.directoryHostId,
+      options.prepareWorkHubRoutingDecision,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({

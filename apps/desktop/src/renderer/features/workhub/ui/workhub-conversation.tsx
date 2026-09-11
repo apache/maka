@@ -18,14 +18,60 @@
  */
 
 import { useContext, useMemo, type ComponentProps, type CSSProperties } from 'react';
-import { ChatView } from '@maka/ui';
+import { ChatView, useUiLocale } from '@maka/ui';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Button } from '@astryxdesign/core';
 import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
 import type { WorkHubLinkedWork } from '../model/linked-work.js';
+import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
+
+export function WorkHubResultCard(props: {
+  work: WorkHubLinkedWork;
+  locale: UiLocale;
+  highlighted: boolean;
+  onHighlight(highlighted: boolean): void;
+  onOpenWork(sessionId: string): void;
+}) {
+  const { work } = props;
+  const copy = workHubLiveCopy[props.locale];
+  const state = work.state ?? 'accepted';
+  const stateLabel = {
+    accepted: copy.delegationAccepted,
+    running: copy.delegationRunning,
+    waiting_for_user: copy.delegationWaiting,
+    completed: copy.delegationCompleted,
+    failed: copy.delegationFailed,
+    aborted: copy.delegationAborted,
+    recovering: copy.delegationRecovering,
+  }[state];
+  return <div className="workhub-message-identity workhub-work-identity"
+    style={{ '--workhub-work-hue': workHubIdentityHue(work.targetSessionId) } as CSSProperties}
+    data-work-session-id={work.targetSessionId}
+    data-work-highlighted={props.highlighted}
+    data-work-state={state}
+    onMouseEnter={() => props.onHighlight(true)}
+    onMouseLeave={() => props.onHighlight(false)}
+    onFocus={() => props.onHighlight(true)}
+    onBlur={() => props.onHighlight(false)}>
+    <div className="workhub-result-card">
+      <div className="workhub-result-heading">
+        <strong>{work.targetSessionName}</strong>
+        <span role="status">{stateLabel}</span>
+      </div>
+      {work.resultPreview ? <p>{work.resultPreview}</p> : null}
+      <Button
+        variant="ghost"
+        label={work.resultPreview ? copy.openResult : copy.openWork}
+        onClick={() => props.onOpenWork(work.targetSessionId)}
+      />
+    </div>
+  </div>;
+}
 
 export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { workLinks: readonly WorkHubLinkedWork[]; onOpenWork(sessionId: string): void }) {
   const { onOpenWork, workLinks: assignments, ...chat } = props;
   const highlight = useContext(WorkHubHighlightContext);
+  const locale = useUiLocale();
   const workByTurn = useMemo(() => new Map(assignments.map((assignment) => [assignment.coordinationTurnId, assignment.targetSessionId])), [assignments]);
   const promptRailDecorations = useMemo(() => new Map([...workByTurn].map(([turnId, sessionId]) => [turnId, {
     accentColor: `oklch(var(--workhub-${highlight.sessionId === sessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(sessionId)})`,
@@ -38,16 +84,13 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       id: assignment.id,
       afterTurnId: assignment.coordinationTurnId,
       renderWhenAnchorMissing: true,
-      content: <div className="workhub-message-identity workhub-work-identity"
-        style={{ '--workhub-work-hue': workHubIdentityHue(assignment.targetSessionId) } as CSSProperties}
-        data-work-session-id={assignment.targetSessionId}
-        data-work-highlighted={highlight.sessionId === assignment.targetSessionId}
-        onMouseEnter={() => highlight.highlight(assignment.targetSessionId)}
-        onMouseLeave={() => highlight.highlight(undefined)}
-        onFocus={() => highlight.highlight(assignment.targetSessionId)}
-        onBlur={() => highlight.highlight(undefined)}>
-        <Button variant="ghost" label={assignment.targetSessionName} onClick={() => onOpenWork(assignment.targetSessionId)} />
-      </div>,
+      content: <WorkHubResultCard
+        work={assignment}
+        locale={locale}
+        highlighted={highlight.sessionId === assignment.targetSessionId}
+        onHighlight={(active) => highlight.highlight(active ? assignment.targetSessionId : undefined)}
+        onOpenWork={onOpenWork}
+      />,
     }))}
   />;
 }

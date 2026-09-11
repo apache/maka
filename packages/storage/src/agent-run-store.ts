@@ -2032,16 +2032,19 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     });
   }
   if (value.kind === 'workhub_coordination') {
+    const routingDecision = normalizeWorkHubRoutingDecision(value.routingDecision);
     if (
       !hasExactKeys(value, [
         'kind',
         'inputDigest',
         ...(value.capabilityBinding === undefined ? [] : ['capabilityBinding']),
+        ...(value.routingDecision === undefined ? [] : ['routingDecision']),
         ...(value.operation === undefined ? [] : ['operation']),
         ...(value.actionId === undefined ? [] : ['actionId']),
       ]) ||
       (value.capabilityBinding !== undefined && !isSha256Digest(value.capabilityBinding)) ||
       (value.actionId !== undefined && value.operation !== 'action') ||
+      (value.operation !== undefined && routingDecision !== undefined) ||
       (value.operation !== undefined && value.operation !== 'action') ||
       (value.actionId !== undefined &&
         (typeof value.actionId !== 'string' || !isSafeId(value.actionId))) ||
@@ -2057,6 +2060,7 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
         ? { capabilityBinding: value.capabilityBinding }
         : {}),
       ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
+      ...(routingDecision ? { routingDecision } : {}),
     });
   }
   if (value.kind === 'regenerate') {
@@ -2242,6 +2246,46 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     agentName: value.agentName,
     sourceRunId: value.sourceRunId as string,
   });
+}
+
+function normalizeWorkHubRoutingDecision(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value) || typeof value.kind !== 'string') {
+    throw new Error('Invalid WorkHub routing decision');
+  }
+  if (
+    value.kind === 'routing' &&
+    (value.disposition === 'answer_here' ||
+      value.disposition === 'create_new' ||
+      value.disposition === 'clarify') &&
+    hasExactKeys(value, ['kind', 'disposition'])
+  ) {
+    return Object.freeze({ kind: 'routing' as const, disposition: value.disposition });
+  }
+  if (
+    value.kind === 'routing' &&
+    value.disposition === 'delegate_existing' &&
+    typeof value.candidateSetId === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(value.candidateSetId) &&
+    typeof value.candidateRef === 'string' &&
+    isSafeId(value.candidateRef) &&
+    hasExactKeys(value, ['kind', 'disposition', 'candidateSetId', 'candidateRef'])
+  ) {
+    return Object.freeze({
+      kind: 'routing' as const,
+      disposition: 'delegate_existing' as const,
+      candidateSetId: value.candidateSetId,
+      candidateRef: value.candidateRef,
+    });
+  }
+  if (
+    value.kind === 'linked' &&
+    (value.operation === 'correct' || value.operation === 'stop' || value.operation === 'resume') &&
+    hasExactKeys(value, ['kind', 'operation'])
+  ) {
+    return Object.freeze({ kind: 'linked' as const, operation: value.operation });
+  }
+  throw new Error('Invalid WorkHub routing decision');
 }
 
 function deepFreezeRootTurnMessageContent(content: MessageContent): void {
