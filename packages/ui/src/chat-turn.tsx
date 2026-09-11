@@ -813,6 +813,11 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
+                safeResumeAction={
+                  statusBarStatus === 'aborted' && turn.abortSource === 'renderer.stop_button'
+                    ? props.safeResumeAction
+                    : undefined
+                }
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -1032,6 +1037,7 @@ function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
+  safeResumeAction?: { pending: boolean; onResume(): void };
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1041,7 +1047,7 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasActions = props.actions.length > 0 || hasSlotContent;
+  const hasActions = props.actions.length > 0 || hasSlotContent || !!props.safeResumeAction;
   const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
@@ -1078,6 +1084,17 @@ function TurnFooter(props: {
                 onClick={() => props.onAction?.(action.id)}
               />
             ),
+          )}
+          {props.safeResumeAction && (
+            <UiButton
+              variant="ghost"
+              size="sm"
+              isDisabled={props.safeResumeAction.pending}
+              onClick={props.safeResumeAction.onResume}
+              label={
+                props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
+              }
+            />
           )}
           {hasSlotContent ? (
             <MakaClientSlotOutlet

@@ -355,6 +355,7 @@ export interface TurnViewModel {
    * Absent on hand-built view models, which are treated as non-evidence.
    */
   statusSource?: TurnRecord["statusSource"];
+  abortSource?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
   errorClass?: string;
@@ -710,6 +711,7 @@ export function materializeTurns(
         turnId,
         status: record?.status ?? "completed",
         statusSource: record?.statusSource ?? "inferred",
+        ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.retriedFromTurnId
           ? { retriedFromTurnId: record.retriedFromTurnId }
           : {}),
