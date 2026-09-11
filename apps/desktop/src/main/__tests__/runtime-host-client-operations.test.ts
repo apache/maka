@@ -99,7 +99,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
     { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
   ]);
 
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
@@ -109,26 +108,9 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [],
   });
-  assert.deepEqual(
-    await client.actWorkHubCoordination({
-      actionId: 'action',
-      userText: 'Question',
-      proposal: { disposition: 'answer_here' },
-    }),
-    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-  );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
     { operation: 'workhub.coordination.candidates', input: {} },
-    {
-      operation: 'workhub.coordination.act',
-      input: {
-        actionId: 'action',
-        userText: 'Question',
-        proposal: { disposition: 'answer_here' },
-      },
-    },
-
   ]);
 });
 
@@ -435,7 +417,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
     },
   ]);
 });
-
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([

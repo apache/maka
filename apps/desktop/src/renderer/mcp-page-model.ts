@@ -27,6 +27,19 @@ import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from './locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
+/** Electron preserves error messages, but not custom error fields. Map only
+ * the fixed publication-error messages to safe, localized presentation. */
+export function mcpWriteFailureMessage(error: unknown, copy: McpCopy): string | undefined {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (message.includes('MCP write durability is uncertain and runtime state is out of sync')) {
+    return copy.errors.writeOutOfSync;
+  }
+  if (message.includes('Atomic file commit outcome is unknown; reload before retrying')) {
+    return copy.errors.writeDurabilityUnknown;
+  }
+  return undefined;
+}
+
 export type McpEditorDraft = {
   id: string;
   kind: 'stdio' | 'remote';

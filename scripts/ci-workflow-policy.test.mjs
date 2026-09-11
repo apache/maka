@@ -962,6 +962,16 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
   assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
 });
 
+test('core CI rebuilds the DeepSeek Harness tree before accepting a new fingerprint', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.match(workflow, /name: Verify DeepSeek Harness toolchain fingerprint/u);
+  assert.match(workflow, /if: steps\.plan\.outputs\.deepseek_harness_toolchain == 'true'/u);
+  assert.match(workflow, /prepare-deepseek-harness-toolchain\.mjs --out/u);
+  assert.match(workflow, /TOOLCHAIN_IDENTITIES\["deepseek-harness"\]\.fingerprint/u);
+  assert.match(workflow, /cd "\$toolchain_root" && sha256sum --check --quiet checksums\.sha256/u);
+});
+
 test('everything that runs before dependency setup imports only node builtins', () => {
   // The steps above `setup-node` run against a bare checkout, so a script there
   // that imports a devDependency throws `ERR_MODULE_NOT_FOUND`. Whether that

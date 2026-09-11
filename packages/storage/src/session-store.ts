@@ -484,7 +484,10 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     expectedRevision?: `sha256:${string}`,
   ): Promise<SessionCatalogPageResult>;
   readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot>;
-  readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
+  readCatalogRecord(
+    sessionId: string,
+    roleScope?: 'ordinary' | 'recoverable',
+  ): Promise<SessionCatalogRecord>;
   updateHeaderVersioned(
     sessionId: string,
     patch: SessionHeaderPatch,
@@ -982,9 +985,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return projectHeaderSnapshot(await this.metadata.read(sessionId));
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionCatalogRecord> {
     await this.ensureCatalogProjectionReadable();
-    const record = await this.metadata.readCatalogRecord(sessionId);
+    const record = await this.metadata.readCatalogRecord(sessionId, roleScope);
     return {
       ...projectHeaderSnapshot(record),
       activityAt: record.activityAt,
@@ -1121,9 +1127,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     await this.metadata.updateMessageAdmission(admission);
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     await this.ensureReady();
-    await this.metadata.reorderMessageAdmissions(sessionId, messageIds);
+    await this.metadata.reorderMessageAdmissions(sessionId, messageIds, disposition);
   }
 
   async cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {

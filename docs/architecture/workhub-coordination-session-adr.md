@@ -25,6 +25,12 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. This change establishes the
+shared Intent, Recall, and deterministic Policy contracts plus a production-model
+adapter, but it does not change the default routing strategy. The default can move
+only after production-path comparative evidence required by the delivery tracker.
+See the [current domain language](../workhub-domain-language.md).
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
@@ -48,7 +54,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and typed dispositions use that same Session substrate.
+coordination transcript and typed action proposals use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -71,71 +77,9 @@ ordinary navigation and target discovery.
 The Coordination Session is authoritative only for the coordination conversation.
 It never acquires authority over an ordinary Session's execution or lifecycle.
 
-## Dispositions and action admission
+## Routing dispositions, linked operations, and admission
 
-An admitted Coordination request owns a real root Turn and Run in the reserved
-WorkHub Session. `answer_here` executes the existing model answer path. Action
-Turns execute the Host operation through the same Runtime admission, execution
-ownership, terminal commit, and recovery machinery; admission does not require an
-extra model call. Intent, Resolver, and clarification can later invoke models
-inside this coordination execution without changing target Session authority.
-
-A successful Action Run writes a host-authored, model-hidden
-`RuntimeEvent.actions.coordination` receipt. The transcript projects it as an
-`action_receipt`, not an invented assistant response. Clarification carries its
-prompt; resume carries the target reference and admission acknowledgement.
-The synthetic `workhub.coordination.record` operation is removed. Released history
-remains readable without inventing admissions for old summary rows.
-
-A receipt acknowledges what the operation accepted; it is not the target's current
-execution state. Candidate-snapshot expiry is a distinct refusal. For a replacement
-of an existing Session, the client may refresh its opaque candidate reference at
-most twice while preserving the action, source delegation, and chosen target.
-Routing is not rerun; a missing or renamed target, another refusal, or continued
-snapshot churn stops the attempt. The Host still validates every refreshed proposal.
-
-Re-delivery of a completed request returns that receipt, including
-after restart, without repeating the effect. Incoming execution content is validated
-against the admitted descriptor even when another request wins admission concurrently;
-legacy compatibility ignores only an absent action identity field, never the input digest.
-Failed attempts remain terminal;
-a same-action retry gets a subsequent admitted Turn. If the failed attempt already
-committed a receipt, the new Turn reuses that result without repeating the effect.
-When target resume admission committed before a missing receipt, retry first
-consults the deterministic target Turn admission and acknowledges that original
-Turn. It does not plan another continuation from the newer target lineage.
-
-The shared transcript reader derives receipts directly from RuntimeEvents and
-retains legacy atomic linkage facts and released history. A rebuildable SQLite
-index holds only `(source, sourceSequence)` references in stable page order; it
-contains no message bodies, action results, or execution authority. Initial
-backfill and incremental refresh commit at most 64 references per foreground
-request. An unfinished catch-up returns `transcript_preparing`, including the
-committed index position; it publishes no incomplete snapshot or empty-history
-claim. Subscription clients yield between resumable requests and retain their
-loading state within the open deadline. Later page and overlay-release requests
-retain their independent per-request timeout, not the remaining preparation time.
-Reader recreation resumes the committed
-source positions. There is no detached maintenance worker or second task lifecycle.
-Once caught up, normal pages
-seek the index and project bounded source batches/Turns. Wall-clock regressions
-and later appends cannot renumber existing pages. No receipt is written back into
-the legacy message store. The WorkHub view groups receipt retries by action
-identity rather than exposing each physical attempt as a new conversation card.
-Persisted user inputs and Run terminal states always remain readable, including
-a failed attempt whose receipt was never committed. The projection carries the
-admitted action identity alongside the physical Turn identity. Only a visible
-receipt or atomic link suppresses its input rows; a bounded page without that
-replacement still shows the failed inputs. Missing acknowledgement is presented
-as incomplete confirmation, without claiming the target effect failed.
-Host-only Turns retain execution ownership without activating a model provider.
-An interrupted Host action is
-closed by Runtime recovery and never replayed as a model answer. Target-owned
-claims, assignment atomicity, and resume source-boundary checks still decide
-whether an unfinished effect can continue. Transactional delegation/Stop facts
-remain authoritative for their existing ownership and linkage projections.
-
-Every WorkHub input resolves to exactly one proposed **disposition**:
+Every ordinary routing input resolves to exactly one proposed **routing disposition**:
 
 - `answer_here`: answer in the Coordination Session.
 - `delegate_existing`: delegate concrete work to one bounded, valid ordinary
@@ -144,12 +88,34 @@ Every WorkHub input resolves to exactly one proposed **disposition**:
 - `clarify`: continue clarification in the Coordination Session without guessing a
   target or creating a Session.
 
-Linked correction is a user-confirmed coordination operation over a prior durable
-delegation, not a model disposition. Its replacement target is still restricted to
-`delegate_existing` or explicit `create_new` admission.
+Correction, stop, and resume are **linked operations** over a prior durable
+delegation, not additional routing dispositions. Correction's replacement target
+is still restricted to `delegate_existing` or explicit `create_new` admission.
+Stop and resume follow the durable delegation-to-Session-to-Turn lineage rather
+than inferring an operation target from a similarly named Session.
+
+The decision flow is:
+
+```text
+user input
+  -> intent analysis
+  -> Session Resolver or linked-target resolution
+  -> Coordination policy
+  -> routing disposition or linked-operation proposal
+  -> deterministic Action Gate
+  -> owning Host / Session
+```
+
+Intent describes what the user wants; it does not select authority. The Session
+Resolver returns bounded existing-Session evidence and never creates a Session.
+Linked-target resolution starts from a bounded WorkHub-owned delegation and
+follows its durable Message, Turn, and continuation lineage. Coordination policy
+combines that evidence into an advisory proposal. Missing, stale, or ambiguous
+linkage fails closed instead of falling back to name similarity.
 
 All model and routing output is advisory. Before any write, a deterministic
-**Action Gate** admits or rejects the proposed disposition and operation. The gate
+**Action Gate** admits or rejects the proposed routing disposition or linked
+operation. The gate
 enforces Runtime Host and target validity, archive and waiting state, self-route
 exclusion, explicit `create_new`, and existing tool and permission ceilings. For a
 replacement, the gate additionally requires explicit correction evidence in the
@@ -157,23 +123,38 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
-Routing experiments replace Action Intent classification and/or Session Resolver
-recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
-one Intent component and one Resolver component; it has no proposal-producing
-`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
-R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
-intent with deterministic recall. These are experiment configurations, not separate
-policy implementations or a production model rollout.
+The optional model-routing adapter first calls a tool-free Intent model using the
+Coordination Session's saved connection, model, and thinking setting. Only
+`execute` and ordinary `continue` invoke a second tool-free Recall call. Recall sees
+at most 32 candidates containing a request-scoped opaque reference, bounded
+Session/workspace names, state, and recency bucket; it does not receive stable
+Session identity, paths, file contents, tools, or capabilities. Intent sees the
+current request and at most eight bounded user/assistant messages, but no candidates.
 
-Intent output contains no target. Resolver output contains only ranked or ambiguous
-opaque candidate references, or no match; it cannot return creation or a disposition.
-The controller shares one bounded candidate context across arms; deterministic
-components retain full request text, while model adapters bound text at the model
-call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
-A model recall budget does not hide known Sessions from exact-name or correction
-rules in that fixed Policy. Policy retains trusted-text creation,
-ambiguity, correction and focus constraints. Model ranking alone cannot authorize
-work, and every resulting proposal still goes through the Host-owned Gate.
+The deterministic Coordination Policy maps those assessments to one disposition or
+linked operation. Invalid model output, provider failure, unavailable candidates,
+empty recall, and ambiguity all fail closed to `clarify`; none implies `create_new`.
+When that adapter is explicitly installed at composition, the result is stored on
+the root-Turn admission and reused by recovery. Every fresh root, including queued
+follow-ups and pending-message recovery, receives its own decision. The main
+Coordination model receives that bound result in its Turn prompt. A side-effecting
+proposal that changes its operation, candidate set, or candidate reference is
+rejected before the existing Action Gate. `answer_here` and `clarify` remain normal
+transcript outcomes.
+
+Before any production default changes, model strategies must be compared through
+the repository's existing `maka eval` Experiment/Cell/Attempt/Result path while
+exercising the production projection and admission seams. A separate WorkHub-only
+evaluation framework is deliberately not introduced here. The required evidence
+must report Intent accuracy, recall-kind accuracy, Recall@K, MRR, outcome accuracy,
+unsafe binds, implicit creation, unnecessary clarification, latency, token usage,
+and cost separately.
+
+Intent output contains no target. Session Resolver output contains only bounded
+opaque candidate references; it cannot return creation or a disposition. Linked
+target evidence is likewise advisory and cannot prove ownership. Model ranking or
+tool selection alone cannot authorize work, and every resulting proposal still goes
+through the Host-owned Gate with the original trusted user request.
 
 ## Delegation links rather than copies transcripts
 

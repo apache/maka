@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
+import { workHubControlBridge } from './workhub-control.js';
+import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -73,6 +76,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -260,6 +264,7 @@ import { projectDesktopSharedSessionSummary } from '../shared/shared-session-cat
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
 let activeRuntimeHostGeneration = 0;
+let newTaskCatalogGeneration = 0;
 type RuntimeHostScopeKey = string;
 const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
@@ -350,7 +355,12 @@ ipcRenderer.on(
     ) {
       activeRuntimeHostGeneration += 1;
     }
-    for (const listener of newTaskChangeListeners) listener();
+    // Guest mounts can only participate in their shared Sessions. Their
+    // reconnects cannot change the Hosts/projects available for a new task.
+    if (change.profileAccess === 'owner') {
+      newTaskCatalogGeneration += 1;
+      for (const listener of newTaskChangeListeners) listener();
+    }
   },
 );
 
@@ -437,6 +447,20 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   }
   if (!scope) throw new Error('The Runtime Host for this task is unavailable');
   return { scope, sessionId: ref.sessionId };
+}
+
+function hostAttachmentRefs(
+  session: { scope: DesktopTargetScope; sessionId: string },
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind !== 'session_file') return attachment;
+    const owner = parseDesktopSessionKey(attachment.ref.sessionId);
+    if (owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) {
+      throw new Error('Retained attachment belongs to another Host or Session');
+    }
+    return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
+  });
 }
 
 type DiagnosticRuntimeHostResolution<TTarget extends 'default' | 'task'> = {
@@ -572,7 +596,7 @@ async function selectedRuntimeHostScope(
 
 async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generation = activeRuntimeHostGeneration;
+    const generation = newTaskCatalogGeneration;
     const profiles = await ipcRenderer.invoke(
       'runtime-host-profiles:getSnapshot',
     ) as DesktopRuntimeHostProfileSnapshot;
@@ -632,7 +656,7 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         }
         }),
     );
-    if (generation !== activeRuntimeHostGeneration) continue;
+    if (generation !== newTaskCatalogGeneration) continue;
     return { defaultProfileId: profiles.defaultProfileId, hosts };
   }
   throw new Error('Runtime Host targets changed while the new-task catalog was loading');
@@ -1368,6 +1392,8 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  workHubControl: workHubControlBridge,
+  workHubPresentation: workHubPresentationBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {
@@ -2006,9 +2032,25 @@ const makaBridge = {
     },
   },
   workHub: {
+    async getSession(coordinationSessionId: string) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return projectSessionSummary(scope, await ipcRenderer.invoke('workhub:getSession', scope));
+    },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+      const attachments = await ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items)) as AttachmentRef[];
+      return projectDesktopAttachmentRefs(scope, attachments);
+    },
+    async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:answer', scope, {
+        ...input,
+        ...(input.attachments ? { attachments: hostAttachmentRefs({ scope, sessionId: parseDesktopSessionKey(coordinationSessionId).sessionId }, input.attachments) } : {}),
+      }) as Promise<WorkHubAnswerResult>;
+    },
+    async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(
@@ -2016,51 +2058,7 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:candidates',
-        scope,
-      ) as OperationOutput<'workhub.coordination.candidates'>;
-      return {
-        ...result,
-        candidates: result.candidates.map((candidate) => ({
-          ...candidate,
-          sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
-        })),
-      };
-    },
-    async act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:act',
-        scope,
-        input,
-      ) as OperationOutcome<'workhub.coordination.act'>;
-      if (!result.ok) return result;
-      if (
-        result.result.disposition === 'answer_here' ||
-        result.result.disposition === 'clarify'
-      ) return result;
-      return {
-        ok: true,
-        result: {
-          ...result.result,
-          targetSessionId: recordRuntimeHostSessionScope(scope, result.result.targetSessionId),
-        },
-      };
-    },
+
   },
   sessionLocal: {
     async listMessages(sessionId) {
@@ -2156,12 +2154,7 @@ const makaBridge = {
         placement,
         {
           ...command,
-          ...(command.retainedAttachments ? { retainedAttachments: command.retainedAttachments.map((attachment) => {
-            if (attachment.ref.kind !== 'session_file') return attachment;
-            const owner = parseDesktopSessionKey(attachment.ref.sessionId);
-            if (!owner || owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) throw new Error('Retained attachment belongs to another Host or Session');
-            return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
-          }) } : {}),
+          ...(command.retainedAttachments ? { retainedAttachments: hostAttachmentRefs(session, command.retainedAttachments) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
         },
       )) as Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>;
@@ -2287,7 +2280,11 @@ const makaBridge = {
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
-        if (disposed) return { completion: Promise.resolve() };
+        if (disposed) {
+          return {
+            completion: Promise.resolve({ kind: 'cancelled' } as const),
+          };
+        }
         const profileId = runtimeHostMetadataFor(session.scope)?.profileId;
         if (!profileId) throw new Error('The Runtime Host profile for this task is unavailable');
         // Keep the renderer listener across Host target epochs. The observer
@@ -2317,18 +2314,26 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             observerId,
-          ).then((seed: readonly SessionEvent[] | undefined) => {
-            if (disposed) return;
-            // Invoke replies can overtake event IPC. Apply the response's
-            // complete active snapshot before publishing renderer readiness.
-            for (const event of seed ?? []) handler(projectDesktopSessionEvent(session.scope, event));
+          ).then((result: RuntimeHostObservationIpcResult<readonly SessionEvent[]>) => {
+            if (!disposed && result.kind === 'ready') {
+              // Invoke replies can overtake event IPC. Apply the response's
+              // complete active snapshot before publishing renderer readiness.
+              for (const event of result.value) handler(projectDesktopSessionEvent(session.scope, event));
+            }
+            return result;
           }),
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
       void observing.then(
-        () => {
-          if (!disposed) onSeeded?.();
+        (result) => {
+          if (result.kind === 'cancelled') {
+            disposed = true;
+            unsubscribeObservationSeed();
+            unsubscribeEvents();
+          } else if (!disposed) {
+            onSeeded?.();
+          }
         },
         (error: unknown) => {
           if (!disposed) onSeedError?.(error);
@@ -2538,7 +2543,7 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             consumerId,
-          ) as Promise<DesktopTranscriptOpenResult>,
+          ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
       let closeTask: Promise<void> | undefined;
@@ -2552,9 +2557,9 @@ const makaBridge = {
         void closeTask.catch(() => undefined);
       };
       registerCancellation?.(requestClose);
-      let opened: DesktopTranscriptOpenResult;
+      let openResult: RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>;
       try {
-        opened = await openDispatch.then(({ completion }) => completion);
+        openResult = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
         const cancelled = closed;
         closed = true;
@@ -2569,6 +2574,12 @@ const makaBridge = {
         }
         throw error;
       }
+      if (openResult.kind === 'cancelled') {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw new Error('Desktop transcript open was cancelled');
+      }
+      const opened = openResult.value;
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (

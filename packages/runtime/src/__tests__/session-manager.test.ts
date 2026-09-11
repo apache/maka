@@ -11937,7 +11937,7 @@ class GatedSteeringBackend implements AgentBackend {
     this.gates.set(input.turnId, gate);
     this.pullDone.set(input.turnId, afterPull);
     await gate.promise;
-    const leases = input.pullSteering?.() ?? [];
+    const leases = (await input.pullSteering?.()) ?? [];
     const record = this.pulls.get(input.turnId) ?? [];
     record.push(leases.map((lease) => lease.content.text));
     this.pulls.set(input.turnId, record);
@@ -14033,7 +14033,7 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
-      pull: () => [],
+      pull: async () => [],
       ack: () => {},
       nack: () => {},
       release: () => {},

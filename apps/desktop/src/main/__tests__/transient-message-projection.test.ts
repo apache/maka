@@ -180,6 +180,7 @@ test('derives one queue projection for main and Side Conversation consumers', ()
   assert.deepEqual(projection.transientMessages, [
     {
       id: 'message-steer',
+      pendingSteering: true,
       transientPlacement: 'current_turn',
       hostTurnId: 'turn-1',
       ts: 7,

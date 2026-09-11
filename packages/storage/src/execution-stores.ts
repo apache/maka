@@ -439,7 +439,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>
         run(() => sessionStore.readHeaderRecordSnapshot(sessionId)),
-      readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
+      readCatalogRecord: (sessionId, roleScope) =>
+        run(() => sessionStore.readCatalogRecord(sessionId, roleScope)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
@@ -477,8 +478,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
       updateMessageAdmission: (admission) =>
         run(() => sessionStore.updateMessageAdmission(admission)),
-      reorderMessageAdmissions: (sessionId, messageIds) =>
-        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds)),
+      reorderMessageAdmissions: (sessionId, messageIds, disposition) =>
+        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds, disposition)),
       cancelMessageAdmissions: (sessionId, messageIds) =>
         run(() => sessionStore.cancelMessageAdmissions(sessionId, messageIds)),
       subscribeTranscriptChanges: (listener) => sessionStore.subscribeTranscriptChanges(listener),

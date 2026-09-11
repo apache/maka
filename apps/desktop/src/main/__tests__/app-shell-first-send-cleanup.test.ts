@@ -37,7 +37,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { LiveTurnProjection } from '@maka/ui';
-import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
 

@@ -86,19 +86,15 @@ export async function awaitSendReady(page: Page): Promise<void> {
   });
 }
 
-/**
- * Wait for the default Host's Coordination Session and the WorkHub projection
- * to agree that the surface is ready. A mounted WorkHub main is not sufficient:
- * it is also rendered while the Host reconnects and the projection reloads.
- */
-export async function waitForWorkHubReady(page: Page, workCount: number): Promise<void> {
-  await expect
-    .poll(async () => {
-      const snapshot = await page.evaluate(() => window.maka.runtimeHostProfiles.getSnapshot());
-      return snapshot.entries.find(({ isDefault }) => isDefault)?.readiness;
-    })
-    .toBe('ready');
-  await expect(page.getByText(`${workCount} 项工作`, { exact: true })).toBeVisible();
+/** The persistent WorkHub WebContentsView is a distinct renderer, not part of the main DOM. */
+export async function getWorkHubPage(app: ElectronApplication): Promise<Page> {
+  let view: Page | undefined;
+  await expect.poll(() => {
+    view = app.context().pages().find((candidate) => new URL(candidate.url()).searchParams.get('surface') === 'workhub');
+    return Boolean(view);
+  }).toBe(true);
+  await expect(view!.locator('.workHubLive .maka-composer-editor')).toBeVisible();
+  return view!;
 }
 
 /**

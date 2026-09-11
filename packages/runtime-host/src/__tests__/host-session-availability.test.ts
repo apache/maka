@@ -106,6 +106,25 @@ test('WorkHub execution requires the exact reserved id, role, and zero-tool prof
   );
 });
 
+test('WorkHub v2 requires its capability permission mode and cannot run as an ordinary turn', () => {
+  const header = {
+    ...base,
+    id: WORKHUB_COORDINATION_SESSION_ID,
+    role: WORKHUB_COORDINATION_SESSION_ROLE,
+    toolProfile: 'workhub-coordination-v2' as const,
+    permissionMode: 'bypass' as const,
+  };
+  assert.equal(runtimeHostExecutionUnavailableReason(header, execution), undefined);
+  assert.equal(
+    runtimeHostExecutionUnavailableReason({ ...header, permissionMode: 'explore' }, execution),
+    WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+  );
+  assert.equal(
+    runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' }),
+    WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+  );
+});
+
 test('legacy Session identity cannot enter Host execution before explicit account recovery', () => {
   assert.equal(
     runtimeHostExecutionUnavailableReason(

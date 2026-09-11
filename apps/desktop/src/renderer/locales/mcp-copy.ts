@@ -24,6 +24,7 @@ export type McpCopy = {
     load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
     importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
+    writeDurabilityUnknown: string; writeOutOfSync: string;
   };
   toast: {
     templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
@@ -74,6 +75,8 @@ const MCP_COPY = {
   'zh-CN': {
     errors: {
       load: '载入 MCP 失败', install: (name) => `安装 ${name} 失败`, cancelInstall: (name) => `取消安装 ${name} 失败`, save: '保存 MCP 失败',
+      writeDurabilityUnknown: '写入已发布，但无法确认断电后是否保留。请检查刷新后的配置再决定是否重试。',
+      writeOutOfSync: '写入的持久性尚未确认，MCP 运行状态也未能与配置同步。请检查配置并重新同步后再重试。',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
       mapLine: (line) => `第 ${line} 行应为 KEY=value`, importJson: 'MCP 配置必须是有效的 JSON', importObject: 'MCP JSON 必须是 object',
       importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1、2 和 3`, importServersObject: 'mcpServers 必须是 object',
@@ -133,6 +136,8 @@ const MCP_COPY = {
   'zh-TW': {
     errors: {
       load: '載入 MCP 失敗', install: (name) => `安裝 ${name} 失敗`, cancelInstall: (name) => `取消安裝 ${name} 失敗`, save: '儲存 MCP 失敗',
+      writeDurabilityUnknown: '寫入已發布，但無法確認斷電後是否保留。請檢查重新整理後的設定再決定是否重試。',
+      writeOutOfSync: '寫入的持久性尚未確認，MCP 執行狀態也未能與設定同步。請檢查設定並重新同步後再重試。',
       import: '匯入 MCP 失敗', update: '更新 MCP 失敗', test: 'MCP 測試失敗', remove: '刪除 MCP 失敗', unavailableStatus: 'Server 沒有返回可用狀態。',
       mapLine: (line) => `第 ${line} 行應為 KEY=value`, importJson: 'MCP 設定必須是有效的 JSON', importObject: 'MCP JSON 必須是 object',
       importVersion: (version) => `不支援 MCP 設定版本 ${version}，目前支援 version 1、2 和 3`, importServersObject: 'mcpServers 必須是 object',
@@ -192,6 +197,8 @@ const MCP_COPY = {
   en: {
     errors: {
       load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
+      writeDurabilityUnknown: 'The write was published, but survival after power loss could not be confirmed. Check the refreshed configuration before retrying.',
+      writeOutOfSync: 'Write durability could not be confirmed, and MCP runtime state is out of sync with the configuration. Check the configuration and resynchronize before retrying.',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
       mapLine: (line) => `Line ${line} must use KEY=value`, importJson: 'MCP configuration must be valid JSON', importObject: 'MCP JSON must be an object',
       importVersion: (version) => `Unsupported MCP config version ${version}; versions 1, 2, and 3 are supported`, importServersObject: 'mcpServers must be an object',

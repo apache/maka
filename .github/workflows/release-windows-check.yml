@@ -81,6 +81,7 @@ on:
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/image-file.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
+      - 'packages/runtime/src/text-line-window.ts'
       - 'packages/runtime/src/unified-diff.ts'
       - 'packages/core/src/absolute-path.ts'
       - 'packages/core/src/artifacts.ts'

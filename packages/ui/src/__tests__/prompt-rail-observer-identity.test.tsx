@@ -47,7 +47,7 @@ import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
-import { READING_BAND_TOP_PERCENT } from '../prompt-anchor-rail.js';
+import { PromptAnchorRail, READING_BAND_TOP_PERCENT } from '../prompt-anchor-rail.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
@@ -185,7 +185,6 @@ function harness() {
 function view(messages: StoredMessage[]): ReactElement {
   const chat = createElement(ChatView, { messages, activeSession, onNew: () => {} } as never);
   const layout = createElement(ChatSurfaceLayout, {
-    scrollOwner: 'host',
     composer: null,
     children: chat,
   });
@@ -238,4 +237,28 @@ test('the rail observes its reading band, not the whole scrollport', async () =>
   // Zero alone reports a boundary touch as an intersection; the second,
   // positive threshold is what distinguishes real overlap from that.
   assert.deepEqual(init.threshold, [0, 0.000_001]);
+});
+
+
+test('portals unloaded landmarks into the layout host and keeps them actionable', async () => {
+  const { mount } = harness();
+  const root = createRoot(mount);
+  mountedRoot = root;
+  const rail = createElement(PromptAnchorRail, {
+    turns: [
+      { turnId: 'turn-1', label: 'Prompt 1', sequence: 0 },
+      { turnId: 'turn-2', label: 'Prompt 2', sequence: 2 },
+      { turnId: 'turn-3', label: 'Prompt 3', sequence: 4 },
+    ],
+    scrollRef: { current: null },
+  });
+  await act(() => root.render(createElement(LocaleProvider, { locale: 'en', children: rail })));
+  assert.equal(mount.querySelector('.maka-prompt-rail'), null, 'no inline rail before a host exists');
+  await act(() => root.render(createElement(LocaleProvider, {
+    locale: 'en', children: createElement(ChatSurfaceLayout, { composer: null, children: rail }),
+  })));
+  assert.equal(mount.querySelectorAll('.maka-prompt-rail-host .maka-prompt-rail').length, 1);
+  assert.match(mount.innerHTML, /data-prompt-turn-id="turn-2"/);
+  assert.doesNotMatch(mount.innerHTML, /data-resident|Not currently loaded|aria-disabled="true"/);
+  assert.match(mount.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
 });

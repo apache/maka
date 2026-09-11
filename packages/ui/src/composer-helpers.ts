@@ -111,8 +111,9 @@ export function rememberComposerDraft(store: Map<string, string>, key: string | 
     return;
   }
 
+  // Detach the tail from the oversized backing while preserving every UTF-16 code unit.
   const bounded = value.length > COMPOSER_DRAFT_MAX_CHARS
-    ? value.slice(value.length - COMPOSER_DRAFT_MAX_CHARS)
+    ? structuredClone(value.slice(value.length - COMPOSER_DRAFT_MAX_CHARS))
     : value;
   store.delete(key);
   store.set(key, bounded);

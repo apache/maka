@@ -148,7 +148,7 @@ type SessionBindingSelection =
   | { readonly ok: false; readonly message: string };
 
 type SessionBindingResult =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly capabilityBinding?: `sha256:${string}` }
   | { readonly ok: false; readonly message: string };
 
 export type SessionBindingPreview<T> =
@@ -268,8 +268,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   async bindSession(
     sessionId: string,
     initiatingConnectionId: string,
-  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
-    return this.#bindSession(sessionId, initiatingConnectionId, 'strict');
+    requiredToolNames?: readonly string[],
+  ): Promise<SessionBindingResult> {
+    return this.#bindSession(sessionId, initiatingConnectionId, 'strict', requiredToolNames);
   }
 
   async bindSessionSuccessor(sessionId: string): Promise<void> {
@@ -302,14 +303,65 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     sessionId: string,
     initiatingConnectionId: string,
     mode: SessionBindingMode,
+    requiredToolNames?: readonly string[],
   ): Promise<SessionBindingResult> {
     return this.#activation.runMutation(async () => {
       const selection = this.#selectSessionState(sessionId, initiatingConnectionId, mode);
       if (!selection.ok) return selection;
+      const capabilityBinding = requiredToolNames
+        ? this.#toolProviderBinding(selection.state, requiredToolNames)
+        : undefined;
+      if (requiredToolNames && !capabilityBinding) {
+        return {
+          ok: false,
+          message: 'Required Client Capability tools do not have one available provider',
+        };
+      }
       this.#storeSessionState(sessionId, selection.state);
       if (selection.modelToolsChanged) this.#onModelToolsChanged();
-      return { ok: true };
+      return { ok: true, ...(capabilityBinding ? { capabilityBinding } : {}) };
     });
+  }
+
+  async bindRecoveredSession(
+    sessionId: string,
+    binding: `sha256:${string}`,
+    toolNames: readonly string[],
+  ): Promise<boolean> {
+    return this.#activation.runMutation(() => {
+      const provider = [...this.#providers.values()].find(
+        (candidate) =>
+          providerAuthorityDigest(candidate) === binding && this.#activeConnection(candidate),
+      );
+      if (!provider) return false;
+      const connection = this.#activeConnection(provider)!;
+      const selection = this.#selectSessionState(sessionId, connection.connectionId, 'strict');
+      if (!selection.ok || this.#toolProviderBinding(selection.state, toolNames) !== binding)
+        return false;
+      this.#storeSessionState(sessionId, selection.state);
+      if (selection.modelToolsChanged) this.#onModelToolsChanged();
+      return true;
+    });
+  }
+
+  #toolProviderBinding(
+    state: SessionCapabilityState | undefined,
+    toolNames: readonly string[],
+  ): `sha256:${string}` | undefined {
+    const missing = new Set(toolNames);
+    let selected: ClientProviderState | undefined;
+    for (const [contractId, binding] of state?.sessionBindings ?? []) {
+      if (binding.kind !== 'bound') continue;
+      const provider = this.#providers.get(binding.providerId);
+      const offer = provider?.current?.offersByContract.get(contractId);
+      if (!provider || !this.#activeConnection(provider) || !offer) continue;
+      for (const tool of offer.offer.tools) {
+        if (!missing.delete(mcpProxyToolName(tool.serverId, tool.name))) continue;
+        if (selected && selected !== provider) return undefined;
+        selected = provider;
+      }
+    }
+    return selected && missing.size === 0 ? providerAuthorityDigest(selected) : undefined;
   }
 
   async runWithSessionBindingPreview<T>(
@@ -1745,4 +1797,21 @@ function sessionCapabilityStatesEqual(
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Registration IDs and connections rotate; authenticated provider authority must not. */
+function providerAuthorityDigest(provider: ClientProviderState): `sha256:${string}` {
+  return `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify([
+        'maka.client-capability-authority.v1',
+        provider.principalKind,
+        provider.principalId,
+        provider.clientInstanceId,
+        provider.credentialBoundClientInstanceId ?? null,
+        provider.capabilityOwner?.principalId ?? null,
+        provider.capabilityOwner?.clientInstanceId ?? null,
+      ]),
+    )
+    .digest('hex')}`;
 }

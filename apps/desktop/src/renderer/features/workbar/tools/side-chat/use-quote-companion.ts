@@ -1435,6 +1435,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       text: trimmed,
       ts: Date.now(),
       transientPlacement: placement,
+      ...(placement === 'current_turn' && { pendingSteering: true }),
       ...(placement === 'current_turn' && activeTurnIdRef.current
         ? { hostTurnId: activeTurnIdRef.current }
         : {}),

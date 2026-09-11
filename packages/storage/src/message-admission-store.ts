@@ -110,7 +110,11 @@ export interface MessageAdmissionStore {
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
   markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void>;
   updateMessageAdmission(admission: PendingMessageAdmission): Promise<void>;
-  reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void>;
+  reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition?: 'steering' | 'followup',
+  ): Promise<void>;
   cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void>;
 }
 

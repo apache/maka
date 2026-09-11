@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setImmediate as immediate } from 'node:timers/promises';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
 import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
@@ -31,7 +32,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
 import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor as pollFor, withTimeout } from '@maka/core/test-only/async-primitives';
 
 test('one Host Goal is shared across clients with CAS control and crash-clear residency', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-'));
@@ -43,9 +44,9 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
   assert.ok(owner);
   if (!owner) return;
 
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -225,8 +226,9 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     await recovered.prepareRecovery();
     assert.equal(recovered.manager.get(session.id)?.condition, 'A second Host-epoch Goal');
     await recovered.close();
-    await goalStore.close();
   } finally {
+    await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -298,6 +300,12 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     });
     await coordinator.prepareRecovery();
 
+    const beforeRetirement = coordinator.readProjection(session.id);
+    const rolledBack = await coordinator.beginSessionRetirement([session.id], 'archive');
+    rolledBack.rollback();
+    assert.deepEqual(coordinator.readProjection(session.id), beforeRetirement);
+    assert.ok(await goalStore.read(session.id), 'rollback preserves durable Goal authority');
+
     const retirement = await coordinator.beginSessionRetirement([session.id], 'archive');
     const header = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
     await stores.sessionStore.setSessionsArchivedVersioned(
@@ -313,9 +321,126 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     assert.deepEqual(projectionChanges, [session.id]);
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('a retired context read cannot replace the new Goal token baseline', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-token-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  const readStarted = deferred();
+  const releaseOldRead = deferred();
+  const evaluationStarted = deferred();
+  const releaseEvaluation = deferred();
+  let firstRead = true;
+  const coordinator = new HostGoalCoordinator({
+    store: goalStore,
+    stores,
+    sessionAdmission: new SessionAdmissionGate(),
+    readSessionMessages: async (sessionId) => {
+      const messages = await stores.sessionStore.readMessagesSnapshot(sessionId);
+      if (firstRead) {
+        firstRead = false;
+        readStarted.resolve();
+        await releaseOldRead.promise;
+      }
+      return messages;
+    },
+    executions: {
+      reconcile: async () => assert.fail('No recovery expected'),
+      subscribe: () => () => {},
+    },
+    evaluator: {
+      evaluate: async () => {
+        evaluationStarted.resolve();
+        await releaseEvaluation.promise;
+        return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"continue"}';
+      },
+      close: async () => {},
+    },
+    admitTurn: () => assert.fail('The one-iteration Goal must stop after evaluation'),
+    acquireResidency: () => ({ release() {} }),
+    onProjectionChanged: () => {},
+    requestDrain: () => assert.fail('No drain expected'),
+  });
+  t.after(async () => {
+    releaseOldRead.resolve();
+    releaseEvaluation.resolve();
+    await coordinator.close();
+    await goalStore.close();
+    await stores.sessionStore.close?.();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  await coordinator.prepareRecovery();
+  const session = await stores.sessionStore.create({
+    cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask',
+  });
+  const appendUsage = (id: string, total: number) =>
+    stores.sessionStore.appendMessage(session.id, {
+      type: 'token_usage',
+      id,
+      turnId: id,
+      ts: 1,
+      input: total,
+      output: 0,
+      total,
+    });
+  const settle = (turnId: string) => {
+    const turn = coordinator.beginObservedTurn(session.id, turnId);
+    assert.equal(turn.kind, 'registered');
+    if (turn.kind !== 'registered') throw new Error('turn not registered');
+    return turn.settle({ kind: 'completed', turnId });
+  };
+  await appendUsage('old-usage', 30);
+  const old = coordinator.manager.create(session.id, 'Old Goal').goal;
+  const oldSettlement = settle('old-turn');
+  await withTimeout(readStarted.promise, 5_000, 'old context read did not start');
+  const cleared = await coordinator.handlers['goal.control'](
+    {
+      sessionId: session.id,
+      goalId: old.id,
+      expectedRevision: old.revision,
+      action: 'clear',
+    },
+    operationContext('test'),
+  );
+  assert.equal(cleared.ok, true);
+  const retirement = await coordinator.beginSessionRetirement([session.id], 'archive');
+  const setArchived = async (archived: boolean) => {
+    const header = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+    await stores.sessionStore.setSessionsArchivedVersioned(
+      [{ sessionId: session.id, expectedVersion: header.revision }],
+      archived,
+    );
+  };
+  await setArchived(true);
+  retirement.commit();
+  await setArchived(false);
+  coordinator.unarchiveSessions([session.id]);
+  await appendUsage('new-usage', 90);
+  coordinator.manager.create(session.id, 'New Goal', { maxIterations: 1, tokenBudget: 50 });
+  const newSettlement = settle('new-turn');
+  await withTimeout(evaluationStarted.promise, 5_000, 'new Goal did not reach evaluation');
+  // Finish the stale read while the new evaluation owns the current token count.
+  releaseOldRead.resolve();
+  await oldSettlement;
+  await immediate();
+  releaseEvaluation.resolve();
+  await withTimeout(newSettlement, 5_000, 'new Goal did not settle');
+  assert.equal(coordinator.manager.get(session.id)?.tokensAtStart, 120);
+  assert.equal(coordinator.manager.get(session.id)?.tokensNow, 120);
+  assert.equal(coordinator.manager.get(session.id)?.status, 'max_iterations');
 });
 
 test('restart settles the durable current Goal execution through Hosted Execution authority', async () => {
@@ -435,6 +560,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
     assert.equal(drainRequested, false);
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -522,6 +648,7 @@ test('restart replaces a stale current execution with the current durable Goal i
     await coordinator.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -669,6 +796,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
     await coordinator.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -771,6 +899,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     await restarted.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -917,6 +1046,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     await restarted.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -998,6 +1128,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     await host.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }

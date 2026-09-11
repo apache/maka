@@ -161,7 +161,9 @@ export function useChatScroll(input: {
       previousPin = pinned;
       report();
     });
-    const stopWatchingReader = authority.subscribeToReaderScroll(report);
+    const stopWatchingReader = authority.subscribeToReaderScroll((_direction, phase) => {
+      if (phase === 'scroll') report();
+    });
     return () => {
       if (reportReadingAnchor.current === report) reportReadingAnchor.current = undefined;
       stopWatchingPolicy();
@@ -181,7 +183,9 @@ export function useChatScroll(input: {
     const requestHistory = (direction: 'up' | 'down'): void => {
       activation.current = { sessionId: input.sessionId };
       commandTarget.current = null;
-      authority.releasePin();
+      // Moving input already released following. Only an immovable edge can
+      // still be pinned; do not cancel the input operation that requested data.
+      if (authority.getSnapshot().pinned) authority.releasePin();
       // A wheel at either edge moves nothing, so no scroll event refreshes the
       // anchor and the restore effect would load around an evicted Turn.
       reportReadingAnchor.current?.();
@@ -212,30 +216,7 @@ export function useChatScroll(input: {
     const stopWatchingReader = authority.subscribeToReaderScroll((direction) => {
       if (canLoad(direction) && nearEdge(direction)) requestHistory(direction);
     });
-    // At either bounded edge a wheel cannot move the scroller, so no scroll
-    // event follows. The gesture still asks for the adjacent page. Do not steal
-    // a wheel from a nested tool output that can consume it itself.
-    const onWheel = (event: WheelEvent): void => {
-      if (event.deltaY === 0) return;
-      const direction = event.deltaY < 0 ? 'up' : 'down';
-      if (!canLoad(direction) || !nearEdge(direction)) return;
-      for (const target of event.composedPath()) {
-        if (target === root) break;
-        if (!(target instanceof HTMLElement)) continue;
-        const overflowY = getComputedStyle(target).overflowY;
-        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
-        const remaining = direction === 'up'
-          ? target.scrollTop
-          : target.scrollHeight - target.clientHeight - target.scrollTop;
-        if (target.scrollHeight > target.clientHeight && remaining > 0) return;
-      }
-      requestHistory(direction);
-    };
-    root.addEventListener('wheel', onWheel, { passive: true });
-    return () => {
-      stopWatchingReader();
-      root.removeEventListener('wheel', onWheel);
-    };
+    return stopWatchingReader;
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canLoadEarlier, canLoadLater,
     input.scrollRef, input.sessionId]);
 

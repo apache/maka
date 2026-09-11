@@ -301,7 +301,6 @@ export function QuoteCompanionPanel(props: {
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
-        scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
@@ -379,6 +378,7 @@ export function QuoteCompanionPanel(props: {
               streaming={companion.streaming}
               processing={companion.processing}
               queuedMessages={companion.queuedMessages}
+              pendingMessages={companion.transientMessages}
               queuedMessageRevision={companion.queuedMessageRevision}
               onPromoteQueuedEntry={companion.promoteQueuedEntry}
               onUpdateQueuedEntry={companion.updateQueuedEntry}
