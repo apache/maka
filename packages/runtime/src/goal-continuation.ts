@@ -93,6 +93,8 @@ export const volatileGoalDurability: GoalDurabilityPort = Object.freeze({
 
 export interface GoalContinuationDeps {
   goalManager: GoalManager;
+  /** Own active evaluation/admission work separately from a durable Goal's lifetime. */
+  acquireActivity?: () => { release(): void };
   evaluator: GoalEvaluatorDeps & Partial<Pick<GoalEvaluatorResource, 'close'>>;
   /** Summarized recent conversation (last ~5 messages) for the evaluator. */
   getRecentContext: (sessionId: string) => Promise<string>;
@@ -598,12 +600,16 @@ export class GoalContinuationCoordinator {
   private scheduleDrain(lane: SessionLane): void {
     if (!this.isCurrent(lane) || lane.draining) return;
     if (this.handoffHeld && lane.queue.length === 0) return;
+    const activity = this.deps.acquireActivity?.();
     const task = this.drainLane(lane).catch((error) => {
       if (!this.isCurrent(lane)) return;
       this.pauseCurrentGoal(lane, `Goal continuation coordinator failed: ${errorMessage(error)}`);
     });
     this.activeDrains.add(task);
-    void task.finally(() => this.activeDrains.delete(task));
+    void task.finally(() => {
+      this.activeDrains.delete(task);
+      activity?.release();
+    });
   }
 
   private async drainLane(lane: SessionLane): Promise<void> {

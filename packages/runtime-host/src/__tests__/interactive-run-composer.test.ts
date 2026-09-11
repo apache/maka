@@ -127,6 +127,86 @@ test('an explicit tool profile remains an exact ceiling over scoped Tool additio
   assert.equal(composer.resolveTools?.().filter(({ name }) => name === 'Read').length, 1);
 });
 
+test('the composer caches the Host base but reassembles scoped Plugin prompts each step', async () => {
+  let pluginText = 'FIRST_PLUGIN_PROMPT';
+  let assemblies = 0;
+  const composer = createFixtureComposer({
+    resolveAdditionalSystemPrompt: async (_context, baseText) => {
+      assemblies += 1;
+      return {
+        text: `${baseText}\n\n${pluginText}`,
+        sourceRevisions: [{ id: 'plugin.system-prompt', revision: `revision-${assemblies}` }],
+      };
+    },
+  });
+  const context = { sessionId: 'session', turnId: 'turn', cwd: '/workspace' };
+
+  const first = await composer.resolveSystemPrompt(context);
+  pluginText = 'SECOND_PLUGIN_PROMPT';
+  const second = await composer.resolveSystemPrompt(context);
+
+  assert.match(first.text ?? '', /FIRST_PLUGIN_PROMPT/u);
+  assert.match(second.text ?? '', /SECOND_PLUGIN_PROMPT/u);
+  assert.equal(assemblies, 2);
+  assert.deepEqual(
+    second.sourceRevisions.find(({ id }) => id === 'plugin.system-prompt'),
+    { id: 'plugin.system-prompt', revision: 'revision-2' },
+  );
+});
+
+test('the composer preserves scoped dynamic contexts for each model step', async () => {
+  const contexts = [{ name: 'plugin:context', text: 'EPHEMERAL_CONTEXT' }];
+  const composer = createFixtureComposer({
+    resolveAdditionalSystemPrompt: async (_context, baseText) => ({
+      text: baseText,
+      contexts,
+      sourceRevisions: [],
+    }),
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+  });
+
+  assert.deepEqual(prompt.contexts, contexts);
+});
+
+test('scoped Plugin Skill contributions join the canonical model inventory', async () => {
+  const composer = createFixtureComposer({
+    skills: {
+      readCanonicalModelInventory: async ({ projectRoot }: { projectRoot: string }) => ({
+        revision: 'base-revision',
+        projectRoot,
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    pluginSkills: {
+      snapshot: (sessionId: string) => ({
+        revision: 4,
+        skills: [
+          {
+            name: 'plugin-probe',
+            description: `Scoped skill for ${sessionId}`,
+            instructions: 'PLUGIN_SKILL_INSTRUCTIONS',
+          },
+        ],
+      }),
+    } as never,
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session-skill',
+    turnId: 'turn-skill',
+    cwd: '/workspace',
+  });
+  assert.match(prompt.text ?? '', /plugin-probe/u);
+  assert.match(prompt.text ?? '', /Scoped skill for session-skill/u);
+});
+
 function tool(name: string): MakaTool {
   return {
     name,
@@ -135,6 +215,46 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
+test('WorkHub v2 binds control, tasks and attachment reading while legacy WorkHub stays tool-free', () => {
+  const control = tool('mcp__desktop_workhub__control');
+  const tasks = tool('mcp__desktop_workhub__tasks');
+  const clientCapabilities = {
+    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    groups: [],
+  };
+  assert.deepEqual(
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v2',
+      clientCapabilities,
+      resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
+    }).tools.map(({ name }) => name),
+    [control.name, tasks.name, 'Read'],
+  );
+  assert.deepEqual(
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v1',
+      clientCapabilities,
+    }).tools,
+    [],
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'workhub-coordination-v2',
+        clientCapabilities: { tools: [control], groups: [] },
+      }),
+    /Hosted tool profile is unavailable: mcp__desktop_workhub__tasks/,
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'workhub-coordination-v2',
+        boundTools: [],
+        clientCapabilities,
+      }),
+    /Hosted tool profile is unavailable/,
+  );
+});
 
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
@@ -144,7 +264,13 @@ function createFixtureComposer(
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: null,
+        memoryRevision: null,
+        body: undefined,
+      }),
+    } as unknown as HostMemoryCoordinator,
     sessionTodo: {} as SessionTodoToolStore,
     builtinTools: {},
     ...overrides,

@@ -142,6 +142,9 @@ import {
   normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
+  type CoordinationTranscriptReference,
+  type CoordinationTranscriptIndexRecord,
+  type CoordinationTranscriptIndexState,
   type SessionMessageScanPage,
   type SessionMessageScanRecord,
   type SessionMessageScanRequest,
@@ -1186,10 +1189,16 @@ export class SqliteSessionMetadataStore {
     return record;
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionMetadataCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionMetadataCatalogRecord> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
-    const role = sqliteOrdinarySessionRolePredicate();
+    const role =
+      roleScope === 'recoverable'
+        ? sqliteRecoverableSessionRolePredicate()
+        : sqliteOrdinarySessionRolePredicate();
     const row = this.db
       .prepare(
         `
@@ -1760,9 +1769,13 @@ export class SqliteSessionMetadataStore {
       assignment.id !== `wha_${suffix}` ||
       assignment.targetMessageId !== `whm_${suffix}` ||
       assignment.delegationId !== `whd_${suffix}` ||
+      !workHubAssignmentAttachmentsMatchTarget(assignment) ||
       !messageContentsEqual(
         admission.content,
-        normalizeMessageContent({ text: assignment.userText }),
+        normalizeMessageContent({
+          text: assignment.delegationText ?? assignment.userText,
+          ...(assignment.targetAttachments ? { attachments: assignment.targetAttachments } : {}),
+        }),
       ) ||
       admission.submittedContentDigest !== messageContentDigest(admission.content) ||
       admission.submittedPlacement !== 'current_turn' ||
@@ -2545,7 +2558,11 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const unique = [...new Set(messageIds)];
@@ -2561,15 +2578,15 @@ export class SqliteSessionMetadataStore {
           `
           SELECT message_id
           FROM message_admissions
-          WHERE session_id = ? AND disposition = 'followup'
+          WHERE session_id = ? AND disposition = ?
           ORDER BY queue_order, sequence
         `,
         )
-        .all(sessionId) as Array<{ message_id?: unknown }>;
+        .all(sessionId, disposition) as Array<{ message_id: string }>;
       const current = rows.map((row) => row.message_id);
       const currentIds = new Set(current);
       if (
-        current.length !== unique.length ||
+        (disposition === 'followup' && current.length !== unique.length) ||
         unique.some((messageId) => !currentIds.has(messageId))
       ) {
         throw new SessionMetadataConflictError('Message admission reorder identity conflict');
@@ -2581,8 +2598,69 @@ export class SqliteSessionMetadataStore {
         WHERE session_id = ? AND message_id = ?
       `,
       );
-      unique.forEach((messageId, index) => update.run(index, sessionId, messageId));
+      // Older steering may already be in flight. Keep those entries in their
+      // slots so recovery never interleaves them with a newly reordered batch.
+      const selected = new Set(unique);
+      let next = 0;
+      current.forEach((messageId, index) => {
+        const orderedId = selected.has(messageId) ? unique[next++]! : messageId;
+        update.run(index, sessionId, orderedId);
+      });
     });
+  }
+
+  async readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState> {
+    this.assertOpen();
+    return this.db
+      .prepare(`SELECT (SELECT MAX(sequence) FROM coordination_transcript_index) AS highWater,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'legacy') AS legacy,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'runtime') AS runtime`)
+      .get() as unknown as CoordinationTranscriptIndexState;
+  }
+
+  async appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void> {
+    this.assertOpen();
+    if (records.length > 64) throw new Error('Coordination transcript index batch exceeds limit');
+    this.transaction(() => {
+      let sequence =
+        (
+          this.db
+            .prepare('SELECT MAX(sequence) AS value FROM coordination_transcript_index')
+            .get() as { value: number | null }
+        ).value ?? -1;
+      const insert = this.db.prepare(`INSERT INTO coordination_transcript_index
+        (sequence, source, source_sequence) VALUES (?, ?, ?)
+        ON CONFLICT(source, source_sequence) DO NOTHING`);
+      for (const record of records) {
+        if (!Number.isSafeInteger(record.sourceSequence) || record.sourceSequence < 0)
+          throw new Error('Invalid Coordination source sequence');
+        const result = insert.run(sequence + 1, record.source, record.sourceSequence);
+        if (result.changes) sequence++;
+      }
+    });
+  }
+
+  async readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 64)
+      throw new Error('Invalid Coordination transcript index limit');
+    const older = request.direction === 'older';
+    return this.db
+      .prepare(`SELECT sequence, source, source_sequence AS sourceSequence
+      FROM coordination_transcript_index WHERE sequence <= ? AND sequence ${older ? '<=' : '>='} ?
+      ORDER BY sequence ${older ? 'DESC' : 'ASC'} LIMIT ?`)
+      .all(
+        request.throughSequence,
+        request.position,
+        request.limit,
+      ) as unknown as CoordinationTranscriptIndexRecord[];
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
@@ -6466,6 +6544,28 @@ function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperati
   );
 }
 
+function workHubAssignmentAttachmentsMatchTarget(
+  assignment: WorkHubDelegationAssignedMessage,
+): boolean {
+  const source = assignment.attachments ?? [];
+  const target = assignment.targetAttachments ?? [];
+  return (
+    source.length === target.length &&
+    source.every((attachment, index) => {
+      const copied = target[index]!;
+      const { ref: sourceRef, ...sourceMetadata } = attachment;
+      const { ref: targetRef, ...targetMetadata } = copied;
+      return (
+        sourceRef.kind === 'session_file' &&
+        sourceRef.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+        targetRef.kind === 'session_file' &&
+        targetRef.sessionId === assignment.targetSessionId &&
+        isDeepStrictEqual(sourceMetadata, targetMetadata)
+      );
+    })
+  );
+}
+
 function sameWorkHubAssignmentRequest(
   existing: WorkHubDelegationAssignedMessage,
   requested: WorkHubDelegationAssignedMessage,
@@ -6478,6 +6578,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: existing.targetSessionId,
       disposition: existing.disposition,
       userText: existing.userText,
+      delegationText: existing.delegationText,
+      attachments: existing.attachments,
       create: existing.create,
       replacesActionId: existing.replacesActionId,
       replacesDelegationId: existing.replacesDelegationId,
@@ -6489,6 +6591,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: requested.targetSessionId,
       disposition: requested.disposition,
       userText: requested.userText,
+      delegationText: requested.delegationText,
+      attachments: requested.attachments,
       create: requested.create,
       replacesActionId: requested.replacesActionId,
       replacesDelegationId: requested.replacesDelegationId,

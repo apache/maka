@@ -131,6 +131,12 @@ describe('TUI copy resources', () => {
     );
   });
 
+  test('localizes current Todo indicator and overlay copy', () => {
+    assert.equal(TUI_COPY_RESOURCES.todo.en.open, '/todo to view');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-CN'].open, '/todo 查看');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-TW'].unavailable, '待辦不可用');
+  });
+
   test('localizes stable onboarding failure codes at the TUI boundary', () => {
     assert.equal(
       onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'en'),

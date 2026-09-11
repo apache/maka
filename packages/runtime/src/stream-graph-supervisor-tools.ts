@@ -50,12 +50,6 @@ import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export const VIEW_AGENT_GRAPH_TOOL_NAME = 'view_agent_graph';
 export const UPDATE_AGENT_GRAPH_TOOL_NAME = 'update_agent_graph';
 export const YIELD_AGENT_GRAPH_TOOL_NAME = 'yield_agent_graph';
-export const AGENT_GRAPH_SUPERVISOR_TOOL_NAMES = [
-  VIEW_AGENT_GRAPH_TOOL_NAME,
-  UPDATE_AGENT_GRAPH_TOOL_NAME,
-  YIELD_AGENT_GRAPH_TOOL_NAME,
-] as const;
-
 const TOOL_VIEW_MAX_TERMINAL_WORK = 64;
 const TOOL_VIEW_MAX_STOPPED_TARGETS = 64;
 const TOOL_VIEW_MAX_INSTRUCTION_CHARS = 2_000;

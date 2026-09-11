@@ -28,6 +28,8 @@ export type HostOperationErrorCode =
   | 'not_found'
   | 'session_archived'
   | 'session_busy'
+  | 'transcript_preparing'
+  | 'candidate_set_stale'
   | 'operation_conflict'
   | 'capability_unavailable'
   | 'invalid_request'

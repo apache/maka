@@ -25,6 +25,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { isCanonicalStorageRef } from '@maka/core/events';
 import {
   discoverMarkedStorageRoot,
+  resolveStorageRoot,
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
 } from './root-authority.js';
@@ -47,9 +48,32 @@ import { SQLITE_SESSION_MESSAGE_CHUNK_MARKER } from './sqlite-session-metadata-s
 export async function withOfflineContextSnapshot<T>(
   root: string,
   operation: (contextLocked: boolean) => Promise<T>,
+  options: {
+    /**
+     * Take the authority even when the root has no context database yet.
+     *
+     * A reader only needs it when there is something to read, but a writer
+     * that is about to CREATE the context store needs it too -- otherwise the
+     * one case where it matters most, a fresh workspace, is the one case that
+     * runs unprotected.
+     */
+    requireAuthority?: boolean;
+  } = {},
 ): Promise<T> {
-  if (!(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))) return operation(false);
-  const capability = await discoverMarkedStorageRoot({ path: root });
+  if (
+    options.requireAuthority !== true &&
+    !(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))
+  ) {
+    return operation(false);
+  }
+  // Discovery finds a marked root; it does not make one. A workspace that has
+  // never been opened is exactly the target an import writes to first, so when
+  // the caller says it is about to write, the root is resolved -- which
+  // initialises it -- rather than merely looked for.
+  const capability =
+    options.requireAuthority === true
+      ? await resolveStorageRoot({ path: root, kind: 'interactive' })
+      : await discoverMarkedStorageRoot({ path: root });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner)
     throw new Error(
@@ -69,7 +93,7 @@ export async function copyContextSnapshot(
   sourceRoot: string,
   targetRoot: string,
   contextLocked: boolean,
-  sessionId?: string,
+  sessionIds?: readonly string[],
 ): Promise<boolean> {
   const sourcePath = join(sourceRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await exists(sourcePath))) return false;
@@ -91,8 +115,14 @@ export async function copyContextSnapshot(
     target.exec('PRAGMA foreign_keys = ON');
     migrateSqliteContextOffloadDatabase(target);
     target.exec('BEGIN IMMEDIATE');
-    if (sessionId !== undefined)
-      target.prepare('DELETE FROM context_refs WHERE session_id <> ?').run(sessionId);
+    // A subagent child's context refs belong to the export as much as its
+    // parent's do: the parent's tool call is why the child ran at all.
+    if (sessionIds !== undefined) {
+      const keep = sessionIds.map(() => '?').join(', ');
+      target
+        .prepare(`DELETE FROM context_refs WHERE session_id NOT IN (${keep})`)
+        .run(...sessionIds);
+    }
     target.exec(`
       DELETE FROM context_gc_candidates;
       DELETE FROM context_file_deletions;
@@ -135,7 +165,10 @@ export async function copyContextSnapshot(
   return true;
 }
 
-export async function planContextSnapshotFiles(root: string, sessionId: string): Promise<string[]> {
+export async function planContextSnapshotFiles(
+  root: string,
+  sessionIds: readonly string[],
+): Promise<string[]> {
   const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await exists(path))) return [];
   await assertRegularPath(root, CONTEXT_OFFLOAD_DATABASE_NAME);
@@ -149,8 +182,9 @@ export async function planContextSnapshotFiles(root: string, sessionId: string):
     for (const row of database
       .prepare(`SELECT DISTINCT b.blob_id, b.payload FROM context_refs r
       JOIN context_blobs b ON b.blob_id = r.blob_id
-      WHERE r.session_id = ? AND b.storage_kind = 'managed_file' ORDER BY b.blob_id`)
-      .iterate(sessionId)) {
+      WHERE r.session_id IN (${sessionIds.map(() => '?').join(', ')})
+        AND b.storage_kind = 'managed_file' ORDER BY b.blob_id`)
+      .iterate(...sessionIds)) {
       const file = managedPath(row.blob_id, row.payload);
       await assertRegularPath(root, file);
       files.push(file);

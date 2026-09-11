@@ -82,7 +82,6 @@ export function reconcileAgentGraphPanelDismissals(
 export function shouldShowAgentGraphPanel(input: {
   enabled: boolean;
   hasGraphActivity: boolean;
-  error: boolean;
   sessionId: string;
   graphId?: string;
   status?: AgentGraphPanelStatus;
@@ -95,5 +94,5 @@ export function shouldShowAgentGraphPanel(input: {
   ) {
     return false;
   }
-  return input.enabled || input.hasGraphActivity || input.error;
+  return input.enabled || input.hasGraphActivity;
 }

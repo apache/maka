@@ -242,6 +242,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 
 export interface ResolvedSystemPrompt {
   text?: string;
+  /** Per-step ephemeral user-role context, resolved once per logical request. */
+  contexts?: readonly { readonly name: string; readonly text: string }[];
   sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 

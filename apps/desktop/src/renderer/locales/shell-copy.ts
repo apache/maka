@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -28,6 +26,12 @@ import { type SettingsSection } from '@maka/core/settings';
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type GoalStatus } from '@maka/core/goal';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  unexpectedOperationFallback,
+} from '@maka/core/redaction';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -344,6 +348,7 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingFailedTitle: string;
@@ -996,6 +1001,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      attachmentIngestBlocked: {
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        total_size_exceeded: '附件总量超出大小限制。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingFailedTitle: '切换思考级别失败',
@@ -1489,6 +1502,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      attachmentIngestBlocked: {
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        total_size_exceeded: '附件總量超出大小限制。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
       modelFailedTitle: '切換模型失敗',
       modelFallback: '模型暫時無法切換，請稍後重試。',
       thinkingFailedTitle: '切換思考級別失敗',
@@ -1988,6 +2009,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      attachmentIngestBlocked: {
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        total_size_exceeded: 'The total attachment size exceeds the limit.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingFailedTitle: 'Could not change thinking level',
@@ -2284,7 +2313,22 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  // The reason token survives the Electron IPC wrapper and is always the
+  // message tail: a bare `attachment_ingest:<code>` from the preload probe or
+  // the IPC-wrapped error line. End-anchored so an unrelated path that merely
+  // contains the substring never matches.
+  const blocked = lookupCopy(
+    maps.attachmentIngestBlocked,
+    message.match(/(?:^|[ :"'])attachment_ingest:([a-z_]+)$/u)?.[1],
+  );
+  if (blocked) return blocked;
+  // A classified failure (timeout / rate limit / auth / provider / network)
+  // is expected; only an unrecognized one lands the redacted diagnostic.
+  return classifyGeneralizedError(error)
+    ? generalizedErrorMessageForLocale(error, fallback, locale)
+    : unexpectedOperationFallback(error, fallback, 'desktop');
 }
 
 export function sessionSettingFailureCopy(

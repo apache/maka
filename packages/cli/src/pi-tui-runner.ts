@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
 import {
   Key,
   ProcessTerminal,
@@ -33,6 +32,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import {
   deriveConnectionSlug,
@@ -167,6 +167,7 @@ import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
   ModelSearchOverlay,
+  SessionSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
@@ -178,6 +179,7 @@ import {
   skillPickerItems,
   thinkingLevelPickerItems,
   type MakaSlashCommand,
+  type SessionSearchChoice,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
 import {
@@ -563,6 +565,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // True while the /session picker is open mid-turn: Escape must close the
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
   let sessionPickerOverlayOpen = false;
+  let transcriptOverlay: OverlayHandle | undefined;
+  let todoOverlay: OverlayHandle | undefined;
+  const closeTodoOverlay = (): void => {
+    todoOverlay?.hide();
+    todoOverlay = undefined;
+  };
+  let transcriptViewer: TranscriptViewerOverlay | undefined;
+  let transcriptViewerSessionId: string | undefined;
+  const resetTranscriptViewer = (): void => {
+    transcriptOverlay?.hide();
+    transcriptOverlay = undefined;
+    transcriptViewer = undefined;
+    transcriptViewerSessionId = undefined;
+  };
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
@@ -677,6 +693,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const activityStrip = new MakaActivityStripComponent(metadata);
   const pendingQueue = new MakaPendingQueueComponent(state, locale);
   const statusLine = new MakaStatusLineComponent(metadata);
+  const currentTodo = new CurrentTodoStore(
+    {
+      read: async (sessionId) => {
+        if (!input.driver.queryTodo) throw new Error('Todo query unavailable');
+        return input.driver.queryTodo(sessionId);
+      },
+    },
+    () => {
+      if (!closed) tui.requestRender();
+    },
+  );
+  const syncTodoSession = (): void => {
+    currentTodo.setSession(input.driver.getSessionId() ?? undefined);
+  };
+  const unsubscribeTodoChanges = input.driver.subscribeTodoChanges?.((sessionId) => {
+    if (sessionId !== input.driver.getSessionId()) return;
+    syncTodoSession();
+    void currentTodo.refresh();
+  });
+  const todoIndicator: Component = {
+    invalidate() {},
+    render(width) {
+      if (!input.driver.queryTodo) return [];
+      const line = renderTodoIndicator(currentTodo.getState(), { locale, width });
+      return line === undefined ? [] : [line];
+    },
+  };
   // Use the vendor editor's full 20-item autocomplete capacity. Larger command
   // catalogs remain scrollable and keep an exact position/total counter.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
@@ -693,6 +736,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     editorSurface,
     statusLine,
     terminal,
+    todoIndicator,
   );
   const attention = new AttentionController(terminal, {
     baseTitle: input.title,
@@ -1002,6 +1046,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeModelCatalogChanges?.();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
+    unsubscribeTodoChanges?.();
+    currentTodo.dispose();
+    closeTodoOverlay();
     void sideConversation?.stopParentObserver?.();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
@@ -1633,6 +1680,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }
 
   const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
+    syncTodoSession();
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
     model = summary.model;
@@ -1739,6 +1787,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages,
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
+    resetTranscriptViewer();
+    closeTodoOverlay();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -2319,6 +2369,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const syncInteractionOverlays = (): void => {
+    if (state.pendingInteraction) {
+      closeTodoOverlay();
+      transcriptOverlay?.hide();
+      transcriptOverlay = undefined;
+    }
     syncUserQuestionOverlay();
     syncFormOverlay();
   };
@@ -2798,21 +2853,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         foreignByValue.set(`foreign:${summary.source}:${summary.id}`, summary);
       }
     }
+    let overlay: OverlayHandle | undefined;
+    let sessionSearch: SessionSearchOverlay | undefined;
     const renderScope = (): void => {
       const visibleSessions =
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
+      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
-        const location =
-          sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
+        const location = sessionListScope === 'all' && session.cwd ? ` ${session.cwd}` : '';
         const childDetail = session.subagentRuntime
           ? ` subagent:${session.subagentRuntime.profile}`
           : '';
-        return {
+        const item = {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
@@ -2820,26 +2876,38 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
               : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
+        return {
+          item,
+          searchText: [
+            session.name,
+            session.id,
+            session.cwd,
+            session.model,
+            session.llmConnectionSlug,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLocaleLowerCase(),
+        };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
       // belong to this project) so a Tab toggle never makes them vanish.
       for (const [value, summary] of foreignByValue) {
-        items.push({
-          value,
-          label: summary.title,
-          description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+        choices.push({
+          item: {
+            value,
+            label: summary.title,
+            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+          },
+          searchText:
+            `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
         });
       }
-      const list = new SelectList(items, 10, selectListTheme(), {
-        minPrimaryColumnWidth: 20,
-        maxPrimaryColumnWidth: Math.max(20, terminal.columns - 30),
-      });
-      let overlay: OverlayHandle | undefined;
       const closeOverlay = () => {
         sessionPickerOverlayOpen = false;
         overlay?.hide();
       };
-      list.onSelect = (item) => {
+      const onSelect = (item: SelectItem) => {
         const foreign = foreignByValue.get(item.value);
         if (foreign) {
           closeOverlay();
@@ -2850,22 +2918,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         closeOverlay();
         void goToSession(item.value);
       };
-      list.onCancel = () => closeOverlay();
+      const scopeLabel =
+        sessionListScope === 'current'
+          ? pickerCopy.sessionScopeCurrent
+          : pickerCopy.sessionScopeAll;
+      if (sessionSearch) {
+        sessionSearch.updateChoices(choices, scopeLabel);
+        sessionSearch.invalidate();
+        return;
+      }
+      sessionSearch = new SessionSearchOverlay(tui, {
+        locale,
+        choices,
+        scopeLabel,
+        onSelect,
+        onCancel: closeOverlay,
+        onToggleScope: () => {
+          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
+          renderScope();
+        },
+      });
       sessionPickerOverlayOpen = true;
-      overlay = showBottomPicker(
-        new PickerOverlay(list, {
-          title: 'Resume Session',
-          rightLabel: sessionListScope === 'current' ? 'Current' : 'All',
-          hint: 'Tab scope · ↑↓ move · Enter select · Esc close',
-          onInput: (data) => {
-            if (!matchesKey(data, Key.tab) || isKeyRelease(data) || isKeyRepeat(data)) return false;
-            sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-            overlay?.hide();
-            renderScope();
-            return true;
-          },
-        }),
-      );
+      overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
   };
@@ -2930,6 +3004,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       requestRender();
       return false;
     }
+    resetTranscriptViewer();
+    closeTodoOverlay();
+    syncTodoSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
     // Auto while a changed Host default creates with full access; the launch
@@ -3009,19 +3086,44 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showTranscriptViewer = (): void => {
-    let overlay: OverlayHandle | undefined;
-    const renderTranscript = transcript.createDocumentRenderer();
-    const viewer = new TranscriptViewerOverlay({
-      renderTranscript,
-      viewportRows: () => terminal.rows,
-      onClose: () => overlay?.hide(),
-      onChange: () => tui.requestRender(),
-    });
-    overlay = tui.showOverlay(viewer, {
+    if (state.pendingInteraction) return;
+    const sessionId = input.driver.getSessionId() ?? undefined;
+    if (!transcriptViewer || transcriptViewerSessionId !== sessionId) {
+      transcriptViewerSessionId = sessionId;
+      transcriptViewer = new TranscriptViewerOverlay({
+        renderTranscript: transcript.createDocumentRenderer(),
+        locale,
+        viewportRows: () => terminal.rows,
+        onClose: () => {
+          transcriptOverlay?.hide();
+          transcriptOverlay = undefined;
+        },
+        onChange: () => tui.requestRender(),
+      });
+    }
+    transcriptOverlay = tui.showOverlay(transcriptViewer, {
       anchor: 'top-left',
       width: '100%',
       maxHeight: '100%',
     });
+  };
+
+  const showTodo = (): void => {
+    if (state.pendingInteraction) return;
+    syncTodoSession();
+    void currentTodo.refresh();
+    closeTodoOverlay();
+    todoOverlay = tui.showOverlay(
+      new TodoOverlay({
+        locale,
+        getState: () =>
+          input.driver.queryTodo ? currentTodo.getState() : { status: 'error', items: [] },
+        viewportRows: () => terminal.rows,
+        onClose: closeTodoOverlay,
+        onChange: () => tui.requestRender(),
+      }),
+      { anchor: 'top-left', width: '100%', maxHeight: '100%' },
+    );
   };
 
   const showMcpStatus = (): void => {
@@ -3892,6 +3994,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showTranscriptViewer();
       },
     },
+    todo: {
+      description: primaryGuidance.commands.todo,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: TUI_COPY_RESOURCES.todo[locale].usage,
+          });
+          requestRender();
+          return;
+        }
+        showTodo();
+      },
+    },
     permissions: {
       description: primaryGuidance.commands.permissions,
       midTurn: 'refuse',
@@ -4189,9 +4307,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // one (e.g. `Esc`, type, `Esc`).
     if (!matchesKey(data, Key.escape)) lastIdleEscapeAt = 0;
     if (matchesKey(data, Key.ctrl('o')) && !isKeyRepeat(data)) {
-      if (handleExpansionToggleKey('tool')) {
-        return { consume: true };
-      }
+      showTranscriptViewer();
+      return { consume: true };
     }
     if (matchesKey(data, Key.ctrl('t')) && !isKeyRepeat(data)) {
       if (handleExpansionToggleKey('thinking')) {
@@ -4297,11 +4414,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // re-wrapping) a full clear would wipe the scrollback the user scrolls through.
   // Differential rendering clears the vacated rows without the wipe.
   //
-  // The Ctrl+O / Ctrl+T toggles are viewport-anchored for the same reason: an
+  // The live Ctrl+T thinking toggle is viewport-anchored for the same reason: an
   // entry above the live viewport lives in terminal scrollback, which cannot
   // be rewritten, so resizing it would push pi-tui's differential renderer
   // into a scrollback-clearing full redraw (its `firstChanged < viewportTop`
-  // path). The toggles therefore retarget only entries inside the viewport;
+  // path). It therefore retargets only entries inside the viewport;
   // see entryInLiveViewport in pi-transcript.ts (#1097). A block whose own
   // expansion pushed its head above the viewport can consequently not be
   // collapsed by the next press (#1134): the toggle still flips the default
@@ -4310,6 +4427,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // again within EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS applies the collapsed
   // default to those blocks too and pays one scrollback-clearing full redraw
   // (requestRender(true)), re-anchoring the viewport at the tail.
+  // Ctrl+O instead opens a detached reader whose details never resize live rows.
   tui.setClearOnShrink(false);
   tui.addChild(layout);
   tui.setFocus(editorSurface);
@@ -4358,6 +4476,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   }
 
+  syncTodoSession();
   return closedPromise;
 }
 

@@ -162,10 +162,11 @@ export class DesktopSessionLocalService {
         if (!target.client || !target.submit || this.#running.has(target.partition)) continue;
         const blockedSessions = new Set<string>();
         const record = this.store.list(target.partition).find((record) => {
-          if (record.state === 'accepted') return false;
+          // Settled messages retain their local copy without reserving delivery order.
+          // Unresolved Host outcomes must still hold later messages behind them.
+          if (record.state === 'accepted' || record.state === 'failed') return false;
           if (blockedSessions.has(record.sessionId)) return false;
           blockedSessions.add(record.sessionId);
-          if (record.state === 'failed') return false;
           return this.#probed.get(`${target.partition}:${record.messageId}`) !== target.client;
         });
         if (!record) continue;

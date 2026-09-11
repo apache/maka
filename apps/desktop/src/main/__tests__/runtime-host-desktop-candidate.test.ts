@@ -405,7 +405,7 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
       browserReleased.push(sessionId);
     },
     computerUseTools: emptyComputerUseTools(),
-    releaseComputerUseSession: (sessionId) => {
+    releaseDesktopInteractionSession: (sessionId) => {
       computerReleased.push(sessionId);
     },
   };
@@ -562,7 +562,7 @@ test('starts without registering an empty native capability set', async () => {
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     }),
   );
 
@@ -582,7 +582,7 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => {
         const value = implementation;
         return [
@@ -639,7 +639,7 @@ test('releases all native Session resources on retirement and generation close',
         browserReleased.push(sessionId);
       },
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession: (sessionId) => {
+      releaseDesktopInteractionSession: (sessionId) => {
         computerReleased.push(sessionId);
       },
     }),
@@ -744,7 +744,7 @@ test('closes the claimed Host connection when native capability construction fai
           resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
-          releaseComputerUseSession() {},
+          releaseDesktopInteractionSession() {},
         }),
       ),
     /tool schema root must be an object/,
@@ -776,7 +776,7 @@ test('isolates an invalid dynamic MCP tool without dropping the Host connection'
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp',
@@ -818,7 +818,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
         released.push(`browser:${sessionId}`);
       },
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession: (sessionId) => {
+      releaseDesktopInteractionSession: (sessionId) => {
         released.push(`computer:${sessionId}`);
       },
     }),
@@ -1255,7 +1255,7 @@ function deps(
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: emptyComputerUseTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   },
 ): DesktopRuntimeHostCandidateDeps {
   return {
@@ -1271,7 +1271,7 @@ function deps(
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
-    completeComputerUseTurn() {},
+    completeDesktopInteractionTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
       rejectCreation: async () => undefined,

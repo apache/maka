@@ -296,3 +296,29 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
 export function isAuthenticationErrorText(message: string): boolean {
   return message.replace(/\bauthorit\w*/g, '').includes('auth');
 }
+
+const reportedFailures = new WeakSet<object>();
+
+/** Redacted diagnostics channel for unexpected operation failures. Copy
+ * catalogs live here (bare-importable) because a depended-on copy catalog may
+ * only hold bare package runtime imports. */
+export function reportUnexpectedOperation(scope: string, error: unknown): void {
+  // One failure, one diagnostic: a rejection formatted again by an outer layer
+  // is the same defect, not a second one.
+  if (typeof error === 'object' && error !== null) {
+    if (reportedFailures.has(error)) return;
+    reportedFailures.add(error);
+  }
+  const detail =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error(`[${scope}] operation failed:`, redactSecrets(detail));
+}
+
+export function unexpectedOperationFallback(
+  error: unknown,
+  fallback: string,
+  scope: string,
+): string {
+  reportUnexpectedOperation(scope, error);
+  return fallback;
+}

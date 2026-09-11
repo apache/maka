@@ -485,7 +485,6 @@ function ComposedShell(props: {
             (<div className="maka-detail-with-artifacts">
               <div className="mainColumn">
               <ChatSurfaceLayout
-                scrollOwner="host"
                 composer={
                   <Composer
                     {...baseComposerProps}
@@ -1913,6 +1912,14 @@ function dockOffered(): boolean {
  * real one does. What it cannot do is scroll, so cases that need the reader to
  * move set `scrollTop` themselves.
  */
+/** Storybook input is synthetic, so supply its native scroll result explicitly. */
+function scrollAsReader(root: HTMLElement, top: number): void {
+  const deltaY = top - root.scrollTop;
+  if (deltaY === 0) return;
+  root.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
+  root.scrollTo({ top, behavior: 'instant' });
+}
+
 function wheelUp(target: Element): void {
   target.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
 }
@@ -2077,16 +2084,19 @@ export const PartialHistoryNotice: Story = {
 /** Stops the harness below, so the tail can be read against a settled transcript. */
 let stopTailStream: (() => void) | undefined;
 let startTailStream: (() => void) | undefined;
+let settleTailTurn: (() => void) | undefined;
 
 /** Streams one line per frame into a live Turn. */
-function StreamingTailHarness() {
+function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean } = {}) {
   const [question, setQuestion] = useState<string>();
+  const [settled, setSettled] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [lines, setLines] = useState(1);
   useEffect(() => {
     startTailStream = () => setStreaming(true);
-    return () => { startTailStream = undefined; };
+    settleTailTurn = () => setSettled(true);
+    return () => { startTailStream = undefined; settleTailTurn = undefined; };
   }, []);
   useEffect(() => {
     if (!streaming) return;
@@ -2112,7 +2122,7 @@ function StreamingTailHarness() {
   }, [streaming]);
   return (
     <ComposedShell
-      session={{ status: question ? 'running' : 'active', streaming: Boolean(question) }}
+      session={{ status: question && !settled ? 'running' : 'active', streaming: Boolean(question) && !settled }}
       composer={{
         onSend: (text) => {
           // Production publishes this once before admitting the sent Message.
@@ -2123,23 +2133,29 @@ function StreamingTailHarness() {
         },
       }}
       chat={{
-        runningStatus: Boolean(question),
+        runningStatus: Boolean(question) && !settled,
+        transientMessages: pendingUser && question && !settled ? [{
+          id: 'msg-tail-1', text: question, ts: NOW - 30_000,
+          transientPlacement: 'current_turn', hostTurnId: 'turn-tail',
+          deliveryStatus: '已接收',
+        }] : [],
         viewportNavigation,
         messages: [
           user('history-question', 'history-turn', 6, '已有问题。'),
           assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
           ...(question ? [
-            user('msg-tail-1', 'turn-tail', 3, question),
+            ...(!pendingUser || settled ? [user('msg-tail-1', 'turn-tail', 3, question)] : []),
+            ...(settled ? [assistant('msg-assistant-tail', 'turn-tail', 2, TAIL_LINES.slice(0, lines).join('\n\n'))] : []),
             {
               type: 'turn_state' as const,
               id: 'state-tail',
               turnId: 'turn-tail',
               ts: NOW - 30_000,
-              status: 'running' as const,
+              status: settled ? 'completed' as const : 'running' as const,
             },
           ] : []),
         ],
-        liveTurn: question ? {
+        liveTurn: question && !settled ? {
           turnId: 'turn-tail',
           phase: 'streamed',
           steps: [{
@@ -2168,7 +2184,7 @@ export const StreamingTailFollow: Story = {
     const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
     if (!input) throw new Error('The composer input is missing');
     await userEvent.type(input, 'Second question after reading history.');
-    tailScroller().scrollTop = 0;
+    scrollAsReader(tailScroller(), 0);
     await painted(6);
     expect(tailMetrics().distance).toBeGreaterThan(500);
     expect(dockOffered()).toBe(true);
@@ -2203,6 +2219,69 @@ export const StreamingTailFollow: Story = {
   },
 };
 
+async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Promise<void> {
+  await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+  await painted(40);
+  const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+  if (!input) throw new Error('The composer input is missing');
+  await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
+  for (let line = 1; line < lines; line += 1) {
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
+    await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。', { delay: null });
+  }
+  await painted(40);
+  // Observe admission itself: the correct final bottom can hide a reverse
+  // jump when an offscreen block first uses an estimate, then its real size.
+  const tops: number[] = [];
+  const arrival = (async () => {
+    for (let frame = 0; frame < 40; frame += 1) {
+      await painted(1);
+      const turn = canvasElement.querySelector('[data-transcript-turn-id="turn-tail"]');
+      if (turn) tops.push(turn.getBoundingClientRect().top);
+    }
+  })();
+  await userEvent.keyboard('{Enter}');
+  await arrival;
+  await expect(tops.length).toBeGreaterThan(1);
+  const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
+  await expect(reversal, JSON.stringify(tops)).toBeLessThanOrEqual(4);
+  await expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+}
+
+export const SubmittedPromptDoesNotReverse: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement),
+};
+
+export const MultilineSubmittedPromptDoesNotReverse: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 8),
+};
+
+export const TallSubmittedPromptDoesNotReverse: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
+};
+
+export const SubmittedPromptSettlesWithoutReversing: Story = {
+  render: () => <StreamingTailHarness pendingUser />,
+  play: async ({ canvasElement }) => {
+    await verifySubmittedPrompt(canvasElement);
+    const turn = canvasElement.querySelector('[data-transcript-turn-id="turn-tail"]')!;
+    const before = turn.getBoundingClientRect().top;
+    const offsets: number[] = [];
+    settleTailTurn?.();
+    for (let frame = 0; frame < 40; frame += 1) {
+      await painted(1);
+      offsets.push(turn.getBoundingClientRect().top - before);
+    }
+    expect(Math.max(...offsets), JSON.stringify(offsets)).toBeLessThanOrEqual(4);
+    expect(canvasElement.querySelector('.maka-message-delivery')).toBeNull();
+    expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
+    expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+  },
+};
+
 /** Lets a play function drive props React owns. One story renders per page. */
 let appendTurn: (() => void) | undefined;
 
@@ -2217,7 +2296,13 @@ const HISTORY_BATCH = 4;
 const HISTORY_BATCHES_AVAILABLE = 8;
 
 /** A settled transcript with a turn the play function can make arrive. */
-function SettledTranscriptHarness({ turns }: { turns: number }) {
+function SettledTranscriptHarness({
+  turns,
+  composer,
+}: {
+  turns: number;
+  composer?: Partial<ComposerProps>;
+}) {
   const [extra, setExtra] = useState(0);
   useEffect(() => {
     appendTurn = () => setExtra((count) => count + 1);
@@ -2225,7 +2310,7 @@ function SettledTranscriptHarness({ turns }: { turns: number }) {
       appendTurn = undefined;
     };
   }, []);
-  return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} />;
+  return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} composer={composer} />;
 }
 
 /** The history seam is two props: `hasOlderHistory`, and a loader that prepends. */
@@ -2281,12 +2366,34 @@ export const TailFollowsGrowthOutsideTurns: Story = {
 };
 
 export const ReaderScrolledUpIsNotPulledBack: Story = {
-  render: () => <SettledTranscriptHarness turns={12} />,
+  render: () => (
+    <SettledTranscriptHarness
+      turns={12}
+      composer={{
+        contextUsage: {
+          usageTokens: 37_000,
+          declaredContextWindow: 100_000,
+          onOpen: noop,
+        },
+      }}
+    />
+  ),
   play: async () => {
     const root = tailScroller();
+    const contextGauge = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开用量追踪"]',
+    );
+    const scrollButtonPaintBoundary = dockButton().parentElement;
+    if (!contextGauge?.querySelector('svg') || !scrollButtonPaintBoundary) {
+      throw new Error('the context gauge or scroll-button paint boundary is missing');
+    }
+    const boundaryStyle = getComputedStyle(scrollButtonPaintBoundary);
+    // Chromium canonicalizes `layout style paint` to the equivalent `content`.
+    expect(boundaryStyle.contain).toBe('content');
+    expect(boundaryStyle.willChange).toContain('opacity');
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
 
-    root.scrollTop -= 500;
+    scrollAsReader(root, root.scrollTop - 500);
     await painted(6);
     const before = tailMetrics().distance;
     expect(before, JSON.stringify(tailMetrics())).toBeGreaterThan(100);
@@ -2315,6 +2422,22 @@ export const ReaderScrolledUpIsNotPulledBack: Story = {
         JSON.stringify({ anchorTurnId, anchorTop, afterTop, ...tailMetrics() }),
       ).toBeLessThanOrEqual(4);
     });
+
+    // Returning to the tail fades the dock button. That transition must not
+    // re-raster the context gauge on the same compositing surface (#4973).
+    // Geometry alone cannot see a device-pixel repaint, so the boundary above
+    // pins the causal contract; these samples separately ensure the fix never
+    // turns into a real footer movement.
+    const iconTops: number[] = [];
+    scrollAsReader(root, root.scrollHeight);
+    root.dispatchEvent(new Event('scroll'));
+    for (let frame = 0; frame < 16; frame += 1) {
+      await painted(1);
+      iconTops.push(contextGauge.querySelector('svg')!.getBoundingClientRect().top);
+    }
+    // Chromium rounds the native scroll limit to a CSS pixel; a fractional
+    // content height can move the sticky dock by up to half a pixel.
+    expect(Math.max(...iconTops) - Math.min(...iconTops)).toBeLessThanOrEqual(0.5);
   },
 };
 
@@ -2323,7 +2446,7 @@ export const DockAffordanceReturnsToTail: Story = {
   play: async () => {
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
 
-    tailScroller().scrollTop = 0;
+    scrollAsReader(tailScroller(), 0);
     await painted(6);
     // Offered at all is the assertion: with Astryx's scroll layer off, its
     // `isScrolledUp` never updates again, so the stock button would stay
@@ -2385,14 +2508,14 @@ export const TailFollowDoesNotAskForHistory: Story = {
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
 // content-visibility bounds them. Reasoning stays mounted while folded, so it is
 // real layout, not free collapsed bytes.
-function oversizedTurnMessages(): StoredMessage[] {
+function oversizedTurnMessages(steps = 24): StoredMessage[] {
   const turnId = 'turn-oversized';
   const out: StoredMessage[] = [
     user('msg-oversized-user', turnId, 30, '逐项检查一组独立的合成步骤，并给出简短结果。'),
   ];
   const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(8);
   const reasoning = '先确认输入边界（空 / 超长 / 并发），再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。'.repeat(4);
-  for (let step = 1; step <= 24; step += 1) {
+  for (let step = 1; step <= steps; step += 1) {
     const ts = NOW - (25 - step) * 20_000;
     out.push({
       type: 'assistant',
@@ -2432,6 +2555,10 @@ function oversizedTurnMessages(): StoredMessage[] {
 }
 
 const oversizedTurn = oversizedTurnMessages();
+
+export const Performance45Tools: Story = {
+  render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
+};
 
 export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,
@@ -2492,7 +2619,7 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       // `behavior: 'instant'` overrides the shell's smooth scrolling: the shell
       // animates over many frames, and a step measured before the animation
       // lands reads a still anchor as a 240px jump.
-      root.scrollTo({ top: root.scrollTop - intended, behavior: 'instant' });
+      scrollAsReader(root, root.scrollTop - intended);
       root.dispatchEvent(new Event('scroll'));
       await painted(4);
       const moved = anchor.getBoundingClientRect().top - topBefore;
@@ -2521,6 +2648,11 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   },
 };
 
+export const OversizedLiveTurnHoldsAReadingAnchorOnColdScroll: Story = {
+  ...OversizedTurnHoldsAReadingAnchorOnColdScroll,
+  render: () => <ComposedShell chat={{ messages: oversizedTurn, runningStatus: true }} />,
+};
+
 export const AWheelTheScrollerCannotActOnAsksForHistory: Story = {
   render: () => <HistoryHarness turns={1} />,
   play: async () => {
@@ -2547,7 +2679,7 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
     // Just short of the band that asks for more, so the active range has
     // painted turns around the reader before the load starts. Landing straight
     // on zero leaves no visible turn above the load boundary to anchor on.
-    root.scrollTop = loadBand() + 400;
+    scrollAsReader(root, loadBand() + 400);
     await painted(6);
     const before = firstResidentTurnId();
     const heightBefore = root.scrollHeight;
@@ -2555,7 +2687,7 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
 
     // The move that asks for earlier history and the reading of where the
     // reader is, in one task.
-    root.scrollTop = Math.min(300, root.scrollHeight - root.clientHeight);
+    scrollAsReader(root, Math.min(300, root.scrollHeight - root.clientHeight));
     const rootTop = root.getBoundingClientRect().top;
     const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
       (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
@@ -2644,7 +2776,7 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
     while (root.scrollTop > 0 && steps < 40) {
       const anchor = anchorInView();
       const scrollBefore = root.scrollTop;
-      root.scrollTop = Math.max(0, scrollBefore - TRAVERSAL_STEP);
+      scrollAsReader(root, Math.max(0, scrollBefore - TRAVERSAL_STEP));
       await painted(4);
 
       // The reader moved by what the scroller actually moved, so the Turn under
@@ -2699,7 +2831,7 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
 
     // The one position where the browser declines to anchor, and the one the
     // wheel-to-load path puts the reader in.
-    root.scrollTop = 0;
+    scrollAsReader(root, 0);
     wheelUp(root);
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
@@ -2809,7 +2941,7 @@ export const PromptRailStaysInsideTheScrollport: Story = {
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
 
     for (const position of ['top', 'bottom'] as const) {
-      scroller.scrollTop = position === 'top' ? 0 : scroller.scrollHeight;
+      scrollAsReader(scroller, position === 'top' ? 0 : scroller.scrollHeight);
       scroller.dispatchEvent(new Event('scroll'));
       await painted(4);
 
@@ -2879,14 +3011,14 @@ export const PromptRailHasNoGapsBetweenTicks: Story = {
 /** Away from the tail, but still inside the band that would ask for history. */
 async function scrollAwayFromTail(): Promise<void> {
   const root = tailScroller();
-  root.scrollTop = Math.min(root.scrollHeight - root.clientHeight - 100, loadBand() + 200);
+  scrollAsReader(root, Math.min(root.scrollHeight - root.clientHeight - 100, loadBand() + 200));
   root.dispatchEvent(new Event('scroll'));
   await painted(4);
 }
 
 async function scrollTranscriptTo(position: 'top' | 'bottom'): Promise<void> {
   const root = tailScroller();
-  root.scrollTop = position === 'top' ? 0 : root.scrollHeight;
+  scrollAsReader(root, position === 'top' ? 0 : root.scrollHeight);
   root.dispatchEvent(new Event('scroll'));
   await painted(4);
 }

@@ -25,6 +25,12 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. This change establishes the
+shared Intent, Recall, and deterministic Policy contracts plus a production-model
+adapter, but it does not change the default routing strategy. The default can move
+only after production-path comparative evidence required by the delivery tracker.
+See the [current domain language](../workhub-domain-language.md).
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
@@ -48,7 +54,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and disposition semantics remain separate later work.
+coordination transcript and typed action proposals use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -71,9 +77,9 @@ ordinary navigation and target discovery.
 The Coordination Session is authoritative only for the coordination conversation.
 It never acquires authority over an ordinary Session's execution or lifecycle.
 
-## Dispositions and action admission
+## Routing dispositions, linked operations, and admission
 
-Every WorkHub input resolves to exactly one proposed **disposition**:
+Every ordinary routing input resolves to exactly one proposed **routing disposition**:
 
 - `answer_here`: answer in the Coordination Session.
 - `delegate_existing`: delegate concrete work to one bounded, valid ordinary
@@ -82,12 +88,34 @@ Every WorkHub input resolves to exactly one proposed **disposition**:
 - `clarify`: continue clarification in the Coordination Session without guessing a
   target or creating a Session.
 
-Linked correction is a user-confirmed coordination operation over a prior durable
-delegation, not a model disposition. Its replacement target is still restricted to
-`delegate_existing` or explicit `create_new` admission.
+Correction, stop, and resume are **linked operations** over a prior durable
+delegation, not additional routing dispositions. Correction's replacement target
+is still restricted to `delegate_existing` or explicit `create_new` admission.
+Stop and resume follow the durable delegation-to-Session-to-Turn lineage rather
+than inferring an operation target from a similarly named Session.
+
+The decision flow is:
+
+```text
+user input
+  -> intent analysis
+  -> Session Resolver or linked-target resolution
+  -> Coordination policy
+  -> routing disposition or linked-operation proposal
+  -> deterministic Action Gate
+  -> owning Host / Session
+```
+
+Intent describes what the user wants; it does not select authority. The Session
+Resolver returns bounded existing-Session evidence and never creates a Session.
+Linked-target resolution starts from a bounded WorkHub-owned delegation and
+follows its durable Message, Turn, and continuation lineage. Coordination policy
+combines that evidence into an advisory proposal. Missing, stale, or ambiguous
+linkage fails closed instead of falling back to name similarity.
 
 All model and routing output is advisory. Before any write, a deterministic
-**Action Gate** admits or rejects the proposed disposition and operation. The gate
+**Action Gate** admits or rejects the proposed routing disposition or linked
+operation. The gate
 enforces Runtime Host and target validity, archive and waiting state, self-route
 exclusion, explicit `create_new`, and existing tool and permission ceilings. For a
 replacement, the gate additionally requires explicit correction evidence in the
@@ -95,23 +123,38 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
-Routing experiments replace Action Intent classification and/or Session Resolver
-recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
-one Intent component and one Resolver component; it has no proposal-producing
-`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
-R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
-intent with deterministic recall. These are experiment configurations, not separate
-policy implementations or a production model rollout.
+The optional model-routing adapter first calls a tool-free Intent model using the
+Coordination Session's saved connection, model, and thinking setting. Only
+`execute` and ordinary `continue` invoke a second tool-free Recall call. Recall sees
+at most 32 candidates containing a request-scoped opaque reference, bounded
+Session/workspace names, state, and recency bucket; it does not receive stable
+Session identity, paths, file contents, tools, or capabilities. Intent sees the
+current request and at most eight bounded user/assistant messages, but no candidates.
 
-Intent output contains no target. Resolver output contains only ranked or ambiguous
-opaque candidate references, or no match; it cannot return creation or a disposition.
-The controller shares one bounded candidate context across arms; deterministic
-components retain full request text, while model adapters bound text at the model
-call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
-A model recall budget does not hide known Sessions from exact-name or correction
-rules in that fixed Policy. Policy retains trusted-text creation,
-ambiguity, correction and focus constraints. Model ranking alone cannot authorize
-work, and every resulting proposal still goes through the Host-owned Gate.
+The deterministic Coordination Policy maps those assessments to one disposition or
+linked operation. Invalid model output, provider failure, unavailable candidates,
+empty recall, and ambiguity all fail closed to `clarify`; none implies `create_new`.
+When that adapter is explicitly installed at composition, the result is stored on
+the root-Turn admission and reused by recovery. Every fresh root, including queued
+follow-ups and pending-message recovery, receives its own decision. The main
+Coordination model receives that bound result in its Turn prompt. A side-effecting
+proposal that changes its operation, candidate set, or candidate reference is
+rejected before the existing Action Gate. `answer_here` and `clarify` remain normal
+transcript outcomes.
+
+Before any production default changes, model strategies must be compared through
+the repository's existing `maka eval` Experiment/Cell/Attempt/Result path while
+exercising the production projection and admission seams. A separate WorkHub-only
+evaluation framework is deliberately not introduced here. The required evidence
+must report Intent accuracy, recall-kind accuracy, Recall@K, MRR, outcome accuracy,
+unsafe binds, implicit creation, unnecessary clarification, latency, token usage,
+and cost separately.
+
+Intent output contains no target. Session Resolver output contains only bounded
+opaque candidate references; it cannot return creation or a disposition. Linked
+target evidence is likewise advisory and cannot prove ownership. Model ranking or
+tool selection alone cannot authorize work, and every resulting proposal still goes
+through the Host-owned Gate with the original trusted user request.
 
 ## Delegation links rather than copies transcripts
 
@@ -277,8 +320,8 @@ lets the stop reach a terminal resolution.
   replacement. Its target comes from the shared Session Resolver port, whose
   first implementation is a temporary exact-name baseline; replacing it changes
   recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Pause, resume, and pronoun-based stop controls
-  remain later work.
+  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  pronoun-based stop controls remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

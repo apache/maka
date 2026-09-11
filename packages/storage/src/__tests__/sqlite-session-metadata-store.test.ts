@@ -58,6 +58,71 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      setup.close();
+      const baseline = new DatabaseSync(path);
+      baseline.exec(
+        "DROP TABLE coordination_transcript_index; UPDATE session_metadata_schema SET version = 38 WHERE scope = 'session_metadata'",
+      );
+      baseline.close();
+      const migrated = createSqliteSessionMetadataStore(path);
+      await migrated.appendCoordinationTranscriptIndex([
+        { source: 'legacy', sourceSequence: 0 },
+        { source: 'runtime', sourceSequence: 8 },
+      ]);
+      migrated.close();
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        await reopened.appendCoordinationTranscriptIndex([
+          { source: 'runtime', sourceSequence: 8 },
+          { source: 'legacy', sourceSequence: 1 },
+        ]);
+        assert.deepEqual(
+          { ...(await reopened.readCoordinationTranscriptIndexState()) },
+          { highWater: 2, legacy: 1, runtime: 8 },
+        );
+        const records = await reopened.readCoordinationTranscriptIndex({
+          direction: 'older',
+          throughSequence: 1,
+          position: 1,
+          limit: 64,
+        });
+        assert.deepEqual(
+          records.map((record) => ({ ...record })),
+          [
+            { sequence: 1, source: 'runtime', sourceSequence: 8 },
+            { sequence: 0, source: 'legacy', sourceSequence: 0 },
+          ],
+        );
+        await assert.rejects(
+          () =>
+            reopened.appendCoordinationTranscriptIndex(
+              Array.from({ length: 65 }, () => ({ source: 'legacy' as const, sourceSequence: 2 })),
+            ),
+          /batch exceeds limit/,
+        );
+        assert.equal((await reopened.readCoordinationTranscriptIndexState()).highWater, 2);
+      } finally {
+        reopened.close();
+      }
+      const inspect = new DatabaseSync(path);
+      assert.deepEqual(
+        inspect
+          .prepare('PRAGMA table_info(coordination_transcript_index)')
+          .all()
+          .map((column) => column.name),
+        ['sequence', 'source', 'source_sequence'],
+      );
+      inspect.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   for (const version30Shape of ['admissions-only', 'coordination-only', 'complete'] as const) {
     test(`converges the ${version30Shape} version-30 schema after the merge`, async () => {
       const root = await mkdtemp(join(tmpdir(), `maka-session-v30-${version30Shape}-`));
@@ -1142,51 +1207,60 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('persists a follow-up reorder across SQLite restart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
-    const path = join(root, 'state.sqlite');
-    try {
-      const store = createSqliteSessionMetadataStore(path);
+  for (const disposition of ['steering', 'followup'] as const) {
+    test(`persists a ${disposition} reorder across SQLite restart`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
+      const path = join(root, 'state.sqlite');
+      const earlierBatch =
+        disposition === 'steering' ? ['in-flight-first', 'in-flight-second'] : [];
       try {
-        await store.create(fullHeader({ id: 'session-reorder' }));
-        for (const [index, messageId] of ['message-first', 'message-second'].entries()) {
-          await store.commitMessageAdmission({
-            sessionId: 'session-reorder',
-            turnId: 'turn-current',
-            runId: 'run-current',
-            messageId,
-            content: { text: messageId },
-            submittedContentDigest: messageContentDigest({ text: messageId }),
-            submittedPlacement: 'next_turn',
-            placement: 'next_turn',
-            disposition: 'followup',
-            skillInvocation: { loaded: [], failed: [], receipts: [] },
-            admittedAt: 20 + index,
-          });
+        const store = createSqliteSessionMetadataStore(path);
+        try {
+          await store.create(fullHeader({ id: 'session-reorder' }));
+          for (const [index, messageId] of [
+            ...earlierBatch,
+            'message-first',
+            'message-second',
+          ].entries()) {
+            await store.commitMessageAdmission({
+              sessionId: 'session-reorder',
+              turnId: 'turn-current',
+              runId: 'run-current',
+              messageId,
+              content: { text: messageId },
+              submittedContentDigest: messageContentDigest({ text: messageId }),
+              submittedPlacement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              placement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              disposition,
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
+              admittedAt: 20 + index,
+            });
+          }
+          await store.reorderMessageAdmissions(
+            'session-reorder',
+            ['message-second', 'message-first'],
+            disposition,
+          );
+        } finally {
+          store.close();
         }
-        await store.reorderMessageAdmissions('session-reorder', [
-          'message-second',
-          'message-first',
-        ]);
-      } finally {
-        store.close();
-      }
 
-      const reopened = createSqliteSessionMetadataStore(path);
-      try {
-        assert.deepEqual(
-          (await reopened.listMessageAdmissions('session-reorder')).map(
-            (admission) => admission.messageId,
-          ),
-          ['message-second', 'message-first'],
-        );
+        const reopened = createSqliteSessionMetadataStore(path);
+        try {
+          assert.deepEqual(
+            (await reopened.listMessageAdmissions('session-reorder')).map(
+              (admission) => admission.messageId,
+            ),
+            [...earlierBatch, 'message-second', 'message-first'],
+          );
+        } finally {
+          reopened.close();
+        }
       } finally {
-        reopened.close();
+        await rm(root, { recursive: true, force: true });
       }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 
   test('migrates v24 legacy session statuses to active exactly once', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-status-v24-'));

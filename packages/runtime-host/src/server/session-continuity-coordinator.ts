@@ -866,7 +866,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     | { ok: true; value: SubscriptionOpenResult }
     | {
         ok: false;
-        code: 'not_found' | 'operation_conflict' | 'operation_unavailable' | 'persistence_failed';
+        code:
+          | 'not_found'
+          | 'operation_conflict'
+          | 'operation_unavailable'
+          | 'persistence_failed'
+          | 'transcript_preparing';
         message: string;
       }
   > {

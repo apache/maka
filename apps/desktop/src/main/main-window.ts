@@ -54,6 +54,9 @@ export interface MainWindowController {
    */
   reloadMainRenderer(): Promise<boolean>;
   send(channel: string, ...args: unknown[]): void;
+  /** Subscribe an app-owned renderer to existing application broadcasts. */
+  registerAuxiliaryRenderer(contents: Electron.WebContents): () => void;
+  ownsRenderer(contents: Electron.WebContents): boolean;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
   notifyRendererReady(
@@ -100,30 +103,39 @@ interface MainWindowControllerDeps {
   // and the fake backend, so main-window.ts owns no env policy of its own.
   revealMode: WindowRevealMode;
   onClose?: () => void;
+  onClosed?: () => void;
   onShow?: () => void;
   onRendererProcessGone: (details: Electron.RenderProcessGoneDetails) => void | Promise<void>;
 }
 
 let mainWindow: BrowserWindow | null = null;
+const auxiliaryRenderers = new Set<Electron.WebContents>();
+
+function registerAuxiliaryRenderer(contents: Electron.WebContents): () => void {
+  if (contents.isDestroyed()) return () => undefined;
+  auxiliaryRenderers.add(contents);
+  const release = () => {
+    auxiliaryRenderers.delete(contents);
+    contents.removeListener('destroyed', release);
+  };
+  contents.once('destroyed', release);
+  return release;
+}
+
+function ownsRenderer(contents: Electron.WebContents): boolean {
+  if (contents.isDestroyed()) return false;
+  return (!!mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents)
+    || auxiliaryRenderers.has(contents);
+}
 let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
-/**
- * Guarded `webContents.send` for `mainWindow`. The `mainWindow?.` optional
- * chain only covers a null reference — it does NOT catch the case where the
- * BrowserWindow has been destroyed (window closed, renderer crashed,
- * teardown raced) while the variable still points at the freed object.
- * Calling `.webContents.send` in that state throws `TypeError: Object has
- * been destroyed`, surfacing as a main-process JS-error dialog.
- *
- * Use this helper anywhere a timer / IPC / menu accelerator might race
- * window teardown. No-op when the window is gone — callers that need
- * delivery confirmation should observe their own state.
- */
+/** Broadcast existing app events once to each live owned renderer, even if the main window is closed. */
 export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const wc = mainWindow.webContents;
-  if (wc.isDestroyed()) return;
-  wc.send(channel, ...args);
+  const recipients = new Set(auxiliaryRenderers);
+  if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
+  for (const contents of recipients) {
+    if (!contents.isDestroyed()) contents.send(channel, ...args);
+  }
 }
 
 // The close button's centre sits on the same vertical line as the sidebar's
@@ -524,6 +536,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         : { ...mainWindow.getBounds(), isMaximized: false };
       void writeSavedBounds(workspaceRoot, final);
     });
+    mainWindow.once('closed', () => deps.onClosed?.());
 
     // Dev-server cache hygiene (issue #4775) — see main-renderer-dev-cache.ts
     // for why a stale immutable dep-chunk graph must never survive into a new
@@ -611,6 +624,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       }
     },
     send: safeSendToRenderer,
+    registerAuxiliaryRenderer,
+    ownsRenderer,
     notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;

@@ -146,7 +146,7 @@ export function createStartupProgressWindow(input: {
   win.webContents.on('will-navigate', (event, url) => {
     event.preventDefault();
     if (url.startsWith('maka-startup://handoff/')) {
-      const match = /^maka-startup:\/\/handoff\/([a-z0-9-]+)\/(cancel|retry|interrupt)$/.exec(url);
+      const match = /^maka-startup:\/\/handoff\/([a-z0-9-]+)\/(cancel|retry|replace|interrupt)$/.exec(url);
       if (match && handoff?.view.revision === match[1] && handoff.view.actions.includes(match[2] as HostHandoffAction)) {
         handoff.submit(match[1], match[2] as HostHandoffAction);
       }
@@ -227,10 +227,11 @@ footer { display: flex; justify-content: space-between; align-items: center; mar
 #elapsed { opacity: .55; font-variant-numeric: tabular-nums; }
 button { font: inherit; color: inherit; background: transparent; border: 1px solid ${dark ? '#48494f' : '#dedee3'}; border-radius: 7px; padding: 6px 10px; cursor: pointer; }
 button:hover { background: ${dark ? '#303137' : '#f4f4f6'}; } button:focus-visible { outline: 2px solid #788aff; outline-offset: 3px; }
-#handoff-detail { white-space: pre-line; margin-top: 18px; } #actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+#handoff-detail { white-space: pre-line; overflow-wrap: anywhere; margin-top: 18px; } #actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
 #actions .destructive { border-color: ${dark ? '#c77976' : '#bc443d'}; color: ${dark ? '#ffada7' : '#a42c25'}; }
 #handoff-diagnostic { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70px; overflow: auto; font: 11px/1.4 monospace; opacity: .6; }
 body[data-handoff] #slow, body[data-handoff] .status { display: none; }
+body[data-handoff="attention"] #elapsed { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } } @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style></head><body>
 <svg viewBox="0 0 460 120" role="img" aria-label="Maka"><g transform="translate(0,120) scale(0.1,-0.1)"><path d="${MAKA_WORDMARK_PATH}"/></g></svg>

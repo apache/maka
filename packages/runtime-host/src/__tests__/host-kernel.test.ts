@@ -1333,6 +1333,63 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('quit activity ignores idle scheduler retention but preserves active work protection', async () => {
+    await withHostPaths(async (paths) => {
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: paths.root, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      let context!: RuntimeHostCompositionContext;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        composition: defineInteractiveRuntimeHostComposition(async (value) => {
+          context = value;
+          const retained = ['daily-review', 'scheduled-task', 'goal'].map((label) =>
+            context.acquireResidency(label, 'idle'),
+          );
+          return testComposition({
+            beginDrain: () => retained.forEach((lease) => lease.release()),
+          });
+        }),
+      });
+      try {
+        const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        const diagnostics = () => connected.connection.request('host.diagnostics.query', {});
+        const idle = await diagnostics();
+        assert.equal(idle.activeResidencies, 3);
+        assert.equal(idle.upgradeBlockingActivity, false);
+        for (const label of ['daily-review', 'scheduled-task', 'goal', 'runtime-resource']) {
+          const active = context.acquireResidency(label);
+          try {
+            assert.equal((await diagnostics()).upgradeBlockingActivity, true, label);
+            assert.deepEqual(
+              await connected.connection.request('host.upgrade.prepare', {
+                expectedHostEpoch: host.hostEpoch,
+                allowInterruptActiveTasks: false,
+              }),
+              { kind: 'active_tasks' },
+            );
+          } finally {
+            active.release();
+          }
+          assert.equal((await diagnostics()).upgradeBlockingActivity, false);
+        }
+        assert.deepEqual(
+          await connected.connection.request('host.upgrade.prepare', {
+            expectedHostEpoch: host.hostEpoch,
+            allowInterruptActiveTasks: false,
+          }),
+          { kind: 'prepared', pid: process.pid },
+        );
+        await host.closed;
+      } finally {
+        await host.close();
+      }
+    });
+  });
+
   test('idle process retention permits a fenced handoff but never claims natural exit', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

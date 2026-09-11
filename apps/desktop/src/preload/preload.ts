@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
+import { workHubControlBridge } from './workhub-control.js';
+import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -233,6 +236,7 @@ import {
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
@@ -259,6 +263,7 @@ import { projectDesktopSharedSessionSummary } from '../shared/shared-session-cat
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
 let activeRuntimeHostGeneration = 0;
+let newTaskCatalogGeneration = 0;
 type RuntimeHostScopeKey = string;
 const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
@@ -349,7 +354,12 @@ ipcRenderer.on(
     ) {
       activeRuntimeHostGeneration += 1;
     }
-    for (const listener of newTaskChangeListeners) listener();
+    // Guest mounts can only participate in their shared Sessions. Their
+    // reconnects cannot change the Hosts/projects available for a new task.
+    if (change.profileAccess === 'owner') {
+      newTaskCatalogGeneration += 1;
+      for (const listener of newTaskChangeListeners) listener();
+    }
   },
 );
 
@@ -436,6 +446,20 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   }
   if (!scope) throw new Error('The Runtime Host for this task is unavailable');
   return { scope, sessionId: ref.sessionId };
+}
+
+function hostAttachmentRefs(
+  session: { scope: DesktopTargetScope; sessionId: string },
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind !== 'session_file') return attachment;
+    const owner = parseDesktopSessionKey(attachment.ref.sessionId);
+    if (owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) {
+      throw new Error('Retained attachment belongs to another Host or Session');
+    }
+    return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
+  });
 }
 
 type DiagnosticRuntimeHostResolution<TTarget extends 'default' | 'task'> = {
@@ -571,7 +595,7 @@ async function selectedRuntimeHostScope(
 
 async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generation = activeRuntimeHostGeneration;
+    const generation = newTaskCatalogGeneration;
     const profiles = await ipcRenderer.invoke(
       'runtime-host-profiles:getSnapshot',
     ) as DesktopRuntimeHostProfileSnapshot;
@@ -631,7 +655,7 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         }
         }),
     );
-    if (generation !== activeRuntimeHostGeneration) continue;
+    if (generation !== newTaskCatalogGeneration) continue;
     return { defaultProfileId: profiles.defaultProfileId, hosts };
   }
   throw new Error('Runtime Host targets changed while the new-task catalog was loading');
@@ -1261,12 +1285,16 @@ function executeWebSearchQuery(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不支持从设置页单独调用。',
+      message: 'web search runs through the primary model inside tasks',
     });
   }
   const query = normalizeWebSearchQuery(input.query);
   if (!query) {
-    return Promise.resolve({ ok: false, reason: 'invalid_query', message: '请输入有效的搜索关键词。' });
+    return Promise.resolve({
+      ok: false,
+      reason: 'invalid_query',
+      message: 'the query is empty after normalization',
+    });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
   return selectedRuntimeHostScope(host).then((scope) =>
@@ -1289,7 +1317,7 @@ function executeWebSearchTest(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不需要单独测试搜索凭据。',
+      message: 'web search runs through the primary model inside tasks',
     });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
@@ -1305,7 +1333,7 @@ function unsupportedWebSearchProvider(): WebSearchResponse {
   return {
     ok: false,
     reason: 'unsupported_provider',
-    message: '当前配置不支持这个搜索引擎，请选择 Tavily 后重试。',
+    message: 'no web search provider is configured',
   };
 }
 
@@ -1363,6 +1391,8 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  workHubControl: workHubControlBridge,
+  workHubPresentation: workHubPresentationBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {
@@ -2001,9 +2031,25 @@ const makaBridge = {
     },
   },
   workHub: {
+    async getSession(coordinationSessionId: string) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return projectSessionSummary(scope, await ipcRenderer.invoke('workhub:getSession', scope));
+    },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+      const attachments = await ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items)) as AttachmentRef[];
+      return projectDesktopAttachmentRefs(scope, attachments);
+    },
+    async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:answer', scope, {
+        ...input,
+        ...(input.attachments ? { attachments: hostAttachmentRefs({ scope, sessionId: parseDesktopSessionKey(coordinationSessionId).sessionId }, input.attachments) } : {}),
+      }) as Promise<WorkHubAnswerResult>;
+    },
+    async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(
@@ -2011,61 +2057,7 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
-    },
-    async candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:candidates',
-        scope,
-      ) as OperationOutput<'workhub.coordination.candidates'>;
-      return {
-        ...result,
-        candidates: result.candidates.map((candidate) => ({
-          ...candidate,
-          sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
-        })),
-      };
-    },
-    async act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:act',
-        scope,
-        input,
-      ) as OperationOutcome<'workhub.coordination.act'>;
-      if (!result.ok) return result;
-      if (
-        result.result.disposition === 'answer_here' ||
-        result.result.disposition === 'clarify'
-      ) return result;
-      return {
-        ok: true,
-        result: {
-          ...result.result,
-          targetSessionId: recordRuntimeHostSessionScope(scope, result.result.targetSessionId),
-        },
-      };
-    },
+
   },
   sessionLocal: {
     async listMessages(sessionId) {
@@ -2161,12 +2153,7 @@ const makaBridge = {
         placement,
         {
           ...command,
-          ...(command.retainedAttachments ? { retainedAttachments: command.retainedAttachments.map((attachment) => {
-            if (attachment.ref.kind !== 'session_file') return attachment;
-            const owner = parseDesktopSessionKey(attachment.ref.sessionId);
-            if (!owner || owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) throw new Error('Retained attachment belongs to another Host or Session');
-            return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
-          }) } : {}),
+          ...(command.retainedAttachments ? { retainedAttachments: hostAttachmentRefs(session, command.retainedAttachments) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
         },
       )) as Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>;
@@ -2414,30 +2401,30 @@ const makaBridge = {
         unsubscribe();
       };
     },
-    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState> {
+    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>> {
       return invokeProjectedSessionRuntimeHost('plan-mode:requestRevision', sessionId, proposalId);
     },
     abandonPlanProposal(
       sessionId: string,
       proposalId: string,
     ): Promise<PlanSessionState> {
-      return invokeProjectedSessionRuntimeHost('plan-mode:abandon', sessionId, proposalId);
+      return invokeProjectedSessionRuntimeHost<PlanSessionState>('plan-mode:abandon', sessionId, proposalId);
     },
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
       expectedStoreVersion: number;
       turnId: string;
-    }): Promise<{ turnId: string; executionId: string }> {
+    }): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>> {
       return invokeSessionRuntimeHost('plan-mode:approve', sessionId, input);
     },
-    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<PlanControlIpcResult<{
       turnId: string;
       executionId: string;
-    }> {
+    }>> {
       return invokeSessionRuntimeHost('plan-mode:resume', sessionId, executionId, turnId);
     },
-    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState> {
+    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanControlIpcResult<PlanSessionState>> {
       return invokeProjectedSessionRuntimeHost('plan-mode:abandonExecution', sessionId, executionId);
     },
     setModelConfiguration(sessionId: string, input: {

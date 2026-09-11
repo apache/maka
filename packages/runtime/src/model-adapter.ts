@@ -49,8 +49,6 @@ export type {
   ModelStepOutcome,
   ModelFinishReason,
   ModelFailure,
-  ModelFailureKind,
-  ModelRequestMetadata,
   ModelToolSet,
 } from './model-protocol.js';
 
