@@ -172,6 +172,8 @@ test('treats pending transcript teardown as IPC cancellation', async () => {
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
@@ -215,6 +217,8 @@ for (const teardown of ['forgetSession', 'close'] as const) {
       async loadTranscriptBefore() {},
       async loadTranscriptAround() {},
       async loadTranscriptAfter() {},
+      async loadTranscriptLatest() {},
+      acknowledgeTranscriptTail() {},
       async closeTranscript() {},
     });
     const ipc = observationIpcHarness(observations);
@@ -255,6 +259,8 @@ test('preserves genuine Session observation initialization failures', async () =
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
@@ -287,6 +293,8 @@ test('returns explicit ready results for Session observation IPC', async () => {
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
