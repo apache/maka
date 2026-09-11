@@ -24,12 +24,13 @@ Phase 1 adds an explicit, fail-closed continuation path on top of the Phase 0
 when the committed source boundary is complete and the host supplies every
 required external safety fact.
 
-Planning and execution remain separate operations. Hosts expose them only when
-`MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1`: desktop provides a **Safe resume** action
-on the interrupted-turn banner, CLI/TUI provide `/resume`, and desktop may
-automatically continue an eligible interrupted session after its startup repair
-pass. With the flag absent, normal turns do not run continuation safety
-inspection and preserve the pre-Phase-1 happy path.
+Planning and execution remain separate operations. Desktop and CLI/TUI expose
+explicit resume by default; every attempt still passes through the authoritative
+safety planner. `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` disables new explicit and
+model-driven resume planning. `=1` additionally permits model-driven WorkHub
+resume, preserving the previous full opt-in behavior. Startup recovery may
+reconstruct an already admitted continuation, but it does not automatically
+select an ordinary failed or cancelled Run.
 
 ## Continuation unit
 
@@ -146,8 +147,8 @@ plan captures these facts in a safety snapshot and execution revalidates them.
 - desktop interrupted-turn banner action: **Safe resume**;
 - desktop main IPC: `sessions:resumeLatest`;
 - CLI TUI command: `/resume`;
-- desktop startup auto-continuation: enabled only by the same feature flag and
-  only after interrupted-run repair;
+- startup recovery: repairs and reconstructs already admitted continuations but
+  does not select ordinary failed or cancelled Runs;
 - structured operational events: `plan_approved`, `plan_parked`,
   `execution_started`, `execution_completed`, and `execution_failed`.
 
