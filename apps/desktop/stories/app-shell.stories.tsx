@@ -1973,7 +1973,9 @@ function PartialHistoryHarness() {
         hasOlderHistory: !readingEarlier,
         hasNewerHistory: readingEarlier,
         onPrefetchHistory: async (edge) => {
-          if (edge === 'newer') setReadingEarlier(false);
+          if (edge !== 'newer') return false;
+          setReadingEarlier(false);
+          return true;
         },
       }}
     />
@@ -2272,13 +2274,14 @@ function HistoryHarness({ turns }: { turns: number }) {
         messages: transcriptTurns(range.from, range.count),
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
         onPrefetchHistory: async (edge) => {
-          if (edge !== 'older') return;
+          if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           setRange((current) => ({
             from: current.from - HISTORY_BATCH,
             count: current.count + HISTORY_BATCH,
           }));
           await painted(2);
+          return true;
         },
       }}
     />

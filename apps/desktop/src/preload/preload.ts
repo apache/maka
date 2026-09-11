@@ -87,7 +87,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
-  type DesktopTranscriptWindowRead,
+  type DesktopTranscriptNavigation,
 } from './transcript-contract.js';
 import {
   adoptTranscriptIdentity,
@@ -2571,7 +2571,7 @@ const makaBridge = {
           | 'sessions:transcript:load-latest',
         anchorSequence: number | null,
         maxBytes: number,
-        navigation: DesktopTranscriptWindowRead,
+        navigation: DesktopTranscriptNavigation,
       ): Promise<void> => {
         const currentIdentity = identity;
         if (!currentIdentity) {
@@ -2583,7 +2583,7 @@ const makaBridge = {
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
-          windowEpoch: navigation.windowEpoch,
+          navigation: navigation.navigation,
         }) as Promise<void>;
       };
       return {

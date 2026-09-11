@@ -121,6 +121,7 @@ test('moves a fragmented overlay record to durable storage without duplicating i
   assert.equal(store.hasDurableMessage(message.id), false);
 
   const change = [...encodeDesktopTranscriptChange(identity, {
+    coversFrom: null,
     durableThrough: 4,
     durableUpserts: [{ sequence: 4, message }],
   })];
@@ -154,6 +155,7 @@ test('tracks the newest resident durable prompt as the window changes', () => {
   assert.equal(store.newestDurableUserSequence(), 3);
 
   for (const batch of encodeDesktopTranscriptChange(identity, {
+    coversFrom: 3,
     durableThrough: 4,
     durableUpserts: [{ sequence: 4, message: assistantMessage('latest') }],  })) store.accept(batch);
   assert.equal(store.newestDurableUserSequence(), 3);
@@ -193,6 +195,7 @@ test('drops stale transcript batches after a generation reset', () => {
   const staleChange = [...encodeDesktopTranscriptChange(
     { sessionId: 'session-1', generation: 'old', hostEpoch: 'host-1' },
     {
+      coversFrom: 2,
       durableThrough: 3,
       durableUpserts: [{ sequence: 3, message: assistantMessage('stale') }],    },
   )];
@@ -209,9 +212,9 @@ test('cached reload snapshots allow the same live transcript generation to resum
   };
   let opens = 0;
   const deliveries: Array<{ generation: string; accepted: boolean }> = [];
-  const publish = (generation: string, text: string, windowEpoch = 0) => {
+  const publish = (generation: string, text: string, navigation?: number) => {
     for (const batch of encodeDesktopTranscriptSnapshot({
-      ...identity, generation, windowEpoch, durableThrough: 1,
+      ...identity, generation, navigation, durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(text) }],
       overlay: [], hasOlder: false, hasNewer: false,
     })) deliveries.push({ generation, accepted: store.accept(batch) });
@@ -229,10 +232,10 @@ test('cached reload snapshots allow the same live transcript generation to resum
       async loadBefore() {},
       async loadAfter() {},
       async loadAround(_sequence, _maxBytes, navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.windowEpoch);
+        publish(identity.generation, `live-${opens}`, navigation?.navigation);
       },
       async loadLatest(navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.windowEpoch);
+        publish(identity.generation, `live-${opens}`, navigation?.navigation);
       },
       async close() {},
     };
@@ -250,6 +253,7 @@ test('cached reload snapshots allow the same live transcript generation to resum
 
     const updated = assistantMessage('live update', 'assistant-2');
     for (const batch of encodeDesktopTranscriptChange(identity, {
+      coversFrom: 1,
       durableThrough: 2,
       durableUpserts: [{ sequence: 2, message: updated }],    })) assert.equal(store.accept(batch), true);
     assert.deepEqual(store.snapshot().messages, [assistantMessage('live-3'), updated]);
@@ -276,6 +280,7 @@ test('a replacement live generation retires the previous replica through cached 
       for (const batch of encodeDesktopTranscriptChange({
         sessionId: 'session-1', generation, hostEpoch: 'host-1',
       }, {
+        coversFrom: 1,
         durableThrough: 2,
         durableUpserts: [{ sequence: 2, message: assistantMessage('stale', 'stale') }],      })) assert.equal(store.accept(batch), false);
     }
@@ -309,6 +314,7 @@ test('keeps unchanged message references stable across immutable range snapshots
   assert.ok(Object.isFrozen(first.messages[0]));
 
   for (const batch of encodeDesktopTranscriptChange(identity, {
+    coversFrom: 1,
     durableThrough: 2,
     durableUpserts: [{ sequence: 2, message: secondMessage }],  })) store.accept(batch);
 
@@ -915,7 +921,7 @@ test('forwards a larger logical history range without changing batch size', asyn
     sessionId: 'session-1',
     generation: 'generation-1',
     hostEpoch: 'host-1',
-    windowEpoch: store.replaceWindow(),
+    navigation: store.navigate(),
     durableThrough: 4,
     durable: [
       { sequence: 1, message: assistantMessage('earlier') },
@@ -976,10 +982,112 @@ test('waits for the required durable message on the current transcript generatio
   })) store.accept(batch);
   const waiting = store.waitForDurableMessage('assistant-1', 100);
   for (const batch of encodeDesktopTranscriptChange(identity, {
+    coversFrom: null,
     durableThrough: 0,
     durableUpserts: [{ sequence: 0, message: assistantMessage('complete') }],  })) store.accept(batch);
 
   assert.equal(await waiting, true);
+});
+
+test('the window does not change while an answer is still being assembled', () => {
+  const store = transcriptStore();
+  const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    ...identity, durableThrough: 1, durable: [{ sequence: 1, message: assistantMessage('first') }],
+    overlay: [], hasOlder: false, hasNewer: false,
+  })) store.accept(batch);
+  const installed = store.snapshot();
+
+  const change = [...encodeDesktopTranscriptChange(identity, {
+    coversFrom: 1, durableThrough: 2,
+    durableUpserts: [{
+      sequence: 2,
+      message: assistantMessage('x'.repeat(300 * 1024), 'assistant-2'),
+    }],
+  })];
+  assert.ok(change.length > 1, 'the answer has to span more than one batch');
+  for (const batch of change.slice(0, -1)) assert.equal(store.accept(batch), false);
+  assert.strictEqual(store.snapshot(), installed, 'the screen is never a half-installed answer');
+
+  assert.equal(store.accept(change.at(-1)!), true);
+  assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [1, 2]);
+});
+
+for (const coversFrom of [7, undefined]) {
+  test(`tail rows a window cannot join are dropped, and its ${coversFrom === undefined ? 'uncovered' : 'mismatched'} watermark still moves`, () => {
+    const store = transcriptStore();
+    const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1, durable: [{ sequence: 1, message: assistantMessage('first') }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    })) store.accept(batch);
+    assert.equal(store.range().hasNewer, false);
+
+    for (const batch of encodeDesktopTranscriptChange(identity, {
+      coversFrom, durableThrough: 9,
+      durableUpserts: [{ sequence: 9, message: assistantMessage('stranded', 'assistant-9') }],
+    })) store.accept(batch);
+
+    assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [1],
+      'nothing proves 9 adjacent to what the window holds');
+    assert.equal(store.range().durableThrough, 9);
+    assert.equal(store.range().hasNewer, true, 'so the window knows to read forward itself');
+  });
+}
+
+test('a reset the reader has navigated past moves the watermark and nothing else', () => {
+  const store = transcriptStore();
+  const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    ...identity, durableThrough: 1, durable: [{ sequence: 1, message: assistantMessage('first') }],
+    overlay: [], hasOlder: false, hasNewer: false,
+  })) store.accept(batch);
+
+  const answer = [...encodeDesktopTranscriptSnapshot({
+    ...identity, navigation: store.navigate(), durableThrough: 6,
+    durable: [
+      { sequence: 5, message: assistantMessage('x'.repeat(300 * 1024), 'assistant-5') },
+      { sequence: 6, message: assistantMessage('jumped', 'assistant-6') },
+    ],
+    overlay: [], hasOlder: true, hasNewer: false,
+  })];
+  assert.ok(answer.length > 1);
+  store.accept(answer[0]!);
+  // The reader asked to be somewhere else before the first answer finished.
+  store.navigate();
+  for (const batch of answer.slice(1)) store.accept(batch);
+
+  assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [1]);
+  assert.equal(store.range().durableThrough, 6);
+  assert.equal(store.pendingNavigation(), 2, 'the jump the reader is waiting for still stands');
+});
+
+test('a fill is issued once per window and again as soon as the window moves', async () => {
+  const store = transcriptStore();
+  let reads = 0;
+  const controller = createDesktopTranscriptRangeController(store, async () => ({
+    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
+    readThroughMessageId: null,
+    async loadBefore() { reads += 1; },
+    async loadAfter() {}, async loadAround() {}, async loadLatest() {}, async close() {},
+  }));
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
+    durableThrough: 2, hasOlder: true, hasNewer: false, overlay: [],
+    durable: [
+      { sequence: 1, message: assistantMessage('first') },
+      { sequence: 2, message: assistantMessage('second', 'assistant-2') },
+    ],
+  })) store.accept(batch);
+
+  assert.equal(await controller.loadBefore(), true);
+  assert.equal(await controller.loadBefore(), false, 'the same window answers the same way');
+  assert.equal(reads, 1);
+
+  assert.equal(store.retain(2, 2), true);
+  assert.equal(await controller.loadBefore(), true);
+  assert.equal(reads, 2);
+  await controller.close();
 });
 
 test('cancels a transcript open that is still waiting for a Host', async () => {

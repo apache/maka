@@ -271,7 +271,7 @@ export function ChatView(props: {
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
   /** Fills the window at an edge the reader is approaching. */
-  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<void>;
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   /** Optional identity decorations shared with a host's work navigation. */

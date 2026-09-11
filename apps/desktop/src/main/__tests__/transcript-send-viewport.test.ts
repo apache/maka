@@ -242,7 +242,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   addTurn('latest', 1800, 1200);
   let reads = 0;
   const controller = {
-    loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
+    loadAround: async () => {}, loadBefore: async () => true, loadAfter: async () => true,
     loadLatest: async () => { reads += 1; },
     store: {
       sessionId: 'session-a',

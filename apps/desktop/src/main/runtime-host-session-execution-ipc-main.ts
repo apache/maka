@@ -833,7 +833,7 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     throw new Error('Invalid Desktop transcript range byte limit');
   }
   if (
-    !Number.isSafeInteger(value.windowEpoch) || (value.windowEpoch as number) < 0
+    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
   ) {
     throw new Error('Invalid Desktop transcript navigation');
   }
@@ -843,7 +843,7 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
-    windowEpoch: value.windowEpoch as number,
+    navigation: value.navigation as number,
   };
 }
 

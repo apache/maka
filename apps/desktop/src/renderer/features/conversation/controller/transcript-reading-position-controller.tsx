@@ -35,8 +35,8 @@ type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRan
     retain(oldestSequence: number | null, newestSequence: number | null): boolean;
     snapshot(): object;
   };
-  loadBefore(maxBytes?: number): Promise<void>;
-  loadAfter(maxBytes?: number): Promise<void>;
+  loadBefore(maxBytes?: number): Promise<boolean>;
+  loadAfter(maxBytes?: number): Promise<boolean>;
   loadLatest(): Promise<void>;
 };
 
@@ -50,7 +50,7 @@ export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
   returnToLatest(): Promise<void>;
-  prefetchHistory(edge: 'older' | 'newer'): Promise<void>;
+  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
   retainWindow(window: { firstTurnId: string; lastTurnId: string }): void;
 }
 
@@ -126,15 +126,14 @@ export function TranscriptReadingPositionController(props: {
      * the page it is waiting for can still be in flight.
      *
      * Safe to ask on every frame the geometry wants it: the range controller
-     * holds the edge, and refuses a read that would only re-answer where the
-     * edge already stands.
+     * refuses a read against a window it has already read, and answers whether
+     * it issued one.
      */
     async prefetchHistory(edge) {
       const controller = props.rangeController.current;
       const { sessionId } = props;
-      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      if (edge === 'older') await controller.loadBefore();
-      else await controller.loadAfter();
+      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return false;
+      return edge === 'older' ? controller.loadBefore() : controller.loadAfter();
     },
     async returnToLatest() {
       const controller = props.rangeController.current;

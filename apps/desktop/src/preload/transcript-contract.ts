@@ -24,8 +24,8 @@ export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
-export interface DesktopTranscriptWindowRead {
-  readonly windowEpoch: number;
+export interface DesktopTranscriptNavigation {
+  readonly navigation: number;
 }
 
 export interface DesktopTranscriptFragment {
@@ -38,20 +38,20 @@ export interface DesktopTranscriptFragment {
 }
 
 /**
- * A batch answering a read carries the epoch of the window that asked for it,
- * plus the edge facts its page established. The window refuses an answer from
- * an epoch it has left — it navigated, or trimmed away the very edge the read
- * was anchored on — because splicing those rows on would leave a hole between
- * them and what the window still holds, and a hole is not something an edge
- * cursor can name or a later page can fill.
+ * Every batch carries what the rows in it are anchored on, because adjacency
+ * cannot be read off durable sequence numbers: they advance by a stride, so
+ * only the Host read that produced a row proves what it is contiguous with.
  *
- * Batches that carry no epoch are not answers to anything the window asked
- * for: tail growth, cache trims, and the snapshot Main sends when it has
- * replaced the transcript underneath every window. They apply to whatever the
- * window holds, under any epoch.
+ * - `extends` names the edge a page read started from.
+ * - `coversFrom` names the watermark a tail change read forward from; absent
+ *   means the batch claims no contiguity and only moves the watermark.
+ * - `navigation` appears on the reset answering `loadAround` / `loadLatest`,
+ *   which replaces the window outright instead of splicing onto it.
  */
 export interface DesktopTranscriptBatchPayload {
-  readonly windowEpoch?: number;
+  readonly navigation?: number;
+  readonly extends?: DesktopTranscriptExtension;
+  readonly coversFrom?: number | null;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -61,6 +61,11 @@ export interface DesktopTranscriptBatchPayload {
   readonly hasNewer?: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
+}
+
+export interface DesktopTranscriptExtension {
+  readonly direction: 'older' | 'newer';
+  readonly anchor: number | null;
 }
 
 export interface DesktopTranscriptBatch extends DesktopTranscriptBatchPayload {
@@ -75,7 +80,7 @@ export interface DesktopTranscriptOpenResult {
 }
 
 export interface DesktopTranscriptRangeRequest {
-  readonly windowEpoch: number;
+  readonly navigation: number;
   readonly consumerId: string;
   readonly sessionId: string;
   readonly hostEpoch: string;
@@ -84,10 +89,10 @@ export interface DesktopTranscriptRangeRequest {
 }
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
-  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
-  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
-  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
-  loadLatest(navigation: DesktopTranscriptWindowRead): Promise<void>;
+  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadLatest(navigation: DesktopTranscriptNavigation): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -98,7 +103,9 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
   const batch = value as Record<string, unknown>;
   if (
     typeof batch.sessionId !== 'string' ||
-    (batch.windowEpoch !== undefined && !isSequence(batch.windowEpoch)) ||
+    (batch.navigation !== undefined && !isSequence(batch.navigation)) ||
+    !isExtension(batch.extends) ||
+    (batch.coversFrom !== undefined && batch.coversFrom !== null && !isSequence(batch.coversFrom)) ||
     !isSequence(batch.deliverySequence) ||
     typeof batch.generation !== 'string' ||
     typeof batch.hostEpoch !== 'string' ||
@@ -150,4 +157,12 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
 
 function isSequence(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isExtension(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const extension = value as Record<string, unknown>;
+  return (extension.direction === 'older' || extension.direction === 'newer') &&
+    (extension.anchor === null || isSequence(extension.anchor));
 }

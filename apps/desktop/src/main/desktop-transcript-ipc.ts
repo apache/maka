@@ -21,6 +21,7 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   type DesktopTranscriptBatchPayload,
+  type DesktopTranscriptExtension,
   type DesktopTranscriptFragment,
 } from '../preload/transcript-contract.js';
 import type {
@@ -31,7 +32,7 @@ import type {
 } from './desktop-transcript-replica.js';
 
 interface TranscriptBatchIdentity {
-  readonly windowEpoch?: number;
+  readonly navigation?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -43,6 +44,8 @@ interface TranscriptBatchContent {
   readonly overlay: readonly StoredMessage[];
   readonly hasOlder?: boolean;
   readonly hasNewer?: boolean;
+  readonly extends?: DesktopTranscriptExtension;
+  readonly coversFrom?: number | null;
   readonly reset: boolean;
 }
 
@@ -62,6 +65,7 @@ export function encodeDesktopTranscriptSnapshot(
 export function encodeDesktopTranscriptPage(
   identity: TranscriptBatchIdentity,
   page: DesktopTranscriptReplicaPage,
+  extension: DesktopTranscriptExtension,
 ): Iterable<DesktopTranscriptBatchPayload> {
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: page.durableThrough,
@@ -69,18 +73,22 @@ export function encodeDesktopTranscriptPage(
     overlay: [],
     hasOlder: page.hasOlder,
     hasNewer: page.hasNewer,
+    extends: extension,
     reset: false,
   });
 }
 
 export function encodeDesktopTranscriptChange(
   identity: TranscriptBatchIdentity,
-  change: DesktopTranscriptReplicaChange,
+  // A merge that had to drop rows carries no `coversFrom` at all: it claims
+  // nothing about adjacency and only moves the watermark.
+  change: Omit<DesktopTranscriptReplicaChange, 'coversFrom'> & { readonly coversFrom?: number | null },
 ): Iterable<DesktopTranscriptBatchPayload> {
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
     overlay: [],
+    coversFrom: change.coversFrom,
     reset: false,
   });
 }
@@ -105,9 +113,9 @@ function* encodeDesktopTranscriptBatches(
       fragment = fragments.next();
     }
     yield {
-      ...(identity.windowEpoch === undefined
-        ? {}
-        : { windowEpoch: identity.windowEpoch }),
+      ...(identity.navigation === undefined ? {} : { navigation: identity.navigation }),
+      ...(content.extends === undefined ? {} : { extends: content.extends }),
+      ...(content.coversFrom === undefined ? {} : { coversFrom: content.coversFrom }),
       sessionId: identity.sessionId,
       generation: identity.generation,
       hostEpoch: identity.hostEpoch,

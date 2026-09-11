@@ -210,9 +210,9 @@ test('history loads follow the reader band, in both directions, once per directi
 
   const calls: string[] = [];
   const resolvers: Array<() => void> = [];
-  const load = (direction: string) => (): Promise<void> => {
+  const load = (direction: string) => (): Promise<boolean> => {
     calls.push(direction);
-    return new Promise<void>((resolve) => resolvers.push(resolve));
+    return new Promise<boolean>((resolve) => resolvers.push(() => resolve(true)));
   };
   let history = { older: true, newer: true };
   function Harness({ older, newer }: { older: boolean; newer: boolean }) {
@@ -305,6 +305,40 @@ test('a failed fill is not reissued until the reader moves again', async () => {
   assert.equal(requests, 1);
 });
 
+test('a fill that issued no read is not chained into another one', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-idle',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      // The first read issued; the window it answered is then the window the
+      // next ask is made against, so the range refuses to read it again.
+      onPrefetchHistory: () => Promise.resolve(++requests === 1),
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  await act(async () => { transcript.readerScrollTo(0); });
+
+  assert.equal(requests, 2, 'the landed read chains one re-check, whose refusal ends it');
+});
+
 test('an older request at offset zero restores the browser anchoring the reader depends on', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
@@ -325,7 +359,7 @@ test('an older request at offset zero restores the browser anchoring the reader 
       hasOlderHistory: true,
       onPrefetchHistory: () => {
         requests += 1;
-        return new Promise<void>(() => undefined);
+        return new Promise<boolean>(() => undefined);
       },
     });
     return null;
@@ -361,7 +395,7 @@ test('a transcript change re-reads the band while the reader stays at the tail',
       hasOlderHistory: true,
       onPrefetchHistory: () => {
         requests += 1;
-        return new Promise<void>(() => undefined);
+        return new Promise<boolean>(() => undefined);
       },
     });
     return null;

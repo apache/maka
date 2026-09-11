@@ -33,7 +33,11 @@ import {
   updateSubscriberTranscriptHighWater,
 } from '../../../../../packages/runtime-host/dist/server/session-transcript-pager.js';
 import { DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import { encodeDesktopTranscriptChange, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import {
+  encodeDesktopTranscriptChange,
+  encodeDesktopTranscriptPage,
+  encodeDesktopTranscriptSnapshot,
+} from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 import { openTranscriptNavigationLedger } from './transcript-navigation-test-fixture.js';
@@ -74,31 +78,48 @@ for (const coalesced of [false, true]) {
   });
 }
 
-test('a window parked off the tail keeps the Turn it is reading when that Turn completes', async () => {
+test('a window parked off the tail reads the completed Turn back through its own edge', async () => {
   const fixture = await openFixture();
   try {
     const { replica, renderer } = fixture;
     // Reading history: the window dropped the newest rows to meet its budget,
     // so its newer edge is a gap and tail growth is no longer its business.
     const oldest = renderer.range().oldestSequence;
+    assert.ok(oldest !== null);
     renderer.retain(oldest, oldest);
     assert.equal(renderer.range().hasNewer, true);
-    const overlaid = renderer.snapshot().messages.find(({ id }) => id === 'answer-b');
-    assert.equal(overlaid?.type === 'assistant' ? overlaid.text : undefined, 'B partial');
+    assert.equal(
+      renderer.snapshot().messages.some(({ id }) => id === 'answer-b'), false,
+      'the overlay is a fact about the tail, and this window no longer reaches it',
+    );
 
     await fixture.advance(B_COMPLETED_THROUGH);
     await fixture.advance(C_COMPLETED_THROUGH);
 
     assert.deepEqual(
+      renderer.durableEntries().map(({ sequence }) => sequence), [oldest],
+      'tail growth has nothing to join onto, so the window stays the range it was trimmed to',
+    );
+    assert.equal(renderer.range().hasNewer, true);
+
+    // Paging back: each read is anchored on the edge the last one left, which
+    // is the only thing that makes the rows spliceable.
+    for (let read = 0; read < 8 && renderer.range().hasNewer; read += 1) {
+      const anchor = renderer.range().newestSequence;
+      const page = await replica.loadAfter(anchor, PAGE_BYTES);
+      assert.ok(page);
+      for (const batch of encodeDesktopTranscriptPage({
+        sessionId: replica.sessionId,
+        generation: replica.generation,
+        hostEpoch: replica.hostEpoch,
+      }, page, { direction: 'newer', anchor })) renderer.accept(batch);
+    }
+
+    assert.deepEqual(
       renderer.snapshot().messages.flatMap((message) =>
         message.type === 'assistant' && message.turnId === 'b' ? [message.text] : []),
       ['B partial and completed answer'],
-      'the completed body replaces the overlay instead of both disappearing',
-    );
-    assert.deepEqual(
-      renderer.snapshot().messages.flatMap(({ id, turnId }) => turnId === 'c' ? [id] : []),
-      [],
-      'settling the read Turn does not pull the window forward to a later Turn',
+      'reading forward from the edge brings the completed body back',
     );
     assert.equal(replica.snapshot().overlay.length, 0);
   } finally {

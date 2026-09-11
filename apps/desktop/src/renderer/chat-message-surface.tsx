@@ -91,7 +91,7 @@ interface ChatMessageSurfaceProps extends Omit<
   onSkip: () => Promise<void> | void;
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
-  onPrefetchHistory: (edge: 'older' | 'newer') => Promise<void>;
+  onPrefetchHistory: (edge: 'older' | 'newer') => Promise<boolean>;
   onRetainWindow: (window: { firstTurnId: string; lastTurnId: string }) => void;
 }
 

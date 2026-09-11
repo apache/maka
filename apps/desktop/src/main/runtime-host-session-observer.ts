@@ -130,8 +130,8 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
-  /** The window the standing replacement installs; what a read must still reach. */
-  windowEpoch: number;
+  /** The standing replacement; a read naming an older one has been abandoned. */
+  navigation: number;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
@@ -142,7 +142,7 @@ interface TranscriptConsumer {
    * not ask for. A reset from recovery or from an error carries no version:
    * the window applies it to whatever it holds, under any navigation.
    */
-  resetWindowEpoch?: number;
+  resetNavigation?: number;
   /** Page answers queued behind the delivery loop so they never interleave with a change. */
   readonly pendingPages: PendingTranscriptPage[];
   pendingChange?: PendingTranscriptChange;
@@ -155,13 +155,14 @@ interface TranscriptConsumer {
 }
 
 interface PendingTranscriptChange {
+  coversFrom: number | null | undefined;
   durableThrough: number | null;
   readonly durableUpserts: Map<number, PendingTranscriptUpsert>;
   encodedBytes: number;
 }
 
 interface PendingTranscriptPage {
-  readonly windowEpoch: number;
+  readonly navigation: number;
   /** Whether this answer installs its window or splices onto one already there. */
   readonly replaces: boolean;
   readonly generation: string;
@@ -310,7 +311,7 @@ export class RuntimeHostSessionObserver {
       consumerId,
       target,
       generation: replica.generation,
-      windowEpoch: 0,
+      navigation: 0,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -357,7 +358,12 @@ export class RuntimeHostSessionObserver {
         requireTranscriptRangeBytes(request.maxBytes),
         isCurrent,
       );
-      return page && { batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page), bytes: page.durable };
+      return page && {
+        batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page, {
+          direction: 'older', anchor: request.anchorSequence,
+        }),
+        bytes: page.durable,
+      };
     });
   }
 
@@ -371,7 +377,12 @@ export class RuntimeHostSessionObserver {
         requireTranscriptRangeBytes(request.maxBytes),
         isCurrent,
       );
-      return page && { batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page), bytes: page.durable };
+      return page && {
+        batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page, {
+          direction: 'newer', anchor: request.anchorSequence,
+        }),
+        bytes: page.durable,
+      };
     });
   }
 
@@ -390,7 +401,7 @@ export class RuntimeHostSessionObserver {
         isCurrent,
       );
       return snapshot && {
-        batches: encodeDesktopTranscriptSnapshot({ ...snapshot, windowEpoch: request.windowEpoch }),
+        batches: encodeDesktopTranscriptSnapshot({ ...snapshot, navigation: request.navigation }),
         bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
       };
     });
@@ -403,7 +414,7 @@ export class RuntimeHostSessionObserver {
     const { state, consumer } = this.#admitTranscriptNavigation(request, targetId, true);
     if (!consumer) return;
     consumer.resetRequested = true;
-    consumer.resetWindowEpoch = request.windowEpoch;
+    consumer.resetNavigation = request.navigation;
     await this.#scheduleTranscriptDelivery(state, consumer);
     this.#touchReplica(state);
   }
@@ -413,22 +424,15 @@ export class RuntimeHostSessionObserver {
       sessionId: replica.sessionId,
       generation: replica.generation,
       hostEpoch: replica.hostEpoch,
-      windowEpoch: request.windowEpoch,
+      navigation: request.navigation,
     };
   }
 
   /**
-   * The Renderer mints a version for every window it can no longer splice onto
-   * — navigating away, and the band trimming an edge out. Only the first of
-   * those abandons a read already in flight: a replacement discards the edges,
-   * so a trim under it leaves it perfectly answerable.
-   *
-   * Which window the Renderer currently holds is not something Main can derive
-   * from the numbers it sees, and it does not need to: the Renderer refuses
-   * what it cannot splice. What Main tracks is the standing replacement, which
-   * is the only thing that abandons work — an extension naming a newer window
-   * is admitted without moving it, and a version below it named a window the
-   * Renderer has left.
+   * Main's navigation number is a cancellation hint and nothing more: dropping
+   * it would leave the system correct, because the Renderer decides what its
+   * window can splice from the anchors the answers carry. What it buys is not
+   * reading and shipping pages for a window the reader has already left.
    */
   #admitTranscriptNavigation(
     request: DesktopTranscriptRangeRequest,
@@ -436,11 +440,11 @@ export class RuntimeHostSessionObserver {
     replaces: boolean,
   ): { state: ObservedSessionState; replica: DesktopTranscriptReplica; consumer?: TranscriptConsumer } {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
-    const version = request.windowEpoch;
-    if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
-    if (version < consumer.windowEpoch) return { state, replica };
-    if (replaces && version > consumer.windowEpoch) {
-      consumer.windowEpoch = version;
+    const navigation = request.navigation;
+    if (!Number.isSafeInteger(navigation) || navigation < 0) throw new Error('Invalid transcript navigation version');
+    if (navigation < consumer.navigation) return { state, replica };
+    if (replaces && navigation > consumer.navigation) {
+      consumer.navigation = navigation;
       // Every queued answer was read for a window this replacement discards.
       consumer.pendingPages.splice(0).forEach((page) =>
         this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
@@ -450,8 +454,8 @@ export class RuntimeHostSessionObserver {
   }
 
   /** Asked before a read is started and again before its answer is sent. */
-  #deliversTranscriptPage(consumer: TranscriptConsumer, windowEpoch: number): boolean {
-    return windowEpoch >= consumer.windowEpoch;
+  #deliversTranscriptPage(consumer: TranscriptConsumer, navigation: number): boolean {
+    return navigation >= consumer.navigation;
   }
 
   async #runTranscriptRangeOperation(
@@ -471,7 +475,7 @@ export class RuntimeHostSessionObserver {
     const isCurrent = () =>
       state.replica === replica &&
       state.transcriptConsumers.get(request.consumerId) === consumer &&
-      this.#deliversTranscriptPage(consumer, request.windowEpoch);
+      this.#deliversTranscriptPage(consumer, request.navigation);
     let answer: Awaited<ReturnType<typeof operation>>;
     try {
       answer = await operation(replica, isCurrent);
@@ -489,7 +493,7 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript delivery capacity was reached');
     }
     consumer.pendingPages.push({
-      windowEpoch: request.windowEpoch,
+      navigation: request.navigation,
       replaces,
       generation: replica.generation,
       batches: answer.batches,
@@ -1274,8 +1278,8 @@ export class RuntimeHostSessionObserver {
         while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
           if (consumer.resetRequested) {
             consumer.resetRequested = false;
-            const resetWindowEpoch = consumer.resetWindowEpoch;
-            consumer.resetWindowEpoch = undefined;
+            const resetNavigation = consumer.resetNavigation;
+            consumer.resetNavigation = undefined;
             this.#clearPendingTranscriptChange(consumer);
             const replica = state.replica;
             if (!replica?.resident || state.closing) return;
@@ -1289,7 +1293,7 @@ export class RuntimeHostSessionObserver {
                 consumer,
                 encodeDesktopTranscriptSnapshot({
                   ...replica.snapshot(),
-                  windowEpoch: resetWindowEpoch,
+                  navigation: resetNavigation,
                 }),
               );
             } finally {
@@ -1301,7 +1305,7 @@ export class RuntimeHostSessionObserver {
           if (page) {
             try {
               if (
-                this.#deliversTranscriptPage(consumer, page.windowEpoch) &&
+                this.#deliversTranscriptPage(consumer, page.navigation) &&
                 page.generation === consumer.generation &&
                 state.replica?.generation === consumer.generation
               ) {
@@ -1330,6 +1334,7 @@ export class RuntimeHostSessionObserver {
                   hostEpoch: replica.hostEpoch,
                 },
                 {
+                  coversFrom: pending.coversFrom,
                   durableThrough: pending.durableThrough,
                   durableUpserts: [...pending.durableUpserts.values()].map(({ entry }) => entry),
                 },
@@ -1359,19 +1364,34 @@ export class RuntimeHostSessionObserver {
     void this.#scheduleTranscriptDelivery(state, consumer).catch(() => undefined);
   }
 
+  /**
+   * Coalesces tail growth for one consumer. A merged change can only keep rows
+   * while each change starts where the last one ended; where it does not, the
+   * rows go and the merge carries nothing but the watermark, which is enough
+   * for the window to learn it has fallen behind and read forward itself.
+   */
   #mergeTranscriptChange(
     consumer: TranscriptConsumer,
     change: DesktopTranscriptReplicaChange,
   ): boolean {
     if (consumer.resetRequested) return true;
-    const pending = consumer.pendingChange ?? {
+    const existing = consumer.pendingChange;
+    const pending = existing ?? {
+      coversFrom: change.coversFrom,
       durableThrough: change.durableThrough,
       durableUpserts: new Map<number, PendingTranscriptUpsert>(),
       encodedBytes: 0,
     };
     let byteDelta = 0;
+    const joins = !existing ||
+      (pending.coversFrom !== undefined && pending.durableThrough === change.coversFrom);
+    if (!joins) {
+      for (const { encodedBytes } of pending.durableUpserts.values()) byteDelta -= encodedBytes;
+      pending.durableUpserts.clear();
+      pending.coversFrom = undefined;
+    }
     pending.durableThrough = change.durableThrough;
-    for (const entry of change.durableUpserts) {
+    for (const entry of joins ? change.durableUpserts : []) {
       const previous = pending.durableUpserts.get(entry.sequence);
       if (previous) byteDelta -= previous.encodedBytes;
       const encodedBytes = encodedTranscriptMessageBytes(entry.message);
@@ -1471,8 +1491,9 @@ export class RuntimeHostSessionObserver {
     batches: Iterable<DesktopTranscriptBatchPayload>,
   ): Promise<void> {
     const deliveries = new Set<Promise<void>>();
+    // One answer goes out whole or not at all: a window assembles it as a unit,
+    // and a run cut short in the middle would never complete into one.
     for (const batch of batches) {
-      if (batch.windowEpoch !== undefined && batch.windowEpoch < consumer.windowEpoch) break;
       let delivery!: Promise<void>;
       delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
         deliveries.delete(delivery);

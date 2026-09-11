@@ -54,7 +54,7 @@ export interface DesktopSequencedTranscriptMessage {
 }
 
 export interface DesktopTranscriptReplicaSnapshot {
-  readonly windowEpoch?: number;
+  readonly navigation?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -73,8 +73,14 @@ export interface DesktopTranscriptReplicaPage {
   readonly hasNewer?: boolean;
 }
 
-/** Tail-cache growth broadcast to every consumer; carries no window edges. */
+/**
+ * Tail-cache growth broadcast to every consumer. `coversFrom` is the watermark
+ * the read that produced these rows started at — the only thing that makes them
+ * spliceable, since sequence numbers advance by a stride and cannot show
+ * adjacency. `null` means the read started at the beginning of the transcript.
+ */
 export interface DesktopTranscriptReplicaChange {
+  readonly coversFrom: number | null;
   readonly durableThrough: number | null;
   readonly durableUpserts: readonly DesktopSequencedTranscriptMessage[];
 }
@@ -406,6 +412,9 @@ export class DesktopTranscriptReplica {
       if (anchorSequence !== null && target <= anchorSequence) return;
       let cursor: string | null = null;
       let nextSequence = (anchorSequence ?? -1) + 1;
+      // What each publish is spliceable onto: where the read that produced it
+      // started, which is the watermark the previous publish ended at.
+      let published = anchorSequence;
       do {
         if (!this.#isLive()) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
@@ -439,13 +448,15 @@ export class DesktopTranscriptReplica {
             undefined,
             page.protectedTurnSequence ?? decoded.messages.at(-1)?.identity,
           );
-          this.#publish(decoded.messages);
+          const through = decoded.messages.at(-1)?.identity ?? published;
+          this.#publish(published, through, decoded.messages);
+          published = through;
           cursor = decoded.nextCursor;
         });
       } while (cursor !== null);
       if (!this.#isLive()) return;
       this.#durableThrough = target;
-      this.#publish([]);
+      this.#publish(published, target, []);
     }
   }
 
@@ -517,13 +528,16 @@ export class DesktopTranscriptReplica {
   }
 
   #publish(
+    coversFrom: number | null,
+    durableThrough: number | null,
     messages: readonly {
       readonly identity: number;
       readonly message: StoredMessage;
     }[],
   ): void {
     this.#onChange(this, {
-      durableThrough: this.#durableThrough,
+      coversFrom,
+      durableThrough,
       // Every row this catch-up read, whether or not the tail cache kept it:
       // the budget that evicts it here is Main's, not any window's.
       durableUpserts: messages.map((entry) => ({

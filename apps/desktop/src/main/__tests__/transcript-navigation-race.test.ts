@@ -117,14 +117,14 @@ test('a global cache trim empties the tail without publishing or reading history
 test('a superseded fragmented reset cannot clear or complete the next navigation', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
-  store.replaceWindow();
+  store.navigate();
   const stale = [...encodeDesktopTranscriptSnapshot({
-    ...identity, windowEpoch: 1, durableThrough: 1,
+    ...identity, navigation: 1, durableThrough: 1,
     durable: [{ sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage }],
     overlay: [], hasOlder: false, hasNewer: true,
   })];
   assert.equal(store.accept(stale[0]!), false);
-  store.replaceWindow();
+  store.navigate();
   acceptSnapshot(store, 2, 'generation-2', [record(1)]);
   const committed = store.snapshot();
   for (const batch of stale) assert.equal(store.accept(batch), false);
@@ -138,7 +138,7 @@ test('a superseded fragmented reset cannot clear or complete the next navigation
 test('a replica replacement is admitted whole, however far the window has navigated', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
-  store.replaceWindow();
+  store.navigate();
   const replacement = [...encodeDesktopTranscriptSnapshot({
     ...identity, generation: 'generation-2', durableThrough: 1,
     durable: [
@@ -153,18 +153,20 @@ test('a replica replacement is admitted whole, however far the window has naviga
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-0', 'message-1']);
 });
 
-test('an edge cannot be extended while the window under it is being replaced', async () => {
+test('a fill landing under a pending jump joins the window it was anchored on', async () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
-  const requests: Array<{ command: string; anchor: number | null }> = [];
   const arrive = deferred<void>();
   const handle: DesktopTranscriptHandle = {
     ...identity, readThroughMessageId: null,
-    async loadBefore(anchor) { requests.push({ command: 'before', anchor }); },
-    async loadAfter(anchor) { requests.push({ command: 'after', anchor }); },
-    async loadAround(anchor, _bytes, navigation) {
-      requests.push({ command: 'around', anchor });
+    async loadBefore(anchor) {
+      for (const batch of encodeDesktopTranscriptPage(identity, {
+        durableThrough: 1, durable: [{ sequence: 0, message: record(0).message }], hasOlder: false,
+      }, { direction: 'older', anchor })) store.accept(batch);
+    },
+    async loadAfter() { assert.fail('unexpected'); },
+    async loadAround(_anchor, _bytes, navigation) {
       await arrive.promise;
-      acceptSnapshot(store, navigation.windowEpoch, 'generation-1', [record(9)]);
+      acceptSnapshot(store, navigation.navigation, 'generation-1', [record(9)]);
     },
     async loadLatest() { assert.fail('unexpected'); },
     async close() {},
@@ -173,13 +175,15 @@ test('an edge cannot be extended while the window under it is being replaced', a
   acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2)]);
   const navigation = controller.loadAround(9);
   await Promise.resolve();
-  // The rows on screen are still the window being left. Anchoring a fill on
-  // their edge and splicing it onto the replacement is how a hole opens.
-  await controller.loadBefore();
-  await controller.loadAfter();
-  assert.deepEqual(requests, [{ command: 'around', anchor: 9 }]);
+
+  assert.equal(await controller.loadBefore(), true);
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id),
+    ['message-0', 'message-1', 'message-2'],
+    'the fill is anchored on an edge of the window still on screen, and reaches it');
+
   arrive.resolve();
   await navigation;
+  // The jump replaces the window whole, so the fill leaves no trace in it.
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-9']);
   await controller.close();
 });
@@ -216,24 +220,21 @@ test('a fill that left an edge where it found it is not asked again', async () =
 test('a fill anchored on the window a navigation replaced cannot splice onto it', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(8), record(9)]);
-  const stranded = store.windowEpoch();
-  const navigating = store.replaceWindow();
+  const navigating = store.navigate();
   acceptSnapshot(store, navigating, 'generation-1', [record(1), record(2)]);
-  const settled = store.snapshot();
-  for (const batch of encodeDesktopTranscriptPage({ ...identity, windowEpoch: stranded }, {
+  for (const batch of encodeDesktopTranscriptPage(identity, {
     durableThrough: 9, durable: [{ sequence: 9, message: record(9).message }], hasNewer: false,
-  })) assert.equal(store.accept(batch), false);
-  assert.strictEqual(store.snapshot(), settled);
+  }, { direction: 'newer', anchor: 9 })) store.accept(batch);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1', 'message-2']);
 });
 
-test('a replacement outlives the band trimming the window it was issued under', () => {
+test('a navigation outlives the band trimming the window it was issued under', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2)]);
-  const navigating = store.replaceWindow();
+  const navigating = store.navigate();
   assert.equal(store.retain(2, 2), true);
   const replacement = [...encodeDesktopTranscriptSnapshot({
-    ...identity, windowEpoch: navigating, durableThrough: 1,
+    ...identity, navigation: navigating, durableThrough: 1,
     durable: [
       { sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage },
       { sequence: 1, message: record(1).message },
@@ -244,25 +245,22 @@ test('a replacement outlives the band trimming the window it was issued under', 
   for (const batch of replacement) store.accept(batch);
   assert.equal(store.range().ready, true);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-0', 'message-1']);
-  const settled = store.snapshot();
-  // The trim's number is not handed back out: the page still in flight under it
-  // is anchored on an edge this replacement threw away.
-  for (const batch of encodeDesktopTranscriptPage({ ...identity, windowEpoch: navigating + 1 }, {
+  // The fill the band left in flight is anchored on an edge nothing here has.
+  for (const batch of encodeDesktopTranscriptPage(identity, {
     durableThrough: 3, durable: [{ sequence: 3, message: record(3).message }], hasNewer: false,
-  })) assert.equal(store.accept(batch), false);
-  assert.strictEqual(store.snapshot(), settled);
+  }, { direction: 'newer', anchor: 2 })) store.accept(batch);
+  assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [0, 1]);
+  assert.equal(store.range().hasNewer, true, 'the watermark it carried still moved');
 });
 
 test('a page anchored on an edge the band has since dropped is refused', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2), record(3)]);
-  const anchored = store.windowEpoch();
   assert.equal(store.retain(3, 3), true);
-  const answer = [...encodeDesktopTranscriptPage({ ...identity, windowEpoch: anchored }, {
+  for (const batch of encodeDesktopTranscriptPage(identity, {
     durableThrough: 3, durable: [{ sequence: 0, message: record(0).message }],
     hasOlder: false,
-  })];
-  for (const batch of answer) assert.equal(store.accept(batch), false);
+  }, { direction: 'older', anchor: 1 })) store.accept(batch);
   // Installing it would leave 1..2 missing between the answer and the window,
   // and no edge cursor can name a hole in the middle.
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-3']);
@@ -272,18 +270,18 @@ test('a page anchored on an edge the band has since dropped is refused', () => {
 test('follow latest invalidates an in-flight history navigation before open resolves', async () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   const opening = deferred<DesktopTranscriptHandle>();
-  const requests: Array<{ command: 'around' | 'latest'; anchor: number | null; windowEpoch: number }> = [];
+  const requests: Array<{ command: 'around' | 'latest'; anchor: number | null; navigation: number }> = [];
   const handle = (generation: string): DesktopTranscriptHandle => ({
     ...identity, generation, readThroughMessageId: null,
     async loadBefore() { assert.fail('an obsolete history request was replayed'); },
     async loadAfter() { assert.fail('an obsolete newer request was replayed'); },
     async loadAround(anchor, _bytes, navigation) {
-      requests.push({ command: 'around', anchor, windowEpoch: navigation.windowEpoch });
-      acceptSnapshot(store, navigation.windowEpoch, generation, [record(0)]);
+      requests.push({ command: 'around', anchor, navigation: navigation.navigation });
+      acceptSnapshot(store, navigation.navigation, generation, [record(0)]);
     },
     async loadLatest(navigation) {
-      requests.push({ command: 'latest', anchor: null, windowEpoch: navigation.windowEpoch });
-      acceptSnapshot(store, navigation.windowEpoch, generation, [record(1)]);
+      requests.push({ command: 'latest', anchor: null, navigation: navigation.navigation });
+      acceptSnapshot(store, navigation.navigation, generation, [record(1)]);
     },
     async close() {},
   });
@@ -292,7 +290,7 @@ test('follow latest invalidates an in-flight history navigation before open reso
   const latest = controller.loadLatest();
   opening.resolve(handle('generation-1'));
   await Promise.all([history, latest]);
-  assert.deepEqual(requests, [{ command: 'latest', anchor: null, windowEpoch: 2 }]);
+  assert.deepEqual(requests, [{ command: 'latest', anchor: null, navigation: 2 }]);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
   await controller.close();
 });
@@ -311,7 +309,7 @@ test('a rejected older navigation cannot fail the newer latest command', async (
       await historyResult;
     },
     async loadLatest(navigation) {
-      acceptSnapshot(store, navigation.windowEpoch, identity.generation, [record(1)]);
+      acceptSnapshot(store, navigation.navigation, identity.generation, [record(1)]);
     },
     async close() {},
   }));
@@ -359,7 +357,7 @@ test('superseded batches remain ACKable and cannot reset the latest window while
     id: 1, once() {}, off() {},
     send(_channel, batch) {
       store.accept(batch);
-      if (batch.windowEpoch === 1 && !releaseAcks) {
+      if (batch.navigation === 1 && !releaseAcks) {
         blocked.push(batch);
         firstOldBatch.resolve();
       } else queueMicrotask(() => ack(batch));
@@ -367,24 +365,28 @@ test('superseded batches remain ACKable and cannot reset the latest window while
   });
   const request: DesktopTranscriptRangeRequest = {
     consumerId: 'consumer-1', sessionId: 'session-1', hostEpoch: 'host-1',
-    anchorSequence: 0, maxBytes: PAGE_BYTES, windowEpoch: 1,
+    anchorSequence: 0, maxBytes: PAGE_BYTES, navigation: 1,
   };
-  store.replaceWindow();
+  store.navigate();
   const history = observer.loadTranscriptAround(request, 1);
   await firstOldBatch.promise;
-  store.replaceWindow();
-  const following = observer.loadTranscriptLatest({ ...request, windowEpoch: 2, anchorSequence: null }, 1);
+  store.navigate();
+  const following = observer.loadTranscriptLatest({ ...request, navigation: 2, anchorSequence: null }, 1);
   releaseAcks = true;
   for (const batch of blocked) ack(batch);
   await Promise.all([history, following]);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
   const snapshot = store.snapshot();
-  for (const batch of blocked) assert.equal(store.accept(batch), false);
+  // Replaying the reset of the answer the reader navigated away from: it names
+  // a navigation that is over, so it cannot reinstall the window it was read for.
+  for (const batch of blocked.filter(({ reset }) => reset)) {
+    assert.equal(store.accept(batch), false);
+  }
   assert.strictEqual(store.snapshot(), snapshot);
   await observer.close();
 });
 
-test('a page naming a newer window does not discard the replacement in flight', async () => {
+test('a fill in flight does not discard the replacement it was issued under', async () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   const entered = deferred<void>();
   const release = deferred<void>();
@@ -425,14 +427,14 @@ test('a page naming a newer window does not discard the replacement in flight', 
   });
   const request: DesktopTranscriptRangeRequest = {
     consumerId: 'consumer-1', sessionId: 'session-1', hostEpoch: 'host-1',
-    anchorSequence: 0, maxBytes: PAGE_BYTES, windowEpoch: 1,
+    anchorSequence: 0, maxBytes: PAGE_BYTES, navigation: 1,
   };
-  store.replaceWindow();
+  store.navigate();
   const navigation = observer.loadTranscriptAround(request, 1);
   await entered.promise;
-  // The band trimmed an edge under the navigation, so the fill that follows
-  // names a newer window. It extends the window; it does not replace it.
-  const filling = observer.loadTranscriptBefore({ ...request, anchorSequence: 1, windowEpoch: 2 }, 1);
+  // A fill issued while the jump is still reading names the same navigation:
+  // it extends the window, and nothing about it abandons the jump.
+  const filling = observer.loadTranscriptBefore({ ...request, anchorSequence: 1 }, 1);
   release.resolve();
   await Promise.all([navigation, filling]);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-0']);
@@ -440,9 +442,9 @@ test('a page naming a newer window does not discard the replacement in flight', 
 });
 
 const identity = { sessionId: 'session-1', hostEpoch: 'host-1', generation: 'generation-1' };
-function acceptSnapshot(store: DesktopTranscriptRangeStore, windowEpoch: number | undefined, generation: string, records: Array<ReturnType<typeof record>>) {
+function acceptSnapshot(store: DesktopTranscriptRangeStore, navigation: number | undefined, generation: string, records: Array<ReturnType<typeof record>>) {
   for (const batch of encodeDesktopTranscriptSnapshot({
-    ...identity, windowEpoch, generation, durableThrough: 1,
+    ...identity, navigation, generation, durableThrough: 1,
     durable: records.map(({ identity: sequence, message }) => ({ sequence, message })),
     overlay: [], hasOlder: true, hasNewer: false,
   })) store.accept(batch);

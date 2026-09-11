@@ -62,7 +62,7 @@ export function useChatScroll(input: {
    * filled window from a failed one.
    */
   /** Fills an edge the reader is approaching. Safe to call on every frame that wants it. */
-  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<void>;
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
   /** The turns the reader can still reach within the retained band; the rest may go. */
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
 }) {
@@ -206,10 +206,8 @@ export function useChatScroll(input: {
         .then(
           // Chaining pages needs a re-check here, because the render that the
           // landed rows caused ran while this direction still counted as in
-          // flight. Re-checking cannot spin: a fill that left the edge where it
-          // found it is refused by the range that holds the edge, so this
-          // resolves without another read until the reader moves.
-          () => { inFlight[direction] = false; check(); },
+          // flight. A prefetch that issued no read has nothing to chain from.
+          (issued) => { inFlight[direction] = false; if (issued) check(); },
           () => { inFlight[direction] = false; },
         );
     };

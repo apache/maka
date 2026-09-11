@@ -265,7 +265,7 @@ export function createDesktopWorkHubServices(
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        loadOlder: () => controller.loadBefore(),
+        loadOlder: async () => { await controller.loadBefore(); },
         loadLatest: () => controller.loadLatest(),
         close: () => { cancellation.removeEventListener('abort', cancel); return controller.close(); },
       };
