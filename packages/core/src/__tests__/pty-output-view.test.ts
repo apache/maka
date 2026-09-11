@@ -17,16 +17,23 @@
  * under the License.
  */
 
-// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
-// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
-// pull the surface and its five nested tool panels back into the eager chunk
-// for every importer of this barrel. Stories reach it through `stories`,
-// which nothing shipped imports.
-export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarTitlebarActions } from './ui/workbar-toggle';
-export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
-export type { SessionWorkbarTabKind } from './model/workbar-tabs';
-export type { WorkbarServices } from './ports';
+import assert from 'node:assert/strict';
+import { it } from 'node:test';
+import type { PtyShellOutput } from '../shell-run.js';
+import { PTY_TRUNCATED_MARKER, ptyHumanTerminalText } from '../pty-output-view.js';
 
-export { ToolOutputPreviewProvider } from './tools/artifacts/tool-output-preview-context.js';
+it('keeps structured PTY truncation metadata out of the human-readable text', () => {
+  const output: PtyShellOutput = {
+    mode: 'pty',
+    screen: 'ALL_TESTS_PASSED',
+    scrollback: `${PTY_TRUNCATED_MARKER}\nretained output`,
+    cols: 80,
+    rows: 24,
+    cursor: { x: 0, y: 0, visible: true },
+    alternateScreen: false,
+    truncated: true,
+    redacted: false,
+  };
+
+  assert.equal(ptyHumanTerminalText(output), 'retained output\nALL_TESTS_PASSED');
+});

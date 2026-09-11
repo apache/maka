@@ -48,6 +48,12 @@ describe('Artifact protocol', () => {
       { kind: 'get', sessionId: 'session-1', artifactId: 'artifact-1' },
       { kind: 'read_text', sessionId: 'session-1', artifactId: 'artifact-1' },
       { kind: 'read_binary', sessionId: 'session-1', artifactId: 'artifact-1' },
+      {
+        kind: 'read_archive_chunk',
+        sessionId: 'session-1',
+        ref: 'maka://archive-ledger/v1/ref',
+        offset: 0,
+      },
       { kind: 'read_chunk', sessionId: 'session-1', artifactId: 'artifact-1', offset: 0 },
     ]) {
       assert.doesNotThrow(() => request('artifact.query', input));
@@ -65,6 +71,15 @@ describe('Artifact protocol', () => {
       { kind: 'list_start', sessionId: 'session-1', includeDeleted: false },
       { kind: 'list_continue', sessionId: 'session-1', revision, cursor: '1', path: '/tmp' },
       { kind: 'get', sessionId: 'session-1', artifactId: 'artifact-1', relativePath: 'x' },
+      {
+        kind: 'read_archive_chunk',
+        sessionId: 'session-1',
+        ref: 'archive-ref',
+        offset: 0,
+        artifactId: 'artifact-1',
+      },
+      { kind: 'read_archive_chunk', sessionId: 'session-1', ref: 'archive-ref', offset: -1 },
+      { kind: 'read_archive_chunk', sessionId: 'session-1', ref: 'x'.repeat(16_385), offset: 0 },
       { kind: 'read_chunk', sessionId: 'session-1', artifactId: 'artifact-1' },
       { kind: 'list_start' },
     ]) {
@@ -115,6 +130,66 @@ describe('Artifact protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  test('keeps archived output query responses closed and sequential', () => {
+    assert.doesNotThrow(() =>
+      response('artifact.query', {
+        kind: 'archive_unavailable',
+        sessionId: 'session-1',
+        reason: 'not_found',
+      }),
+    );
+    assert.throws(
+      () =>
+        response('artifact.query', {
+          kind: 'archive_unavailable',
+          sessionId: 'session-1',
+          reason: 'unsupported_mime',
+        }),
+      isInvalidFrame,
+    );
+
+    const chunkBase64 = Buffer.from('abc').toString('base64');
+    assert.doesNotThrow(() =>
+      response('artifact.query', {
+        kind: 'archive_chunk',
+        sessionId: 'session-1',
+        offset: 0,
+        totalBytes: 3,
+        chunkBase64,
+        nextOffset: null,
+      }),
+    );
+    for (const result of [
+      {
+        kind: 'archive_chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+        offset: 0,
+        totalBytes: 3,
+        chunkBase64,
+        nextOffset: null,
+      },
+      {
+        kind: 'archive_chunk',
+        sessionId: 'session-1',
+        offset: 0,
+        totalBytes: 4,
+        chunkBase64,
+        nextOffset: null,
+      },
+      {
+        kind: 'archive_chunk',
+        sessionId: 'session-1',
+        offset: 0,
+        totalBytes: 4,
+        chunkBase64: 'not-base64',
+        nextOffset: 3,
+      },
+    ]) {
+      assert.throws(() => response('artifact.query', result), isInvalidFrame);
+    }
   });
 
   test('bounds chunked attachment publication below the message limit', () => {

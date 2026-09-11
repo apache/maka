@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
@@ -42,6 +43,130 @@ function renderToStaticMarkup(node: ReactNode, locale: UiLocale = 'zh-CN'): stri
 }
 
 describe('tool activity presentation', () => {
+  it('projects semantic collapsed targets without dumping generic arguments', () => {
+    const rowText = (item: ToolActivityItem) => parseHTML(renderToStaticMarkup(
+      createElement(ToolTrow, { items: [item] }), 'en',
+    )).document.querySelector('[data-slot="chat-tool-call-row"]')?.textContent ?? '';
+    const running = (toolName: string, args: unknown): ToolActivityItem => ({
+      toolUseId: toolName, toolName, status: 'running', args,
+    });
+
+    assert.match(rowText(running('Read', { path: '/repo/a/index.ts', offset: 20, limit: 10 })), /index\.ts · L20\+10/);
+    assert.doesNotMatch(rowText(running('Read', { path: '/repo/a/index.ts' })), /\/repo\/a/);
+    assert.match(rowText(running('Read', { ref: `maka:\/\/archive\/artifact\/${'a'.repeat(64)}\/42` })), /Archived result/);
+    assert.doesNotMatch(rowText(running('Read', { ref: 'maka://runtime/background-tasks/task-1' })), /maka:\/\//);
+    assert.match(rowText(running('Grep', { pattern: 'needle', path: '/repo/src', glob: '*.ts' })), /needle in \/repo\/src \(\*\.ts\)/);
+    assert.match(rowText(running('WebFetch', { url: 'https://example.com/docs' })), /https:\/\/example\.com\/docs/);
+    assert.equal(rowText(running('CustomTool', { opaque: { nested: true } })).includes('opaque'), false);
+
+    const command = `printf ${'x'.repeat(180)}`;
+    assert.match(rowText(running('Bash', { command })), new RegExp(`printf x{180}`));
+  });
+
+  it('pairs collapsed targets with result-specific stats', () => {
+    const rowText = (item: ToolActivityItem) => parseHTML(renderToStaticMarkup(
+      createElement(ToolTrow, { items: [item] }), 'en',
+    )).document.querySelector('[data-slot="chat-tool-call-row"]')?.textContent ?? '';
+    const completed = (toolName: string, args: unknown, result: ToolActivityItem['result']): ToolActivityItem => ({
+      toolUseId: toolName, toolName, status: 'completed', args, result,
+    });
+
+    assert.match(rowText(completed('WebFetch', { url: 'https://example.com/docs' }, { kind: 'text', text: '# API docs\nbody' })), /example\.com\/docs.*API docs|API docs.*example\.com\/docs/);
+    assert.match(rowText(completed('Grep', { pattern: 'needle', path: '/repo' }, { kind: 'json', value: ['one', 'two'] })), /needle in \/repo.*2 items returned|2 items returned.*needle in \/repo/);
+    const write = completed('Write', { path: '/repo/out.txt' }, { kind: 'file_write', path: '/repo/out.txt', bytes: 42 });
+    assert.match(rowText(write), /out\.txt.*42 B|42 B.*out\.txt/);
+    const writeRow = parseHTML(renderToStaticMarkup(createElement(ToolTrow, { items: [write] }), 'en'))
+      .document.querySelector('[data-slot="chat-tool-call-row"]')!;
+    assert.equal(writeRow.getAttribute('aria-expanded'), 'false');
+    assert.match(renderToStaticMarkup(createElement(ToolCallDetail, { item: write }), 'en'), /\/repo\/out\.txt/);
+    assert.match(rowText(completed('Read', { path: '/repo/index.ts' }, { kind: 'text', text: 'source\nsecond' })), /index\.ts.*2 lines|2 lines.*index\.ts/);
+  });
+
+  it('shows native Read JSON bodies as text with line counts in existing sessions', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'read-json', toolName: 'Read', status: 'completed',
+      args: { path: '/repo/events.ts', offset: 118, limit: 60 },
+      result: { kind: 'json', value: { content: 'first line\n\nthird line' } },
+    };
+    const row = parseHTML(renderToStaticMarkup(createElement(ToolTrow, { items: [item] }), 'en'))
+      .document.querySelector('[data-slot="chat-tool-call-row"]')!.textContent ?? '';
+    assert.match(row, /3 lines/);
+    assert.equal(row.match(/events\.ts/g)?.length, 1);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }), 'en');
+    assert.match(detail, /data-kind="text"/);
+    assert.doesNotMatch(detail, /data-kind="json"/);
+    assert.match(detail, /first line/);
+    for (const [text, count] of [['', 0], ['one\n', 2], ['one\r\ntwo', 2]] as const) {
+      const markup = renderToStaticMarkup(createElement(ToolTrow, { items: [{
+        ...item, result: { kind: 'json', value: { content: text } },
+      }] }), 'zh-CN');
+      assert.match(markup, new RegExp(`${count} 行`));
+    }
+  });
+
+  it('omits redundant success disclosure but keeps additional diagnostic fields inspectable', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'receipt', toolName: 'Update', status: 'completed', args: {},
+      result: { kind: 'json', value: { ok: true } },
+    };
+    const row = (value: ToolActivityItem) => parseHTML(renderToStaticMarkup(
+      createElement(ToolTrow, { items: [value] }), 'en',
+    )).document.querySelector('[data-slot="chat-tool-call-row"]')!;
+    assert.equal(row(item).getAttribute('aria-expanded'), null);
+    assert.match(row(item).textContent ?? '', /Succeeded/);
+    const diagnostic = row({ ...item, result: { kind: 'json', value: { ok: true, warning: 'Partial update' } } });
+    assert.equal(diagnostic.getAttribute('aria-expanded'), 'false');
+    assert.equal(row({ ...item, status: 'running', result: undefined }).getAttribute('aria-expanded'), 'false');
+  });
+
+  it('does not expose an empty disclosure for a failed boundary request', () => {
+    const markup = renderToStaticMarkup(createElement(ToolTrow, { items: [{
+      toolUseId: 'sandbox-boundary',
+      toolName: 'request_sandbox_boundary',
+      status: 'errored',
+      args: undefined,
+    }] }), 'en');
+    const row = parseHTML(markup).document.querySelector('[data-slot="chat-tool-call-row"]')!;
+    assert.equal(row.getAttribute('aria-expanded'), null);
+  });
+
+  it('renders fetched pages as references and preserves failure diagnostics', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'fetch', toolName: 'WebFetch', status: 'completed',
+      args: { url: 'https://example.com/docs' }, result: { kind: 'text', text: 'FETCHED_BODY_SENTINEL\n' + 'body\n'.repeat(100) + 'FETCHED_TAIL' },
+    };
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }), 'en');
+    assert.doesNotMatch(markup, /Open full output/);
+    assert.match(markup, /href="https:\/\/example.com\/docs"/);
+    assert.match(markup, /534 B.*102 lines/);
+    assert.doesNotMatch(markup, /FETCHED_BODY_SENTINEL/);
+    assert.doesNotMatch(markup, /FETCHED_TAIL/);
+    const failed = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: { ...item, status: 'errored', result: { kind: 'text', text: 'HTTP 403: Forbidden' } },
+    }), 'en');
+    assert.match(failed, /HTTP 403/);
+    assert.doesNotMatch(failed, /Open full output/);
+  });
+
+  it('bounds ordinary JSON and fallback previews while retaining diagnostics', () => {
+    const content = {
+      kind: 'json' as const,
+      value: { rows: Array.from({ length: 2000 }, (_, i) => `entry-${i}`), error: 'Partial result', token: 'private-value' },
+    };
+    for (const node of [
+      createElement(ToolResultPreview, { content }),
+      createElement(ToolCallDetail, { item: {
+        toolUseId: 'large-json', toolName: 'Inspect', status: 'completed', args: {}, result: content,
+      } }),
+    ]) {
+      const markup = renderToStaticMarkup(node, 'en');
+      assert.match(markup, /Partial result/);
+      assert.match(markup, /entry-0/);
+      assert.doesNotMatch(markup, /entry-1999|private-value/);
+      assert.match(markup, /Open full output/);
+    }
+  });
+
   it('localizes client capability boundary failures and offers recovery', () => {
     const item: ToolActivityItem = {
       toolUseId: 'client-capability-boundary',
@@ -527,17 +652,17 @@ describe('collapsed tool row target', () => {
     assert.match(markup, /npm test/);
   });
 
-  it('caps a long command so the collapsed row stays single-line', async () => {
+  it('keeps ordinary commands intact and retains a generous DOM safety cap', async () => {
     const { ToolTrow } = await import('../tool-activity.js');
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [{
         ...baseItem,
-        args: { command: `echo ${'x'.repeat(300)}` },
+        args: { command: `echo ${'x'.repeat(700)}` },
       }],
     }));
     const matches = markup.match(/x{100,}/g) ?? [];
     for (const run of matches) {
-      assert.ok(run.length <= 119, `expected a capped run, got ${run.length}`);
+      assert.ok(run.length <= 494, `expected a capped run, got ${run.length}`);
     }
     assert.match(markup, /…/);
   });

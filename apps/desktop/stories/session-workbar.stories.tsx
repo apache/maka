@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -26,13 +26,14 @@ import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-revi
 import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { ToastProvider, ToolCallDetail } from '@maka/ui';
+import { WorkbarServicesProvider, WorkbarTitlebarActions, ToolOutputPreviewProvider } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   activateSessionWorkbarTab,
+  closeSessionWorkbarTabs,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
   terminalSessionWorkbarTabId,
@@ -920,6 +921,7 @@ function bridge(options: {
  * column. Its 990px media query is what stacks the column in narrow windows.
  */
 function Workbar(props: {
+  conversation?: ReactNode;
   tab?: SessionWorkbarTabKind;
   /** Extra faces opened after `tab`, so the strip can be seen with several. */
   alsoOpen?: readonly Exclude<SessionWorkbarTabKind, 'side-chat' | 'terminal'>[];
@@ -931,6 +933,8 @@ function Workbar(props: {
    * affordance drive `rightCollapsed`, the way the app's reducer does.
    */
   collapsible?: boolean;
+  /** Lets play tests exercise the real tab open/close lifecycle. */
+  interactiveTabs?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
@@ -974,6 +978,8 @@ function Workbar(props: {
   const tabsState = openedFirst.activeTabId
     ? activateSessionWorkbarTab(withExtras, openedFirst.activeTabId)
     : withExtras;
+  const [interactiveTabsState, setInteractiveTabsState] = useState(tabsState);
+  const visibleTabsState = props.interactiveTabs ? interactiveTabsState : tabsState;
   return (
     <ToastProvider>
       <div
@@ -991,6 +997,7 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn">
+          {props.conversation}
           {props.collapsible && (
             <WorkbarTitlebarActions
               available
@@ -1003,14 +1010,26 @@ function Workbar(props: {
           sessionId={SESSION_ID}
           hidden={false}
           onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
-          panelsState={createSessionWorkbarPanelsState(tabsState)}
+          panelsState={createSessionWorkbarPanelsState(visibleTabsState)}
           rightCollapsed={collapsed}
           bottomOpen={false}
-          onActivateTab={noop}
-          onCloseTab={noop}
-          onCloseTabs={noop}
+          onActivateTab={props.interactiveTabs
+            ? (_placement, tabId) => setInteractiveTabsState(state => activateSessionWorkbarTab(state, tabId))
+            : noop}
+          onCloseTab={props.interactiveTabs
+            ? (_placement, closing) => setInteractiveTabsState(state => closeSessionWorkbarTabs(state, [closing.id]))
+            : noop}
+          onCloseTabs={props.interactiveTabs
+            ? (_placement, closing) => setInteractiveTabsState(state => closeSessionWorkbarTabs(state, closing.map(tab => tab.id)))
+            : noop}
           onOpenLauncher={noop}
-          onRequestOpenTab={noop}
+          onRequestOpenTab={props.interactiveTabs
+            ? (_placement, kind) => {
+                if (kind !== 'side-chat') {
+                  setInteractiveTabsState(state => openStaticSessionWorkbarTab(state, kind));
+                }
+              }
+            : noop}
           confirmBypass={async () => true}
           quotes={quotes}
           sourceSession={
@@ -1561,4 +1580,31 @@ export const TraceEmpty: Story = {
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
   render: () => <Workbar tab="inspector" />,
+};
+
+
+// Real path: a retained-output action in chat opens the existing Files preview.
+export const RetainedToolOutput: Story = {
+  decorators: [(Story) => <ToolOutputPreviewProvider><Story /></ToolOutputPreviewProvider>, bridge()],
+  render: () => <Workbar tab="files" interactiveTabs conversation={<div className="maka-turn" style={{ padding: 24 }}>
+    <ToolCallDetail item={{ toolUseId: 'retained-read', toolName: 'Read', status: 'completed',
+      args: { path: '/repo/docs/guide.md' }, result: { kind: 'json', value: {
+        content: 'DOCUMENT_START\n' + 'Documentation paragraph.\n'.repeat(12_000) + 'DOCUMENT_END',
+      },
+      },
+    }} />
+  </div>} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: /打开完整输出|開啟完整輸出|Open full output/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-preview-plain-remainder')?.textContent).toContain('DOCUMENT_END'));
+    expect(canvasElement.querySelector('.mainColumn')?.textContent).not.toContain('DOCUMENT_END');
+    const viewer = canvasElement.querySelector<HTMLElement>('.maka-artifact-preview')!;
+    expect(viewer.scrollHeight).toBeGreaterThan(viewer.clientHeight);
+    await userEvent.click(canvas.getByRole('button', { name: /打开或关闭工作栏的面|開啟或關閉工作欄的面|Open or close workbar faces/ }));
+    await userEvent.click(canvas.getByRole('menuitem', { name: /生成文件|生成檔案|Generated files/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-preview')).toBeNull());
+    await userEvent.click(canvas.getByRole('button', { name: /浏览当前任务生成的文件|瀏覽目前任務生成的檔案|Browse files generated by this task/ }));
+    await waitFor(() => expect(canvas.queryByRole('button', { name: /返回生成文件|返回生成檔案|Back to generated files/ })).toBeNull());
+  },
 };

@@ -217,34 +217,13 @@
 /* Cursor for tool/reasoning disclosure triggers is owned by
    styles/native-cursor.css (role=button + default !important). */
 
-.maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font: var(--maka-text-label);
-}
-
-/* Reasoning and tool-call rows read at BODY size, not supporting size.
-   Astryx puts the label and preview on inner spans styled as `supporting`
-   (12px on this scale). Measured on main they rendered at 9.75px — Astryx's
-   sm tier at 0.75rem against the old 13px root — which made them the least
-   legible text in the product, and they carry real content — what the agent is
-   thinking and which tool is running — not metadata.
-   Cursor makes the same call: its tool rows sit at body size and lean
-   entirely on --text-secondary/tertiary for de-emphasis. Weight and colour
-   already do that here, so size does not need to.
-
-   Rebinding the role token rather than restyling the spans. Astryx's
-   supporting atoms are `font-size: var(--text-supporting-size)` and
-   `line-height: var(--text-supporting-leading)`, so redefining those two on
-   the trigger reaches every span that opts into the role, at any depth,
-   through inheritance — no !important, since nothing else declares them
-   here, and no dependency on child order.
-   The earlier form of this rule selected `> span:not(:last-child)`, which
-   read as "every span except the chevron". It was wrong for exactly the
-   reason positional selectors are: ChatReasoning wraps its label, duration
-   and preview in a `<div>` (packages/ui/src/astryx-chat-reasoning.tsx), so
-   the rule enlarged the leading icon wrapper and left the reasoning text at
-   supporting size — the one row the retune was for. */
+/* Tool typography belongs to the activity container, independent of whether
+   a row has expandable details. Rebind Astryx's supporting tokens once so
+   group headers, interactive rows and static rows inherit the same body size.
+   Keep Astryx's font families and weights; detail CodeBlocks retain their
+   own code-role token override in packages/ui/src/styles.css. */
 .maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn .astryx-chat-tool-calls [role="button"] {
+.maka-turn .maka-tool-activity-card {
   --text-supporting-size: var(--text-body-size);
   --text-supporting-leading: var(--maka-line-body);
 }

@@ -27,7 +27,10 @@ import {
   normalizeArtifactImagePreviewMime,
   resolveArtifactImagePreview,
   type ArtifactSaveResult,
+  type ArtifactTextReadResult,
+  type ToolResultArchiveIdentity,
 } from '@maka/core/artifacts';
+import { buildToolResultArchiveResourceRef, parseToolResultArchiveResourceRef } from '@maka/runtime/tool-result-archive-resource';
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
 import {
   handleReconnectableRead,
@@ -50,7 +53,7 @@ type RuntimeHostAttachmentPreviewIpcDeps = Pick<
   'ipcMain' | 'client'
 >;
 
-const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
+const ARTIFACT_READ_LIMIT_EXCEEDED = Symbol("artifact-read-limit-exceeded");
 
 export function registerRuntimeHostArtifactsIpc(
   deps: RuntimeHostArtifactsIpcDeps,
@@ -75,6 +78,23 @@ export function registerRuntimeHostArtifactsIpc(
     "artifacts:readBinary",
     (_event, sessionId: string, artifactId: string) =>
       deps.client.readArtifactBinary(sessionId, artifactId),
+  );
+  handleReconnectableRead(
+    deps.ipcMain,
+    'artifacts:readToolResult',
+    async (_event, sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult> => {
+      if (!identity || (!identity.resourceRef && typeof identity.artifactId !== 'string')
+        || !Number.isSafeInteger(identity.originalBytes) || identity.originalBytes < 0
+        || typeof identity.bodySha256 !== 'string' || !/^[a-f0-9]{64}$/.test(identity.bodySha256)) return { ok: false, reason: 'not_allowed' };
+      const ref = identity.resourceRef ?? buildToolResultArchiveResourceRef({
+        artifactId: identity.artifactId!, originalBytes: identity.originalBytes, bodySha256: identity.bodySha256,
+      });
+      if (typeof ref !== 'string') return { ok: false, reason: 'not_allowed' };
+      const parsed = parseToolResultArchiveResourceRef(ref);
+      if (!parsed || parsed.originalBytes !== identity.originalBytes || parsed.bodySha256 !== identity.bodySha256)
+        return { ok: false, reason: 'not_allowed' };
+      return deps.client.readToolResult(sessionId, ref);
+    },
   );
   deps.ipcMain.handle(
     "artifacts:delete",
@@ -163,12 +183,12 @@ export function registerRuntimeHostAttachmentPreviewIpc(
         await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
           received += chunk.byteLength;
           if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
-            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
+            throw ARTIFACT_READ_LIMIT_EXCEEDED;
           }
           chunks.push(Buffer.from(chunk));
         });
       } catch (error) {
-        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
+        if (error === ARTIFACT_READ_LIMIT_EXCEEDED) {
           return { ok: false as const, reason: "too_large" };
         }
         throw error;

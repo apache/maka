@@ -168,6 +168,7 @@ import type {
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
+  ToolResultArchiveIdentity,
 } from '@maka/core/artifacts';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
@@ -3674,6 +3675,9 @@ const makaBridge = {
   artifacts: {
     list(sessionId: string): Promise<ArtifactDescriptor[]> {
       return invokeProjectedSessionRuntimeHost('artifacts:list', sessionId);
+    },
+    readToolResult(sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult> {
+      return invokeSessionRuntimeHost('artifacts:readToolResult', sessionId, identity);
     },
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult> {
       return invokeSessionRuntimeHost('artifacts:readText', sessionId, artifactId);

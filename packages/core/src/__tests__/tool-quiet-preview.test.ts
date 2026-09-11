@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   formatAsKeyValueLines,
+  formatBoundedQuietJsonValue,
   formatQuietJsonValue,
   formatToolInvocationLine,
   projectToolArgsPreview,
@@ -28,6 +29,13 @@ import {
 import { projectToolActivityArgs } from '../tool-activity-args.js';
 
 describe('tool quiet preview', () => {
+  it('reports omitted object fields when the preview budget is exactly exhausted', () => {
+    const retained = Object.fromEntries(['a', 'b', 'c', 'd'].map((key) => [key, 'x'.repeat(1999)]));
+    assert.equal(formatBoundedQuietJsonValue(retained, 'en').truncated, false);
+    const preview = formatBoundedQuietJsonValue({ ...retained, z: 'LAST_FIELD' }, 'en');
+    assert.doesNotMatch(preview.body, /LAST_FIELD/);
+    assert.equal(preview.truncated, true);
+  });
   it('redacts secrets in values and embedded keys', () => {
     const value = formatQuietJsonValue({ password: 'correct-horse', ok: true }, 'en').body;
     assert.doesNotMatch(value, /correct-horse/);

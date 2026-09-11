@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ArtifactReadFailureReason } from '@maka/core/artifacts';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
@@ -24,6 +25,21 @@ type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
 type WebGuidanceKey = 'env' | 'settings' | 'rate_limited' | 'not_configured' | 'timed_out' | 'privacy_mode' | 'unknown';
 
 export interface ToolActivityCopy {
+  detail: {
+    viewSaved: string;
+    loading: string;
+    loadFailed: string;
+    unavailable: string;
+    retry: string;
+    copySaved: string;
+    jumpToBottom: string;
+    outputRegion: string;
+    archivedResult: string;
+    previewTruncated: string;
+    lines: (count: number) => string;
+    readFailure: Record<ArtifactReadFailureReason, string>;
+    returned: ((count: number) => string);
+  };
   errorLabel: string;
   /** The two outcomes a tool row spells out next to its name. */
   status: {
@@ -155,8 +171,6 @@ export interface ToolActivityCopy {
     disconnected: string;
     terminalTruncated: string;
     terminalRedacted: string;
-    streamHidden: (stream: 'stdout' | 'stderr', count: number) => string;
-    streamsTruncated: (limit: number) => string;
     outputTruncated: string;
     outputRedacted: string;
     backgroundStatus: Record<BackgroundTerminalStatus, string>;
@@ -183,6 +197,21 @@ export interface ToolActivityCopy {
 
 const TOOL_ACTIVITY_COPY = {
   'zh-CN': {
+    detail: {
+      viewSaved: '打开完整输出',
+      loading: '正在加载…',
+      loadFailed: '无法加载输出',
+      unavailable: '已保存输出不可用',
+      retry: '重试',
+      copySaved: '复制全部输出',
+      jumpToBottom: '跳到底部',
+      outputRegion: '工具输出',
+      archivedResult: '归档结果',
+      previewTruncated: '预览已截断',
+      lines: (count) => `${count} 行`,
+      readFailure: { not_found: '输出不存在或已删除', not_allowed: '输出未通过访问或完整性校验', too_large: '输出超过查看器的 4 MB 上限', read_failed: '读取输出失败，请重试' },
+      returned: (count) => `返回 ${count} 项`,
+    },
     errorLabel: '错误',
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断' },
     output: { redacted: '[已脱敏]', truncated: '输出已截断' },
@@ -278,7 +307,7 @@ const TOOL_ACTIVITY_COPY = {
     },
     permissionDenied: '用户已拒绝权限请求',
     result: {
-      hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源任务管理', sourceUnavailable: '源任务不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
+      hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源任务管理', sourceUnavailable: '源任务不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
       backgroundStatus: { running: '后台运行中', completed: '后台已完成', failed: '后台失败', timed_out: '后台超时', cancelled: '后台已取消', orphaned: '后台任务已断开' }, backgroundUnknown: (status) => `后台 · ${status}`,
       workflow: { action: '动作', status: '状态', error: '错误', nodes: '节点摘要', diagnostics: '诊断片段' }, webNoResults: '没有结果', webResults: (n) => `${n} 条结果`, credentialSource: { env: '环境变量', settings: '本机已保存 key', missing: '未配置', unknown: '来源未知' }, webFailure: '搜索失败', webSearch: '联网搜索', webGuidance: { env: '请检查 TAVILY_API_KEY / MAKA_TAVILY_API_KEY 后重启。', settings: '请在 设置 · 联网搜索 中更新 Tavily key。', rate_limited: 'Tavily 当前限流，请稍后重试或更换可用凭据。', not_configured: '请先完成联网搜索配置后再重试。', timed_out: '请求超时，请稍后重试。', privacy_mode: '隐私模式下不会发起联网搜索。', unknown: '请检查网络或稍后重试。' },
       workflowCompleted: 'Rive 工作流已完成',
@@ -291,6 +320,21 @@ const TOOL_ACTIVITY_COPY = {
     },
   },
   'zh-TW': {
+    detail: {
+      viewSaved: '開啟完整輸出',
+      loading: '正在載入…',
+      loadFailed: '無法載入輸出',
+      unavailable: '已儲存輸出無法使用',
+      retry: '重試',
+      copySaved: '複製全部輸出',
+      jumpToBottom: '跳到底部',
+      outputRegion: '工具輸出',
+      archivedResult: '封存結果',
+      previewTruncated: '預覽已截斷',
+      lines: (count) => `${count} 行`,
+      readFailure: { not_found: '輸出不存在或已刪除', not_allowed: '輸出未通過存取或完整性校驗', too_large: '輸出超過檢視器的 4 MB 上限', read_failed: '讀取輸出失敗，請重試' },
+      returned: (count) => `傳回 ${count} 項`,
+    },
     errorLabel: '錯誤',
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中斷' },
     output: { redacted: '[已脫敏]', truncated: '輸出已截斷' },
@@ -386,7 +430,7 @@ const TOOL_ACTIVITY_COPY = {
     },
     permissionDenied: '使用者已拒絕權限請求',
     result: {
-      hiddenLines: (n) => `… 已隱藏 ${n} 行`, ptyFailed: '後臺終端互動失敗', queued: '已輸入', notQueued: '未輸入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 位元組`, byteCount: (action, bytes) => `${action} ${bytes} 位元組`, resizeNotApplied: (size) => `未調整為 ${size}`, resized: (size) => `已調整為 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '後臺終端互動已完成', terminalUnavailable: '終端輸出不可用', noTerminalFrame: '（無可用終端畫面）', noOutputYet: '（尚無輸出）', noOutput: '（無輸出）', exitCode: (code) => `退出碼 ${code}`, managedBySource: '由源任務管理', sourceUnavailable: '源任務不可用', running: '執行中', success: '成功', failed: '失敗', timedOut: '已超時', cancelled: '已取消', disconnected: '已斷開', terminalTruncated: '終端輸出已截斷', terminalRedacted: '終端輸出已脫敏', streamHidden: (stream, n) => `… ${stream} 已隱藏 ${n} 行`, streamsTruncated: (limit) => `輸出已截斷 · 每路僅展示前 ${limit} 行`, outputTruncated: '輸出已截斷', outputRedacted: '輸出已脫敏',
+      hiddenLines: (n) => `… 已隱藏 ${n} 行`, ptyFailed: '後臺終端互動失敗', queued: '已輸入', notQueued: '未輸入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 位元組`, byteCount: (action, bytes) => `${action} ${bytes} 位元組`, resizeNotApplied: (size) => `未調整為 ${size}`, resized: (size) => `已調整為 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '後臺終端互動已完成', terminalUnavailable: '終端輸出不可用', noTerminalFrame: '（無可用終端畫面）', noOutputYet: '（尚無輸出）', noOutput: '（無輸出）', exitCode: (code) => `退出碼 ${code}`, managedBySource: '由源任務管理', sourceUnavailable: '源任務不可用', running: '執行中', success: '成功', failed: '失敗', timedOut: '已超時', cancelled: '已取消', disconnected: '已斷開', terminalTruncated: '終端輸出已截斷', terminalRedacted: '終端輸出已脫敏', outputTruncated: '輸出已截斷', outputRedacted: '輸出已脫敏',
       backgroundStatus: { running: '後臺執行中', completed: '後臺已完成', failed: '後臺失敗', timed_out: '後臺超時', cancelled: '後臺已取消', orphaned: '後臺任務已斷開' }, backgroundUnknown: (status) => `後臺 · ${status}`,
       workflow: { action: '動作', status: '狀態', error: '錯誤', nodes: '節點摘要', diagnostics: '診斷片段' }, webNoResults: '沒有結果', webResults: (n) => `${n} 條結果`, credentialSource: { env: '環境變數', settings: '本機已儲存 key', missing: '未設定', unknown: '來源未知' }, webFailure: '搜尋失敗', webSearch: '聯網搜尋', webGuidance: { env: '請檢查 TAVILY_API_KEY / MAKA_TAVILY_API_KEY 後重啟。', settings: '請在 設定 · 聯網搜尋 中更新 Tavily key。', rate_limited: 'Tavily 目前限流，請稍後重試或更換可用憑據。', not_configured: '請先完成聯網搜尋設定後再重試。', timed_out: '請求超時，請稍後重試。', privacy_mode: '隱私模式下不會發起聯網搜尋。', unknown: '請檢查網路或稍後重試。' },
       workflowCompleted: 'Rive 工作流已完成',
@@ -399,6 +443,21 @@ const TOOL_ACTIVITY_COPY = {
     },
   },
   en: {
+    detail: {
+      viewSaved: 'Open full output',
+      loading: 'Loading…',
+      loadFailed: 'Could not load output',
+      unavailable: 'Saved output unavailable',
+      retry: 'Retry',
+      copySaved: 'Copy full output',
+      jumpToBottom: 'Jump to bottom',
+      outputRegion: 'Tool output',
+      archivedResult: 'Archived result',
+      previewTruncated: 'Preview truncated',
+      lines: (count) => `${count} lines`,
+      readFailure: { not_found: 'Output does not exist or was deleted', not_allowed: 'Output failed access or integrity validation', too_large: 'Output exceeds the viewer’s 4 MB limit', read_failed: 'Could not read output; try again' },
+      returned: (count) => `${count} items returned`,
+    },
     errorLabel: 'Error',
     status: { sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted' },
     output: { redacted: '[Redacted]', truncated: 'Output truncated' },
@@ -491,7 +550,7 @@ const TOOL_ACTIVITY_COPY = {
     },
     permissionDenied: 'User denied the permission request',
     result: {
-      hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by the source task', sourceUnavailable: 'Source task unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
+      hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by the source task', sourceUnavailable: 'Source task unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
       backgroundStatus: { running: 'Running in background', completed: 'Background task completed', failed: 'Background task failed', timed_out: 'Background task timed out', cancelled: 'Background task cancelled', orphaned: 'Background task disconnected' }, backgroundUnknown: (status) => `Background · ${status}`,
       workflow: { action: 'Action', status: 'Status', error: 'Error', nodes: 'Node summary', diagnostics: 'Diagnostic excerpts' }, webNoResults: 'No results', webResults: (n) => `${n} ${n === 1 ? 'result' : 'results'}`, credentialSource: { env: 'Environment variable', settings: 'Locally saved key', missing: 'Not configured', unknown: 'Unknown source' }, webFailure: 'Search failed', webSearch: 'Web search', webGuidance: { env: 'Check TAVILY_API_KEY / MAKA_TAVILY_API_KEY and restart.', settings: 'Update the Tavily key in Settings · Web search.', rate_limited: 'Tavily is rate-limiting requests. Try again later or use another credential.', not_configured: 'Configure web search before retrying.', timed_out: 'The request timed out. Try again later.', privacy_mode: 'Web search is disabled in privacy mode.', unknown: 'Check the network connection or try again later.' },
       workflowCompleted: 'Rive workflow completed',

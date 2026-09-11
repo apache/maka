@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
@@ -53,6 +53,8 @@ import {
 } from './tool-activity/computer-action-label.js';
 import {
   extractErrorText,
+  toolHasDetail,
+  toolResultStats,
   isCancelledToolResult,
   isPermissionDeniedToolResult,
   isRequiresBypassToolResult,
@@ -73,6 +75,7 @@ import {
   type ChatToolCallItem,
   VisuallyHidden,
 } from '@astryxdesign/core';
+import { ToolOutputScroller } from './tool-activity/tool-text-preview.js';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
 import {
@@ -219,25 +222,9 @@ export function ToolCallDetail({
       locale,
     })
     : undefined;
-  const quietJson =
-    displayResult?.kind === 'json'
-      ? formatQuietJsonValue(displayResult.value, locale)
-      : undefined;
-  // Drop headline when it duplicates the invocation (e.g. Write path === path).
-  const showInvocation = invocationLine !== undefined;
-  const resultHeadline = quietJson?.headline
-    && quietJson.headline !== invocationLine
-    ? quietJson.headline
-    : undefined;
-  // Live streaming has its own surface below, so this covers only the settled
-  // stack.
-  const hasSharedPanelContent =
-    !ownsPanel && !showLiveStream && (
-      showInvocation
-      || !!resultHeadline
-      || showResult
-      || (!!item.args && !permissionDenied && !invocationLine)
-    );
+  const hasSharedPanelContent = !ownsPanel && !showLiveStream && (
+    invocationLine !== undefined || showResult || (!!item.args && !permissionDenied)
+  );
 
   return (
     <div className="maka-tool-call-detail">
@@ -258,6 +245,7 @@ export function ToolCallDetail({
           <ToolResultPreview
             content={displayResult}
             toolName={item.toolName}
+            failed={failedOutcome}
             args={item.args}
             shellRunSource={item.shellRunSource}
             actionIdentity={outputActionIdentity}
@@ -271,7 +259,8 @@ export function ToolCallDetail({
       {showLiveStream && (
         <ToolOutputSurface
           kind="live_stream"
-          heading={showInvocation ? invocationLine : undefined}
+          body={redactSecrets(item.outputChunks!.map(chunk => chunk.text).join(''))}
+          heading={invocationLine}
           actionIdentity={outputActionIdentity}
         >
           <ToolOutputStream
@@ -283,41 +272,22 @@ export function ToolCallDetail({
       )}
       {hasSharedPanelContent && (
         <div data-slot="tool-output" className="maka-tool-output-stack">
-          {(() => {
-            const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
-              && !permissionDenied && !showResult
-              ? formatQuietJsonValue(item.args, locale).body
-              : undefined;
-            const body = quietJson?.body ?? argsBody;
-            const title = resultHeadline ?? (showInvocation ? invocationLine : undefined);
-            if (body) {
-              return (
-                <ToolCodeBlock
-                  code={body}
-                  // Only raw args dumps are JSON; quiet bodies stay untokenized.
-                  language={argsBody ? 'json' : undefined}
-                  title={title}
-                  actionIdentity={outputActionIdentity}
-                />
-              );
-            }
-            if (showInvocation && invocationLine && !showResult) {
-              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
-            }
-            if (showResult && !ownsPanel && displayResult) {
-              return (
-                <ToolResultPreview
-                  content={displayResult}
-                  toolName={item.toolName}
-                  actionIdentity={outputActionIdentity}
-                />
-              );
-            }
-            if (showInvocation && invocationLine) {
-              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
-            }
-            return null;
-          })()}
+          {showResult && displayResult ? (
+            <ToolResultPreview
+              content={displayResult}
+              toolName={item.toolName}
+              failed={failedOutcome}
+              args={item.args}
+              heading={invocationLine}
+              actionIdentity={outputActionIdentity}
+            />
+          ) : (
+            <ToolCodeBlock
+              code={invocationLine ?? formatQuietJsonValue(item.args, locale).body}
+              language={invocationLine ? undefined : 'json'}
+              actionIdentity={outputActionIdentity}
+            />
+          )}
         </div>
       )}
     </div>
@@ -486,6 +456,8 @@ function standardToolCall(
   inferredTarget?: string,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ChatToolCallItem {
+  const target = collapsedToolTarget(item, locale, inferredTarget);
+  const resultStats = toolResultStats(item, locale);
   return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
@@ -494,31 +466,30 @@ function standardToolCall(
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: collapsedToolTarget(item, locale, inferredTarget),
+    target,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
-      : outcomeWord(item, locale),
+      : outcomeWord(item, locale) ?? (resultStats === target ? undefined : resultStats),
     ...diffStats(itemDiffs(item)),
-    resultDetail: (
+    resultDetail: toolHasDetail(item) ? (
       <ToolDetailReveal>
         <ToolCallDetail
           item={item}
           onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
         />
       </ToolDetailReveal>
-    ),
+    ) : undefined,
   };
 }
 
 /**
  * What the collapsed row (and a collapsed group's header) says about the call.
  * `intent` wins when the runtime authored one; otherwise fall back to the
- * shared invocation line derived from the call's args — or, during the live
- * window, from the bounded wire args preview (full args arrive at turn end).
- * Only the first line is shown, hard-capped so a long command cannot stretch
- * the group header (Astryx ellipsizes too, but the header row is shared).
+ * tool-specific semantic projection of the call's args — or, during the live
+ * window, its bounded wire args preview (full args arrive at turn end).
+ * Expanded details keep the shared invocation formatter and its full paths.
  */
 function collapsedToolTarget(
   item: ToolActivityItem,
@@ -527,11 +498,67 @@ function collapsedToolTarget(
 ): string | undefined {
   if (workHubControlStatus(item)) return undefined;
   if (item.intent) return formatToolIntent(item.intent);
-  const line = preferred ?? formatToolInvocationLine(item, locale);
+  const args = item.args ?? item.argsPreview;
+  const record = args && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : undefined;
+  const scalar = (key: string) => {
+    const value = record?.[key];
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  };
+  const path = scalar('path') ?? scalar('file');
+  const baseName = path?.split(/[\\/]/).filter(Boolean).at(-1);
+  const invocation = () => formatToolInvocationLine({ toolName: item.toolName, args }, locale);
+  let line = preferred;
+  if (!line) {
+    switch (item.toolName) {
+      case 'Read': {
+        const offset = typeof record?.offset === 'number' ? record.offset : undefined;
+        const limit = typeof record?.limit === 'number' ? record.limit : undefined;
+        const range = offset === undefined && limit === undefined
+          ? ''
+          : ` · L${offset ?? 0}${limit === undefined ? '' : `+${limit}`}`;
+        line = baseName ? `${baseName}${range}` : semanticInternalRef(scalar('ref'), locale);
+        break;
+      }
+      case 'Write':
+      case 'Edit':
+        line = baseName;
+        break;
+      case 'Bash':
+      case 'Grep':
+      case 'Glob':
+      case 'Find':
+      case 'WriteStdin':
+      case 'deep_research_start':
+      case 'GoalSet':
+      case 'AskUserQuestion':
+        line = invocation();
+        break;
+      case 'WebFetch':
+        line = scalar('url');
+        break;
+      default: {
+        const ref = scalar('ref');
+        line = (ref?.startsWith('maka://') ? semanticInternalRef(ref, locale) : undefined)
+          ?? ['query', 'pattern', 'url', 'name', 'title', 'path', 'file', 'id']
+            .map(scalar)
+            .find(Boolean)
+          ?? ref;
+      }
+    }
+  }
   if (!line) return undefined;
-  const firstLine = line.split('\n')[0]!.trim();
+  const firstLine = redactSecrets(line).split('\n')[0]!.trim();
   if (!firstLine) return undefined;
-  return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
+  return firstLine.length > 500 ? `${firstLine.slice(0, 499)}…` : firstLine;
+}
+
+function semanticInternalRef(ref: string | undefined, locale: UiLocale): string | undefined {
+  if (!ref?.startsWith('maka://')) return ref;
+  return ref.startsWith('maka://archive/')
+    ? getToolActivityCopy(locale).detail.archivedResult
+    : undefined;
 }
 
 function linkedAgentRows(
@@ -714,18 +741,14 @@ function ToolOutputStream(props: {
   live: boolean;
   truncated: boolean;
 }) {
-  const copy = getToolActivityCopy(useUiLocale()).output;
-  const preRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    if (!props.live) return;
-    const el = preRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [props.chunks, props.live]);
-
+  const activityCopy = getToolActivityCopy(useUiLocale());
+  const copy = activityCopy.output;
   return (
     <>
-      <pre ref={preRef} className={TOOL_OUTPUT_BODY_CLASS} data-live={props.live ? 'true' : undefined}>
+      <ToolOutputScroller
+        className={TOOL_OUTPUT_BODY_CLASS}
+        data-live={props.live ? 'true' : undefined}
+      >
         {props.chunks.map((chunk) => (
           <span
             key={chunk.seq}
@@ -745,7 +768,7 @@ function ToolOutputStream(props: {
             )}
           </span>
         ))}
-      </pre>
+      </ToolOutputScroller>
       {props.truncated && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.truncated}</p>
       )}

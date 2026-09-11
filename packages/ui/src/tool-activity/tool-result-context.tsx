@@ -17,16 +17,23 @@
  * under the License.
  */
 
-// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
-// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
-// pull the surface and its five nested tool panels back into the eager chunk
-// for every importer of this barrel. Stories reach it through `stories`,
-// which nothing shipped imports.
-export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarTitlebarActions } from './ui/workbar-toggle';
-export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
-export type { SessionWorkbarTabKind } from './model/workbar-tabs';
-export type { WorkbarServices } from './ports';
+import { createContext } from 'react';
+import type { ToolResultArchiveIdentity } from '@maka/core/artifacts';
 
-export { ToolOutputPreviewProvider } from './tools/artifacts/tool-output-preview-context.js';
+export type ToolOutputSource =
+  | { kind: 'text'; text: string }
+  | { kind: 'archive'; sessionId: string; identity: ToolResultArchiveIdentity };
+
+export interface ToolOutputOpenRequest {
+  title: string;
+  toolName?: string;
+  source: ToolOutputSource;
+}
+
+export const ToolResultHostContext = createContext<
+  ((request: ToolOutputOpenRequest) => void) | undefined
+>(undefined);
+export const ToolResultSessionContext = createContext<string | undefined>(undefined);
+
+export const ToolResultHostProvider = ToolResultHostContext.Provider;
+export const SessionToolResultProvider = ToolResultSessionContext.Provider;

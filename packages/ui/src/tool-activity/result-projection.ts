@@ -23,6 +23,51 @@ import type { ToolActivityItem } from '../materialize.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
+import { redactSecrets } from '../redact.js';
+import { formatBytes, readResultText, webFetchReference } from './preview-utils.js';
+
+function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
+  if (result?.kind !== 'json' || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return false;
+  const record = result.value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return keys.length > 0 && keys.every((key) =>
+    key === 'ok' && record.ok === true
+    || key === 'status' && (record.status === 'completed' || record.status === 'success'),
+  );
+}
+
+export function toolHasDetail(item: ToolActivityItem): boolean {
+  if (item.outputChunks?.length || item.outputTruncated) return true;
+  if (item.status !== 'completed' && item.args !== undefined) return true;
+  if (item.status === 'completed' && isSuccessReceipt(item.result)) return false;
+  if (item.result?.kind === 'text') return item.result.text.trim().length > 0;
+  return item.result !== undefined;
+}
+
+export function toolResultStats(item: ToolActivityItem, locale: UiLocale): string | undefined {
+  if (item.status !== 'completed') return undefined;
+  const copy = getToolActivityCopy(locale);
+  const result = item.result;
+  if (result?.kind === 'file_write') return formatBytes(result.bytes);
+  if (isSuccessReceipt(result)) return copy.result.success;
+  if (item.toolName === 'WebFetch') return webFetchReference(result?.kind === 'text' ? result.text : '', item.args).title;
+  if (item.toolName === 'Read' && item.args && typeof item.args === 'object' && 'path' in item.args && typeof item.args.path === 'string') {
+    const name = redactSecrets(item.args.path.split(/[\\/]/).pop() ?? item.args.path);
+    const text = readResultText(result);
+    return text === undefined ? name : copy.detail.lines(text === '' ? 0 : text.split('\n').length);
+  }
+  if (result?.kind === 'web_search') return copy.detail.returned(result.rows.length);
+  if (['Grep', 'Glob', 'Find'].includes(item.toolName) && result?.kind === 'json') {
+    if (Array.isArray(result.value)) return copy.detail.returned(result.value.length);
+    if (result.value && typeof result.value === 'object') {
+      const record = result.value as Record<string, unknown>;
+      for (const key of ['matches', 'files', 'results', 'items', 'paths']) {
+        if (Array.isArray(record[key])) return copy.detail.returned(record[key].length);
+      }
+    }
+  }
+  return undefined;
+}
 
 export function extractErrorText(result: ToolActivityItem['result'], locale: UiLocale): string {
   if (!result) return '';

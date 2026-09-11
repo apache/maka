@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 267 files — blocker 0, reimplementation 0, polish 2, aligned 265.
+**Totals:** 271 files — blocker 0, reimplementation 0, polish 2, aligned 269.
 
 ## Exclusions (explicit)
 
@@ -89,6 +89,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, MoreMenu | aligned — uses Astryx (Banner, Button, EmptyState, MoreMenu) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx` | shell-chrome-or-panel | Banner, Button, CodeBlock, Spinner | aligned — uses Astryx (Banner, Button, CodeBlock, Spinner) | aligned |
+| `apps/desktop/src/renderer/features/workbar/tools/artifacts/tool-output-preview-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workbar/tools/artifacts/tool-output-preview.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, TextInput, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, TextInput, Toolbar, Tooltip) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-probe.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, Section, Text, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, Section, Text, VStack) | aligned |
@@ -289,7 +291,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls, List, ListItem, StatusDot, Text, VisuallyHidden | aligned — uses Astryx (Banner, Button, ChatToolCalls, List, ListItem, StatusDot, Text, VisuallyHidden) | aligned |
 | `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | CodeBlock | aligned — uses Astryx (CodeBlock) | aligned |
+| `packages/ui/src/tool-activity/tool-result-context.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-result-preview.tsx` | ui-composition | Button, Link | aligned — uses Astryx (Button, Link) | aligned |
+| `packages/ui/src/tool-activity/tool-text-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/transcript-scroll-authority.tsx` | ui-composition | ChatLayoutScrollButton | aligned — uses Astryx (ChatLayoutScrollButton) | aligned |
 | `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, RadioList, RadioListItem, TextInput | aligned — uses Astryx (Button, RadioList, RadioListItem, TextInput) | aligned |
