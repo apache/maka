@@ -231,6 +231,93 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
   });
 });
 
+test('a quote-only queued message survives the wire snapshot, the admission chain, and a Host restart (#4804)', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const probe = new SubscriptionProbe(
+      await client.openSessionSubscription({
+        sessionId: fixture.sessionId,
+        transcript: { kind: 'none' },
+      }),
+    );
+
+    // The root turn occupies the session so the quote-only submit queues as
+    // a follow-up instead of opening a successor.
+    const rootTurnId = randomUUID();
+    requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId: rootTurnId,
+        content: { text: `continuity root ${'x'.repeat(540)}` },
+      }),
+    );
+
+    // ① The framed-client submit admits the quote-only Message.
+    const messageId = randomUUID();
+    const queued = await client.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId,
+      content: quotedContent('the deploy failed at step three'),
+      placement: 'next_turn',
+    });
+    assert.equal(queued.disposition, 'followup');
+
+    // ② The wire queue snapshot carries the entry with its excerpt — the
+    //    read-back that a queue-snapshot decoder gap would break.
+    const projection = (await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.queue.followup.some((entry) => entry.messageId === messageId),
+      'the queued quote-only message never reached the wire snapshot',
+    )) as Extract<SubscriptionFrame, { kind: 'subscription.session_projection' }>;
+    const wireEntry = projection.snapshot.queue.followup.find(
+      (entry) => entry.messageId === messageId,
+    );
+    assert.match(
+      wireEntry?.content.text ?? '',
+      /the deploy failed at step three/,
+      'the excerpt survives wire serialization',
+    );
+
+    // ③ A Host restart re-opens the stores and re-publishes the durable
+    //    queue entry with the quote intact — close/reopen the whole chain.
+    await fixture.killHost(host);
+    await client.closed;
+    const secondHost = await fixture.startHost();
+    const second = await connectClient(fixture.root);
+    const recoveredSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    // The restart promotes the queued follow-up into a successor root Turn
+    // that runs to completion; the durable user message must carry the
+    // quote excerpt — the full submit -> admission -> wire snapshot ->
+    // reopen round trip me2seeks asked to pin (#5125 review, item 3).
+    const probe2 = new SubscriptionProbe(recoveredSubscription);
+    const successor = await probe2.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== rootTurnId,
+      'no successor root was recovered after the Host restart',
+    );
+    if (successor.kind !== 'subscription.session_projection' || !successor.snapshot.rootTurn)
+      return;
+    await waitForTerminalTurn(second, fixture.sessionId, successor.snapshot.rootTurn.turnId);
+    await second.close();
+    await probe2.done;
+    await fixture.stopHost(secondHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [messageId],
+    );
+  });
+});
+
 test('production UDS admission commits one transcript before the root handoff', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
