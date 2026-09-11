@@ -177,12 +177,14 @@ export type OnboardingOAuthFailureReason =
 export type OnboardingOAuthResult =
   | { readonly kind: 'authenticated'; readonly connection: OAuthConnectionIdentity }
   | { readonly kind: 'cancelled' }
+  | { readonly kind: 'unconfirmed' }
   | { readonly kind: 'failed'; readonly reason: OnboardingOAuthFailureReason };
 
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;
-  /** One complete Host-owned OAuth attempt. Polling, cancellation convergence,
-   * and presentation transport stay behind this interface. */
+  /** Observe a Host-owned OAuth attempt. An unconfirmed result retains the
+   * attempt for reconciliation when the same target is retried. Polling,
+   * cancellation convergence and presentation stay behind this interface. */
   loginOAuth?(input: OnboardingOAuthInput): Promise<OnboardingOAuthResult>;
   verify(input: OnboardingVerifyInput): Promise<OnboardingVerifyResult>;
   save(input: OnboardingSaveInput): Promise<OnboardingSaveResult>;

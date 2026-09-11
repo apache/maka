@@ -19,9 +19,10 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
+  createRuntimeHostReconnectingConnection,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type ClientCapabilityProvider,
@@ -131,7 +132,498 @@ function loginWithOAuth(
   });
 }
 
+/** A physical peer: capabilities belong to this connection, not its reconnect wrapper. */
+function oauthPhysicalConnection(
+  connectionId: string,
+  request: (operation: string, input: { attemptId: string }) => unknown | Promise<unknown>,
+  onRegister?: () => Promise<void>,
+) {
+  const closed = deferred<void>();
+  const events: string[] = [];
+  let registered = false;
+  const connection = {
+    rootId: 'oauth-test-root',
+    hostEpoch: 'oauth-test-host',
+    connectionId,
+    selectedProtocol: 0,
+    compositionId: 'maka.interactive',
+    compositionRevision: '1',
+    closed: closed.promise,
+    replaceClientCapabilities: async () => {
+      events.push('capabilities');
+      if (onRegister) await onRegister();
+      registered = true;
+      return { registrationId: connectionId, revision: 1 };
+    },
+    request: async (operation: string, input: { attemptId: string }) => {
+      events.push(operation);
+      if (operation === 'oauth.login.start' && !registered) {
+        throw new RuntimeHostOperationError(operation, 'capability_unavailable', 'Not registered');
+      }
+      return request(operation, input);
+    },
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => closed.resolve(),
+  } as unknown as RuntimeHostConnection;
+  return { connection, events, disconnect: () => closed.resolve() };
+}
+
 describe('createRuntimeHostOnboardingSurface', () => {
+  for (const action of ['cancel', 'close'] as const) {
+    test(`bounds OAuth ${action} while a real reconnecting query waits for an offline Host`, async () => {
+      const queryDispatched = deferred<void>();
+      const first = oauthPhysicalConnection('first', (operation, { attemptId }) => {
+        if (operation === 'oauth.login.start') {
+          return oauthProjection(attemptId, 'awaiting_authorization');
+        }
+        assert.equal(operation, 'oauth.login.query');
+        first.disconnect();
+        queryDispatched.resolve();
+        throw new RuntimeHostRequestInterruptedError(
+          operation,
+          'query',
+          'dispatched',
+          'connection_lost',
+        );
+      });
+      const connection = await createRuntimeHostReconnectingConnection({
+        initialConnection: first.connection,
+        connect: (signal) =>
+          new Promise<RuntimeHostConnection>((_resolve, reject) => {
+            if (signal.aborted) reject(signal.reason);
+            else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          }),
+      });
+      let closeCalls = 0;
+      const options = {
+        connectOAuth: async () => ({
+          connection,
+          close: async () => {
+            closeCalls += 1;
+            await connection.close();
+          },
+        }),
+        pollIntervalMs: 0,
+        requestTimeoutMs: 60_000,
+        cancellationTimeoutMs: 20,
+        shutdownTimeoutMs: 20,
+      };
+      const surface = createRuntimeHostOnboardingSurface(connection, options);
+      const abort = new AbortController();
+      const login = loginWithOAuth(surface, { signal: abort.signal });
+      try {
+        await queryDispatched.promise;
+        if (action === 'cancel') abort.abort();
+        const closing = action === 'close' ? surface.close() : Promise.resolve();
+        const [result] = await withTimeout(
+          Promise.all([login, closing]),
+          500,
+          `OAuth ${action} did not settle while the Host was offline`,
+        );
+        assert.deepEqual(result, { kind: 'unconfirmed' });
+        assert.equal(closeCalls, 1);
+        await connection.closed;
+      } finally {
+        await connection.close();
+        await login;
+        await surface.close();
+      }
+    });
+  }
+
+  test('waits for the replacement OAuth capability acknowledgement before retrying start', async () => {
+    const starts: string[] = [];
+    const registration = deferred<void>();
+    const queried = deferred<void>();
+    const first = oauthPhysicalConnection('first', (operation, { attemptId }) => {
+      starts.push(attemptId);
+      first.disconnect();
+      assert.equal(operation, 'oauth.login.start');
+      throw interruptedOAuthRequest(operation);
+    });
+    const replacement = oauthPhysicalConnection(
+      'replacement',
+      (operation, { attemptId }) => {
+        if (operation === 'oauth.login.query') {
+          queried.resolve();
+          throw new RuntimeHostOperationError(operation, 'not_found', 'Not admitted');
+        }
+        starts.push(attemptId);
+        return oauthProjection(attemptId, 'authenticated');
+      },
+      () => registration.promise,
+    );
+    const connection = await createRuntimeHostReconnectingConnection({
+      initialConnection: first.connection,
+      connect: async () => replacement.connection,
+    });
+    const surface = createRuntimeHostOnboardingSurface(connection, {
+      connectOAuth: async () => ({ connection, close: () => connection.close() }),
+      createAttemptId: () => 'reconnected-start',
+    });
+    const login = loginWithOAuth(surface);
+    try {
+      await withTimeout(queried.promise, 500, 'Replacement was not queried');
+      assert.ok(!replacement.events.includes('oauth.login.start'));
+      registration.resolve();
+      assert.deepEqual(await login, {
+        kind: 'authenticated',
+        connection: oauthConnectionIdentity,
+      });
+      assert.deepEqual(starts, ['reconnected-start', 'reconnected-start']);
+      assert.ok(
+        replacement.events.indexOf('capabilities') <
+          replacement.events.indexOf('oauth.login.start'),
+      );
+      assert.equal(replacement.events.filter((event) => event === 'oauth.login.start').length, 1);
+    } finally {
+      registration.resolve();
+      await surface.close();
+      await connection.close();
+    }
+  });
+
+  test('survives another disconnect while publishing the replacement OAuth capability', async () => {
+    const first = oauthPhysicalConnection('first', (operation) => {
+      first.disconnect();
+      assert.equal(operation, 'oauth.login.start');
+      throw interruptedOAuthRequest(operation);
+    });
+    const unstable = oauthPhysicalConnection(
+      'unstable',
+      (operation) => {
+        assert.equal(operation, 'oauth.login.query');
+        throw new RuntimeHostOperationError(operation, 'not_found', 'Not admitted');
+      },
+      async () => {
+        unstable.disconnect();
+        throw new RuntimeHostRequestInterruptedError(
+          'client.capability.replace',
+          'control',
+          'dispatched',
+          'connection_lost',
+        );
+      },
+    );
+    const replacement = oauthPhysicalConnection('replacement', (operation, { attemptId }) => {
+      if (operation === 'oauth.login.query') {
+        throw new RuntimeHostOperationError(operation, 'not_found', 'Not admitted');
+      }
+      return oauthProjection(attemptId, 'authenticated');
+    });
+    let reconnects = 0;
+    const connection = await createRuntimeHostReconnectingConnection({
+      initialConnection: first.connection,
+      connect: async () => (++reconnects === 1 ? unstable.connection : replacement.connection),
+    });
+    const surface = createRuntimeHostOnboardingSurface(connection, {
+      connectOAuth: async () => ({ connection, close: () => connection.close() }),
+    });
+    try {
+      assert.equal((await loginWithOAuth(surface)).kind, 'authenticated');
+      assert.ok(!unstable.events.includes('oauth.login.start'));
+      assert.ok(
+        replacement.events.indexOf('capabilities') <
+          replacement.events.indexOf('oauth.login.start'),
+      );
+    } finally {
+      await surface.close();
+      await connection.close();
+    }
+  });
+
+  for (const blockedOperation of [
+    'oauth.login.start',
+    'oauth.login.query',
+    'oauth.login.cancel',
+  ] as const) {
+    test(`retains the attempt and exact target after ${blockedOperation} times out`, async () => {
+      const blocked = deferred<never>();
+      const started = deferred<void>();
+      const abort = new AbortController();
+      const requests: Array<{ operation: string; attemptId: string }> = [];
+      const target = {
+        kind: 'create',
+        providerType: 'openai-codex',
+        name: 'Work Codex',
+        slug: 'codex-work',
+      } as const;
+      let connections = 0;
+      let ids = 0;
+      let closes = 0;
+      const surface = createRuntimeHostOnboardingSurface({} as RuntimeHostConnection, {
+        connectOAuth: async () => {
+          const ordinal = ++connections;
+          const physical = oauthPhysicalConnection(`physical-${ordinal}`, (operation, input) => {
+            requests.push({ operation, attemptId: input.attemptId });
+            if (ordinal === 1) {
+              if (operation === 'oauth.login.start') {
+                assert.deepEqual(input, { attemptId: 'attempt-1', target });
+                started.resolve();
+              }
+              if (operation === blockedOperation) return blocked.promise;
+              return oauthProjection(input.attemptId, 'awaiting_authorization');
+            }
+            assert.equal(operation, 'oauth.login.query');
+            return {
+              ...oauthProjection(input.attemptId, 'authenticated'),
+              connection: { ...oauthConnectionIdentity, slug: 'codex-work' },
+            };
+          });
+          return {
+            connection: physical.connection,
+            close: async () => {
+              closes += 1;
+              await physical.connection.close();
+            },
+          };
+        },
+        createAttemptId: () => `attempt-${++ids}`,
+        pollIntervalMs: 0,
+        requestTimeoutMs: 20,
+        cancellationTimeoutMs: 20,
+      });
+      try {
+        const login = loginWithOAuth(surface, { signal: abort.signal, target });
+        if (blockedOperation === 'oauth.login.cancel') {
+          await started.promise;
+          abort.abort();
+        }
+        assert.deepEqual(await withTimeout(login, 500, 'OAuth request remained pending'), {
+          kind: 'unconfirmed',
+        });
+        assert.deepEqual(await loginWithOAuth(surface, { target, signal: AbortSignal.abort() }), {
+          kind: 'unconfirmed',
+        });
+        assert.deepEqual(await loginWithOAuth(surface, { target }), {
+          kind: 'authenticated',
+          connection: { ...oauthConnectionIdentity, slug: 'codex-work' },
+        });
+        assert.equal(ids, 1);
+        assert.equal(closes, 2);
+        assert.ok(requests.every(({ attemptId }) => attemptId === 'attempt-1'));
+        assert.equal(
+          requests.filter(({ operation }) => operation === 'oauth.login.start').length,
+          1,
+        );
+      } finally {
+        blocked.reject(new Error('Fixture closed'));
+        await surface.close();
+      }
+    });
+  }
+
+  test('does not apply the OAuth request timeout to connection acquisition', async () => {
+    const connecting = deferred<{ connection: RuntimeHostConnection; close(): Promise<void> }>();
+    const entered = deferred<void>();
+    const physical = oauthPhysicalConnection('slow', (operation, { attemptId }) => {
+      assert.equal(operation, 'oauth.login.start');
+      return oauthProjection(attemptId, 'authenticated');
+    });
+    let closes = 0;
+    const surface = createRuntimeHostOnboardingSurface({} as RuntimeHostConnection, {
+      connectOAuth: async () => {
+        entered.resolve();
+        return connecting.promise;
+      },
+      requestTimeoutMs: 20,
+    });
+    const login = loginWithOAuth(surface);
+    try {
+      await entered.promise;
+      await assert.rejects(
+        withTimeout(login, 60, 'OAuth connection acquisition remained pending'),
+        /remained pending/,
+      );
+      connecting.resolve({
+        connection: physical.connection,
+        close: async () => {
+          closes += 1;
+          await physical.connection.close();
+        },
+      });
+      assert.deepEqual(await login, {
+        kind: 'authenticated',
+        connection: oauthConnectionIdentity,
+      });
+      assert.equal(closes, 1);
+    } finally {
+      connecting.resolve({
+        connection: physical.connection,
+        close: () => physical.connection.close(),
+      });
+      await surface.close();
+    }
+  });
+
+  test('shutdown bounds a pending connection and releases it if it arrives late', async () => {
+    const connecting = deferred<{ connection: RuntimeHostConnection; close(): Promise<void> }>();
+    const entered = deferred<void>();
+    const physical = oauthPhysicalConnection('late', () => assert.fail('Must not start OAuth'));
+    let closes = 0;
+    const surface = createRuntimeHostOnboardingSurface({} as RuntimeHostConnection, {
+      connectOAuth: async () => {
+        entered.resolve();
+        return connecting.promise;
+      },
+      shutdownTimeoutMs: 20,
+    });
+    const login = loginWithOAuth(surface);
+    await entered.promise;
+    await withTimeout(surface.close(), 500, 'Shutdown kept waiting for the connector');
+    assert.deepEqual(await login, { kind: 'cancelled' });
+    connecting.resolve({
+      connection: physical.connection,
+      close: async () => {
+        closes += 1;
+        await physical.connection.close();
+      },
+    });
+    await waitFor(() => closes === 1);
+    assert.deepEqual(physical.events, []);
+  });
+
+  test('cancelling during capability publication never dispatches OAuth start', async () => {
+    const registration = deferred<void>();
+    const entered = deferred<void>();
+    const abort = new AbortController();
+    const physical = oauthPhysicalConnection(
+      'first',
+      () => assert.fail('Must not start OAuth'),
+      async () => {
+        entered.resolve();
+        await registration.promise;
+      },
+    );
+    const surface = createRuntimeHostOnboardingSurface(physical.connection, {
+      connectOAuth: async () => ({
+        connection: physical.connection,
+        close: () => physical.connection.close(),
+      }),
+    });
+    const login = loginWithOAuth(surface, { signal: abort.signal });
+    try {
+      await entered.promise;
+      abort.abort();
+      registration.resolve();
+      assert.deepEqual(await login, { kind: 'cancelled' });
+      assert.deepEqual(physical.events, ['capabilities']);
+    } finally {
+      registration.resolve();
+      await surface.close();
+    }
+  });
+
+  test('a slow connection cleanup cannot hide an authenticated result or block shutdown', async () => {
+    const cleanup = deferred<void>();
+    let closes = 0;
+    const physical = oauthPhysicalConnection('first', (_operation, { attemptId }) =>
+      oauthProjection(attemptId, 'authenticated'),
+    );
+    const surface = createRuntimeHostOnboardingSurface(physical.connection, {
+      connectOAuth: async () => ({
+        connection: physical.connection,
+        close: async () => {
+          closes += 1;
+          await cleanup.promise;
+          await physical.connection.close();
+        },
+      }),
+      shutdownTimeoutMs: 20,
+    });
+    try {
+      const result = await withTimeout(
+        loginWithOAuth(surface),
+        500,
+        'Cleanup hid the login result',
+      );
+      assert.deepEqual(result, { kind: 'authenticated', connection: oauthConnectionIdentity });
+      await withTimeout(surface.close(), 500, 'Cleanup blocked shutdown');
+      assert.equal(closes, 1);
+    } finally {
+      cleanup.resolve();
+      await physical.connection.closed;
+      await surface.close();
+    }
+  });
+
+  test('an unconfirmed attempt cannot be resumed against a different Host root', async () => {
+    const blocked = deferred<never>();
+    const first = oauthPhysicalConnection('first', () => blocked.promise);
+    const wrongRoot = oauthPhysicalConnection('wrong-root', () =>
+      assert.fail('Wrong root was queried'),
+    );
+    let connections = 0;
+    let ids = 0;
+    const surface = createRuntimeHostOnboardingSurface(first.connection, {
+      connectOAuth: async () => {
+        const connection =
+          ++connections === 1
+            ? first.connection
+            : { ...wrongRoot.connection, rootId: 'another-root' };
+        return { connection, close: () => connection.close() };
+      },
+      createAttemptId: () => `attempt-${++ids}`,
+      requestTimeoutMs: 20,
+    });
+    try {
+      assert.deepEqual(await loginWithOAuth(surface), { kind: 'unconfirmed' });
+      assert.deepEqual(await loginWithOAuth(surface), { kind: 'unconfirmed' });
+      assert.equal(ids, 1);
+      assert.deepEqual(wrongRoot.events, []);
+    } finally {
+      blocked.reject(new Error('Fixture closed'));
+      await surface.close();
+    }
+  });
+
+  test('reopening setup during cancellation observes the original commit instead of starting again', async () => {
+    const started = deferred<void>();
+    const queried = deferred<void>();
+    const committed = deferred<ReturnType<typeof oauthProjection>>();
+    const abort = new AbortController();
+    let starts = 0;
+    let ids = 0;
+    const physical = oauthPhysicalConnection('first', (operation, { attemptId }) => {
+      if (operation === 'oauth.login.start') {
+        starts += 1;
+        started.resolve();
+        return oauthProjection(attemptId, 'awaiting_authorization');
+      }
+      if (operation === 'oauth.login.cancel') return oauthProjection(attemptId, 'committing');
+      queried.resolve();
+      return committed.promise;
+    });
+    const surface = createRuntimeHostOnboardingSurface(physical.connection, {
+      connectOAuth: async () => ({
+        connection: physical.connection,
+        close: () => physical.connection.close(),
+      }),
+      createAttemptId: () => `attempt-${++ids}`,
+      pollIntervalMs: 0,
+    });
+    const first = loginWithOAuth(surface, { signal: abort.signal });
+    try {
+      await started.promise;
+      abort.abort();
+      await queried.promise;
+      const reopened = loginWithOAuth(surface);
+      committed.resolve(oauthProjection('attempt-1', 'authenticated'));
+      const expected = { kind: 'authenticated', connection: oauthConnectionIdentity };
+      assert.deepEqual(await first, expected);
+      assert.deepEqual(await reopened, expected);
+      assert.equal(starts, 1);
+      assert.equal(ids, 1);
+    } finally {
+      committed.resolve(oauthProjection('attempt-1', 'authenticated'));
+      await surface.close();
+    }
+  });
+
   test('asks the Host enrollment gate before offering Codex OAuth', async () => {
     const operations: string[] = [];
     const connection = {
@@ -379,7 +871,7 @@ describe('createRuntimeHostOnboardingSurface', () => {
     await started.promise;
     controller.abort();
 
-    assert.deepEqual(await login, { kind: 'failed', reason: 'persistence_failed' });
+    assert.deepEqual(await login, { kind: 'unconfirmed' });
   });
 
   test('preserves a Host slug_taken error as an OAuth failure reason', async () => {

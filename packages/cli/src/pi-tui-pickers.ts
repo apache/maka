@@ -118,6 +118,8 @@ interface TuiPickerCopy {
   readonly oauthStarting: string;
   readonly oauthWaiting: string;
   readonly oauthCancelling: string;
+  readonly oauthUnconfirmed: string;
+  readonly oauthRecheckAction: string;
   readonly oauthLoadingModels: string;
   readonly oauthContinueToModels: string;
   readonly oauthRetryAction: string;
@@ -1193,6 +1195,7 @@ export class OnboardingWizard implements Component {
     | { readonly kind: 'starting' }
     | { readonly kind: 'waiting' }
     | { readonly kind: 'cancelling' }
+    | { readonly kind: 'unconfirmed' }
     | {
         readonly kind: 'authenticated';
         readonly loadingModels: boolean;
@@ -1434,7 +1437,11 @@ export class OnboardingWizard implements Component {
   }
 
   setOAuthPresentation(presentation: OnboardingOAuthPresentation): void {
-    if (this.phase !== 'oauth') return;
+    if (
+      this.phase !== 'oauth' ||
+      (this.oauthStatus.kind !== 'starting' && this.oauthStatus.kind !== 'waiting')
+    )
+      return;
     this.oauthPresentation = presentation;
     this.oauthStatus = { kind: 'waiting' };
   }
@@ -1442,6 +1449,11 @@ export class OnboardingWizard implements Component {
   setOAuthCancelling(): void {
     if (this.phase !== 'oauth') return;
     this.oauthStatus = { kind: 'cancelling' };
+  }
+
+  setOAuthUnconfirmed(): void {
+    if (this.phase !== 'oauth') return;
+    this.oauthStatus = { kind: 'unconfirmed' };
   }
 
   setOAuthAuthenticated(loadingModels = true): void {
@@ -1671,6 +1683,10 @@ export class OnboardingWizard implements Component {
       return;
     }
     if (matchesKey(data, Key.escape)) {
+      if (this.oauthStatus.kind === 'unconfirmed') {
+        this.input.onCancel();
+        return;
+      }
       if (this.oauthStatus.kind === 'starting' || this.oauthStatus.kind === 'waiting') {
         this.oauthStatus = { kind: 'cancelling' };
         this.input.onCancelOAuth();
@@ -1683,7 +1699,8 @@ export class OnboardingWizard implements Component {
       return;
     }
     if ((matchesKey(data, Key.enter) || matchesKey(data, Key.return)) && !isKeyRepeat(data)) {
-      if (this.oauthStatus.kind === 'error') this.startOAuth();
+      if (this.oauthStatus.kind === 'error' || this.oauthStatus.kind === 'unconfirmed')
+        this.startOAuth();
       else if (this.oauthStatus.kind === 'authenticated' && !this.oauthStatus.loadingModels) {
         this.oauthStatus = { kind: 'authenticated', loadingModels: true };
         this.input.onContinueOAuth();
@@ -1924,7 +1941,13 @@ export class OnboardingWizard implements Component {
         width,
       ),
       padLine(
-        this.oauthStatus.kind === 'authenticated' ? '' : ansi.dim(this.copy.oauthHint),
+        this.oauthStatus.kind === 'authenticated'
+          ? ''
+          : ansi.dim(
+              this.oauthStatus.kind === 'unconfirmed'
+                ? this.copy.oauthRecheckAction
+                : this.copy.oauthHint,
+            ),
         width,
       ),
       padLine('', width),
@@ -1952,6 +1975,8 @@ export class OnboardingWizard implements Component {
         return `${ansi.yellow('⠋')} ${this.copy.oauthWaiting}`;
       case 'cancelling':
         return `${ansi.yellow('⠋')} ${this.copy.oauthCancelling}`;
+      case 'unconfirmed':
+        return ansi.yellow(this.copy.oauthUnconfirmed);
       case 'authenticated':
         if (this.oauthStatus.loadingModels) {
           return `${ansi.yellow('⠋')} ${this.copy.oauthLoadingModels}`;

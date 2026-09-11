@@ -958,6 +958,126 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  for (const [locale, cancellingText, unconfirmedText] of [
+    ['en', 'Cancelling sign-in', 'Sign-in result is not confirmed'],
+    ['zh-CN', '正在取消登录', '登录结果尚未确认'],
+    ['zh-TW', '正在取消登入', '登入結果尚未確認'],
+  ] as const) {
+    test(`an unconfirmed OAuth result stays on authorization and can resume model setup (${locale})`, async () => {
+      const terminal = new FakeTerminal();
+      const authorization = deferred<OnboardingOAuthResult>();
+      const loginInputs: OnboardingOAuthInput[] = [];
+      const verifyCalls: OnboardingVerifyInput[] = [];
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver: new SlashCommandDriver(),
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        locale,
+        terminal,
+        onboarding: fakeOnboardingSurface({
+          providers: [oauthCreateProvider(['gpt-5.5'])],
+          loginOAuth: async (input) => {
+            loginInputs.push(input);
+            if (loginInputs.length === 1) return authorization.promise;
+            return {
+              kind: 'authenticated',
+              connection: {
+                connectionId: 'recovered-codex',
+                slug: 'codex-subscription',
+                providerType: 'openai-codex',
+              },
+            };
+          },
+          verify: async (input) => {
+            verifyCalls.push(input);
+            return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+          },
+        }),
+      });
+      try {
+        await waitForTuiPaint(terminal);
+        terminal.input('/setup');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/4'));
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+        terminal.input('\r');
+        terminal.input('\r');
+        await waitFor(() => loginInputs.length === 1);
+        terminal.input('\x1b');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(cancellingText));
+        assert.equal(loginInputs[0]?.signal.aborted, true);
+        loginInputs[0]!.onPresentation({
+          url: 'https://auth.openai.com/codex/device',
+          stateHint: 'LATE-CODE',
+        });
+        await waitForTuiPaint(terminal);
+        assert.match(plainTerminalOutput(terminal.screenOutput()), new RegExp(cancellingText));
+        authorization.resolve({ kind: 'unconfirmed' });
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(unconfirmedText));
+        const screen = plainTerminalOutput(terminal.screenOutput());
+        assert.match(screen, /3\/4/);
+        assert.doesNotMatch(screen, /LATE-CODE/);
+        assert.equal(verifyCalls.length, 0);
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+        assert.equal(loginInputs.length, 2);
+        assert.deepEqual(loginInputs[1]?.target, loginInputs[0]?.target);
+        assert.deepEqual(verifyCalls[0]?.target, {
+          kind: 'existing',
+          connectionId: 'recovered-codex',
+        });
+      } finally {
+        authorization.resolve({ kind: 'unconfirmed' });
+        process.emit('SIGTERM');
+        await run;
+      }
+    });
+  }
+
+  test('Esc closes unconfirmed OAuth setup without pretending to return to an uncreated identity', async () => {
+    const terminal = new FakeTerminal();
+    let logins = 0;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver: new SlashCommandDriver(),
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'ask',
+      terminal,
+      firstRun: true,
+      onboarding: fakeOnboardingSurface({
+        providers: [oauthCreateProvider(['gpt-5.5'])],
+        loginOAuth: async () => {
+          logins += 1;
+          return { kind: 'unconfirmed' };
+        },
+        verify: async () => assert.fail('Unconfirmed OAuth cannot enter Models'),
+      }),
+    });
+    try {
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/4'));
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+      terminal.input('\r');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Sign-in result is not confirmed'),
+      );
+      terminal.input('\x1b');
+      await run;
+      assert.equal(terminal.stopCalls, 1);
+      assert.equal(logins, 1);
+    } finally {
+      if (terminal.stopCalls === 0) process.emit('SIGTERM');
+      await run;
+    }
+  });
+
   test('an OAuth slug collision returns a new account to the identity step', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();

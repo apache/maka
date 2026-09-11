@@ -2416,6 +2416,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         (result) => {
           if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'unconfirmed') {
+            targetWizard.setOAuthUnconfirmed();
+            requestRender();
+            return;
+          }
           if (result.kind === 'cancelled') {
             targetWizard.setOAuthCancelled();
             wizardAttempt += 1;

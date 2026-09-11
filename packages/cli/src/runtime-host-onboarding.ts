@@ -33,7 +33,11 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import type { OAuthLoginProjection, OAuthLoginTarget } from '@maka/runtime-host/protocol';
+import type {
+  OAuthLoginProjection,
+  OAuthLoginTarget,
+  OperationInput,
+} from '@maka/runtime-host/protocol';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
@@ -53,11 +57,30 @@ export interface RuntimeHostOnboardingSurfaceOptions {
   readonly connectOAuth?: (signal: AbortSignal) => Promise<RuntimeHostOnboardingOAuthConnection>;
   readonly pollIntervalMs?: number;
   readonly createAttemptId?: () => string;
+  readonly requestTimeoutMs?: number;
+  readonly cancellationTimeoutMs?: number;
+  readonly shutdownTimeoutMs?: number;
 }
 
 export interface RuntimeHostOnboardingSurface extends MakaOnboardingSurface {
   close(): Promise<void>;
 }
+
+interface OAuthLoginAttempt {
+  readonly attemptId: string;
+  readonly target: OAuthLoginTarget;
+  rootId?: string;
+  startRequested: boolean;
+  task?: Promise<OnboardingOAuthResult>;
+}
+
+type OAuthLoginRequest = <
+  K extends 'oauth.login.start' | 'oauth.login.query' | 'oauth.login.cancel',
+>(
+  operation: K,
+  input: OperationInput<K>,
+  deadline?: number,
+) => Promise<OAuthLoginProjection>;
 
 /** Adapt the TUI onboarding workflow to Host-owned verification and persistence. */
 export function createRuntimeHostOnboardingSurface(
@@ -65,7 +88,9 @@ export function createRuntimeHostOnboardingSurface(
   options: RuntimeHostOnboardingSurfaceOptions = {},
 ): RuntimeHostOnboardingSurface {
   const shutdown = new AbortController();
-  const activeOAuthLogins = new Set<Promise<OnboardingOAuthResult>>();
+  // An interrupted observation is not a new login intent. Keep its identity
+  // until a later observation establishes a terminal result on the same root.
+  const oauthAttempts = new Map<string, OAuthLoginAttempt>();
   return {
     listProviders: async () => {
       const catalog = await readRuntimeHostConnectionCatalog(connection);
@@ -81,11 +106,31 @@ export function createRuntimeHostOnboardingSurface(
       return projectProviders(catalog, codexOAuthEnabled);
     },
     loginOAuth: (input) => {
-      const task = runOAuthLogin(input, options, shutdown.signal);
-      activeOAuthLogins.add(task);
+      const target = asOAuthTarget(input.target);
+      if (!target) return Promise.resolve({ kind: 'failed', reason: 'unavailable' });
+      const key = JSON.stringify(target);
+      const pending = oauthAttempts.get(key);
+      if (input.signal.aborted || shutdown.signal.aborted) {
+        return Promise.resolve({ kind: pending?.startRequested ? 'unconfirmed' : 'cancelled' });
+      }
+      const attempt: OAuthLoginAttempt = pending ?? {
+        attemptId: (options.createAttemptId ?? randomUUID)(),
+        target,
+        startRequested: false,
+      };
+      // Re-entering the same intent observes its existing result.
+      if (attempt.task) return attempt.task;
+      oauthAttempts.set(key, attempt);
+      const task = runOAuthLogin(input, options, shutdown.signal, attempt);
+      attempt.task = task;
       void task.then(
-        () => activeOAuthLogins.delete(task),
-        () => activeOAuthLogins.delete(task),
+        (result) => {
+          attempt.task = undefined;
+          if (result.kind !== 'unconfirmed') oauthAttempts.delete(key);
+        },
+        () => {
+          attempt.task = undefined;
+        },
       );
       return task;
     },
@@ -143,7 +188,8 @@ export function createRuntimeHostOnboardingSurface(
     },
     close: async () => {
       shutdown.abort();
-      await Promise.allSettled([...activeOAuthLogins]);
+      await Promise.allSettled([...oauthAttempts.values()].map(({ task }) => task));
+      oauthAttempts.clear();
     },
   };
 }
@@ -152,44 +198,122 @@ async function runOAuthLogin(
   input: OnboardingOAuthInput,
   options: RuntimeHostOnboardingSurfaceOptions,
   shutdownSignal: AbortSignal,
+  attempt: OAuthLoginAttempt,
 ): Promise<OnboardingOAuthResult> {
   if (!options.connectOAuth) return { kind: 'failed', reason: 'unavailable' };
   const signal = AbortSignal.any([input.signal, shutdownSignal]);
-  if (signal.aborted) return { kind: 'cancelled' };
-  const target = asOAuthTarget(input.target);
-  if (!target) return { kind: 'failed', reason: 'unavailable' };
+  if (signal.aborted) return { kind: attempt.startRequested ? 'unconfirmed' : 'cancelled' };
+  const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? 1_000;
+  const observation = new AbortController();
+  const pollingSignal = AbortSignal.any([signal, observation.signal]);
   let connected: RuntimeHostOnboardingOAuthConnection | undefined;
-  let startRequested = false;
-  let cancellationRequested: boolean = signal.aborted;
-  const requestCancellation = () => {
-    cancellationRequested = true;
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopDeadline = Number.POSITIVE_INFINITY;
+  const stopAfter = (milliseconds: number): void => {
+    const deadline = Date.now() + milliseconds;
+    if (deadline >= stopDeadline) return;
+    stopDeadline = deadline;
+    clearTimeout(stopTimer);
+    stopTimer = setTimeout(() => observation.abort(), milliseconds);
   };
-  signal.addEventListener('abort', requestCancellation, { once: true });
+  const cancelObservation = () => stopAfter(options.cancellationTimeoutMs ?? requestTimeoutMs);
+  const closeObservation = () => stopAfter(shutdownTimeoutMs);
+  input.signal.addEventListener('abort', cancelObservation, { once: true });
+  shutdownSignal.addEventListener('abort', closeObservation, { once: true });
   try {
-    connected = await options.connectOAuth(signal);
-    await connected.connection.replaceClientCapabilities(
-      createOAuthPresentationClientProvider({
-        openExternal: async (url, stateHint) => {
-          input.onPresentation({ url, ...(stateHint === undefined ? {} : { stateHint }) });
-        },
-      }),
+    const connecting = options.connectOAuth(AbortSignal.any([signal, observation.signal]));
+    void connecting.then(
+      (resource) => {
+        // A connector may finish after its observer timed out. It still needs
+        // an owner to release the late connection.
+        if (observation.signal.aborted) void resource.close().catch(() => undefined);
+      },
+      () => undefined,
     );
-    const attemptId = (options.createAttemptId ?? randomUUID)();
-    startRequested = true;
-    let projection = await startOAuthAttempt(connected.connection, attemptId, target);
+    connected = await waitForOAuthOperation(connecting, undefined, observation.signal);
+    const connection = connected.connection;
+    if (attempt.rootId !== undefined && attempt.rootId !== connection.rootId) {
+      return { kind: 'unconfirmed' };
+    }
+    attempt.rootId = connection.rootId;
+    const provider = createOAuthPresentationClientProvider({
+      openExternal: async (url, stateHint) => {
+        if (!signal.aborted && !observation.signal.aborted) {
+          input.onPresentation({ url, ...(stateHint === undefined ? {} : { stateHint }) });
+        }
+      },
+    });
+    const connectionKey = () => JSON.stringify([connection.hostEpoch, connection.connectionId]);
+    let presentationConnectionKey: string | undefined;
+    const request: OAuthLoginRequest = async (operation, input, deadline) => {
+      const remainingTimeout = (): number => {
+        if (observation.signal.aborted) throw new Error('OAuth observation ended');
+        const remaining = Math.min(deadline ?? Infinity, stopDeadline) - Date.now();
+        if (remaining <= 0) throw new Error('OAuth reconciliation timed out');
+        return Math.min(requestTimeoutMs, remaining);
+      };
+      if (operation === 'oauth.login.start') {
+        const current = connectionKey();
+        if (presentationConnectionKey !== current) {
+          // Capability ownership follows a physical connection. Queries need
+          // no presentation service; only a start must await its publication.
+          const timeoutMs = remainingTimeout();
+          try {
+            await waitForOAuthOperation(
+              connection.replaceClientCapabilities(provider, timeoutMs),
+              timeoutMs,
+              observation.signal,
+            );
+          } catch (error) {
+            if (
+              error instanceof RuntimeHostRequestInterruptedError &&
+              error.reason === 'connection_lost'
+            ) {
+              throw interruptedOAuthStart();
+            }
+            throw error;
+          }
+          if (current !== connectionKey()) throw interruptedOAuthStart();
+          presentationConnectionKey = current;
+        }
+        remainingTimeout();
+        if (signal.aborted && !attempt.startRequested)
+          throw new Error('OAuth cancelled before start');
+        attempt.startRequested = true;
+      }
+      const timeoutMs = remainingTimeout();
+      return waitForOAuthOperation(
+        connection.request(operation, input, timeoutMs),
+        timeoutMs,
+        observation.signal,
+      );
+    };
+    const { attemptId, target } = attempt;
+    let projection = await startOAuthAttempt(
+      request,
+      attemptId,
+      target,
+      requestTimeoutMs,
+      attempt.startRequested,
+    );
     let cancellationSent = false;
     while (!isTerminalOAuthProjection(projection)) {
-      if (cancellationRequested && !cancellationSent) {
+      if (signal.aborted && !cancellationSent) {
         cancellationSent = true;
-        const cancelledProjection = await cancelOAuthAttempt(connected.connection, attemptId);
+        const cancelledProjection = await cancelOAuthAttempt(request, attemptId, requestTimeoutMs);
         if (!cancelledProjection) return { kind: 'cancelled' };
         projection = cancelledProjection;
         continue;
       }
       // Once cancellation has reached the Host, the aborted UI signal must no
       // longer collapse this delay into a busy query loop while a commit wins.
-      await waitForOAuthPoll(options.pollIntervalMs ?? 250, cancellationSent ? undefined : signal);
-      projection = await connected.connection.request('oauth.login.query', { attemptId });
+      await waitForOAuthPoll(
+        options.pollIntervalMs ?? 250,
+        cancellationSent ? observation.signal : pollingSignal,
+      );
+      if (signal.aborted && !cancellationSent) continue;
+      projection = await request('oauth.login.query', { attemptId });
     }
     if (projection.phase === 'authenticated') {
       return { kind: 'authenticated', connection: projection.connection };
@@ -198,6 +322,13 @@ async function runOAuthLogin(
     return { kind: 'failed', reason: projection.failure ?? 'internal_failure' };
   } catch (error) {
     if (error instanceof RuntimeHostOperationError) {
+      if (
+        attempt.startRequested &&
+        (error.code === 'persistence_failed' ||
+          error.code === 'internal_failure' ||
+          (error.code === 'not_found' && error.operation === 'oauth.login.query'))
+      )
+        return { kind: 'unconfirmed' };
       if (error.code === 'not_found') return { kind: 'failed', reason: 'connection_not_found' };
       if (error.code === 'operation_conflict') {
         return { kind: 'failed', reason: 'operation_conflict' };
@@ -210,30 +341,48 @@ async function runOAuthLogin(
         return { kind: 'failed', reason: error.code };
       }
     }
-    return signal.aborted && !startRequested
-      ? { kind: 'cancelled' }
-      : { kind: 'failed', reason: 'unavailable' };
+    if (attempt.startRequested) return { kind: 'unconfirmed' };
+    return signal.aborted ? { kind: 'cancelled' } : { kind: 'failed', reason: 'unavailable' };
   } finally {
-    signal.removeEventListener('abort', requestCancellation);
-    await connected?.close().catch(() => undefined);
+    observation.abort();
+    clearTimeout(stopTimer);
+    input.signal.removeEventListener('abort', cancelObservation);
+    shutdownSignal.removeEventListener('abort', closeObservation);
+    if (connected) {
+      const resource = connected;
+      await waitForOAuthOperation(
+        Promise.resolve().then(() => resource.close()),
+        Math.max(1, Math.min(shutdownTimeoutMs, stopDeadline - Date.now())),
+      ).catch(() => undefined);
+    }
   }
 }
 
 async function startOAuthAttempt(
-  connection: RuntimeHostConnection,
+  request: OAuthLoginRequest,
   attemptId: string,
   target: OAuthLoginTarget,
+  timeoutMs: number,
+  resume: boolean,
 ): Promise<OAuthLoginProjection> {
+  const deadline = Date.now() + timeoutMs;
+  if (resume) {
+    try {
+      return await request('oauth.login.query', { attemptId }, deadline);
+    } catch (error) {
+      if (!isOAuthAttemptNotFound(error)) throw error;
+    }
+  }
   while (true) {
     try {
-      return await connection.request('oauth.login.start', { attemptId, target });
+      return await request('oauth.login.start', { attemptId, target }, deadline);
     } catch (error) {
       if (!isOAuthRequestInterruption(error, 'oauth.login.start')) throw error;
       try {
         // A write acknowledged by the local transport may already be running
         // on the Host. Query the stable attempt identity before retrying the
         // idempotent start so a lost response cannot create a second login.
-        return await connection.request('oauth.login.query', { attemptId });
+        return await request('oauth.login.query', { attemptId }, deadline);
       } catch (queryError) {
         if (!isOAuthAttemptNotFound(queryError)) throw queryError;
         // No live or durable state is visible yet. Starting again with the same
@@ -246,17 +395,19 @@ async function startOAuthAttempt(
 }
 
 async function cancelOAuthAttempt(
-  connection: RuntimeHostConnection,
+  request: OAuthLoginRequest,
   attemptId: string,
+  timeoutMs: number,
 ): Promise<OAuthLoginProjection | null> {
+  const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
-      return await connection.request('oauth.login.cancel', { attemptId });
+      return await request('oauth.login.cancel', { attemptId }, deadline);
     } catch (error) {
       if (isOAuthAttemptNotFound(error)) return null;
       if (!isOAuthRequestInterruption(error, 'oauth.login.cancel')) throw error;
       try {
-        const projection = await connection.request('oauth.login.query', { attemptId });
+        const projection = await request('oauth.login.query', { attemptId }, deadline);
         if (isTerminalOAuthProjection(projection)) return projection;
         // A non-terminal query cannot prove that the interrupted cancellation
         // reached the Host. Cancel again; the operation is attempt-idempotent.
@@ -266,6 +417,35 @@ async function cancelOAuthAttempt(
       }
     }
   }
+}
+
+function interruptedOAuthStart(): RuntimeHostRequestInterruptedError {
+  return new RuntimeHostRequestInterruptedError(
+    'oauth.login.start',
+    'command',
+    'not_dispatched',
+    'connection_lost',
+  );
+}
+
+/** A local observation deadline says nothing about whether the Host committed. */
+function waitForOAuthOperation<T>(
+  task: Promise<T>,
+  timeoutMs: number | undefined,
+  signal?: AbortSignal,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let stop: () => void;
+  return new Promise<T>((resolve, reject) => {
+    stop = () => reject(new Error('OAuth result could not be confirmed'));
+    if (timeoutMs !== undefined) timeout = setTimeout(stop, timeoutMs);
+    signal?.addEventListener('abort', stop, { once: true });
+    void task.then(resolve, reject);
+    if (signal?.aborted) stop();
+  }).finally(() => {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', stop);
+  });
 }
 
 function isOAuthRequestInterruption(
@@ -280,7 +460,7 @@ function isOAuthAttemptNotFound(error: unknown): error is RuntimeHostOperationEr
 }
 
 function asOAuthTarget(target: OnboardingOAuthInput['target']): OAuthLoginTarget | null {
-  if (target.kind === 'existing') return target;
+  if (target.kind === 'existing') return { kind: 'existing', connectionId: target.connectionId };
   return target.providerType === 'openai-codex'
     ? {
         kind: 'create',

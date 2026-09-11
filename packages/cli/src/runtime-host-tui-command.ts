@@ -20,10 +20,7 @@
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
-import {
-  readRuntimeHostConnectionCatalog,
-  HostHandoffCancelledError,
-} from '@maka/runtime-host/client';
+import { HostHandoffCancelledError } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
@@ -201,7 +198,14 @@ async function runFirstRunOnboarding(
       } satisfies MakaPiTuiTurnActivitySurface,
       onboarding,
     });
-    return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
+    // The overlay is closed: only the default-target metadata is needed, and
+    // an offline primary connection must not prevent the finally cleanup.
+    const catalog = await connected.connection.request(
+      'connection.catalog.query',
+      { kind: 'start' },
+      1_000,
+    );
+    return catalog.kind === 'page' && catalog.defaultTarget !== null;
   } finally {
     try {
       await onboarding.close();
