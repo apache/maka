@@ -73,6 +73,13 @@ const DINGTALK_SINGLE_SEND_PATH = '/v1.0/robot/oToMessages/batchSend';
 const DINGTALK_GROUP_CHAT_PREFIX = 'group:';
 const DINGTALK_SINGLE_CHAT_PREFIX = 'oto:';
 
+/**
+ * The discriminator this bridge used before chatIds carried a stamp.
+ * Retained only to route ids that predate stamping — see the unstamped
+ * branch of `pickDingTalkSendRoute`.
+ */
+const DINGTALK_LEGACY_GROUP_ID_PREFIX = 'cid';
+
 interface DingTalkConnectionOpenResponse {
   endpoint: string;
   ticket: string;
@@ -154,11 +161,13 @@ export function buildDingTalkSingleSendBody(
  * Pure helper: route a send to the right DingTalk REST endpoint based on
  * the chatId prefix that `dingTalkPayloadToEvent` stamps.
  *
- * An unprefixed id is treated as a group `openConversationId`. Those are
- * chatIds recorded before this bridge stamped a prefix — persisted
- * scheduled-task delivery targets and hand-typed ids in the scheduled
- * task form — and group delivery is what they resolved to at the time,
- * so keeping that mapping preserves their behavior.
+ * Unstamped ids are chatIds recorded before this bridge stamped a prefix
+ * — persisted scheduled-task delivery targets and ids typed by hand into
+ * the scheduled task form. They keep the pre-stamping discriminator, so
+ * both of its outcomes survive: a `cid…` conversation id still goes to
+ * the group endpoint, and a bare staff id still goes to the 1:1 endpoint,
+ * which is where it was delivering successfully. That guess was only ever
+ * wrong for a 1:1 *conversation* id, and the stamped path now covers it.
  */
 export function pickDingTalkSendRoute(
   chatId: string,
@@ -178,14 +187,23 @@ export function pickDingTalkSendRoute(
       body: buildDingTalkSingleSendBody(staffId, robotCode, text),
     };
   }
-  const openConversationId = targetId.startsWith(DINGTALK_GROUP_CHAT_PREFIX)
-    ? targetId.slice(DINGTALK_GROUP_CHAT_PREFIX.length).trim()
-    : targetId;
-  if (!openConversationId) return null;
-  return {
-    path: DINGTALK_GROUP_SEND_PATH,
-    body: buildDingTalkGroupSendBody(openConversationId, robotCode, text),
-  };
+  if (targetId.startsWith(DINGTALK_GROUP_CHAT_PREFIX)) {
+    const openConversationId = targetId.slice(DINGTALK_GROUP_CHAT_PREFIX.length).trim();
+    if (!openConversationId) return null;
+    return {
+      path: DINGTALK_GROUP_SEND_PATH,
+      body: buildDingTalkGroupSendBody(openConversationId, robotCode, text),
+    };
+  }
+  return targetId.startsWith(DINGTALK_LEGACY_GROUP_ID_PREFIX)
+    ? {
+        path: DINGTALK_GROUP_SEND_PATH,
+        body: buildDingTalkGroupSendBody(targetId, robotCode, text),
+      }
+    : {
+        path: DINGTALK_SINGLE_SEND_PATH,
+        body: buildDingTalkSingleSendBody(targetId, robotCode, text),
+      };
 }
 
 /**
@@ -260,10 +278,14 @@ export function dingTalkPayloadToEvent(
   const staffId = typeof payload.senderStaffId === 'string' ? payload.senderStaffId.trim() : '';
   // Stamp the route while the conversation kind is still known. A 1:1
   // reply must address the sender's staff id, not the conversation, so
-  // that is what the chatId carries. When the payload omits
-  // `senderStaffId` there is no address to reply to, so fall back to the
-  // bare conversationId: the message is still delivered upward and keeps
-  // a stable per-conversation key, and the send simply routes as before.
+  // that is what the chatId carries.
+  //
+  // When the payload omits `senderStaffId` there is nothing a 1:1 reply
+  // can be addressed to. Fall back to the bare conversationId so the
+  // message still reaches the agent under a stable per-conversation key,
+  // but a reply to it will take the unstamped `cid…` branch and fail at
+  // the group endpoint — the same dead end as before this change, not a
+  // working path.
   const chatId = isGroup
     ? `${DINGTALK_GROUP_CHAT_PREFIX}${conversationId}`
     : staffId

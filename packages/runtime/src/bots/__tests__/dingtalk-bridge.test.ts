@@ -73,12 +73,21 @@ describe('pickDingTalkSendRoute', () => {
     );
   });
 
-  it('keeps unprefixed ids on the group endpoint for pre-existing delivery targets', () => {
-    // Scheduled-task delivery targets persisted before the prefix existed,
-    // and ids typed by hand into the scheduled task form.
+  // Unstamped ids are scheduled-task delivery targets persisted before the
+  // prefix existed, plus ids typed by hand into the scheduled task form.
+  // Both outcomes of the pre-stamping discriminator have to survive.
+  it('keeps an unprefixed conversation id on the group endpoint', () => {
     const route = pickDingTalkSendRoute(GROUP_CONVERSATION_ID, 'app-key-1', 'hello');
     assert.equal(route?.path, '/v1.0/robot/groupMessages/send');
     assert.equal(route?.body.openConversationId, GROUP_CONVERSATION_ID);
+  });
+
+  it('keeps an unprefixed staff id on the 1:1 endpoint', () => {
+    // A bare staff id delivered successfully before stamping existed, so
+    // routing it to the group endpoint would break a working target.
+    const route = pickDingTalkSendRoute(SENDER_STAFF_ID, 'app-key-1', 'hi');
+    assert.equal(route?.path, '/v1.0/robot/oToMessages/batchSend');
+    assert.deepEqual(route?.body.userIds, [SENDER_STAFF_ID]);
   });
 
   it('rejects empty and prefix-only ids', () => {
