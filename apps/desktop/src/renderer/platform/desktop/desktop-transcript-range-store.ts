@@ -474,7 +474,7 @@ export class DesktopTranscriptRangeStore {
    * that; whether its rows reach the window is settled once the whole answer is
    * in hand, against the anchor the answer carries.
    */
-  accepts(batch: DesktopTranscriptBatchPayload): boolean {
+  #accepts(batch: DesktopTranscriptBatchPayload): boolean {
     if (this.#retiredGenerations.has(batch.generation)) return false;
     if (batch.reset) {
       return batch.navigation === undefined || batch.navigation === this.#pendingNavigation;
@@ -492,7 +492,7 @@ export class DesktopTranscriptRangeStore {
   }
 
   accept(batch: DesktopTranscriptBatchPayload): boolean {
-    if (!this.accepts(batch)) return false;
+    if (!this.#accepts(batch)) return false;
     if (batch.reset && batch.sessionId !== this.#expectedSessionId) {
       throw new Error('Desktop transcript belongs to a different Session');
     }
