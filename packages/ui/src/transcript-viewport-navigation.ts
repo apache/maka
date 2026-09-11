@@ -17,10 +17,24 @@
  * under the License.
  */
 
-/** Explicit viewport commands are consumed once, never replayed on mount or growth. */
+/** Bridge the active surface's scroll authority to conversation commands and publication.
+ * No geometry or pending range state lives here; detaching invalidates queued callbacks. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
+  let commitScheduler: { sessionId: string; schedule: (commit: () => void) => void } | undefined;
   return {
+    attachCommitScheduler(sessionId: string, schedule: (commit: () => void) => void): () => void {
+      const attached = { sessionId, schedule };
+      commitScheduler = attached;
+      return () => { if (commitScheduler === attached) commitScheduler = undefined; };
+    },
+    commitRange(sessionId: string, commit: () => void): void {
+      const attached = commitScheduler;
+      if (attached?.sessionId === sessionId) attached.schedule(() => {
+        if (commitScheduler === attached) commit();
+      });
+      else commit();
+    },
     followLatest(sessionId: string): void {
       for (const listener of [...listeners]) listener(sessionId);
     },

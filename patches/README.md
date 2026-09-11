@@ -148,6 +148,12 @@ keep reusing compiled regexes. A call-site language filter would duplicate the
 dependency's language list, discard the displayed label, and miss the shared
 CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
 
+`CodeBlock` retains memoized line chunks, but lays them out without guessed
+intrinsic heights. Replacing those estimates on first visibility changed the
+transcript scroll range (#5184). Keep layout/style/paint containment. Remove
+this hunk when upstream offers equivalent stable geometry; the default-mode
+geometry CI covers 1200 lines without any ablation override.
+
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft
 visible for a frame after the sent message is rendered; clearing it later

@@ -30,6 +30,7 @@ import { useAppShellSessionList } from './use-app-shell-session-list.js';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease.js';
 import { hasNewTaskReloadIntent } from './new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
+import { currentTranscriptRange } from './features/conversation/controller/transcript-reading-position.js';
 import {
   createSessionWorkspaceActions,
   type SessionWorkspaceActions,
@@ -54,7 +55,13 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
+  // Messages and their gap flags are one published view. Reading flags from
+  // the receiving store during a held gesture would resize the document even
+  // when message publication is deferred.
+  const [transcriptView, setTranscriptView] = useState<{
+    messages: StoredMessage[];
+    range: ReturnType<DesktopTranscriptRangeController['store']['range']> | undefined;
+  }>({ messages: [], range: undefined });
   const messagesRef = useRef<StoredMessage[]>([]);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessage[]>([]);
   const transientMessagesBySessionRef = useRef(
@@ -79,7 +86,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     // controller is created once per renderer, so this identity is fixed and
     // the once-created factory may capture it.
     setActiveIdState: catalog.setActiveSessionId,
-    setMessagesState: setMessages,
+    setMessagesState: (messages) => setTranscriptView({
+      messages,
+      range: messages.length ? currentTranscriptRange(transcriptRangeRef.current, activeIdRef.current) : undefined,
+    }),
     setTransientMessagesState: setTransientMessages,
     setMessageLoadPending,
     clearSessionUiState: sessionUiController.clearSessionUiState,
@@ -102,7 +112,8 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
     ...actions,
-    messages,
+    messages: transcriptView.messages,
+    publishedTranscriptRange: transcriptView.range,
     transientMessages,
     transcriptRangeRef,
     messageLoadPending,

@@ -17,17 +17,13 @@
  * under the License.
  */
 
-// Manual evidence probe on the real Host/window path, deliberately separate
-// from fixed-membership geometry. A pass means input/measurement worked, not
-// that the reported height/range changes satisfy the future product contract.
+// Real native scrollbar input: stable held geometry, preserved reading anchor,
+// and history progress after release. Fixed-range cold scrolling runs in CI too.
 import { test, expect } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { withE2eWindow } from '../../apps/desktop/e2e/fixtures';
+import { withE2eWindow } from './fixtures';
 
-test('record native thumb drag through transcript window changes', async () => {
+test('native thumb keeps its geometry and releases history without moving the reader', async () => {
   test.setTimeout(180_000);
-  const rows: unknown[] = [];
   await withE2eWindow(
     {
       seed: false,
@@ -40,16 +36,12 @@ test('record native thumb drag through transcript window changes', async () => {
       await page.setViewportSize({ width: 1000, height: 700 });
       const cdp = await page.context().newCDPSession(page);
       await page.addInitScript(() => {
-        const mode = sessionStorage.getItem('geometry-mode');
         const style = document.createElement('style');
         style.textContent = `
         [data-chat-scroll-container] { scroll-behavior:auto !important; scrollbar-width:auto !important; scrollbar-color:auto !important; }
         [data-chat-scroll-container]::-webkit-scrollbar { width:14px; }
         [data-chat-scroll-container]::-webkit-scrollbar-thumb { background:#777; min-height:0; border:0; }
-        [data-chat-scroll-container]::-webkit-scrollbar-track { background:#ddd; }
-        ${mode === 'no-skip' ? '.maka-transcript-turn, [data-maka-transcript-boundary], .astryx-codeblock [style*="contain-intrinsic-block-size"]' : ':not(*)'} {
-          content-visibility:visible !important; contain:layout style paint !important;
-        }`;
+        [data-chat-scroll-container]::-webkit-scrollbar-track { background:#ddd; }`;
         const append = () => document.documentElement.append(style);
         if (document.documentElement) append();
         else
@@ -60,8 +52,7 @@ test('record native thumb drag through transcript window changes', async () => {
             }
           }).observe(document, { childList: true });
       });
-      for (const mode of ['baseline', 'no-skip', 'no-skip', 'baseline']) {
-        await page.evaluate((mode) => sessionStorage.setItem('geometry-mode', mode), mode);
+      {
         await page.reload();
         await expect(page.locator('[data-turn-id]').first()).toBeVisible();
         const returnLatest = page.getByRole('button', {
@@ -82,6 +73,8 @@ test('record native thumb drag through transcript window changes', async () => {
             held: false,
             done: false,
             pointerDown: 0,
+            pointerUp: 0,
+            readingId: undefined as string | undefined,
             frames: [] as Array<{
               h: number;
               t: number;
@@ -89,10 +82,12 @@ test('record native thumb drag through transcript window changes', async () => {
               range: string;
               held: boolean;
               ms: number;
+              anchorTop?: number;
             }>,
           };
           (window as any).__windowGeometry = state;
           root.addEventListener('pointerdown', () => state.pointerDown++);
+          document.addEventListener('pointerup', () => state.pointerUp++);
           const frame = () => {
             const turns = [...root.querySelectorAll<HTMLElement>('.maka-transcript-turn')];
             state.frames.push({
@@ -102,6 +97,10 @@ test('record native thumb drag through transcript window changes', async () => {
               range: turns.map((t) => t.dataset.transcriptTurnId).join(','),
               held: state.held,
               ms: performance.now(),
+              anchorTop: state.readingId
+                ? root.querySelector(`[data-turn-id="${state.readingId}"]`)?.getBoundingClientRect()
+                    .top
+                : undefined,
             });
             if (!state.done) requestAnimationFrame(frame);
           };
@@ -142,7 +141,15 @@ test('record native thumb drag through transcript window changes', async () => {
           await page.waitForTimeout(25);
         }
         await page.waitForTimeout(400);
-        await page.screenshot({ path: path.resolve(`perf-results/window-held-${mode}.png`) });
+        const reading = await page.evaluate(() => {
+          const root = document.querySelector('[data-chat-scroll-container]')!;
+          const top = root.getBoundingClientRect().top;
+          const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+            (el) => el.getBoundingClientRect().bottom > top,
+          )!;
+          (window as any).__windowGeometry.readingId = turn.dataset.turnId;
+          return { id: turn.dataset.turnId!, top: turn.getBoundingClientRect().top };
+        });
         await cdp.send('Input.dispatchMouseEvent', {
           type: 'mouseReleased',
           x: start.x,
@@ -164,21 +171,44 @@ test('record native thumb drag through transcript window changes', async () => {
         const heightDrift =
           Math.max(...held.map((f: any) => f.h)) - Math.min(...held.map((f: any) => f.h));
         const ranges = new Set(held.map((f: any) => f.range));
+        expect(result.pointerDown).toBe(1);
+        expect(result.pointerUp).toBe(1);
+        expect(heightDrift, 'height must remain constant while held').toBeLessThanOrEqual(1);
+        expect(ranges.size, 'resident membership must remain constant while held').toBe(1);
+        expect(
+          Math.max(0, ...held.slice(1).map((f: any, i: number) => f.t - held[i].t)),
+          'upward native drag must not reverse',
+        ).toBeLessThanOrEqual(1);
+        const released = result.frames.filter((f: any) => !f.held && f.anchorTop !== undefined);
+        expect(released.length).toBeGreaterThan(2);
+        expect(
+          Math.max(...released.map((f: any) => Math.abs(f.anchorTop - reading.top))),
+          'reading anchor must survive every release frame',
+        ).toBeLessThanOrEqual(1);
+        await expect
+          .poll(() =>
+            page
+              .locator('.maka-transcript-turn')
+              .evaluateAll((els) =>
+                els.map((el) => (el as HTMLElement).dataset.transcriptTurnId).join(','),
+              ),
+          )
+          .not.toBe(held[0].range);
+        const anchor = page.locator('[data-turn-id="' + reading.id + '"]');
+        await expect(anchor).toHaveCount(1);
+        await expect
+          .poll(async () => Math.abs((await anchor.boundingBox())!.y - reading.top))
+          .toBeLessThanOrEqual(1);
+        await page
+          .getByRole('button', {
+            name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
+          })
+          .click();
+        await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
         expect(
           Math.max(...held.map((f: any) => f.t)) - Math.min(...held.map((f: any) => f.t)),
           'native thumb drag must actually scroll',
         ).toBeGreaterThan(100);
-        rows.push({ mode, start, heightDrift, heldRanges: ranges.size, ...result });
-        await mkdir('perf-results', { recursive: true });
-        await writeFile('perf-results/window-geometry.json', JSON.stringify({ rows }, null, 2));
-        console.log(
-          JSON.stringify({
-            mode,
-            heightDrift,
-            heldRanges: ranges.size,
-            pointerDown: result.pointerDown,
-          }),
-        );
       }
     },
   );

@@ -325,6 +325,7 @@ function AppShellContent({
     retireCancelledTransientMessages,
     removeTransientMessage,
     transcriptRangeRef,
+    publishedTranscriptRange,
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
@@ -2010,6 +2011,7 @@ function AppShellContent({
     activeSession?.profileId,
   );
   useActiveSessionEvents({
+    commitTranscriptRange: sessionUiController.transcriptViewportNavigation.commitRange,
     uiLocale,
     activeId: activeHostSession?.id,
     observationAuthorityRevision: observationAuthorityRef.current.revision,
@@ -2184,10 +2186,8 @@ function AppShellContent({
   const activeUnavailableTranscriptRestore = activeId
     ? transcriptRestoreUnavailableBySession[activeId]
     : undefined;
-  const activeTranscriptRange = Conversation.transcriptReadingPosition.currentRange(
-    transcriptRangeRef.current,
-    activeId,
-  );
+  const activeTranscriptRange = publishedTranscriptRange?.sessionId === activeId
+    ? publishedTranscriptRange : undefined;
   const homeSurfaceActive =
     sessionsSelected &&
     messages.length === 0 &&

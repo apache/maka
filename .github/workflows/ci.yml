@@ -443,6 +443,13 @@ jobs:
         if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
 
+      - name: Transcript geometry invariants
+        if: steps.plan.outputs.storybook == 'true'
+        env:
+          GEOMETRY_MODE: baseline
+          GEOMETRY_REPETITIONS: '1'
+        run: xvfb-run -a node scripts/perf/geometry-ablation.mjs --assert-stable
+
       - name: Update stable Rust for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
         run: rustup update stable --no-self-update

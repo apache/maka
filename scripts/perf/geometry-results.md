@@ -1,5 +1,25 @@
 # #5184 geometry ablation — 2026-09-11
 
+## Implementation after the experiment
+
+The measurements below describe the pre-change source, not current product
+behavior. The implementation now uses real layout for resident Turns, timeline
+blocks and code chunks. The existing scroll authority defers range publication
+during input, coalesces pending publication, and restores the reading Turn once
+at commit. Messages and gap metadata form one published view; otherwise gap
+changes alone moved held height by 68px in the native probe. The old 1px input
+nudge and the render-skipping assertion were removed.
+
+Ordinary CI runs the fixed-range driver with `GEOMETRY_MODE=baseline` and
+`--assert-stable`. The former native diagnostic is now
+`apps/desktop/e2e/scroll-geometry.spec.ts`: held height/range, monotonic upward
+movement, release-frame anchor position, and subsequent navigation are strict
+assertions. This implementation targets main, not the unmerged #5170 branch.
+The post-change performance run must be compared using the report commit and
+environment; a successful job is not a statistical non-inferiority result.
+
+## Pre-change experiment
+
 This is a diagnostic result, not a production fix or a claim of a universal
 performance bound. Production CSS and window policy were not modified.
 
@@ -124,9 +144,12 @@ directory):
 
 ```sh
 npm run build:with-deps
-npx playwright test --config ../../scripts/perf/geometry-window.config.ts
+npx playwright test --config e2e/playwright.config.ts e2e/scroll-geometry.spec.ts
 ```
 
-The window report is `apps/desktop/perf-results/window-geometry.json`. Fixed
+The original diagnostic and its JSON output belong to measurement commit
+`817a5737d`; it has now been replaced by the ordinary E2E regression above.
+The regression asserts held range/height, upward monotonicity, every sampled
+release-frame anchor position and progress after release. Fixed
 range reports default to repository `perf-results/geometry-ablation.json` and
 can be directed with `GEOMETRY_OUTPUT`. Preserve reports before a subsequent run.

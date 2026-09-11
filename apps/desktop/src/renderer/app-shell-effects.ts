@@ -320,6 +320,7 @@ export function useActiveSessionEvents(options: {
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
+  commitTranscriptRange: (sessionId: string, commit: () => void) => void;
   transcriptRangeRef: RefBox<desktopTranscript.DesktopTranscriptRangeController | undefined>;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
@@ -338,15 +339,18 @@ export function useActiveSessionEvents(options: {
   const applyTranscript = useEffectEvent((
     sessionId: string,
     store: desktopTranscript.DesktopTranscriptRangeStore,
+    isDisposed: () => boolean,
   ) => {
-    if (options.activeIdRef.current === sessionId) {
-      const snapshot = store.snapshot();
-      options.setMessages([...snapshot.messages]);
-      if (snapshot.ready) {
-        clearMessageLoadError(sessionId);
-        options.setMessageLoadPending(false);
+    options.commitTranscriptRange(sessionId, () => {
+      if (!isDisposed() && options.activeIdRef.current === sessionId) {
+        const snapshot = store.snapshot();
+        options.setMessages([...snapshot.messages]);
+        if (snapshot.ready) {
+          clearMessageLoadError(sessionId);
+          options.setMessageLoadPending(false);
+        }
       }
-    }
+    });
   });
   const applyReadError = useEffectEvent((sessionId: string, error: unknown) => {
     if (options.activeIdRef.current === sessionId) {
@@ -409,7 +413,7 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
-    const unsubscribeTranscript = transcript.subscribe(() => applyTranscript(activeId, transcript));
+    const unsubscribeTranscript = transcript.subscribe(() => applyTranscript(activeId, transcript, () => disposed));
     const openTranscript = (signal: AbortSignal) =>
       window.maka.transcripts.open(
         activeId,

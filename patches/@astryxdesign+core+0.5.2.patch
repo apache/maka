@@ -1,5 +1,5 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
-index 5046603..ec36a00 100644
+index 5046603..f34333e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 @@ -22,7 +22,7 @@
@@ -41,7 +41,7 @@ index ff34874..0f5ae14 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..d20288e 100644
+index ff9b9fa..f681cd0 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -85,7 +85,8 @@ const styles = {
@@ -218,6 +218,28 @@ index eac4c4b..a21c0c4 100644
    return def;
  }
  function buildLanguageUncached(lang) {
+
+diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
+index 4765e55..a93b859 100644
+--- a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
++++ b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
+@@ -218,15 +218,8 @@ function renderLines(lines, highlightSet, renderLineContent, lineNumbers, chunkS
+   for (let start = 0; start < lines.length; start += chunkSize) {
+     const end = Math.min(start + chunkSize, lines.length);
+     const chunkLines = lines.slice(start, end);
+-    const estimatedHeight = `${chunkLines.length}lh`;
+     chunks.push(/*#__PURE__*/_jsx("div", {
+-      ...mergeProps({
+-        className: "xb5mbof"
+-      }, {
+-        style: {
+-          containIntrinsicBlockSize: `auto ${estimatedHeight}`
+-        }
+-      }),
++      style: { contain: "layout style paint" },
+       children: /*#__PURE__*/_jsx(CodeChunk, {
+         lines: chunkLines,
+         startIndex: start,
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
 index 82ae62c..a97eff5 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts

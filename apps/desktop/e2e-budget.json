@@ -69,6 +69,10 @@
       "tests": 1,
       "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Chromium containment and fixture motion run in the TranscriptRenderCost story."
     },
+    "scroll-geometry.spec.ts": {
+      "tests": 1,
+      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
+    },
     "workhub-layout.spec.ts": {
       "tests": 2,
       "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility and pointer dragging verifies model-wheel scrolling and release snapping; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"

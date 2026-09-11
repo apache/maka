@@ -1115,7 +1115,6 @@ export const WideAssistantProse: Story = {
     const turnRect = turn.getBoundingClientRect();
     expect(turnRect.width).toBeGreaterThan(680);
     expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
-    expect(getComputedStyle(boundary).contentVisibility).toBe('auto');
     // Paint containment (`content-visibility: auto`, `contain: paint`,
     // `overflow` other than visible) clips to the rounded padding box, and
     // headless Chromium does not reproduce that clip, so pin the geometry:
@@ -2368,6 +2367,7 @@ function SettledTranscriptHarness({
  */
 function HistoryHarness({ turns }: { turns: number }) {
   const [range, setRange] = useState({ from: 0, count: turns });
+  const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
     historyLoads.length = 0;
   }, []);
@@ -2375,14 +2375,15 @@ function HistoryHarness({ turns }: { turns: number }) {
     <ComposedShell
       chat={{
         messages: transcriptTurns(range.from, range.count),
+        viewportNavigation,
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
         onPrefetchHistory: async (edge) => {
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
-          setRange((current) => ({
+          viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
             from: current.from - HISTORY_BATCH,
             count: current.count + HISTORY_BATCH,
-          }));
+          })));
           await painted(2);
           return true;
         },
@@ -2648,6 +2649,8 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,
   play: async () => {
     const root = tailScroller();
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     // A single Turn taller than several viewports is the point; without the
     // overflow the rest proves nothing.
@@ -2655,14 +2658,6 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       root.scrollHeight,
       JSON.stringify(tailMetrics()),
     ).toBeGreaterThan(root.clientHeight * 3);
-    // The containment claim itself, in the same Chromium the app ships:
-    // offscreen timeline blocks are genuinely skipped, not merely marked.
-    // (This carries the deleted Electron spec's assertion — #4825 moved this
-    // tier of coverage below Electron.)
-    const skipped = [...root.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
-      .filter((element) => !element.checkVisibility({ contentVisibilityAuto: true }))
-      .length;
-    expect(skipped, 'no offscreen boundary is skipped').toBeGreaterThan(0);
 
     // The visible block nearest the middle of the scrollport, re-chosen each
     // step so it is always one the reader can actually see.
@@ -2684,15 +2679,8 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       return anchor;
     };
 
-    // Cold: no warmup pass has rendered the blocks above, so each upward step
-    // materializes first-paint intrinsic-size estimates. The criterion is what
-    // the reader sees, so it is measured in viewport space: an anchor they were
-    // reading should move down by exactly the step they asked for. Native
-    // `overflow-anchor` compensates the materialization by adjusting
-    // `scrollTop`, so neither document-space growth nor the scrollTop delta may
-    // be the yardstick — comparing against either reports the (allowed)
-    // correction itself as a jump. Only `|viewport move − intended step|` is a
-    // jump the reader experiences.
+    // First traversal, without a preparatory scroll. The visible block must
+    // move by the requested distance, without an extra layout correction.
     let worstUnexpected = 0;
     const steps: Array<Record<string, number>> = [];
     for (let step = 0; step < 8 && root.scrollTop > 0; step += 1) {
@@ -2716,19 +2704,12 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
         grewBy: root.scrollHeight - heightBefore,
       });
     }
-    // On main this story reads 0 by construction — no sub-turn boundary exists
-    // to materialize. On this branch the error tracks materialization exactly:
-    // a zero-growth step read 0px, and with the folded-disclosure estimate at
-    // 320px against a 24–32px collapsed row, steps measured up to 244px — a
-    // reader-visible stall of a 240px scroll step. With the collapsed estimate
-    // corrected, the residual is the answer blocks' estimate error, which stays
-    // well under half a step. The bound is half a step: loose enough for
-    // per-run variance, tight enough that a stalled or reversed step can never
-    // pass again.
+    // Fixed content must move only by the requested distance, including on
+    // the first traversal. One CSS pixel allows rounding, not an estimate.
     expect(
       worstUnexpected,
       `worst unexpected reading-anchor move: ${Math.round(worstUnexpected)}px; steps: ${JSON.stringify(steps)}`,
-    ).toBeLessThanOrEqual(120);
+    ).toBeLessThanOrEqual(1);
   },
 };
 
@@ -2796,25 +2777,10 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
 };
 
 /**
- * The reader going *up* through Turns that have never rendered.
- *
- * A bound, not stillness. A Turn off screen is laid out at
- * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
- * the way past, so travelling through them moves things by construction —
- * about 8% of the transcript here. What the bound says is that one Turn owes
- * at most one estimate, keeping the correction proportional to Turns crossed
- * rather than to what is inside them.
+ * First upward traversal of a deep fixed transcript: document height and
+ * the reader's content position must remain stable without a warm-up pass.
  */
 const TRAVERSAL_STEP = 700;
-
-/** What one Turn is worth, measured after everything has rendered once. */
-function medianTurnHeight(): number {
-  const heights = [...tailScroller().querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .map((turn) => turn.getBoundingClientRect().height)
-    .sort((a, b) => a - b);
-  if (heights.length === 0) throw new Error('the transcript has no mounted turn');
-  return heights[Math.floor(heights.length / 2)];
-}
 
 /** The first Turn whose box is still on screen, and where it starts. */
 function anchorInView(): { turnId: string; top: number } {
@@ -2831,6 +2797,8 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
   render: () => <SettledTranscriptHarness turns={40} />,
   play: async () => {
     const root = tailScroller();
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     const heightBefore = root.scrollHeight;
     expect(
@@ -2856,20 +2824,15 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
     expect(steps, 'the traversal has to have taken real steps').toBeGreaterThan(6);
 
     const worstDrift = Math.max(...drifts.map(Math.abs));
-    const turnHeight = medianTurnHeight();
-    // No single step throws the reader past a whole exchange. One Turn's worth
-    // of correction is the most one Turn can owe.
-    expect(worstDrift, `per-step drift: ${drifts.join(' ')} against a Turn of ${turnHeight}`)
-      .toBeLessThanOrEqual(turnHeight);
+    expect(worstDrift, `per-step drift: ${drifts.join(' ')}`)
+      .toBeLessThanOrEqual(1);
 
-    // And over the whole traversal the corrections stay proportional to the
-    // Turns crossed. Measured at ~8% here; #4259's 63% is the failure this
-    // exists to catch.
+    // The fixed document keeps its full height throughout the traversal.
     const heightAfter = root.scrollHeight;
     expect(
-      Math.abs(heightAfter - heightBefore) / heightBefore,
-      JSON.stringify({ heightBefore, heightAfter, steps, turnHeight }),
-    ).toBeLessThanOrEqual(0.15);
+      Math.abs(heightAfter - heightBefore),
+      JSON.stringify({ heightBefore, heightAfter, steps }),
+    ).toBeLessThanOrEqual(1);
 
     // And the reader can still get back.
     dockButton().click();
@@ -2899,15 +2862,13 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     // The one position where the browser declines to anchor, and the one the
     // wheel-to-load path puts the reader in.
     scrollAsReader(root, 0);
+    const reading = anchorInView();
     wheelUp(root);
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
     await painted(6);
 
-    // Anchoring resumes at an offset of one pixel, so the offset itself is the
-    // evidence: left at zero the browser holds the scroller at the top and
-    // every turn that arrives pushes the reader's content down the viewport.
-    expect(tailScroller().scrollTop).toBeGreaterThanOrEqual(1);
+    expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
   },
 };
 

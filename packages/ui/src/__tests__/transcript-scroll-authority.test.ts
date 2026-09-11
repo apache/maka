@@ -183,6 +183,49 @@ test('Ctrl and Meta wheel zoom preserve following without requesting history', (
   });
 });
 
+test('a held scrollbar coalesces range publication until release, including a stationary hold', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    const commits: number[] = [];
+    root.grabScrollbar();
+    root.scrollTop -= 100;
+    root.emitScroll();
+    authority.commitWhenIdle(() => commits.push(1));
+    authority.commitWhenIdle(() => commits.push(2));
+    root.end(); frame(); frame();
+    assert.deepEqual(commits, []);
+    root.ownerDocument.dispatchEvent(new Event('pointerup'));
+    frame(); frame();
+    assert.deepEqual(commits, [2]);
+  });
+});
+
+test('an edge wheel without scrollend publishes after input settles and detach drops pending work', () => {
+  withObservers((_resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+    root.scrollTop = 0;
+    let commits = 0;
+    const phases: string[] = [];
+    authority.subscribeToReaderScroll((phase) => {
+      phases.push(phase);
+      if (phase === 'input') authority.commitWhenIdle(() => commits++);
+    });
+    root.input(-100);
+    assert.equal(commits, 0);
+    frame(); frame();
+    assert.equal(commits, 1);
+    assert.deepEqual(phases, ['input', 'settled']);
+    root.grabScrollbar();
+    authority.commitWhenIdle(() => commits++);
+    detach(); frame(); frame();
+    assert.equal(commits, 1);
+  });
+});
+
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
   withObservers((resize) => {
     const root = fakeRoot();
