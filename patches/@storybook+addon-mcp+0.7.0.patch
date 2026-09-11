@@ -1,0 +1,13 @@
+diff --git a/node_modules/@storybook/addon-mcp/dist/preset.js b/node_modules/@storybook/addon-mcp/dist/preset.js
+index 956b95c..5f82bf8 100644
+--- a/node_modules/@storybook/addon-mcp/dist/preset.js
++++ b/node_modules/@storybook/addon-mcp/dist/preset.js
+@@ -748 +748 @@ var legacy_test_instructions_default = "## Validation Workflow\n\n- After editin
+-var review_docs_instructions_default = "## Documentation Workflow\n\n**CRITICAL: Never hallucinate component properties!** Undocumented props do not exist — never assume them from naming or other libraries; verify every prop via these tools, not source or types in node_modules.\n\n1. Call **list-all-documentation** once at task start for component and docs IDs.\n2. Call **get-documentation** with an `id` from that list for props and usage examples.\n\nOnly reference IDs returned by these tools — never guess; scope multi-source requests with `storybookId`.\n";
++var maka_docs_instructions_default = "## Documentation Workflow\n\nUse Storybook documentation tools first to discover documented components, props, and examples. This catalog is incremental and incomplete: missing documentation does not mean a component or prop does not exist.\n\n1. Call **list-all-documentation** once at task start for available component and docs IDs.\n2. Call **get-documentation** with an `id` from that list for props and usage examples.\n3. Call **get-documentation-for-story** for additional details about a documented story variant.\n\nFor gaps, follow the repository's **DESIGN.md**. Verify Astryx components and props against Astryx's official API or published type declarations. Never guess props from names, conventions, or unrelated libraries. Only reference Storybook IDs returned by these tools; scope multi-source requests with `storybookId`.\n";
+@@ -773 +773 @@ function buildServerInstructions(options) {
+-	const sections = [options.docsEnabled ? "Follow these workflows when working with UI and/or Storybook. Answer questions about component props, API, or usage with the documentation tools — never from source or type definitions." : "Follow these workflows when working with UI and/or Storybook."];
++	const sections = ["Follow these workflows when working with UI and/or Storybook."];
+@@ -783 +783 @@ function buildServerInstructions(options) {
+-	if (options.docsEnabled) sections.push((reviewEnabled ? review_docs_instructions_default : STORYBOOK_MCP_INSTRUCTIONS).trim());
++	if (options.docsEnabled) sections.push(maka_docs_instructions_default.trim());
