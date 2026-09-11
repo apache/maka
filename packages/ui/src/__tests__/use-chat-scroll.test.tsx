@@ -358,7 +358,7 @@ test('a fill that issued no read is not chained into another one', async () => {
   assert.equal(requests, 2, 'the landed read chains one re-check, whose refusal ends it');
 });
 
-test('an older request at offset zero restores the browser anchoring the reader depends on', async () => {
+test('an older request at offset zero does not move the reader', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
   );
@@ -391,7 +391,7 @@ test('an older request at offset zero restores the browser anchoring the reader 
 
   transcript.readerScrollTo(0);
   assert.equal(requests, 1);
-  assert.equal(transcript.scrollTop, 1, 'keep native anchoring enabled at the start');
+  assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
 });
 
 test('a transcript change re-reads the band while the reader stays at the tail', async () => {

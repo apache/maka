@@ -57,9 +57,9 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
           : undefined,
       });
     },
-    publishTranscript(sessionId: string, store: TranscriptSource, isDisposed: () => boolean, onReady: () => void) {
+    publishTranscript(sessionId: string, store: TranscriptSource, onReady: () => void) {
       controller.transcriptViewportNavigation.commitRange(sessionId, () => {
-        if (isDisposed() || activeIdRef.current !== sessionId) return;
+        if (transcriptRangeRef.current?.store !== store || activeIdRef.current !== sessionId) return;
         const snapshot = store.snapshot();
         publishMessages([...snapshot.messages]);
         if (snapshot.ready) onReady();

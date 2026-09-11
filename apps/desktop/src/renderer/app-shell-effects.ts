@@ -319,7 +319,7 @@ export function useActiveSessionEvents(options: {
   completeObservationSeed: (sessionId: string) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
-  publishTranscript: (sessionId: string, store: desktopTranscript.DesktopTranscriptRangeStore, isDisposed: () => boolean, onReady: () => void) => void;
+  publishTranscript: (sessionId: string, store: desktopTranscript.DesktopTranscriptRangeStore, onReady: () => void) => void;
   transcriptRangeRef: RefBox<desktopTranscript.DesktopTranscriptRangeController | undefined>;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
@@ -333,14 +333,12 @@ export function useActiveSessionEvents(options: {
       return next;
     });
   });
-  // Reached only from the store subscription, which the effect unsubscribes on
-  // teardown, so the window it publishes is always a live one.
+  // Publication rechecks the controller's store identity after any input wait.
   const applyTranscript = useEffectEvent((
     sessionId: string,
     store: desktopTranscript.DesktopTranscriptRangeStore,
-    isDisposed: () => boolean,
   ) => {
-    options.publishTranscript(sessionId, store, isDisposed, () => {
+    options.publishTranscript(sessionId, store, () => {
       clearMessageLoadError(sessionId);
       options.setMessageLoadPending(false);
     });
@@ -406,7 +404,7 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
-    const unsubscribeTranscript = transcript.subscribe(() => applyTranscript(activeId, transcript, () => disposed));
+    const unsubscribeTranscript = transcript.subscribe(() => applyTranscript(activeId, transcript));
     const openTranscript = (signal: AbortSignal) =>
       window.maka.transcripts.open(
         activeId,

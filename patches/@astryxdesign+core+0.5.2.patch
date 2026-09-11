@@ -218,7 +218,6 @@ index eac4c4b..a21c0c4 100644
    return def;
  }
  function buildLanguageUncached(lang) {
-
 diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
 index 4765e55..a93b859 100644
 --- a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
