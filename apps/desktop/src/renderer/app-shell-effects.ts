@@ -20,7 +20,7 @@
 import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ConnectionEvent } from '@maka/core/connections';
-import type { SessionChangedEvent, SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
@@ -319,8 +319,7 @@ export function useActiveSessionEvents(options: {
   completeObservationSeed: (sessionId: string) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
-  setMessages: (messages: StoredMessage[]) => void;
-  commitTranscriptRange: (sessionId: string, commit: () => void) => void;
+  publishTranscript: (sessionId: string, store: desktopTranscript.DesktopTranscriptRangeStore, isDisposed: () => boolean, onReady: () => void) => void;
   transcriptRangeRef: RefBox<desktopTranscript.DesktopTranscriptRangeController | undefined>;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
@@ -341,15 +340,9 @@ export function useActiveSessionEvents(options: {
     store: desktopTranscript.DesktopTranscriptRangeStore,
     isDisposed: () => boolean,
   ) => {
-    options.commitTranscriptRange(sessionId, () => {
-      if (!isDisposed() && options.activeIdRef.current === sessionId) {
-        const snapshot = store.snapshot();
-        options.setMessages([...snapshot.messages]);
-        if (snapshot.ready) {
-          clearMessageLoadError(sessionId);
-          options.setMessageLoadPending(false);
-        }
-      }
+    options.publishTranscript(sessionId, store, isDisposed, () => {
+      clearMessageLoadError(sessionId);
+      options.setMessageLoadPending(false);
     });
   });
   const applyReadError = useEffectEvent((sessionId: string, error: unknown) => {

@@ -326,6 +326,7 @@ function AppShellContent({
     removeTransientMessage,
     transcriptRangeRef,
     publishedTranscriptRange,
+    publishTranscript,
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
@@ -2011,7 +2012,7 @@ function AppShellContent({
     activeSession?.profileId,
   );
   useActiveSessionEvents({
-    commitTranscriptRange: sessionUiController.transcriptViewportNavigation.commitRange,
+    publishTranscript,
     uiLocale,
     activeId: activeHostSession?.id,
     observationAuthorityRevision: observationAuthorityRef.current.revision,
@@ -2022,7 +2023,6 @@ function AppShellContent({
     completeObservationSeed,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessageLoadPending,
-    setMessages,
     transcriptRangeRef,
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
