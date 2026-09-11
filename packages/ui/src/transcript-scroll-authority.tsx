@@ -75,7 +75,7 @@ export interface TranscriptScrollAuthority {
    * the resulting reading position. Neither phase is emitted for layout alone;
    * consumers do not interpret raw wheel or scroll events themselves.
    */
-  subscribeToReaderScroll(listener: (direction: 'up' | 'down', phase: 'input' | 'scroll') => void): () => void;
+  subscribeToReaderScroll(listener: (phase: 'input' | 'scroll') => void): () => void;
   /**
    * The reading position, measured now and published like any other move. For
    * a caller that has just moved the viewport or the content itself and cannot
@@ -110,7 +110,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
   const listeners = new Set<() => void>();
-  const readerListeners = new Set<(direction: 'up' | 'down', phase: 'input' | 'scroll') => void>();
+  const readerListeners = new Set<(phase: 'input' | 'scroll') => void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
   const readTurn = (): string | undefined => {
@@ -136,8 +136,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     awayFromTail = false;
     publish();
   };
-  const reportReader = (direction: 'up' | 'down', phase: 'input' | 'scroll'): void => {
-    for (const listener of [...readerListeners]) listener(direction, phase);
+  const reportReader = (phase: 'input' | 'scroll'): void => {
+    for (const listener of [...readerListeners]) listener(phase);
   };
 
   return {
@@ -153,13 +153,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (remaining <= 0) {
           // An edge gesture can ask for an adjacent history page even though
           // it produces no scroll (and therefore no scrollend).
-          reportReader(direction, 'input');
+          reportReader('input');
           return;
         }
         gesture = { top: gesture?.top ?? target.scrollTop, direction };
         pinned = false;
         publish();
-        reportReader(direction, 'input');
+        reportReader('input');
       };
       const onWheel = (event: WheelEvent): void => {
         if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
@@ -231,7 +231,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             gesture.direction = direction;
             pinned = false;
             publish();
-            reportReader(direction, 'scroll');
+            reportReader('scroll');
             return;
           }
         }

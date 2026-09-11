@@ -207,7 +207,7 @@ test('identical shrink/grow geometry follows only when no reader input intervene
       const authority = createTranscriptScrollAuthority();
       authority.attach(root as unknown as HTMLElement);
       let readerMoves = 0;
-      authority.subscribeToReaderScroll((_direction, phase) => {
+      authority.subscribeToReaderScroll((phase) => {
         if (phase === 'scroll') readerMoves += 1;
       });
       if (readerInput) root.input(-100);
@@ -389,13 +389,13 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
   });
 });
 
-test('reports both directions even when the reader returns to the last written offset', () => {
+test('reports both moves even when the reader returns to the last written offset', () => {
   withObservers(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    const directions: string[] = [];
-    authority.subscribeToReaderScroll((direction, phase) => { if (phase === 'scroll') directions.push(direction); });
+    let readerMoves = 0;
+    authority.subscribeToReaderScroll((phase) => { if (phase === 'scroll') readerMoves += 1; });
     root.emitScroll();
     root.input(-100);
     root.scrollTop = 900;
@@ -404,7 +404,7 @@ test('reports both directions even when the reader returns to the last written o
     root.scrollTop = 2_400;
     root.emitScroll();
     root.end();
-    assert.deepEqual(directions, ['up', 'down']);
+    assert.equal(readerMoves, 2);
   });
 });
 
@@ -541,7 +541,7 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     let heard = 0;
-    const stop = authority.subscribeToReaderScroll((_direction, phase) => {
+    const stop = authority.subscribeToReaderScroll((phase) => {
       if (phase === 'scroll') heard += 1;
     });
     authority.attach(root as unknown as HTMLElement);

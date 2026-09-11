@@ -168,7 +168,7 @@ export function useChatScroll(input: {
       previousPin = pinned;
       report();
     });
-    const stopWatchingReader = authority.subscribeToReaderScroll((_direction, phase) => {
+    const stopWatchingReader = authority.subscribeToReaderScroll((phase) => {
       if (phase === 'scroll') report();
     });
     return () => {
