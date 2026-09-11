@@ -32,6 +32,8 @@ import { Selector } from '@astryxdesign/core/Selector';
 export function SessionReviewBaseBranchPicker(props: {
   baseBranch: string | null;
   baseBranchOptions: readonly GitReviewBaseBranchOption[];
+  /** A comparison is being re-read: the field spins and the panel dims behind it. */
+  isLoading?: boolean;
   label: string;
   onSelect: (branch: string) => void;
 }) {
@@ -45,6 +47,7 @@ export function SessionReviewBaseBranchPicker(props: {
         variant="ghost"
         size="sm"
         hasSearch
+        isLoading={props.isLoading}
         options={[...props.baseBranchOptions]}
         value={props.baseBranch ?? undefined}
         onChange={props.onSelect}

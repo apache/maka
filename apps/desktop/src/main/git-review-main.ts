@@ -171,7 +171,7 @@ async function readTrackedChanges(input: {
   let truncated = false;
 
   for (const comparison of comparisons) {
-    const [nameStatus, unified] = await Promise.all([
+    const [nameStatus, unifiedResult] = await Promise.all([
       input.runGit(input.repositoryRoot, [
         'diff',
         '--name-status',
@@ -179,7 +179,7 @@ async function readTrackedChanges(input: {
         '--find-renames',
         ...comparison,
       ]),
-      input.runGit(input.repositoryRoot, [
+      runDiffAllowTruncated(input.runGit, input.repositoryRoot, [
         'diff',
         '--no-ext-diff',
         '--no-color',
@@ -190,7 +190,7 @@ async function readTrackedChanges(input: {
       ]),
     ]);
     const entries = parseNameStatus(nameStatus);
-    const chunks = splitUnifiedDiff(unified);
+    const chunks = splitUnifiedDiff(unifiedResult.stdout);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
       const diff = chunks[index] ?? '';
@@ -206,9 +206,42 @@ async function readTrackedChanges(input: {
       diffChars += diff.length;
     }
     if (truncated) break;
+    // The diff itself was cut off at the buffer limit: keep what we read and
+    // say so, rather than failing the whole review on a huge branch diff.
+    if (unifiedResult.truncated) {
+      truncated = true;
+      break;
+    }
   }
 
   return { files: dedupeReviewFiles(files), diffChars, truncated };
+}
+
+/**
+ * A branch diff can exceed the child process buffer on far-diverged branches.
+ * Node hands back the bytes it managed to read, which the caller caps at
+ * REVIEW_MAX_DIFF_CHARS anyway, so overflow degrades to a truncated diff.
+ */
+async function runDiffAllowTruncated(
+  runGit: GitReviewCommandRunner,
+  root: string,
+  args: readonly string[],
+): Promise<{ stdout: string; truncated: boolean }> {
+  try {
+    return { stdout: await runGit(root, args), truncated: false };
+  } catch (error) {
+    const partial = maxBufferStdout(error);
+    if (partial === null) throw error;
+    return { stdout: partial, truncated: true };
+  }
+}
+
+function maxBufferStdout(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const { code, stdout } = error as { code?: unknown; stdout?: unknown };
+  return code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' && typeof stdout === 'string'
+    ? stdout
+    : null;
 }
 
 async function readUntrackedChanges(

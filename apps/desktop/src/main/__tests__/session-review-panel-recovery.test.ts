@@ -32,25 +32,7 @@ import {
 } from '../../renderer/features/workbar/testing.js';
 
 test('a saved failing comparison keeps the picker available and can recover', async () => {
-  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
-  const storage = new Map<string, string>();
-  const globals = {
-    document, window,
-    HTMLElement: window.HTMLElement,
-    HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => undefined,
-    IS_REACT_ACT_ENVIRONMENT: true,
-    localStorage: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
-    },
-  };
-  const previous = new Map(Object.keys(globals).map((key) =>
-    [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  const { document, restore } = installDom();
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
@@ -102,9 +84,94 @@ test('a saved failing comparison keeps the picker available and can recover', as
     assert.ok(container.querySelector<HTMLButtonElement>('.maka-session-review-base-branch button'));
   } finally {
     await act(async () => { root.unmount(); });
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    restore();
   }
 });
+
+test('a comparison switch spins the picker and dims the stale diff until it lands', async () => {
+  const { document, restore } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const branches = {
+    currentBranch: 'feature',
+    baseBranchOptions: [
+      { label: 'main', value: 'refs/heads/main' },
+      { label: 'gh-pages', value: 'refs/heads/gh-pages' },
+    ],
+  };
+  let landSlowRead: (() => void) | undefined;
+  const review: WorkbarServices['review'] = {
+    read: async ({ baseBranch }) => {
+      if (baseBranch === 'refs/heads/gh-pages') {
+        await new Promise<void>((resolve) => { landSlowRead = resolve; });
+      }
+      return {
+        ok: true,
+        snapshot: {
+          ...branches, source: 'branch', repositoryRoot: '/repo',
+          baseBranch: baseBranch ?? 'refs/heads/main', revision: baseBranch ?? 'initial',
+          files: [], additions: 0, deletions: 0, truncated: false,
+        },
+      };
+    },
+    subscribeSessionEvents: () => () => undefined,
+  };
+  const services = createFakeWorkbarServices({ review });
+  try {
+    await act(async () => {
+      root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(WorkbarServicesProvider, { services },
+          createElement(SessionReviewPanel, { sessionId: 'switch-session', active: true })),
+      }));
+    });
+    assert.equal(container.querySelector('.maka-session-review-switching'), null);
+    const trigger = container.querySelector<HTMLButtonElement>('.maka-session-review-base-branch button');
+    assert.ok(trigger);
+    await act(async () => { trigger.click(); });
+    const ghPages = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(
+      (option) => option.textContent === 'gh-pages');
+    assert.ok(ghPages);
+    await act(async () => { ghPages.click(); });
+    assert.ok(container.querySelector('.maka-session-review-switching'), 'the panel reports the pending switch');
+    assert.ok(container.querySelector('.maka-session-review-base-branch [aria-busy="true"]'), 'the picker spins while the read is in flight');
+    await act(async () => { landSlowRead?.(); });
+    assert.equal(container.querySelector('.maka-session-review-switching'), null);
+    assert.equal(container.querySelector('.maka-session-review-base-branch [aria-busy="true"]'), null);
+  } finally {
+    await act(async () => { root.unmount(); });
+    restore();
+  }
+});
+
+function installDom() {
+  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
+  const storage = new Map<string, string>();
+  const globals = {
+    document, window,
+    HTMLElement: window.HTMLElement,
+    HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => undefined,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    },
+  };
+  const previous = new Map(Object.keys(globals).map((key) =>
+    [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  return {
+    document,
+    restore: () => {
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    },
+  };
+}

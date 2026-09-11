@@ -66,6 +66,9 @@ export function SessionReviewPanel(props: {
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
   const [branches, setBranches] = useState<GitReviewBranchContext | null>(null);
   const [loading, setLoading] = useState(false);
+  // Distinct from `loading`: a background refresh must not flash the switch
+  // feedback, so only a user's pick drives it.
+  const [switching, setSwitching] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState(() =>
@@ -79,6 +82,7 @@ export function SessionReviewPanel(props: {
   useEffect(() => {
     setBranches(null);
     setGitResult(null);
+    setSwitching(false);
     const stored = readSessionReviewBaseBranch(props.sessionId);
     baseBranchRef.current = stored;
     setBaseBranch(stored);
@@ -136,7 +140,10 @@ export function SessionReviewPanel(props: {
         );
       }
     } finally {
-      if (revision === revisionRef.current) setLoading(false);
+      if (revision === revisionRef.current) {
+        setLoading(false);
+        setSwitching(false);
+      }
     }
   }, [copy.loadFailed, locale, props.sessionId, review]);
 
@@ -146,6 +153,7 @@ export function SessionReviewPanel(props: {
       baseBranchRef.current = branch;
       setBaseBranch(branch);
       persistSessionReviewBaseBranch(props.sessionId, branch);
+      setSwitching(true);
       void load();
     },
     [load, props.sessionId],
@@ -213,7 +221,12 @@ export function SessionReviewPanel(props: {
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      <VStack gap={3} align="stretch" width="100%">
+      <VStack
+        gap={3}
+        align="stretch"
+        width="100%"
+        className={switching ? 'maka-session-review-switching' : undefined}
+      >
         {/* Keep branch selection available when computing the diff fails. */}
         {branches && branches.baseBranchOptions.length > 0 ? (
           <HStack
@@ -237,6 +250,7 @@ export function SessionReviewPanel(props: {
             <SessionReviewBaseBranchPicker
               baseBranch={baseBranch}
               baseBranchOptions={branches.baseBranchOptions}
+              isLoading={switching}
               label={copy.baseBranchLabel}
               onSelect={selectBaseBranch}
             />

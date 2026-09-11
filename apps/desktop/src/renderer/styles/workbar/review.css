@@ -29,6 +29,14 @@
   justify-content: flex-start;
 }
 
+/* A switch re-reads the whole branch diff and can take a while on a diverged
+   branch. The picker spins and everything below it stays readable but visibly
+   stale until the new snapshot lands. */
+.maka-session-review-switching > *:not(.maka-session-review-branch-row) {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .maka-session-review-current-branch {
   min-width: 0;
   flex-shrink: 1;
