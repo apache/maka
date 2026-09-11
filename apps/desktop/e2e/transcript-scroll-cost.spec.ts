@@ -77,6 +77,7 @@ declare global {
     __makaTranscriptDisplacement?: {
       boundaries: TranscriptBoundary[];
       peakMounted: number;
+      record(on: boolean): void;
       stop(): void;
     };
   }
@@ -202,20 +203,29 @@ async function observeDisplacement(page: Page): Promise<void> {
         key: [...tops.keys()].join(','),
       };
     };
-    const state: { boundaries: unknown[]; peakMounted: number; stop(): void } = {
+    // Only frames the reader is not scrolling through can be compared: a wheel
+    // tick moves every Turn on screen by its own delta, which is
+    // indistinguishable from a page that moved them. Which frames those are is
+    // told, not inferred — the gesture and the rAF that reads it land in the
+    // same frame in an order nothing here controls, and a reading that catches
+    // one tick reports exactly one tick of displacement.
+    let recording = false;
+    const state: {
+      boundaries: unknown[];
+      peakMounted: number;
+      record(on: boolean): void;
+      stop(): void;
+    } = {
       boundaries: [],
       peakMounted: 0,
+      record: (on: boolean) => {
+        recording = on;
+        previous = read();
+        settled = null;
+      },
       stop: () => { running = false; },
     };
     let running = true;
-    // Only frames the reader is not currently scrolling through can be
-    // compared: a wheel tick moves every Turn on screen by its own delta, which
-    // is indistinguishable from a page that moved them. The reader's hand stops
-    // between gestures, and a page that lands then is exactly the one they see
-    // jump.
-    let lastWheelAt = -Infinity;
-    const QUIET_MS = 250;
-    document.addEventListener('wheel', () => { lastWheelAt = performance.now(); }, true);
     let previous = read();
     // The last frame before the range started changing. Held across a run of
     // changing frames so the measurement spans settled state to settled state:
@@ -228,7 +238,7 @@ async function observeDisplacement(page: Page): Promise<void> {
       const current = read();
       peakMounted = Math.max(peakMounted, current.tops.size);
       state.peakMounted = peakMounted;
-      if (performance.now() - lastWheelAt < QUIET_MS) {
+      if (!recording) {
         settled = null;
         previous = current;
         requestAnimationFrame(tick);
@@ -271,6 +281,15 @@ async function observeDisplacement(page: Page): Promise<void> {
     window.__makaTranscriptDisplacement = state as never;
     requestAnimationFrame(tick);
   }, SCROLLER);
+}
+
+/** Opens the measurement window, or closes it around the reader's own gesture. */
+async function recordDisplacement(page: Page, on: boolean): Promise<void> {
+  await page.evaluate((value) => {
+    const state = window.__makaTranscriptDisplacement;
+    if (!state) throw new Error('the transcript displacement probe is missing');
+    state.record(value);
+  }, on);
 }
 
 async function displacement(page: Page): Promise<{
@@ -504,10 +523,12 @@ test('paging back never moves the reader at a range boundary', async ({
     if (firstBefore === 'turn-prompt-rail-1') break;
     await expect
       .poll(async () => {
+        await recordDisplacement(page, false);
         await wheel(page, cdp, { ticks: 12, deltaY: -120 });
-        // Let the hand come off the wheel. A page requested by this gesture
-        // lands here, in the quiet the probe measures across — which is also
-        // when a reader would see it move.
+        // The hand comes off the wheel here. A page requested by the gesture
+        // lands in the quiet that follows — which is also when a reader would
+        // see it move — so that quiet is the whole of what is measured.
+        await recordDisplacement(page, true);
         await page.waitForTimeout(150);
         return turns.first().getAttribute('data-turn-id');
       })
