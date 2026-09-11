@@ -5,7 +5,7 @@ language: zh-CN
 source_language: zh-CN
 implementation_status: current
 document_status: current
-translation_status: original
+translation_status: source-only
 last_verified: 2026-09-11
 owners:
   - maka-backend
@@ -88,7 +88,7 @@ owners:
 
 7. Approval and privacy
    - approval 是 app capability gate，不是 active observation 或 action freshness 证明。
-   - Maka 采用分级短 lease：metadata read、screenshot read、pointer mutation、keyboard mutation、semantic mutation 分离；目标、action class、observation 或 session generation 变化时重新授权。
+   - Maka 采用分级短 lease：`metadata_read`、`screenshot_read`、`keyboard_mutation`、`semantic_mutation` 四类（见 `packages/core/src/computer-use.ts`），分离；目标、action class、observation 或 session generation 变化时重新授权。
    - approval 至少标明 action class 与目标 app/window；敏感应用、secure/password field 和不支持的目的地 fail closed。
    - screenshot、typed text、coordinate、raw AX label/value、window title、secret 和 raw page content 默认不进入持久 session log、telemetry 或 evaluation report。
    - 上传截图前验证 model vision capability，并满足对应用户/provider consent policy。
@@ -123,13 +123,13 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 1. TypeScript 与 Storybook 构建保证语义属性、文案契约和非默认状态 fixture 能随产品 API
    一起演进。不要重新引入基于正则的 JSX 源码扫描器；它无法可靠理解组件语义，主干已用
    真实 AX 验证取代这类检查。
-2. `scripts/ax-tree-audit.mjs` 是 Storybook 与 Electron E2E 共用的测试侧 AX 规则源，
+2. `scripts/ax-tree-audit.mjs` 是 Storybook smoke 的测试侧 AX 规则源（当前唯一消费者，不对 Electron 运行），
    拒绝无名或同一语义作用域内歧义的可操作 node、多 `main`、无名 dialog，以及缺少
    checked/selected/expanded/value 的状态控件。
 3. Electron 侧的广域设置导航 AX 清单（原
-   `apps/desktop/e2e/accessibility-coverage.spec.ts`）已随 #4803 撤下：该类
-   broad route inventory 由第 2 层的 `ax-tree-audit.mjs` 规则与第 4 层的
-   Storybook smoke 在各自的 owning boundary 承担；Electron E2E 保留修订、
+   `apps/desktop/e2e/accessibility-coverage.spec.ts`）已随 #4803 **退役而非迁
+   移**：#4803 明确不声称存在等价覆盖，且该缺口是有意接受的。目前没有任何
+   层对运行中的 Electron 应用做路由清单枚举；Electron E2E 仅保留修订、
    WorkHub 与草稿焦点等边界内 journey。
 4. `scripts/storybook-visual-smoke.mjs` 对 Storybook 全目录读取 AX tree，执行 `play`
    函数到最终态，并验证 modal 焦点、隐藏/惰性 surface 和关键 Computer Use story
@@ -266,7 +266,7 @@ JSON/YAML 不比"一元素一行 + 缩进"省：实测分别是它的 3.5 倍和
 
 任务是「把窗口挪到左边」。移动窗口只能拖标题栏，拖标题栏只能用坐标动作，而坐标动作
 要求目标像素属于目标窗口——Computer Use 驱动的是用户没在看的窗口，后台启动的窗口
-必然压在 z-order 底部，于是必然被遮挡。**这个任务没有解**：协议里没有窗口管理动词，
+必然压在 z-order 底部，于是必然被遮挡。**这个任务当时没有解**：记录时协议里没有窗口管理动词（`window_action` 的 move/resize/minimize 是 #1952 之后才加入严格动作集的），
 而「移动窗口」也不是任何控件的 AX 动作。
 
 把拒绝语句写清楚之后，模型确实读懂了「这条路不通」，于是去试别的路——而别的路也不

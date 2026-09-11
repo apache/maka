@@ -5,7 +5,7 @@ language: en
 source_language: en
 implementation_status: current
 document_status: current
-translation_status: synced
+translation_status: source-only
 last_verified: 2026-09-11
 owners:
   - maka-backend

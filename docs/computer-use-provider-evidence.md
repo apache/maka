@@ -5,7 +5,7 @@ language: en
 source_language: en
 implementation_status: current
 document_status: current
-translation_status: synced
+translation_status: source-only
 last_verified: 2026-09-11
 owners:
   - maka-backend
@@ -50,7 +50,7 @@ provider transports, or execution backends.
 
 ## Report Contract
 
-Reports separate three evidence classes:
+Reports separate four evidence classes:
 
 - `real-runtime`: a live provider model used the production Maka runtime;
 - `fault-injection`: a live provider and Runtime exercised a named injected

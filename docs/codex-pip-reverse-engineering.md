@@ -5,7 +5,7 @@ language: en
 source_language: en
 implementation_status: current
 document_status: current
-translation_status: synced
+translation_status: source-only
 last_verified: 2026-09-11
 owners:
   - maka-backend
@@ -247,5 +247,7 @@ It needs no accessibility and no unlocked screen — it drives Electron windows
 only — which makes it the one real-machine check that keeps working when the
 rest cannot run.
 
-The physics and the anchor scoring are covered exactly, without a desktop, in
-`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`.
+The physics and the anchor scoring were covered without a desktop in
+`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts` (deleted by
+#2478); after #3293 replaced the transcribed constants, that exact-coverage
+claim no longer holds — see computer-use-cursor-provenance.md.
