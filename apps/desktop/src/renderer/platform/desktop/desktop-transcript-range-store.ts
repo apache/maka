@@ -57,13 +57,6 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
-  /**
-   * The navigation the window currently sits on. Main uses it only to cancel
-   * work a newer navigation has made pointless, so an extension issued while a
-   * navigation is still in flight names that navigation: it is the one Main is
-   * already reading for.
-   */
-  let lastNavigation = 0;
   const extending: {
     older?: { anchor: number | null; task: Promise<void> };
     newer?: { anchor: number | null; task: Promise<void> };
@@ -78,9 +71,11 @@ export function createDesktopTranscriptRangeController(
     replace: boolean,
     run: (value: DesktopTranscriptHandle, navigation: DesktopTranscriptNavigation) => Promise<void>,
   ) => {
-    // Mint before awaiting an open handle or any in-flight page.
-    const navigation = replace ? store.navigate() : store.pendingNavigation() ?? lastNavigation;
-    if (replace) lastNavigation = navigation;
+    // Mint before awaiting an open handle or any in-flight page. Main uses the
+    // number only to cancel work a newer navigation has made pointless, so an
+    // extension issued while a navigation is still in flight names that
+    // navigation: it is the one Main is already reading for.
+    const navigation = replace ? store.navigate() : store.pendingNavigation() ?? store.navigation();
     const opening = handle;
     const isCurrent = () => !closed && opening === handle &&
       (!replace || store.pendingNavigation() === navigation);
@@ -467,6 +462,11 @@ export class DesktopTranscriptRangeStore {
   /** The replacement that has been asked for and has not landed yet. */
   pendingNavigation(): number | undefined {
     return this.#pendingNavigation;
+  }
+
+  /** The navigation the window currently sits on. */
+  navigation(): number {
+    return this.#navigations;
   }
 
   /**

@@ -215,10 +215,10 @@ test('cached reload snapshots allow the same live transcript generation to resum
   const deliveries: Array<{ generation: string; accepted: boolean }> = [];
   const publish = (generation: string, text: string, navigation?: number) => {
     for (const batch of encodeDesktopTranscriptSnapshot({
-      ...identity, generation, navigation, durableThrough: 1,
+      ...identity, generation, durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(text) }],
       overlay: [], hasOlder: false, hasNewer: false,
-    })) deliveries.push({ generation, accepted: store.accept(batch) });
+    }, navigation)) deliveries.push({ generation, accepted: store.accept(batch) });
   };
   const controller = createDesktopTranscriptRangeController(store, async () => {
     opens += 1;
@@ -1003,7 +1003,6 @@ test('forwards a larger logical history range without changing batch size', asyn
     sessionId: 'session-1',
     generation: 'generation-1',
     hostEpoch: 'host-1',
-    navigation: store.navigate(),
     durableThrough: 4,
     durable: [
       { sequence: 1, message: assistantMessage('earlier') },
@@ -1019,7 +1018,7 @@ test('forwards a larger logical history range without changing batch size', asyn
     overlay: [],
     hasOlder: true,
     hasNewer: true,
-  })) store.accept(batch);
+  }, store.navigate())) store.accept(batch);
   let request: { anchorSequence: number | null; maxBytes?: number } | undefined;
   const controller = createDesktopTranscriptRangeController(store, async () => ({
     sessionId: 'session-1',
@@ -1127,13 +1126,13 @@ test('a reset the reader has navigated past moves the watermark and nothing else
   })) store.accept(batch);
 
   const answer = [...encodeDesktopTranscriptSnapshot({
-    ...identity, navigation: store.navigate(), durableThrough: 6,
+    ...identity, durableThrough: 6,
     durable: [
       { sequence: 5, message: assistantMessage('x'.repeat(300 * 1024), 'assistant-5') },
       { sequence: 6, message: assistantMessage('jumped', 'assistant-6') },
     ],
     overlay: [], hasOlder: true, hasNewer: false,
-  })];
+  }, store.navigate())];
   assert.ok(answer.length > 1);
   store.accept(answer[0]!);
   // The reader asked to be somewhere else before the first answer finished.

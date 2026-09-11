@@ -166,8 +166,6 @@ interface PendingTranscriptChange {
 
 interface PendingTranscriptPage {
   readonly navigation: number;
-  /** Whether this answer installs its window or splices onto one already there. */
-  readonly replaces: boolean;
   readonly generation: string;
   readonly batches: Iterable<DesktopTranscriptBatchPayload>;
   readonly encodedBytes: number;
@@ -403,7 +401,7 @@ export class RuntimeHostSessionObserver {
         isCurrent,
       );
       return snapshot && {
-        batches: encodeDesktopTranscriptSnapshot({ ...snapshot, navigation: request.navigation }),
+        batches: encodeDesktopTranscriptSnapshot(snapshot, request.navigation),
         bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
       };
     });
@@ -514,7 +512,6 @@ export class RuntimeHostSessionObserver {
     }
     consumer.pendingPages.push({
       navigation: request.navigation,
-      replaces,
       generation: replica.generation,
       batches: answer.batches,
       encodedBytes,
@@ -1335,10 +1332,7 @@ export class RuntimeHostSessionObserver {
             try {
               await this.#sendTranscriptBatches(
                 consumer,
-                encodeDesktopTranscriptSnapshot({
-                  ...replica.snapshot(),
-                  navigation: resetNavigation,
-                }),
+                encodeDesktopTranscriptSnapshot(replica.snapshot(), resetNavigation),
               );
             } finally {
               this.#adjustTranscriptDeliveryBytes(consumer, -deliveryBytes);

@@ -32,10 +32,10 @@ test('a Turn completing at the tail does not splice into a window parked far fro
   // A jump to 5 during a run: loadAround's snapshot carries the live overlay (21).
   const navigation = store.navigate();
   for (const batch of encodeDesktopTranscriptSnapshot({
-    ...identity, navigation, durableThrough: 20,
+    ...identity, durableThrough: 20,
     durable: [{ sequence: 5, message: message(5) }, { sequence: 6, message: message(6) }],
     overlay: [message(21, 'partial')], hasOlder: true, hasNewer: true,
-  })) store.accept(batch);
+  }, navigation)) store.accept(batch);
   // 21 completes; the tail broadcast carries its durable row.
   for (const batch of encodeDesktopTranscriptChange(identity, {
     coversFrom: 20, durableThrough: 21,

@@ -212,10 +212,10 @@ test('a superseded fragmented reset cannot clear or complete the next navigation
   acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
   store.navigate();
   const stale = [...encodeDesktopTranscriptSnapshot({
-    ...identity, navigation: 1, durableThrough: 1,
+    ...identity, durableThrough: 1,
     durable: [{ sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage }],
     overlay: [], hasOlder: false, hasNewer: true,
-  })];
+  }, 1)];
   assert.equal(store.accept(stale[0]!), false);
   store.navigate();
   acceptSnapshot(store, 2, 'generation-2', [record(1)]);
@@ -327,13 +327,13 @@ test('a navigation outlives the band trimming the window it was issued under', (
   const navigating = store.navigate();
   assert.equal(store.retain(2, 2), true);
   const replacement = [...encodeDesktopTranscriptSnapshot({
-    ...identity, navigation: navigating, durableThrough: 1,
+    ...identity, durableThrough: 1,
     durable: [
       { sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage },
       { sequence: 1, message: record(1).message },
     ],
     overlay: [], hasOlder: false, hasNewer: false,
-  })];
+  }, navigating)];
   assert.ok(replacement.length > 1, 'the replacement has to span more than its reset batch');
   for (const batch of replacement) store.accept(batch);
   assert.equal(store.range().ready, true);
@@ -537,10 +537,10 @@ test('a fill in flight does not discard the replacement it was issued under', as
 const identity = { sessionId: 'session-1', hostEpoch: 'host-1', generation: 'generation-1' };
 function acceptSnapshot(store: DesktopTranscriptRangeStore, navigation: number | undefined, generation: string, records: Array<ReturnType<typeof record>>) {
   for (const batch of encodeDesktopTranscriptSnapshot({
-    ...identity, navigation, generation, durableThrough: 1,
+    ...identity, generation, durableThrough: 1,
     durable: records.map(({ identity: sequence, message }) => ({ sequence, message })),
     overlay: [], hasOlder: true, hasNewer: false,
-  })) store.accept(batch);
+  }, navigation)) store.accept(batch);
 }
 function record(identity: number) {
   const message: StoredMessage = { type: 'assistant', id: `message-${identity}`, turnId: `turn-${identity}`, ts: 1, text: String(identity), modelId: 'test' };

@@ -51,8 +51,9 @@ interface TranscriptBatchContent {
 
 export function encodeDesktopTranscriptSnapshot(
   snapshot: DesktopTranscriptReplicaSnapshot,
+  navigation?: number,
 ): Iterable<DesktopTranscriptBatchPayload> {
-  return encodeDesktopTranscriptBatches(snapshot, {
+  return encodeDesktopTranscriptBatches({ ...snapshot, navigation }, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
     overlay: snapshot.overlay,

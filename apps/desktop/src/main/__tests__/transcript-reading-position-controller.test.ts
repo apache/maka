@@ -52,11 +52,11 @@ test('sending before transcript open completes supersedes the queued bookmark wi
     const turnId = sequence === null ? 'b' : 'a';
     for (const batch of encodeDesktopTranscriptSnapshot({
       sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
-      navigation: navigation.navigation, durableThrough: 20,
+      durableThrough: 20,
       durable: [{ sequence: sequence ?? 20, message: {
         type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
       } }], overlay: [], hasOlder: true, hasNewer: sequence !== null,
-    })) store.accept(batch);
+    }, navigation.navigation)) store.accept(batch);
   };
   const handle: DesktopTranscriptHandle = {
     sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
@@ -91,11 +91,11 @@ test('sending before transcript open completes supersedes the queued bookmark wi
     const latest = store.snapshot();
     for (const batch of encodeDesktopTranscriptSnapshot({
       sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
-      navigation: 1, durableThrough: 20,
+      durableThrough: 20,
       durable: [{ sequence: 10, message: {
         type: 'assistant', id: 'answer-a', turnId: 'a', text: 'a', ts: 1, modelId: 'fixture',
       } }], overlay: [], hasOlder: false, hasNewer: true,
-    })) assert.equal(store.accept(batch), false);
+    }, 1)) assert.equal(store.accept(batch), false);
     assert.strictEqual(store.snapshot(), latest, 'a late history response must not replace the latest range');
   } finally {
     opening.resolve(handle);

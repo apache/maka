@@ -212,8 +212,8 @@ test('WorkHub proves a long historical Turn tail before caching its final result
         ) => {
           for (const batch of encodeDesktopTranscriptSnapshot({
             sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-            durableThrough: 4, overlay: [], hasOlder, hasNewer, navigation, durable,
-          })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+            durableThrough: 4, overlay: [], hasOlder, hasNewer, durable,
+          }, navigation)) onBatch({ ...batch, deliverySequence: ++deliverySequence });
         };
         emit(undefined, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
         return {
@@ -371,9 +371,9 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
         await new Promise<void>((resolve) => setImmediate(resolve));
         try {
           for (const batch of encodeDesktopTranscriptSnapshot({
-            ...snapshot, navigation: request.navigation,
+            ...snapshot,
             durable: [{ sequence: 7, message }],
-          })) {
+          }, request.navigation)) {
             deliver(batch);
             if (!batch.ready) {
               partialProjectionCounts.push(projections.length);
@@ -490,9 +490,9 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           };
           const deliver = (navigation?: number) => {
             for (const batch of encodeDesktopTranscriptSnapshot({
-              ...snapshot, navigation,
+              ...snapshot,
               durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
-            })) onBatch({ ...batch, deliverySequence: 1 });
+            }, navigation)) onBatch({ ...batch, deliverySequence: 1 });
           };
           deliver();
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };

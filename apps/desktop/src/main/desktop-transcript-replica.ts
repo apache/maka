@@ -54,7 +54,6 @@ export interface DesktopSequencedTranscriptMessage {
 }
 
 export interface DesktopTranscriptReplicaSnapshot {
-  readonly navigation?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
