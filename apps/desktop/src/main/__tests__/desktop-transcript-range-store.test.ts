@@ -38,7 +38,7 @@ import {
 } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
 import { readSettledMessages } from '../../renderer/session-message-settlement.js';
-import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
+import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
 test('merges a settled tail without dropping earlier messages', () => {
@@ -763,6 +763,85 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
   assert.ok(!upserts.includes(5), 'a discarded replica must not be repopulated by an in-flight catch-up');
   assert.equal(replica.resident, false);
   assert.equal(replica.residentBytes, 0);
+});
+
+test('a window opened between catch-up pages can join the change that follows', async () => {
+  const bootstrap = [0, 1, 2].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const firstPage = [3, 4, 5].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const secondPage = [{ identity: 6, message: assistantMessage('6', 'assistant-6') }];
+  const page = (nextCursor: string | null, throughSequence: number) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'newer' as const,
+    throughSequence,
+    rawBytes: 1,
+    fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
+    nextCursor,
+  });
+  const bootstrapPage = page(null, 2);
+  const first = page('more', 6);
+  const second = page(null, 6);
+  let releaseSecond: () => void = () => {};
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let signalSecond: () => void = () => {};
+  const secondEntered = new Promise<void>((resolve) => { signalSecond = resolve; });
+  const changes: DesktopTranscriptReplicaChange[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 2,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null, 2), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: bootstrap, nextCursor: null }
+      : candidate === first
+        ? { messages: firstPage, nextCursor: 'more' }
+        : { messages: secondPage, nextCursor: null },
+    loadTranscriptPage: async (request) => {
+      if (request.cursor === null) return first;
+      signalSecond();
+      await secondGate;
+      return second;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1024 * 1024,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  const advancing = replica.advance(6);
+  await secondEntered;
+  // The first page is installed; the second is pending. A window opening now
+  // must be told the watermark its rows actually reach.
+  const opened = replica.snapshot();
+  assert.deepEqual(opened.durable.map(({ sequence }) => sequence), [0, 1, 2, 3, 4, 5]);
+  assert.equal(opened.durableThrough, 5);
+  releaseSecond();
+  await advancing;
+
+  const store = transcriptStore();
+  for (const batch of encodeDesktopTranscriptSnapshot(opened)) store.accept(batch);
+  const identity = { sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch };
+  for (const change of changes.slice(1)) {
+    for (const batch of encodeDesktopTranscriptChange(identity, change)) store.accept(batch);
+  }
+  assert.deepEqual(store.durableEntries().map(({ sequence }) => sequence), [0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(store.range().hasNewer, false);
 });
 
 test('rejects an overlay that exceeds its cache budget', async () => {

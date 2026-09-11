@@ -448,7 +448,11 @@ export class DesktopTranscriptReplica {
             undefined,
             page.protectedTurnSequence ?? decoded.messages.at(-1)?.identity,
           );
+          // The watermark moves with every page, not only at the end: a window
+          // opening mid-catch-up takes a snapshot whose rows must agree with the
+          // `durableThrough` it names, or the next change cannot join it.
           const through = decoded.messages.at(-1)?.identity ?? published;
+          if (through !== null) this.#durableThrough = through;
           this.#publish(published, through, decoded.messages);
           published = through;
           cursor = decoded.nextCursor;
