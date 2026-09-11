@@ -25,8 +25,10 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { isCanonicalStorageRef } from '@maka/core/events';
 import {
   discoverMarkedStorageRoot,
+  resolveStorageRoot,
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
+  type StorageRootLease,
 } from './root-authority.js';
 import {
   migrateSqliteContextOffloadDatabase,
@@ -47,9 +49,52 @@ import { SQLITE_SESSION_MESSAGE_CHUNK_MARKER } from './sqlite-session-metadata-s
 export async function withOfflineContextSnapshot<T>(
   root: string,
   operation: (contextLocked: boolean) => Promise<T>,
+  options: {
+    /**
+     * Take the authority even when the root has no context database yet.
+     *
+     * A reader only needs it when there is something to read, but a writer
+     * that is about to CREATE the context store needs it too -- otherwise the
+     * one case where it matters most, a fresh workspace, is the one case that
+     * runs unprotected.
+     */
+    requireAuthority?: boolean;
+    /**
+     * Run under authority the caller already holds instead of electing it.
+     *
+     * The owner lock is an election, not a mutex: it is taken with `tryLock`
+     * and refuses a second exclusive hold on the same file even from the same
+     * process. So a Runtime Host cannot reach this path by calling it -- it
+     * would be refused by its own lock -- and the only way it can prepare or
+     * accept a bundle is to lend the authority it took at startup.
+     *
+     * The lease must name this same root. A valid lease for a DIFFERENT root
+     * would otherwise authorise writing to a directory nobody holds.
+     */
+    lease?: StorageRootLease<'interactive', 'write'>;
+  } = {},
 ): Promise<T> {
-  if (!(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))) return operation(false);
-  const capability = await discoverMarkedStorageRoot({ path: root });
+  if (
+    options.requireAuthority !== true &&
+    !(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))
+  ) {
+    return operation(false);
+  }
+  const lease = options.lease;
+  if (lease) {
+    if ((await realpath(root).catch(() => resolve(root))) !== lease.canonicalPath) {
+      throw new Error('Context snapshot lease does not name this Storage Root');
+    }
+    return runWithStorageRootLease(lease, 'interactive', 'write', () => operation(true));
+  }
+  // Discovery finds a marked root; it does not make one. A workspace that has
+  // never been opened is exactly the target an import writes to first, so when
+  // the caller says it is about to write, the root is resolved -- which
+  // initialises it -- rather than merely looked for.
+  const capability =
+    options.requireAuthority === true
+      ? await resolveStorageRoot({ path: root, kind: 'interactive' })
+      : await discoverMarkedStorageRoot({ path: root });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner)
     throw new Error(

@@ -361,7 +361,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
         for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, durable: [] })) {
           deliver(batch);
         }
-        return { ...snapshot, readThroughMessageId: null };
+        return { kind: 'ready', value: { ...snapshot, readThroughMessageId: null } };
       }
       if (channel === 'sessions:transcript:load-latest') {
         const request = args[1] as DesktopTranscriptRangeRequest;
