@@ -339,12 +339,13 @@ export function useActiveSessionEvents(options: {
       return next;
     });
   });
+  // Reached only from the store subscription, which the effect unsubscribes on
+  // teardown, so the window it publishes is always a live one.
   const applyTranscript = useEffectEvent((
     sessionId: string,
     store: desktopTranscript.DesktopTranscriptRangeStore,
-    isDisposed: () => boolean,
   ) => {
-    if (!isDisposed() && options.activeIdRef.current === sessionId) {
+    if (options.activeIdRef.current === sessionId) {
       const snapshot = store.snapshot();
       options.setMessages([...snapshot.messages]);
       if (snapshot.ready) {
@@ -353,8 +354,8 @@ export function useActiveSessionEvents(options: {
       }
     }
   });
-  const applyReadError = useEffectEvent((sessionId: string, error: unknown, isDisposed: () => boolean) => {
-    if (!isDisposed() && options.activeIdRef.current === sessionId) {
+  const applyReadError = useEffectEvent((sessionId: string, error: unknown) => {
+    if (options.activeIdRef.current === sessionId) {
       const message = messageReadErrorMessage(error, options.uiLocale);
       options.setMessageLoadErrorBySession((current) => ({
         ...current,
@@ -408,7 +409,6 @@ export function useActiveSessionEvents(options: {
   useLayoutEffect(() => {
     if (!activeId) return;
     let disposed = false;
-    const isDisposed = () => disposed;
     let observationAttempt = 0;
     let observationFailures = 0;
     let observationRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -422,9 +422,7 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
-    const unsubscribeTranscript = transcript.subscribe(() => {
-      if (!disposed) applyTranscript(activeId, transcript, isDisposed);
-    });
+    const unsubscribeTranscript = transcript.subscribe(() => applyTranscript(activeId, transcript));
     const openTranscript = (signal: AbortSignal) =>
       window.maka.transcripts.open(
         activeId,
@@ -433,7 +431,7 @@ export function useActiveSessionEvents(options: {
           try {
             transcript.accept(batch);
           } catch (error) {
-            applyReadError(activeId, error, isDisposed);
+            applyReadError(activeId, error);
           }
         },
         (cancel) => {
@@ -445,7 +443,7 @@ export function useActiveSessionEvents(options: {
       transcript,
       openTranscript,
       {
-        onError: (error) => applyReadError(activeId, error, isDisposed),
+        onError: (error) => { if (!disposed) applyReadError(activeId, error); },
       },
     );
     options.transcriptRangeRef.current = controller;

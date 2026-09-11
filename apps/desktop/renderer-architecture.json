@@ -500,7 +500,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3837
+        "nonTriviaTokens": 3801
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
