@@ -530,9 +530,113 @@ export const Composer = forwardRef<
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
   const inputRootRef = useRef<HTMLDivElement>(null);
+  /** Selection to restore after a toolbar control changes composer settings. */
+  const thinkingSelectionRef = useRef<{ range: Range; value: string } | null>(null);
+  /** Distinguishes a menu close after selection from cancel/light dismiss. */
+  const thinkingRestorePendingRef = useRef(false);
+  /** Suppresses the trigger focus returned by a cancelled menu close. */
+  const suppressThinkingTriggerFocusRef = useRef(false);
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
+  function rememberThinkingSelection() {
+    if (thinkingSelectionRef.current) return;
+    const editable = editableNode();
+    const selection = document.getSelection();
+    if (!editable || !selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editable.contains(range.commonAncestorContainer)) return;
+    thinkingSelectionRef.current = {
+      range: range.cloneRange(),
+      value: inputHandleRef.current?.getValue() ?? editable.textContent ?? '',
+    };
+  }
+  function restoreThinkingSelection() {
+    const pending = thinkingSelectionRef.current;
+    thinkingSelectionRef.current = null;
+    if (!pending) return;
+    const editable = editableNode();
+    const currentValue = editable ? inputHandleRef.current?.getValue() ?? editable.textContent ?? '' : '';
+    if (
+      !editable ||
+      currentValue !== pending.value ||
+      !editable.contains(pending.range.startContainer) ||
+      !editable.contains(pending.range.endContainer)
+    ) return;
+    editable.focus();
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(pending.range);
+  }
+  function handleThinkingMenuOpenChange(open: boolean) {
+    if (open) {
+      suppressThinkingTriggerFocusRef.current = false;
+      // A cancelled menu must never seed the next interaction. Pointer opens
+      // may already have captured the range before the trigger takes focus.
+      if (!thinkingSelectionRef.current) rememberThinkingSelection();
+      return;
+    }
+    suppressThinkingTriggerFocusRef.current = true;
+    if (!thinkingRestorePendingRef.current) thinkingSelectionRef.current = null;
+  }
+  function changeThinkingLevel(
+    level: import('@maka/core/model-thinking').ThinkingLevel | undefined,
+    onChange?: (next: import('@maka/core/model-thinking').ThinkingLevel | undefined) => void | Promise<void>,
+  ) {
+    if (!thinkingSelectionRef.current) rememberThinkingSelection();
+    const hasSelection = thinkingSelectionRef.current !== null;
+    thinkingRestorePendingRef.current = hasSelection;
+    const result = onChange?.(level);
+    if (hasSelection) {
+      window.requestAnimationFrame(() => {
+        restoreThinkingSelection();
+        thinkingRestorePendingRef.current = false;
+      });
+    }
+    return result;
+  }
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form) return undefined;
+    const rememberForThinkingControl = (event: Event) => {
+      const target = event.target as Element | null;
+      const selector = target?.closest?.('.maka-thinking-level-selector');
+      if (selector) {
+        if (
+          event.type === 'pointerdown' &&
+          selector.getAttribute('aria-disabled') !== 'true' &&
+          !(selector as HTMLButtonElement).disabled
+        ) {
+          suppressThinkingTriggerFocusRef.current = false;
+          rememberThinkingSelection();
+        } else if (event.type === 'keydown') {
+          const key = (event as unknown as globalThis.KeyboardEvent).key;
+          if (key === 'Enter' || key === ' ' || key === 'ArrowDown') {
+            suppressThinkingTriggerFocusRef.current = false;
+          }
+        } else if (
+          event.type === 'focusin' &&
+          !suppressThinkingTriggerFocusRef.current
+        ) {
+          rememberThinkingSelection();
+        }
+      } else if (target?.closest?.('[contenteditable="true"]')) {
+        // The queued restore can focus the editor before its rAF runs.
+        if (!thinkingRestorePendingRef.current) {
+          thinkingSelectionRef.current = null;
+          thinkingRestorePendingRef.current = false;
+        }
+      }
+    };
+    form.addEventListener('pointerdown', rememberForThinkingControl, true);
+    form.addEventListener('focusin', rememberForThinkingControl, true);
+    form.addEventListener('keydown', rememberForThinkingControl, true);
+    return () => {
+      form.removeEventListener('pointerdown', rememberForThinkingControl, true);
+      form.removeEventListener('focusin', rememberForThinkingControl, true);
+      form.removeEventListener('keydown', rememberForThinkingControl, true);
+    };
+  }, []);
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -2151,7 +2255,8 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
-                    onChange={props.onThinkingLevelChange}
+                    onOpenChange={handleThinkingMenuOpenChange}
+                    onChange={(level) => changeThinkingLevel(level, props.onThinkingLevelChange)}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
                   />
@@ -2159,7 +2264,8 @@ export const Composer = forwardRef<
                   <ThinkingLevelSelector
                     levels={props.newChatThinkingLevels ?? []}
                     current={props.newChatThinkingLevel}
-                    onChange={props.onNewChatThinkingLevelChange}
+                    onOpenChange={handleThinkingMenuOpenChange}
+                    onChange={(level) => changeThinkingLevel(level, props.onNewChatThinkingLevelChange)}
                   />
                 )}
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
