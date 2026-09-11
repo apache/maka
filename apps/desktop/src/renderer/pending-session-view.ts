@@ -27,8 +27,7 @@ export interface PendingSessionViewInput {
 }
 
 export interface RuntimeHostSessionProjection<T extends SessionSummary> {
-  hostActiveId: string | undefined;
-  hostActiveSession: T | undefined;
+  activeHostSession: T | undefined;
   ownerActiveId: string | undefined;
   sharedSessionActive: boolean;
 }
@@ -50,18 +49,10 @@ export function projectRuntimeHostSession<
   },
 >(session: T | undefined): RuntimeHostSessionProjection<T> {
   const sharedSessionActive = session?.shared === true;
-  if (!session || session.localState === 'pending') {
-    return {
-      hostActiveId: undefined,
-      hostActiveSession: undefined,
-      ownerActiveId: undefined,
-      sharedSessionActive,
-    };
-  }
+  const activeHostSession = session?.localState !== 'pending' ? session : undefined;
   return {
-    hostActiveId: session.id,
-    hostActiveSession: session,
-    ownerActiveId: sharedSessionActive ? undefined : session.id,
+    activeHostSession,
+    ownerActiveId: sharedSessionActive ? undefined : activeHostSession?.id,
     sharedSessionActive,
   };
 }
@@ -82,9 +73,7 @@ export function projectRuntimeHostSession<
  * backend (#3211) to mean "not loaded". The unknown-ness is the same; the
  * borrowed name is gone.
  */
-export function pendingSessionView(
-  input: PendingSessionViewInput,
-): SessionSummary & { readonly localState: 'pending' } {
+export function pendingSessionView(input: PendingSessionViewInput): SessionSummary {
   return {
     id: input.sessionId,
     name: input.name,
@@ -98,6 +87,5 @@ export function pendingSessionView(
     connectionLocked: false,
     model: '',
     permissionMode: input.permissionMode,
-    localState: 'pending',
   };
 }

@@ -37,7 +37,6 @@ test('the pending chat view names no connection or model it cannot know', () => 
   assert.equal(view.id, 'session-1');
   assert.equal(view.permissionMode, 'ask');
   assert.equal(view.connectionLocked, false);
-  assert.equal(view.localState, 'pending');
 
   // The empty pair is load-bearing: this fallback covers any active id whose
   // summary has not arrived, so naming a plausible connection/model would let
@@ -78,15 +77,14 @@ test('a pending session is not exposed to Runtime Host consumers', () => {
   };
 
   assert.deepEqual(projectRuntimeHostSession(pending), {
-    hostActiveId: undefined,
-    hostActiveSession: undefined,
+    activeHostSession: undefined,
     ownerActiveId: undefined,
     sharedSessionActive: false,
   });
 });
 
 test('authoritative and cached sessions remain available to Runtime Host consumers', () => {
-  const { localState: _pendingState, ...authoritative } = pendingSessionView({
+  const authoritative = pendingSessionView({
     sessionId: 'session-authoritative',
     name: '已接纳任务',
     permissionMode: 'ask',
@@ -101,14 +99,12 @@ test('authoritative and cached sessions remain available to Runtime Host consume
   };
 
   assert.deepEqual(projectRuntimeHostSession(authoritative), {
-    hostActiveId: authoritative.id,
-    hostActiveSession: authoritative,
+    activeHostSession: authoritative,
     ownerActiveId: authoritative.id,
     sharedSessionActive: false,
   });
   assert.deepEqual(projectRuntimeHostSession(cached), {
-    hostActiveId: cached.id,
-    hostActiveSession: cached,
+    activeHostSession: cached,
     ownerActiveId: cached.id,
     sharedSessionActive: false,
   });
@@ -121,18 +117,16 @@ test('a shared session is Host-backed but has no local-owner capabilities', () =
   };
 
   assert.deepEqual(projectRuntimeHostSession(shared), {
-    hostActiveId: shared.id,
-    hostActiveSession: shared,
+    activeHostSession: shared,
     ownerActiveId: undefined,
     sharedSessionActive: true,
   });
 });
 
 function authoritativeSession(sessionId: string, name: string) {
-  const { localState: _pendingState, ...session } = pendingSessionView({
+  return pendingSessionView({
     sessionId,
     name,
     permissionMode: 'ask',
   });
-  return session;
 }

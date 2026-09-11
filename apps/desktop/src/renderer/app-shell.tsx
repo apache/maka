@@ -136,7 +136,10 @@ import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
 import { useSessionSettingIntent } from './features/session-settings';
 import { deriveStaleSessionIds } from './stale-sessions';
-import * as pendingSession from './pending-session-view';
+import {
+  pendingSessionView,
+  projectRuntimeHostSession,
+} from './pending-session-view';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
@@ -334,13 +337,9 @@ function AppShellContent({
     setMessageLoadPending,
     sessionUiController,
   } = useAppShellSessionWorkspace(toastApi);
-  const activeSession = sessions.find((session) => session.id === activeId);
-  const {
-    hostActiveId,
-    hostActiveSession,
-    ownerActiveId,
-    sharedSessionActive,
-  } = pendingSession.projectRuntimeHostSession(activeSession);
+  const activeCatalogSession = sessions.find((session) => session.id === activeId);
+  const { activeHostSession, ownerActiveId, sharedSessionActive } =
+    projectRuntimeHostSession(activeCatalogSession);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
     const epochs = interactionHydrationEpochRef.current;
@@ -374,8 +373,8 @@ function AppShellContent({
   // that cannot move under it. See NEW_TASK_PENDING_KEY.
   const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
   const directoryHostId = activeId
-    ? (activeSession?.profileKind === 'local'
-        ? activeSession.runtimeHostId
+    ? (activeCatalogSession?.profileKind === 'local'
+        ? activeCatalogSession.runtimeHostId
         : undefined)
     : (taskEntry.selectors.selectedHost?.kind === 'local'
         ? taskEntry.selectors.target?.hostId
@@ -654,6 +653,7 @@ function AppShellContent({
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
   const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
+  const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent({
     catalogRevision,
     isActiveSession: (sessionId) => activeIdRef.current === sessionId,
@@ -982,7 +982,7 @@ function AppShellContent({
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
   const activeSessionForView = activeSession ?? (activeId
-    ? pendingSession.pendingSessionView({
+    ? pendingSessionView({
         sessionId: activeId,
         name: shellCopy.newConversation,
         permissionMode: newTaskPermissionMode,
@@ -1064,7 +1064,7 @@ function AppShellContent({
     ? sessionSettingIntent.overlays.permissionMode[activeId]
       ?? activeBoundarySurface.permissionMode
     : activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(ownerActiveId ? hostActiveSession : undefined);
+  const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
@@ -1370,7 +1370,7 @@ function AppShellContent({
   const workbar = useWorkbarController({
     available: workbarAvailable,
     layoutSessionId: activeId,
-    activeSession: hostActiveSession,
+    activeSession: activeHostSession,
     projectId: currentProjectId,
     projectAliases: currentProject?.aliases ?? [],
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
@@ -2030,12 +2030,12 @@ function AppShellContent({
   const observationAuthorityRef = useRef(liveContent.EMPTY_SESSION_OBSERVATION_AUTHORITY);
   observationAuthorityRef.current = liveContent.advanceSessionObservationAuthority(
     observationAuthorityRef.current,
-    hostActiveId,
-    hostActiveSession?.profileId,
+    activeId,
+    activeSession?.profileId,
   );
   useActiveSessionEvents({
     uiLocale,
-    activeId: hostActiveId,
+    activeId: activeHostSession?.id,
     observationAuthorityRevision: observationAuthorityRef.current.revision,
     activeIdRef,
     handleEvent,
@@ -2053,9 +2053,9 @@ function AppShellContent({
     setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
   });
   useSessionEventHealthPolling({
-    activeId: hostActiveId,
+    activeId: activeHostSession?.id,
     activeInteraction,
-    activeSession: hostActiveSession,
+    activeSession,
     activeStreamingLive,
     hasInFlightLiveTools,
     refreshMessages,
