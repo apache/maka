@@ -68,7 +68,8 @@ export async function readStableBoundedFile(
   }
   try {
     const initial = await stableFileSnapshot(handle, input, deps);
-    const bytes = Buffer.allocUnsafe(input.maxBytes + 1);
+    // One extra byte detects growth even if the file shrinks before the final stat.
+    const bytes = Buffer.allocUnsafe(Number(initial.size) + 1);
     let offset = 0;
     while (offset < bytes.length) {
       const result = await handle.read(bytes, offset, bytes.length - offset, offset);

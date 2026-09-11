@@ -66,8 +66,8 @@
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
     "transcript-scroll-cost.spec.ts": {
-      "tests": 3,
-      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"
+      "tests": 4,
+      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping, and reader displacement only exists against a real layout"
     },
     "workhub-layout.spec.ts": {
       "tests": 2,
@@ -76,6 +76,10 @@
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
+    },
+    "workhub-return-rail.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

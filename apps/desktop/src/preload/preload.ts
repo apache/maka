@@ -76,6 +76,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -87,7 +88,6 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
-  type DesktopTranscriptNavigation,
 } from './transcript-contract.js';
 import {
   adoptTranscriptIdentity,
@@ -2279,7 +2279,11 @@ const makaBridge = {
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
-        if (disposed) return { completion: Promise.resolve() };
+        if (disposed) {
+          return {
+            completion: Promise.resolve({ kind: 'cancelled' } as const),
+          };
+        }
         const profileId = runtimeHostMetadataFor(session.scope)?.profileId;
         if (!profileId) throw new Error('The Runtime Host profile for this task is unavailable');
         // Keep the renderer listener across Host target epochs. The observer
@@ -2309,18 +2313,26 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             observerId,
-          ).then((seed: readonly SessionEvent[] | undefined) => {
-            if (disposed) return;
-            // Invoke replies can overtake event IPC. Apply the response's
-            // complete active snapshot before publishing renderer readiness.
-            for (const event of seed ?? []) handler(projectDesktopSessionEvent(session.scope, event));
+          ).then((result: RuntimeHostObservationIpcResult<readonly SessionEvent[]>) => {
+            if (!disposed && result.kind === 'ready') {
+              // Invoke replies can overtake event IPC. Apply the response's
+              // complete active snapshot before publishing renderer readiness.
+              for (const event of result.value) handler(projectDesktopSessionEvent(session.scope, event));
+            }
+            return result;
           }),
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
       void observing.then(
-        () => {
-          if (!disposed) onSeeded?.();
+        (result) => {
+          if (result.kind === 'cancelled') {
+            disposed = true;
+            unsubscribeObservationSeed();
+            unsubscribeEvents();
+          } else if (!disposed) {
+            onSeeded?.();
+          }
         },
         (error: unknown) => {
           if (!disposed) onSeedError?.(error);
@@ -2469,7 +2481,6 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
       let cachedIdentity: DesktopTranscriptIdentity | undefined;
-      let navigationVersion = 0;
       const retiredGenerations = new Set<string>();
       let closed = false;
       let requestClose = () => {};
@@ -2489,7 +2500,7 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if ((batch.navigationVersion ?? 0) === navigationVersion && !retiredGenerations.has(batch.generation)) {
+          if (!retiredGenerations.has(batch.generation)) {
             const adopted = adoptTranscriptIdentity(identity, batch);
             if (adopted !== identity) {
               if (identity && identity.generation !== adopted.generation) retiredGenerations.add(identity.generation);
@@ -2530,7 +2541,7 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             consumerId,
-          ) as Promise<DesktopTranscriptOpenResult>,
+          ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
       let closeTask: Promise<void> | undefined;
@@ -2544,9 +2555,9 @@ const makaBridge = {
         void closeTask.catch(() => undefined);
       };
       registerCancellation?.(requestClose);
-      let opened: DesktopTranscriptOpenResult;
+      let openResult: RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>;
       try {
-        opened = await openDispatch.then(({ completion }) => completion);
+        openResult = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
         const cancelled = closed;
         closed = true;
@@ -2555,26 +2566,32 @@ const makaBridge = {
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...cachedIdentity, sessionId, readThroughMessageId: null,
+            acknowledgeTail: unavailable,
             loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
+            loadLatest: unavailable,
             close: async () => {},
           };
         }
         throw error;
       }
+      if (openResult.kind === 'cancelled') {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw new Error('Desktop transcript open was cancelled');
+      }
+      const opened = openResult.value;
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
+        operation:
+          | 'sessions:transcript:load-before'
+          | 'sessions:transcript:load-after'
+          | 'sessions:transcript:load-around'
+          | 'sessions:transcript:load-latest',
         anchorSequence: number | null,
-        maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-        navigation?: DesktopTranscriptNavigation,
+        maxBytes: number,
+        navigation: number,
       ): Promise<void> => {
-        const nextNavigation = navigation ?? {
-          navigationVersion: navigationVersion + 1,
-          intent: 'history' as const,
-        };
-        if (nextNavigation.navigationVersion < navigationVersion) return Promise.resolve();
-        navigationVersion = nextNavigation.navigationVersion;
         const currentIdentity = identity;
         if (!currentIdentity) {
           throw new Error('Desktop transcript identity is unavailable');
@@ -2585,21 +2602,32 @@ const makaBridge = {
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
-          navigationVersion: nextNavigation.navigationVersion,
-          intent: nextNavigation.intent,
-          preserveRange: nextNavigation.preserveRange,
-          readingTurnId: nextNavigation.readingTurnId,
+          navigation,
         }) as Promise<void>;
       };
       return {
         ...opened,
         sessionId,
+        acknowledgeTail: (through) => {
+          const currentIdentity = identity;
+          if (!currentIdentity) {
+            throw new Error('Desktop transcript identity is unavailable');
+          }
+          return ipcRenderer.invoke('sessions:transcript:acknowledge-tail', consumerScope, {
+            consumerId,
+            sessionId: opened.sessionId,
+            hostEpoch: currentIdentity.hostEpoch,
+            through,
+          }) as Promise<void>;
+        },
         loadBefore: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
         loadAfter: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-after', anchorSequence, maxBytes, navigation),
         loadAround: (sequence, maxBytes, navigation) =>
           range('sessions:transcript:load-around', sequence, maxBytes, navigation),
+        loadLatest: (navigation) =>
+          range('sessions:transcript:load-latest', null, DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, navigation),
         async close() {
           if (closed) return;
           requestClose();

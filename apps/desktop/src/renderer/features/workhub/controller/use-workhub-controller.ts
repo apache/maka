@@ -387,6 +387,13 @@ export function useWorkHubController() {
           id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
           ts: Date.now(), transientPlacement: attempt.placement, pendingSteering: attempt.placement === 'current_turn',
         }]);
+        viewportNavigation.followLatest(target);
+        // A queued message becomes visible only where the tail is, and its own
+        // retry guard waits on seeing it. Issue the read before admission so an
+        // uncertain enqueue — the case that arms the guard — is covered too.
+        void range.current?.loadLatest().catch((reason: unknown) => {
+          if (currentSessionId.current === target) report(reason);
+        });
         const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
         if (result === 'rejected' && pendingQueued.current === attempt) {
           pendingQueued.current = undefined;
@@ -394,9 +401,6 @@ export function useWorkHubController() {
         }
         if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
         if (pendingQueued.current === attempt) pendingQueued.current = undefined;
-        if (currentSessionId.current === target) {
-          viewportNavigation.followLatest(target);
-        }
         return true;
       }
       const previous = pendingSend.current;
@@ -523,7 +527,10 @@ export function useWorkHubController() {
         void send(attempt.input.text, attempt.input.attachments ?? []);
       } else retryResolution.current();
     },
-    loadOlder: () => range.current?.loadOlder(),
+    prefetchHistory: (edge: 'older' | 'newer') =>
+      range.current?.prefetchHistory(edge) ?? Promise.resolve(false),
+    retainWindow: (window: { firstTurnId: string; lastTurnId: string }) =>
+      range.current?.retain(window),
     loadLatest: () => range.current?.loadLatest(),
     report,
     streamingSettled(messageId?: string) {

@@ -34,53 +34,44 @@ import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.j
 
 const PAGE_BYTES = 128 * 1024;
 
-test('loading history before a small latest Turn makes an oversized earlier Turn reachable', async () => {
+test('a history page reaches an oversized earlier Turn without disturbing the tail', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
 
-    await fixture.replica.loadBefore(2, PAGE_BYTES);
+    const page = await fixture.replica.loadBefore(2, PAGE_BYTES);
 
-    assert.equal(
-      sequences(fixture.replica)[0],
-      0,
-      'the successfully fetched earlier Turn must survive eviction so history paging makes progress',
+    assert.ok(page);
+    assert.deepEqual(page.durable.map(({ sequence }) => sequence), [0, 1]);
+    assert.equal(page.durable[1]?.message.id, 'assistant-a',
+      'the oversized earlier answer reaches the Renderer whole');
+    assert.equal(page.hasOlder, false);
+    assert.deepEqual(
+      sequences(fixture.replica),
+      [2, 3],
+      'a window read answers the Renderer and leaves the Main tail alone',
     );
-    assert.equal(fixture.replica.snapshot().hasOlder, false);
-    assert.equal(fixture.replica.messages()[1]?.id, 'assistant-a');
-
-    await fixture.replica.readAt(0);
-
-    assert.deepEqual(sequences(fixture.replica), [0, 1]);
-    assert.equal(fixture.replica.snapshot().hasNewer, true);
   } finally {
     fixture.replica.close();
   }
 });
 
-test('durable tail advancement preserves an explicitly selected oversized history Turn', async () => {
+test('tail catch-up evicts only the oldest Turns and always keeps the newest complete', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
-    await fixture.replica.loadAround(0, PAGE_BYTES);
-    assert.deepEqual(sequences(fixture.replica), [0, 1]);
-    fixture.requests.length = 0;
-
     await fixture.replica.advance(4);
+    assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
+
+    await fixture.replica.advance(6);
 
     assert.deepEqual(
       sequences(fixture.replica),
-      [0, 1],
-      'persisting a new answer must not replace the history range selected by the reader',
+      [5, 6],
+      'the oversized newest Turn stays whole and the older Turn leaves the tail',
     );
-    assert.equal(fixture.replica.durableThrough, 4);
-    assert.equal(fixture.replica.snapshot().hasNewer, true);
-    assert.deepEqual(fixture.requests, [], 'history ownership only advances the durable watermark');
-
-    await fixture.replica.followLatest(PAGE_BYTES);
-
-    assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
-    assert.equal(fixture.replica.messages().at(-1)?.id, 'assistant-b-later');
-    assert.equal(fixture.replica.snapshot().hasNewer, false);
+    assert.equal(fixture.replica.messages().at(-1)?.id, 'assistant-c');
+    assert.equal(fixture.replica.durableThrough, 6);
+    assert.equal(fixture.replica.snapshot().hasOlder, true);
   } finally {
     fixture.replica.close();
   }
@@ -91,8 +82,6 @@ test('a completed resident bookmark does not reload after streaming settlement e
   const lifecycle = createTranscriptRestoreLifecycle();
   let loaded = 0;
   const controller = {
-    // This test isolates restore command lifetime from reader navigation.
-    setReadingAnchor: async () => {},
     loadAround: async (sequence: number) => {
       loaded += 1;
       await fixture.replica.loadAround(sequence, PAGE_BYTES);
@@ -138,7 +127,6 @@ test('a completed resident bookmark does not reload after streaming settlement e
 test('reopening a bookmark at the current Turn retains content persisted later in that same Turn', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
-    await fixture.replica.readAt(2);
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
     await fixture.replica.advance(4);
     assert.equal(fixture.replica.durableThrough, 4, 'the Host has persisted the final answer segment');
@@ -150,8 +138,7 @@ test('reopening a bookmark at the current Turn retains content persisted later i
       sessionId: 'session-1',
       readingAnchor: { turnId: 'turn-b', sequence: 2 },
       controller: {
-        setReadingAnchor: (sequence) => fixture.replica.readAt(sequence),
-        loadAround: (sequence) => fixture.replica.loadAround(sequence, PAGE_BYTES),
+        loadAround: async (sequence) => { await fixture.replica.loadAround(sequence, PAGE_BYTES); },
         store: {
           sessionId: 'session-1',
           range: () => ({ sessionId: 'session-1' }),
@@ -172,53 +159,6 @@ test('reopening a bookmark at the current Turn retains content persisted later i
       true,
       'restoring the visible Turn must not silently omit its later persisted answer segment',
     );
-  } finally {
-    fixture.replica.close();
-  }
-});
-
-test('an oversized new Turn cannot evict the current Turn being read while its own answer finishes', async () => {
-  const fixture = await oversizedHistoryFixture();
-  try {
-    await fixture.replica.readAt(2);
-    await fixture.replica.advance(4);
-    await fixture.replica.advance(6);
-
-    assert.deepEqual(
-      sequences(fixture.replica),
-      [2, 3, 4],
-      'the reader keeps the complete selected Turn B when a new oversized Turn C is persisted',
-    );
-    assert.equal(fixture.replica.durableThrough, 6);
-    assert.equal(fixture.replica.snapshot().hasNewer, true);
-    assert.equal(fixture.replica.messages().some(({ id }) => id === 'assistant-c'), false);
-
-    await fixture.replica.followLatest(PAGE_BYTES);
-
-    assert.deepEqual(sequences(fixture.replica), [5, 6]);
-    assert.equal(fixture.replica.messages().at(-1)?.id, 'assistant-c');
-    assert.equal(fixture.replica.snapshot().hasNewer, false);
-  } finally {
-    fixture.replica.close();
-  }
-});
-
-test('streaming persistence retains a newly loaded oversized neighbor until the reader chooses an anchor', async () => {
-  const fixture = await oversizedHistoryFixture();
-  try {
-    await fixture.replica.loadBefore(2, PAGE_BYTES);
-    assert.deepEqual(sequences(fixture.replica), [0, 1, 2, 3]);
-
-    await fixture.replica.advance(4);
-
-    assert.deepEqual(
-      sequences(fixture.replica),
-      [0, 1, 2, 3, 4],
-      'new durable text in B must not erase the older A that the reader just requested',
-    );
-    await fixture.replica.readAt(2);
-    assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
-    assert.equal(fixture.replica.snapshot().hasOlder, true);
   } finally {
     fixture.replica.close();
   }

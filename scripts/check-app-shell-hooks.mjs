@@ -147,7 +147,7 @@ export const ALLOWED = {
     useShellRunUpdates: 1,
     useShellSearch: 1,
     useStableActions: 6,
-    useState: 12,
+    useState: 11,
     useTaskSubmissionReadiness: 1,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry

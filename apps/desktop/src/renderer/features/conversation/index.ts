@@ -22,14 +22,13 @@ import {
   transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
+export { TranscriptReadSupersededError } from './controller/transcript-reading-position.js';
+
 export const transcriptReadingPosition = {
   currentRange: currentTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
 };
 
-export type {
-  TranscriptHistoryPending,
-} from './controller/transcript-reading-position.js';
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
@@ -45,6 +44,7 @@ export * from './model/session-ui-state.js';
 export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';

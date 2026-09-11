@@ -416,6 +416,86 @@ test('opens the complete latest Turn when bootstrap starts inside its assistant'
   assert.equal(decoded.nextCursor, null);
 });
 
+test('keeps sparse adjacent Turns in separate client ranges while paging in either direction', async () => {
+  const durable: StoredMessage[] = [
+    ...Array.from({ length: 161 }, (_, index) => ({
+      ...assistantMessage(index),
+      turnId: 'turn-older',
+      text: 'x'.repeat(1_600),
+    })),
+    ...Array.from({ length: 134 }, (_, index) => ({
+      ...assistantMessage(index + 161),
+      turnId: 'turn-newer',
+      text: 'x'.repeat(1_600),
+    })),
+  ];
+
+  for (const direction of ['older', 'newer'] as const) {
+    for (const projection of ['owner', 'shared'] as const) {
+      const ranges = await decodeSparseTranscriptRanges(durable, direction, projection);
+      const expected = direction === 'older' ? [134, 161] : [161, 134];
+
+      assert.deepEqual(
+        ranges.map((range) => range.length),
+        expected,
+        `${projection} ${direction}`,
+      );
+      assert.equal(
+        new Set(ranges.flat().map(({ identity }) => identity)).size,
+        durable.length,
+        `${projection} ${direction}`,
+      );
+    }
+  }
+});
+
+test('admits a sparse Turn exactly at the client range message bound', async () => {
+  const durable: StoredMessage[] = [
+    ...Array.from({ length: 256 }, (_, index) => ({
+      ...assistantMessage(index),
+      turnId: 'turn-at-bound',
+      text: 'x'.repeat(1_600),
+    })),
+    ...Array.from({ length: 20 }, (_, index) => ({
+      ...assistantMessage(index + 256),
+      turnId: 'turn-after',
+      text: 'x'.repeat(1_600),
+    })),
+  ];
+
+  for (const projection of ['owner', 'shared'] as const) {
+    const ranges = await decodeSparseTranscriptRanges(durable, 'newer', projection);
+    assert.deepEqual(
+      ranges.map((range) => range.length),
+      [256, 20],
+      projection,
+    );
+  }
+});
+
+test('restarts a partial first row deferred past a sparse range boundary', async () => {
+  const durable: StoredMessage[] = [
+    ...Array.from({ length: 161 }, (_, index) => ({
+      ...assistantMessage(index),
+      turnId: 'turn-older',
+      text: index === 160 ? 'y'.repeat(600 * 1024) : 'x'.repeat(1_600),
+    })),
+    ...Array.from({ length: 134 }, (_, index) => ({
+      ...assistantMessage(index + 161),
+      turnId: 'turn-newer',
+      text: 'x'.repeat(1_600),
+    })),
+  ];
+
+  const ranges = await decodeSparseTranscriptRanges(durable, 'older', 'owner');
+  assert.deepEqual(
+    ranges.map((range) => range.length),
+    [134, 161],
+  );
+  assert.equal(new Set(ranges.flat().map(({ identity }) => identity)).size, durable.length);
+  assert.deepEqual(ranges[1]?.find(({ identity }) => identity === 160 * 8)?.message, durable[160]);
+});
+
 test('pages through a terminal Turn that exceeds the Host range message bound', async () => {
   const durable: StoredMessage[] = Array.from({ length: 286 }, (_, index) => ({
     ...assistantMessage(index),
@@ -985,6 +1065,75 @@ function decodeBootstrap(
   return page.fragments.map((fragment) =>
     JSON.parse(Buffer.from(fragment.data, 'base64').toString('utf8')),
   );
+}
+
+async function decodeSparseTranscriptRanges(
+  durable: readonly StoredMessage[],
+  direction: 'older' | 'newer',
+  projection: 'owner' | 'shared',
+): Promise<Array<readonly { identity: number; message: StoredMessage }[]>> {
+  const reader = transcriptReader(durable, [], 8);
+  const throughSequence = (durable.length - 1) * 8 + 7;
+  const subscriptionId = `subscription-${projection}-${direction}`;
+  const { bootstrap, state } = await createSessionTranscriptBootstrap({
+    reader,
+    sessionId: 'session-1',
+    subscriptionId,
+    throughSequence,
+    rootTurn: null,
+    activeAssistantStreams: [],
+    maxBytes: 16 * 1024,
+    projection,
+  });
+  const subscription = new ClientSessionSubscription(
+    {
+      hostEpoch: 'host-1',
+      subscriptionId,
+      nextSequence: 1,
+      activeAssistantStreams: [],
+      transcript: bootstrap,
+      snapshot: {
+        schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+        session: {
+          sessionId: 'session-1',
+          metadataRevision: 1,
+          status: 'active',
+          createdAt: 1,
+          isArchived: false,
+        },
+        projectionRevision: 1,
+        rootTurn: null,
+        goal: null,
+        queue: { hostEpoch: 'host-1', queueRevision: 1, steering: [], followup: [] },
+        interactions: { pending: [] },
+      },
+    },
+    async () => undefined,
+    (request) => readSessionTranscriptPage({ reader, state, request }),
+  );
+  const decodeStoredMessage = (value: unknown): StoredMessage =>
+    decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+  const ranges: Array<readonly { identity: number; message: StoredMessage }[]> = [];
+  let cursor: string | null = null;
+  do {
+    const page = await readSessionTranscriptPage({
+      reader,
+      state,
+      request: {
+        subscriptionId,
+        source: 'durable',
+        direction,
+        throughSequence,
+        cursor,
+        anchorSequence: null,
+        maxBytes: 128 * 1024,
+      },
+    });
+    const decoded = await subscription.decodeTranscriptPage(page, decodeStoredMessage);
+    ranges.push(decoded.messages);
+    cursor = decoded.nextCursor;
+  } while (cursor !== null);
+  return ranges;
 }
 
 test('shared transcript preserves admitted action identity alongside its physical Turn', () => {

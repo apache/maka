@@ -51,7 +51,7 @@ export type ReconnectPeerStream = (
   upgrade: boolean,
 ) => Promise<PeerStreamAttachment | undefined>;
 
-interface Path extends PeerStreamAttachment {
+interface Path extends Omit<PeerStreamAttachment, 'remainder'> {
   sent: number;
   acknowledged: number;
   pong: number | undefined;
@@ -152,7 +152,8 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
     }
     const old = this.#path;
     const path: Path = {
-      ...attachment,
+      stream: attachment.stream,
+      received: attachment.received,
       sent: this.#acknowledged,
       acknowledged: -1,
       pong: undefined,
@@ -164,7 +165,7 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
     this.#recoveryStarted = undefined;
     old?.stream.abort();
     this.#notify();
-    void this.#pumpRead(path).catch((error) => this.#pathFailed(path, error));
+    void this.#pumpRead(path, attachment.remainder).catch((error) => this.#pathFailed(path, error));
     void this.#pumpWrite(path).catch((error) => this.#pathFailed(path, error));
   }
 
@@ -267,14 +268,15 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
     this.#notify();
   }
 
-  async #pumpRead(path: Path): Promise<void> {
-    let buffered = path.remainder;
+  async #pumpRead(path: Path, buffered: Buffer): Promise<void> {
+    // Suspended reads retain locals: drop consumed chunks and backing-buffer views before awaiting.
     while (this.#path === path && !this.#ended) {
       if (buffered.length < HEADER_BYTES) {
-        const chunk = await path.stream.read();
+        let chunk = await path.stream.read();
         if (!chunk) throw new Error('Peer path ended');
         if (this.#path !== path) return;
         buffered = Buffer.concat([buffered, chunk]);
+        chunk = null;
         continue;
       }
       const type = buffered[0];
@@ -288,15 +290,14 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
         throw new PeerResumeRejectedError('Invalid peer stream frame');
       }
       if (buffered.length < HEADER_BYTES + size) {
-        const chunk = await path.stream.read();
+        let chunk = await path.stream.read();
         if (!chunk) throw new Error('Peer path ended inside frame');
         if (this.#path !== path) return;
         buffered = Buffer.concat([buffered, chunk]);
+        chunk = null;
         continue;
       }
       const offset = Number(wideOffset);
-      const bytes = buffered.subarray(HEADER_BYTES, HEADER_BYTES + size);
-      buffered = buffered.subarray(HEADER_BYTES + size);
       switch (type) {
         case DATA:
           if (size === 0 || this.#remoteFin)
@@ -304,7 +305,7 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
           if (offset + size <= this.#received) break; // Lost ACK: already retained/delivered.
           if (offset !== this.#received || this.#received - this.#consumed + size > WINDOW_BYTES)
             throw new PeerResumeRejectedError('Peer stream receive window violated');
-          this.#incoming.push(Buffer.from(bytes));
+          this.#incoming.push(Buffer.from(buffered.subarray(HEADER_BYTES, HEADER_BYTES + size)));
           this.#received += size;
           break;
         case ACK:
@@ -329,6 +330,10 @@ export class ResumablePeerStream implements RuntimeHostPeerNativeStream {
         default:
           throw new PeerResumeRejectedError('Unknown peer stream frame');
       }
+      buffered =
+        buffered.length === HEADER_BYTES + size
+          ? Buffer.alloc(0)
+          : buffered.subarray(HEADER_BYTES + size);
       this.#notify();
     }
   }
