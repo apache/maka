@@ -37,8 +37,36 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { DatabaseSync } from 'node:sqlite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
-import { withArtifactWriterLock } from './artifact-writer-lock.js';
-import type { StorageRootLease } from './root-authority.js';
+import {
+  withArtifactWriterLock,
+  withLeaseBoundArtifactWriterLock,
+} from './artifact-writer-lock.js';
+import { syncDirectoryChain } from './stable-storage.js';
+import {
+  prepareArtifactWriterLockAuthorityForLease,
+  type StorageRootLease,
+} from './root-authority.js';
+
+/**
+ * Holds the Artifact writer lock for the root the caller is authorised over.
+ *
+ * Without a lease the root is named by a path, and the lock is derived from
+ * that path again after the authority was checked. A lease says which root the
+ * authority covers, so deriving the lock from the lease keeps the two from
+ * drifting: an alias or a replaced directory between the two steps would
+ * otherwise bind the operation to one root while the lease names another --
+ * including an unmarked one, which takes no lock at all.
+ */
+async function withBundleArtifactWriterLock<T>(
+  stateRoot: string,
+  lease: StorageRootLease<'interactive', 'write'> | undefined,
+  operation: (canonicalStateRoot: string) => Promise<T>,
+): Promise<T> {
+  if (!lease) return withArtifactWriterLock(stateRoot, operation);
+  const authority = await prepareArtifactWriterLockAuthorityForLease(lease, 'interactive');
+  return withLeaseBoundArtifactWriterLock(authority, () => operation(lease.canonicalPath));
+}
+import { runWithContextValueMutation } from './context-value-mutation-gate.js';
 import {
   withOfflineContextSnapshot,
   copyContextSnapshot,
@@ -307,7 +335,7 @@ export async function exportSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
         const destinationRoot = resolve(input.destinationRoot);
         await assertDestinationMissing(destinationRoot);
         const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
@@ -937,7 +965,7 @@ export async function importSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
         const sessionIds = readBundleSessionIds(bundleDatabasePath);
         if (sessionIds.length === 0) {
           throw new SessionBundleImportError('invalid_root', 'Bundle carries no Session');
@@ -1275,14 +1303,41 @@ async function mergeBundleContext(
     );
   }
 
-  // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
-  // only immediate children saw one directory, skipped it, and reported a
-  // successful import whose referenced bytes were all absent.
-  await copyContextValueTree(
-    resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
-    resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
-  );
+  // An archive digest authenticates the archive, not the state inside it: it
+  // says the bytes arrived as sent, and nothing about whether a row claiming a
+  // hash names a file that actually hashes to it. Validated here, against the
+  // hydrated copy, before anything is written to the target -- a payload that
+  // fails is a bundle nobody can use, and importing it publishes a reference to
+  // content that cannot be read back.
+  await validateContextSnapshot(bundleStateRoot);
 
+  // Everything below is one turn in the Storage Root's context mutation queue,
+  // shared with the Context Store's own publication and collection. Those
+  // operations read database state, await, and only then act on files --
+  // collection decides a payload is unreferenced, awaits, unlinks it -- so an
+  // import that commits a reference inside that await leaves the reference
+  // pointing at a file that is about to disappear. The re-check collection does
+  // cannot see it, because the check and the unlink straddle the await.
+  return runWithContextValueMutation(stateRoot, async () => {
+    // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
+    // only immediate children saw one directory, skipped it, and reported a
+    // successful import whose referenced bytes were all absent.
+    const destination = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+    await mkdir(destination, { recursive: true, mode: 0o700 });
+    await copyContextValueTree(
+      resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
+      destination,
+      stateRoot,
+    );
+    return mergeBundleContextDatabase(bundleContext, stateRoot, sessionIds);
+  });
+}
+
+async function mergeBundleContextDatabase(
+  bundleContext: string,
+  stateRoot: string,
+  sessionIds: readonly string[],
+): Promise<number> {
   const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await pathExists(targetContext))) {
     await copyFile(bundleContext, targetContext);
@@ -1314,6 +1369,15 @@ async function mergeBundleContext(
           );
         }
         database.exec('INSERT OR IGNORE INTO main.context_refs SELECT * FROM bundle.context_refs');
+        // A blob the target already held may have been queued for collection
+        // while nothing referenced it. It is referenced again now, and leaving
+        // the candidate behind makes the next collection fail outright --
+        // `Context garbage candidate is still referenced or missing` -- and
+        // keep failing. Ordinary insertion in the Store clears it the same way.
+        database.exec(`
+          DELETE FROM main.context_gc_candidates
+          WHERE blob_id IN (SELECT blob_id FROM main.context_refs)
+        `);
         // The context store maintains its usage tables explicitly -- no trigger
         // does it. Inserting blobs and refs without them leaves quotas and the
         // cleanup consistency checks reading numbers that describe a store that
@@ -1359,13 +1423,19 @@ async function mergeBundleContext(
  * Content-addressed names mean an existing file is the same file, so an
  * already-present payload is left alone rather than treated as a conflict.
  */
-async function copyContextValueTree(source: string, destination: string): Promise<void> {
+async function copyContextValueTree(
+  source: string,
+  destination: string,
+  stateRoot: string,
+): Promise<void> {
   if (!(await pathExists(source))) return;
+  await assertManagedDestinationDirectory(destination, stateRoot);
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const from = resolveInside(source, entry.name);
     const to = resolveInside(destination, entry.name);
     if (entry.isDirectory()) {
-      await copyContextValueTree(from, to);
+      await mkdir(to, { recursive: true, mode: 0o700 });
+      await copyContextValueTree(from, to, stateRoot);
       continue;
     }
     if (!entry.isFile()) {
@@ -1374,8 +1444,49 @@ async function copyContextValueTree(source: string, destination: string): Promis
         `Bundle context payload is not a regular file: ${entry.name}`,
       );
     }
-    await mkdir(dirname(to), { recursive: true });
-    await publishContextValue(from, to);
+    await publishContextValue(from, to, stateRoot);
+  }
+}
+
+/**
+ * Refuses a destination directory that does not really live inside the Storage
+ * Root.
+ *
+ * `resolveInside` compares strings, which says nothing about what the path
+ * resolves to: a `context-offload-values` replaced by a symlink passes it and
+ * then receives the payloads somewhere else entirely. The Context Store already
+ * holds this invariant over its own managed directories, and a directory it
+ * would refuse to publish into is not one an import may publish into either.
+ */
+async function assertManagedDestinationDirectory(
+  directory: string,
+  stateRoot: string,
+): Promise<void> {
+  let entry: Awaited<ReturnType<typeof lstat>>;
+  let resolved: string;
+  try {
+    [entry, resolved] = await Promise.all([lstat(directory), realpath(directory)]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') {
+      throw new SessionBundleImportError(
+        'io_failed',
+        `Context payload directory is not a directory: ${directory}`,
+      );
+    }
+    throw error;
+  }
+  const fromRoot = relative(stateRoot, resolved);
+  if (
+    !entry.isDirectory() ||
+    entry.isSymbolicLink() ||
+    fromRoot === '..' ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  ) {
+    throw new SessionBundleImportError(
+      'io_failed',
+      `Context payload directory escapes the Storage Root: ${directory}`,
+    );
   }
 }
 
@@ -1396,7 +1507,7 @@ async function copyContextValueTree(source: string, destination: string): Promis
  * race -- both need the write authority, and it is exclusive -- but an import
  * and the Store publishing the same blob can, and they must not share a name.
  */
-async function publishContextValue(from: string, to: string): Promise<void> {
+async function publishContextValue(from: string, to: string, stateRoot: string): Promise<void> {
   const staging = join(dirname(to), `.${basename(to)}.import.tmp`);
   await rm(staging, { force: true });
   try {
@@ -1411,6 +1522,10 @@ async function publishContextValue(from: string, to: string): Promise<void> {
     }
     try {
       await link(staging, to);
+      // The bytes were synced; the directory entry naming them was not. A crash
+      // here otherwise keeps the committed reference and loses the name, which
+      // reads exactly like a payload that never arrived.
+      await syncDirectoryChain(dirname(to), stateRoot);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       // Reaching the final path now means the payload was already there, not

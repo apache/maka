@@ -1002,3 +1002,119 @@ test('refuses a lease that names a different Storage Root', async () => {
     await rm(other.root, { recursive: true, force: true });
   }
 });
+
+test('refuses a bundle whose payload does not hash to what its row claims', async () => {
+  const source = await makeWorkspace('maka-import-tamper-source');
+  const target = await makeWorkspace('maka-import-tamper-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    // An archive digest authenticates the archive, not the state inside it: it
+    // says the bytes arrived as sent, not that a row claiming a hash names a
+    // file that hashes to it. Without validating the hydrated state, this
+    // imports and publishes a reference to content nobody can read back.
+    await writeFile(
+      join(source.workspaceRoot, 'context-offload-values', seeded.relativePath),
+      'XYZ',
+    );
+
+    await assert.rejects(() => importState(target.workspaceRoot, source.workspaceRoot));
+
+    // Rejected before the target was touched, not midway through it.
+    const after = openDatabase(target.workspaceRoot, true);
+    try {
+      const present = after
+        .prepare('SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = ?')
+        .get(sessionId) as { count?: unknown };
+      assert.equal(Number(present.count), 0);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses to publish through a payload directory that leaves the Storage Root', async () => {
+  const source = await makeWorkspace('maka-import-escape-source');
+  const target = await makeWorkspace('maka-import-escape-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+
+    // Containment by string comparison says nothing about what the path
+    // resolves to. With the payload directory replaced by a symlink, a lexical
+    // check passes and the payloads land outside the workspace entirely.
+    const { symlink } = await import('node:fs/promises');
+    const values = join(target.workspaceRoot, 'context-offload-values');
+    const elsewhere = join(target.root, 'elsewhere');
+    await mkdir(elsewhere, { recursive: true });
+    await rm(values, { recursive: true, force: true });
+    await symlink(elsewhere, values);
+
+    await assert.rejects(
+      () => importState(target.workspaceRoot, source.workspaceRoot),
+      /escapes the Storage Root/,
+    );
+    assert.deepEqual(await readdir(elsewhere), [], 'nothing was written outside the root');
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('clears the collection candidate of a blob the import references again', async () => {
+  const source = await makeWorkspace('maka-import-gc-source');
+  const target = await makeWorkspace('maka-import-gc-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ABC');
+
+    // The target holds the same content -- payloads are content-addressed, so
+    // this is the ordinary case -- and it was queued for collection while
+    // nothing referenced it. The import references it again.
+    const queue = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      queue.exec(`
+        DELETE FROM context_refs;
+        DELETE FROM context_session_usage;
+        INSERT INTO context_gc_candidates SELECT blob_id, 0 FROM context_blobs;
+      `);
+    } finally {
+      queue.close();
+    }
+
+    await importState(target.workspaceRoot, source.workspaceRoot);
+
+    // Left behind, the next collection fails outright and keeps failing: the
+    // candidate is referenced, which collection treats as corruption.
+    const after = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'), {
+      readOnly: true,
+    });
+    try {
+      const stranded = after
+        .prepare(`
+          SELECT COUNT(*) AS count FROM context_gc_candidates
+          WHERE blob_id IN (SELECT blob_id FROM context_refs)
+        `)
+        .get() as { count?: unknown };
+      assert.equal(Number(stranded.count), 0);
+    } finally {
+      after.close();
+    }
+    assert.ok(seeded.relativePath.length > 0);
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
