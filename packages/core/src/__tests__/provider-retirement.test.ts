@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  isRetiredProvider,
-  RETIRED_PROVIDER_TYPES,
-} from '../provider-retirement.ts';
+import { isRetiredProvider, RETIRED_PROVIDER_TYPES } from '../provider-retirement.js';
 
 describe('provider retirement', () => {
   it('owns the known retired providers', () => {
