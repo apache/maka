@@ -132,6 +132,17 @@ export function projectDesktopStoredMessage(
         : message;
     case 'workhub_coordination':
       if (message.kind === 'delegation_superseded') return message;
+      if (message.kind === 'action_receipt') {
+        const result = message.receipt.result;
+        if (!('targetSessionId' in result)) return message;
+        return {
+          ...message,
+          receipt: {
+            ...message.receipt,
+            result: { ...result, targetSessionId: projectSessionId(host, result.targetSessionId) },
+          },
+        };
+      }
       return {
         ...message,
         targetSessionId: projectSessionId(host, message.targetSessionId),

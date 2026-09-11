@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
 import {
@@ -57,6 +58,42 @@ test('registers Session observation as one reconnectable operation', () => {
 
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
+
+for (const phase of ['connecting', 'seeding'] as const) {
+  for (const cancellation of ['unobserve', 'renderer destruction'] as const) {
+    test(`Session observation IPC completes normally after ${cancellation} while ${phase}`, async () => {
+      const errors: unknown[] = [];
+      const observations = new RuntimeHostSessionObservationRegistry((error) => errors.push(error));
+      const ipc = ipcHarness();
+      let finishSeed = () => {};
+      let seeds = 0;
+      const source = {
+        observe: () => {
+          seeds += 1;
+          return new Promise<void>((resolve) => { finishSeed = resolve; });
+        },
+        async unobserve() {},
+      };
+      if (phase === 'seeding') await observations.attach(source);
+      registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+      const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+      void observing.catch(() => undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(observations.observedSessionIds(), ['session-1']);
+
+      if (cancellation === 'unobserve') await observations.unobserve('observer-1');
+      else ipc.rendererDestroyed();
+      finishSeed();
+
+      assert.deepEqual(await observing, []);
+      assert.deepEqual(observations.observedSessionIds(), []);
+      assert.deepEqual(await observations.attach(source), []);
+      assert.equal(seeds, phase === 'seeding' ? 1 : 0);
+      assert.deepEqual(errors, []);
+      await observations.close();
+    });
+  }
+}
 
 test('forward transcript paging is an observation operation scoped to the renderer', async () => {
   const ipc = ipcHarness();
@@ -1922,3 +1959,25 @@ function session(cwd = "/workspace", id = 'session-1'): SessionCatalogProjection
 function sideConversationSession(id = 'session-1'): SessionCatalogProjection {
   return { ...session('/workspace', id), labels: [SIDE_CONVERSATION_SESSION_LABEL] };
 }
+
+
+test('steers WorkHub through Host admission even though the ordinary Session catalog omits it', async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc({
+    client: executionClient({
+      getSession: async () => null,
+      submitMessage: async (input) => {
+        submits.push(input);
+        return { disposition: 'steering', queueRevision: 1, skillInvocation: { loaded: [], failed: [], receipts: [] } };
+      },
+    }),
+    observer: unusedObserver(), attachmentApprovals: createAttachmentApprovalRegistry(),
+    emitSessionsChanged() {}, stat: async () => ({ size: 0 }), resizeImage: async (bytes) => bytes, beforeStop() {},
+  }, ipc);
+  const result = await ipc.invoke('sessions:submitMessage', WORKHUB_COORDINATION_SESSION_ID, 'current_turn', {
+    messageId: 'workhub-steering', text: 'Change direction immediately',
+  });
+  assert.deepEqual(submits, [{ sessionId: WORKHUB_COORDINATION_SESSION_ID, messageId: 'workhub-steering', placement: 'current_turn', content: { text: 'Change direction immediately', inlineReferences: [] } }]);
+  assert.equal((result as { disposition: string }).disposition, 'steering');
+});

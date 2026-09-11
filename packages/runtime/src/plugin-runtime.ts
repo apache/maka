@@ -622,11 +622,9 @@ export function fiberStateName(state: FiberState): MakaCompositionEntryStatus {
   ] as MakaCompositionEntryStatus;
 }
 
-export function isCanonicalPluginId(value: unknown): value is string {
+export function isCanonicalExtensionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 128 && ID_PATTERN.test(value);
 }
-
-export const isCanonicalExtensionId = isCanonicalPluginId;
 
 function cloneCompositionEntry(entry: MakaCompositionEntry): MakaCompositionEntry {
   return {
@@ -685,7 +683,7 @@ export function isCanonicalExtensionScopeId(value: unknown): value is string {
 }
 
 function validatePluginId(value: unknown, label: string): asserts value is string {
-  if (!isCanonicalPluginId(value)) {
+  if (!isCanonicalExtensionId(value)) {
     throw new MakaPluginRuntimeError('invalid_entry', `Invalid ${label}`);
   }
 }

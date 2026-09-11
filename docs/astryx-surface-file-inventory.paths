@@ -12,6 +12,7 @@ apps/desktop/src/renderer/chat-recovery-notice.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
+apps/desktop/src/renderer/composition/legacy-desktop-region.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
@@ -69,10 +70,16 @@ apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
-apps/desktop/src/renderer/features/workhub/services-context.tsx
+apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx
+apps/desktop/src/renderer/features/workhub/ui/cursor.tsx
+apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx
-apps/desktop/src/renderer/features/workhub/ui/workhub-prompt-rail.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
@@ -145,6 +152,7 @@ apps/desktop/src/renderer/styles/composer.css
 apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
 apps/desktop/src/renderer/styles/deep-research.css
+apps/desktop/src/renderer/styles/desktop-assistant.css
 apps/desktop/src/renderer/styles/error.css
 apps/desktop/src/renderer/styles/help.css
 apps/desktop/src/renderer/styles/hero.css
@@ -195,7 +203,6 @@ apps/desktop/src/renderer/styles/workbar/side-chat.css
 apps/desktop/src/renderer/styles/workbar/terminal.css
 apps/desktop/src/renderer/styles/workhub.css
 apps/desktop/src/renderer/work-board-panel.tsx
-apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
 packages/ui/src/attachment-image.tsx

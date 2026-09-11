@@ -169,6 +169,12 @@ export async function resolveDesktopRuntimeHostStartup(
     readPreferences?: () => Promise<DesktopRuntimeHostPreferences>;
   } = {},
 ): Promise<DesktopRuntimeHostStartup> {
+  // The Desktop single-instance lock is held before startup opens any stores.
+  // Reclaim only legacy directory markers here, before concurrent readers can
+  // start; current deployment writers use a process-lifetime OS lease.
+  await recoverAbandonedDesktopFileUpdateLock(
+    join(clientDataRoot, "runtime-host-deployments.json"),
+  );
   const preferencesPath = join(clientDataRoot, PREFERENCES_FILE);
   let preferences: DesktopRuntimeHostPreferences;
   let preferencesReadFailure: Error | undefined;
@@ -226,7 +232,7 @@ export async function resolveDesktopRuntimeHostStartup(
     ),
   );
   if (obsoleteProfileIds.size > 0) {
-    await recoverAbandonedProfileLock(join(clientDataRoot, PROFILE_FILE));
+    await recoverAbandonedDesktopFileUpdateLock(join(clientDataRoot, PROFILE_FILE));
   }
   for (const profileId of obsoleteProfileIds) await catalog.remove(profileId);
   if (obsoleteProfileIds.size > 0) document = await catalog.read();
@@ -341,7 +347,7 @@ export function createDesktopRuntimeHostProfileService(input: {
 
   const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
     mutate(async () => {
-      await recoverAbandonedProfileLock(profilePath);
+      await recoverAbandonedDesktopFileUpdateLock(profilePath);
       assertPreferencesWritable();
       if (pairingReadFailure) {
         throw new Error(
@@ -919,18 +925,18 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
-    resolveManagedService(profileId) {
-      return mutate(async () => {
-        const profile = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === profileId,
-        );
-        if (!profile) return undefined;
-        const binding = findDesktopRuntimeHostManagedServiceBinding(
-          await managedServices.read(),
-          profile,
-        );
-        return binding;
-      });
+    async resolveManagedService(profileId) {
+      // Connection may be waiting for handoff while the profile mutation queue
+      // is held. Read the persisted binding without re-entering that queue;
+      // mutation adapters revalidate the snapshot before acting on it.
+      const profile = (await catalog.read()).profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      if (!profile) return undefined;
+      return findDesktopRuntimeHostManagedServiceBinding(
+        await managedServices.read(),
+        profile,
+      );
     },
     resolveCollaborationConnectionTarget(profile) {
       return mutate(async () => {
@@ -1470,8 +1476,8 @@ function assertRootIsNotEnabled(
   }
 }
 
-async function recoverAbandonedProfileLock(profilePath: string): Promise<void> {
-  const lockPath = `${profilePath}.lock`;
+async function recoverAbandonedDesktopFileUpdateLock(targetPath: string): Promise<void> {
+  const lockPath = `${targetPath}.lock`;
   const lock = await lstat(lockPath).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;

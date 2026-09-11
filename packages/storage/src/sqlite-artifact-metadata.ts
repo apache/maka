@@ -110,6 +110,19 @@ class SqliteArtifactMetadataRepository {
     );
   }
 
+  readRelativePathsByCaseFoldedArtifactIds(artifactIds: readonly string[]): string[] {
+    this.assertOpen();
+    if (artifactIds.length === 0) return [];
+    const placeholders = artifactIds.map(() => '?').join(', ');
+    const rows = this.#lease.database
+      .prepare(
+        `SELECT relative_path FROM artifact_records
+          WHERE artifact_id COLLATE NOCASE IN (${placeholders})`,
+      )
+      .all(...artifactIds) as Array<{ relative_path: string }>;
+    return rows.map((row) => row.relative_path);
+  }
+
   forgetUpgradeOrphanPaths(relativePaths: readonly string[]): void {
     this.assertOpen();
     this.#lease.transaction('write', () => {

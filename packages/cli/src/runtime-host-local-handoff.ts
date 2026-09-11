@@ -35,7 +35,11 @@ import {
   type RuntimeHostInstallationOwner,
 } from '@maka/runtime-host/operator';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator/update-package-evidence';
-import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  connectExistingRuntimeHost,
+  forceTerminateObservedRegisteredRuntimeHost,
+  type RuntimeHostProcessIdentity,
+} from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -116,6 +120,7 @@ interface RuntimeHostLocalRestartDeps extends RuntimeHostLocalHandoffDeps {
     input: RuntimeHostTargetActivationInput,
   ) => Promise<RuntimeHostTargetActivation>;
   readonly retireSource: typeof launchRuntimeHostLocalSourceRetirement;
+  readonly terminateObservedHost: typeof forceTerminateObservedRegisteredRuntimeHost;
 }
 
 export type RuntimeHostLocalProcessLifecycleAdapter = Omit<
@@ -155,6 +160,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
   input: {
     readonly rootPath: string;
     readonly registration: HostRegistration;
+    readonly processIdentity?: RuntimeHostProcessIdentity;
     readonly installationOptions?: Parameters<typeof resolveRuntimeHostNpmGlobalInstallation>[0];
     readonly deploymentPathOptions?: RuntimeHostLocalDeploymentPathOptions;
     readonly activeWorkPolicy?: 'refuse_active_work' | 'interrupt_active_work';
@@ -183,6 +189,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     connectExisting: connectExistingRuntimeHost,
     activateTarget: launchRuntimeHostTargetActivator,
     retireSource: launchRuntimeHostLocalSourceRetirement,
+    terminateObservedHost: forceTerminateObservedRegisteredRuntimeHost,
     ...overrides,
   };
   if (await deps.resolveManagedAuthority(input.registration.rootId)) {
@@ -361,6 +368,18 @@ export async function restartRuntimeHostNpmGlobalDeployment(
         throw new Error('The exact target did not activate after source retirement began');
       }
       return { kind: 'target_present' };
+    }
+    // Older source packages cannot negotiate retirement. Explicit consent may
+    // use Desktop's exact-process recovery, inside this existing deployment
+    // transaction and only after staging the verified successor.
+    if (activeWorkPolicy === 'interrupt_active_work' && input.processIdentity) {
+      input.signal?.throwIfAborted();
+      const stopped = await deps.terminateObservedHost(
+        { rootPath: input.rootPath, registration: input.registration },
+        { processIdentity: input.processIdentity, isCurrent: () => !input.signal?.aborted },
+      );
+      if (!stopped)
+        throw new Error('The observed Runtime Host changed before it could be stopped safely');
     }
     const activated = await activateExactTarget(
       rootId,

@@ -87,7 +87,8 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
           start: () => goalTurn,
         };
       },
-      acquireResidency: () => {
+      acquireResidency: (kind) => {
+        if (kind !== 'idle') return { release() {} };
         acquired++;
         return { release: () => released++ };
       },
@@ -288,7 +289,10 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
         close: async () => {},
       },
       admitTurn: () => assert.fail('A terminal Goal must not admit a continuation'),
-      acquireResidency: () => assert.fail('A terminal Goal must not retain Host residency'),
+      acquireResidency: (kind) => {
+        assert.notEqual(kind, 'idle', 'A terminal Goal must not retain Host residency');
+        return { release() {} };
+      },
       onProjectionChanged: (sessionId) => projectionChanges.push(sessionId),
       requestDrain: () => drainRequests++,
     });

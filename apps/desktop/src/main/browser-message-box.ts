@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog } from '@maka/core/ui-locale';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -348,7 +349,7 @@ export function buildBrowserMessageBoxHtml(
 
 function renderBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
   const nonce = randomUUID().replaceAll('-', '');
-  const closeLabel = input.locale === 'zh-CN' ? '关闭' : input.locale === 'zh-TW' ? '關閉' : 'Close';
+  const closeLabel = CLOSE_LABEL[input.locale];
   const closeButton = `<button class="window-close" type="button" data-response="${input.cancelId}" aria-label="${closeLabel}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
   </button>`;
@@ -638,3 +639,5 @@ function escapeHtml(value: string): string {
     return entities[character] ?? character;
   });
 }
+
+const CLOSE_LABEL = { 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close' } satisfies UiCatalog<string>;

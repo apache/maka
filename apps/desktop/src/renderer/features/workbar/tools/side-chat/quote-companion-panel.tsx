@@ -301,7 +301,6 @@ export function QuoteCompanionPanel(props: {
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
-        scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
@@ -350,11 +349,11 @@ export function QuoteCompanionPanel(props: {
                   steer: companion.steer,
                   send: async () => {
                     try {
-                      preflightAttachmentItems(pendingAttachments, locale);
+                      preflightAttachmentItems(pendingAttachments);
                     } catch (error) {
                       toast.error(
                         copy.errors.sendRejected,
-                        error instanceof Error ? error.message : String(error),
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
                       );
                       return false;
                     }

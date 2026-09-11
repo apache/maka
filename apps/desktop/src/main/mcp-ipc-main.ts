@@ -29,6 +29,7 @@ import {
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import {
+  AtomicFileWriteCommitUnknownError,
   assertMcpEndpointPolicyOnChanges,
   McpServerExistsError,
   McpConfigSourceError,
@@ -107,32 +108,56 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   const inMutationLane = deps.exclusiveLane ?? createMcpExclusiveLane();
   const commitConfig = async (
     mutate: (current: McpConfigFile) => McpConfigFile,
-  ): Promise<McpConfigFile> =>
-    deps.store.transform(async (current) => {
-      const next = mutate(current);
-      assertMcpEndpointPolicyOnChanges(current, next);
-      // The authoritative gate: every server this commit semantically touches
-      // is re-checked INSIDE the lane. The handler-entry checks are advisory
-      // fast-fails; this one cannot race a login claim, because claims travel
-      // the same lane.
-      for (const serverId of new Set([
-        ...Object.keys(current.mcpServers),
-        ...Object.keys(next.mcpServers),
-      ])) {
-        const before = current.mcpServers[serverId];
-        const after = next.mcpServers[serverId];
-        if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
+    assertReconciliationAllowed?: () => void,
+  ): Promise<McpConfigFile> => {
+    try {
+      return await deps.store.transform(async (current) => {
+        const next = mutate(current);
+        assertMcpEndpointPolicyOnChanges(current, next);
+        // The authoritative gate: every server this commit semantically touches
+        // is re-checked INSIDE the lane. The handler-entry checks are advisory
+        // fast-fails; this one cannot race a login claim, because claims travel
+        // the same lane.
+        for (const serverId of new Set([
+          ...Object.keys(current.mcpServers),
+          ...Object.keys(next.mcpServers),
+        ])) {
+          const before = current.mcpServers[serverId];
+          const after = next.mcpServers[serverId];
+          if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
+        }
+        // Erases are per-server and not transactional as a set: if one fails
+        // partway, the commit aborts with the EARLIER servers already logged
+        // out. That partial effect is deliberately in the fail-closed direction
+        // — a re-login is recoverable, a credential outliving its removed or
+        // repointed config is not.
+        for (const serverId of credentialRetirements(current, next)) {
+          await deps.manager.forgetServerCredentials(serverId);
+        }
+        return next;
+      });
+    } catch (error) {
+      if (!(error instanceof AtomicFileWriteCommitUnknownError)) throw error;
+      // Rename has already published a file even though its durability fence
+      // failed. Read the authority again rather than replaying the mutation
+      // or assuming our proposed snapshot is still current. Keep this in the
+      // mutation lane so another local mutation or OAuth claim cannot pass
+      // the reconciliation, and retain the original durability failure.
+      try {
+        const authoritative = await deps.store.get();
+        assertReconciliationAllowed?.();
+        await deps.manager.sync(authoritative);
+        changed(deps);
+      } catch (reconciliationError) {
+        throw new AggregateError(
+          [error, reconciliationError],
+          'MCP write durability is uncertain and runtime state is out of sync; reload before retrying',
+          { cause: error },
+        );
       }
-      // Erases are per-server and not transactional as a set: if one fails
-      // partway, the commit aborts with the EARLIER servers already logged
-      // out. That partial effect is deliberately in the fail-closed direction
-      // — a re-login is recoverable, a credential outliving its removed or
-      // repointed config is not.
-      for (const serverId of credentialRetirements(current, next)) {
-        await deps.manager.forgetServerCredentials(serverId);
-      }
-      return next;
-    });
+      throw error;
+    }
+  };
   // The renderer is semi-trusted (SECURITY.md §3): every config that crosses
   // toward it leaves with clientSecret replaced by the sentinel, and every
   // config it sends back has sentinels restored from disk before the store
@@ -255,6 +280,13 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
             ...current,
             mcpServers: { ...current.mcpServers, [serverId]: installed },
           };
+        }, () => {
+          // Cancellation may have called cancelConnect while the write was
+          // pending. Do not start a new connection after that cancellation;
+          // the existing settled/rollback path will reconcile the removal.
+          if (operation.cancelled) {
+            throw new Error('MCP installation cancelled; awaiting configuration rollback');
+          }
         }),
       );
       if (operation.cancelled) return redactMcpConfigSecrets(next);

@@ -144,9 +144,9 @@ describe('FileCredentialStore', () => {
       await chmod(dir, 0o777); // a loose dir that predates the hardening
       const store = createFileCredentialStore(dir);
       await store.setSecret('a', 'api_key', 'k');
-      // ensureSecretDir re-chmods an existing dir (mkdir's mode only applies on
-      // creation); the writer and the lock share it, so the lock can't leave
-      // the dir loose either.
+      // hardenDirectory re-chmods an existing dir (mkdir's mode only applies
+      // on creation); the writer and the lock share it, so the lock can't
+      // leave the dir loose either.
       assert.equal((await stat(dir)).mode & 0o777, 0o700);
     });
   });

@@ -51,7 +51,7 @@ import {
   type ShellRunUpdatesBySession,
 } from './shell-run-update-state.js';
 import { sessionCatalogRetiresSession } from '../shared/runtime-host-identity.js';
-import * as desktopTranscript from './desktop-transcript-range-store.js';
+import * as desktopTranscript from './platform/desktop/desktop-transcript-range-store.js';
 
 type RefBox<T> = { current: T };
 

@@ -105,6 +105,8 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 export interface HostMessageSessionHeader {
   readonly isArchived: boolean;
   readonly unavailableReason?: string;
+  /** A reserved Session accepts queued messages only while its dedicated root is active. */
+  readonly activeTurnOnly?: boolean;
 }
 
 export type HostMessageRootState =
@@ -218,7 +220,9 @@ export interface HostMessageRootPort {
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<
+    { readonly turnId: string } | { readonly error: string } | { readonly deferred: true }
+  >;
   prepareMessage(input: HostMessagePreparationInput): Promise<HostMessagePreparationOutcome>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
@@ -302,7 +306,7 @@ type QueuedMutationKind = 'retract' | 'retract_entry' | 'promote' | 'update_entr
 type MessageOperationKind = QueuedMutationKind | 'submit' | 'interrupt';
 
 interface PendingQueuedMutation {
-  readonly payload: object;
+  readonly payload: { readonly sessionId: string };
   readonly result: Promise<MessageOutcome<unknown>>;
 }
 
@@ -1088,6 +1092,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         },
         admissionLease,
       );
+      if ('deferred' in started) return;
       if ('error' in started) {
         throw new RuntimeMessageAuthorityInvariantError(
           `Durable Message recovery failed: ${started.error}`,
@@ -1259,6 +1264,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
+        }
+        if (header.activeTurnOnly && rootState.kind !== 'active') {
+          return failure('operation_unavailable', 'No active Turn can accept queued messages');
         }
         if (rootState.kind === 'idle') {
           const existingState = this.#sessions.get(input.sessionId);
@@ -1984,7 +1992,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (state.transition) {
       return failure('operation_conflict', 'Message queue is draining into the next Turn');
     }
-    const current = state.followup;
+    const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
+    const current = steering ? state.steering : state.followup;
     if (input.entryIds.length !== current.length) {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
@@ -1995,14 +2004,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!entry) {
         return failure('operation_conflict', 'Message queue changed since the reorder was issued');
       }
+      byId.delete(entryId);
       reordered.push(entry);
     }
     if (reordered.some((entry, index) => current[index] !== entry)) {
       await this.#admissions.reorderMessageAdmissions(
         input.sessionId,
         reordered.map((entry) => entry.messageId),
+        steering ? 'steering' : 'followup',
       );
-      state.followup = reordered;
+      if (steering) state.steering = reordered;
+      else state.followup = reordered;
       this.#mutated(state);
     }
     const result = { queueRevision: state.revision };
@@ -2317,7 +2329,22 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  #pull(run: BoundRun): readonly SteeringLease[] {
+  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+    // A provider boundary must observe steering admission and queue mutations,
+    // not mistake an unfinished durable write for an empty queue.
+    for (;;) {
+      const pending = [
+        ...[...this.#pendingSubmits.values()].filter(
+          ({ payload }) =>
+            payload.sessionId === run.sessionId && payload.placement === 'current_turn',
+        ),
+        ...[...this.#pendingQueuedMutations.values()].filter(
+          ({ payload }) => payload.sessionId === run.sessionId,
+        ),
+      ];
+      if (pending.length === 0) break;
+      await Promise.all(pending.map(({ result }) => result));
+    }
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];

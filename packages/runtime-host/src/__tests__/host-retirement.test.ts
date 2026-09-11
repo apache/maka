@@ -65,6 +65,32 @@ test('retirement binds both interruption policy choices to the authenticated Hos
   ]);
 });
 
+test('quit can require interruption consent instead of waiting for cooperative handoff', async () => {
+  const connection = {
+    hostEpoch: 'authenticated-host',
+    cooperativeHandoff: true,
+    request: async (operation: string, input: unknown, timeoutMs: number) => {
+      assert.equal(operation, 'host.upgrade.prepare');
+      assert.deepEqual(input, {
+        expectedHostEpoch: 'authenticated-host',
+        allowInterruptActiveTasks: false,
+      });
+      assert.equal(timeoutMs, 2_000);
+      return { kind: 'active_tasks' };
+    },
+  } as unknown as RuntimeHostConnection;
+  assert.deepEqual(
+    await prepareConnectedRuntimeHostRetirement(
+      connection,
+      'refuse_active_work',
+      2_000,
+      undefined,
+      { allowCooperativeHandoff: false },
+    ),
+    { kind: 'active_tasks' },
+  );
+});
+
 test('cancelling preparation closes its connection and waits for the request to settle', async () => {
   const cancellation = new AbortController();
   let rejectRequest!: (error: Error) => void;

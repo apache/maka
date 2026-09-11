@@ -125,6 +125,7 @@ export function PasswordInput(props: {
     // still carries the prop, because that input is what `aria-required` is
     // written on, and the group's `aria-labelledby` is what names it.
     <InputGroup
+      data-maka-assistant-exclude
       label={props.label}
       // Cast: InputGroup/Field type `description` as `string`, but the
       // underlying FieldLabel renders any ReactNode (see the prop's note).

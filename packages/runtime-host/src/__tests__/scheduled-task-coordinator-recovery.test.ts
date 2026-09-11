@@ -27,6 +27,7 @@ import type { RootTurnAdmission } from '@maka/storage/execution-stores';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { SessionNotFoundError } from '@maka/storage/session-store';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   HostScheduledTaskCoordinator,
   scheduledTaskExecutionFingerprint,
@@ -407,7 +408,7 @@ test('scheduler handoff waits for an admitted native effect and cancellation res
   let clock = 1_000;
   let timer: (() => void) | undefined;
   let effects = 0;
-  const residency = { release: () => {} };
+  const residencies = new HostResidencyRegistry();
   const coordinator = new HostScheduledTaskCoordinator({
     store,
     sessions: null as never,
@@ -428,7 +429,7 @@ test('scheduler handoff waits for an admitted native effect and cancellation res
     },
     createSession: async () => {},
     changes: { publish: () => {} },
-    acquireResidency: () => residency,
+    acquireResidency: (kind) => residencies.acquire('scheduled-task', kind),
     requestDrain: () => assert.fail('scheduler must not drain'),
     now: () => clock,
     setTimeout: (callback) => {
@@ -453,11 +454,14 @@ test('scheduler handoff waits for an admitted native effect and cancellation res
     await coordinator.prepareRecovery();
     coordinator.start();
     await waitFor(() => timer !== undefined);
+    await waitFor(() => residencies.drainCount === 0);
+    assert.equal(residencies.activeCount, 1);
     clock = task.nextFireAt!;
     const fire = timer!;
     timer = undefined;
     fire();
     await entered.promise;
+    assert.equal(residencies.drainCount, 1);
     const hold = coordinator.holdForHandoff();
     assert.ok(hold);
     let settled = false;
@@ -470,10 +474,12 @@ test('scheduler handoff waits for an admitted native effect and cancellation res
     await ready;
     assert.equal(timer, undefined);
     assert.equal(effects, 1);
-    assert.deepEqual(hold.residencies(), [residency]);
+    assert.equal(residencies.hasDrainResidenciesExcept(hold.residencies()), false);
+    assert.equal(residencies.activeCount, 1);
     assert.equal((await store.listPendingFires()).length, 0);
     hold.release();
     await waitFor(() => timer !== undefined);
+    await waitFor(() => residencies.drainCount === 0);
     assert.equal(effects, 1);
   } finally {
     effect.resolve({});

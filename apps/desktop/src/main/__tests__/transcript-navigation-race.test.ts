@@ -22,7 +22,7 @@ import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { SESSION_CONTINUITY_SCHEMA_VERSION, type SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptBatch, DesktopTranscriptHandle, DesktopTranscriptNavigation, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
-import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/desktop-transcript-range-store.js';
+import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';

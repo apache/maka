@@ -18,7 +18,7 @@
  */
 
 import { ipcMain as electronIpcMain } from 'electron';
-import { searchWorkspaceFiles } from './workspace-file-search.js';
+import { createWorkspaceFileSearcher } from './workspace-file-search.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -32,6 +32,7 @@ export interface WorkspaceSearchIpcDeps {
 
 export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
   const ipcMain = deps.ipcMain ?? electronIpcMain;
+  const searcher = createWorkspaceFileSearcher();
   // Composer `@` mention popup: active sessions resolve from their persisted
   // cwd; the new-task surface resolves from the app project root. Git repos
   // honor .gitignore + untracked via `git ls-files`; other trees fall back to
@@ -45,6 +46,6 @@ export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
       projectId?: unknown;
     };
     const projectPath = await deps.getProjectRoot(request.sessionId, request.projectId);
-    return searchWorkspaceFiles(projectPath, { query: request.query, limit: request.limit });
+    return searcher.search(projectPath, { query: request.query, limit: request.limit });
   });
 }
