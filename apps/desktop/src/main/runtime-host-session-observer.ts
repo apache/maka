@@ -413,8 +413,16 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    const { state, consumer } = this.#admitTranscriptNavigation(request, targetId, true);
+    const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId, true);
     if (!consumer) return;
+    // This answer is the tail cache, and global reclaim trims that cache even
+    // while the Session is open (`#touchReplica`). Refill it first or a reader
+    // returning to latest is answered with less than a tail.
+    await replica.refillTail(
+      requireTranscriptRangeBytes(request.maxBytes),
+      this.#transcriptReadIsCurrent(state, replica, consumer, request),
+    );
+    if (!this.#transcriptReadIsCurrent(state, replica, consumer, request)()) return;
     consumer.resetRequested = true;
     consumer.resetNavigation = request.navigation;
     await this.#scheduleTranscriptDelivery(state, consumer);
@@ -460,6 +468,19 @@ export class RuntimeHostSessionObserver {
     return navigation >= consumer.navigation;
   }
 
+  /** Whether a Host read still belongs to the window that asked for it. */
+  #transcriptReadIsCurrent(
+    state: ObservedSessionState,
+    replica: DesktopTranscriptReplica,
+    consumer: TranscriptConsumer,
+    request: DesktopTranscriptRangeRequest,
+  ): () => boolean {
+    return () =>
+      state.replica === replica &&
+      state.transcriptConsumers.get(request.consumerId) === consumer &&
+      this.#deliversTranscriptPage(consumer, request.navigation);
+  }
+
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
@@ -474,10 +495,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId, replaces);
     if (!consumer) return;
-    const isCurrent = () =>
-      state.replica === replica &&
-      state.transcriptConsumers.get(request.consumerId) === consumer &&
-      this.#deliversTranscriptPage(consumer, request.navigation);
+    const isCurrent = this.#transcriptReadIsCurrent(state, replica, consumer, request);
     let answer: Awaited<ReturnType<typeof operation>>;
     try {
       answer = await operation(replica, isCurrent);

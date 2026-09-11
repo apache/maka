@@ -299,6 +299,50 @@ export class DesktopTranscriptReplica {
     });
   }
 
+  /**
+   * Reads the newest page back into the tail cache when global reclaim has
+   * trimmed it below a tail. Follow-tail is answered from this cache, so
+   * without the refill a reader returning to latest is shown whatever reclaim
+   * happened to leave — down to nothing.
+   */
+  refillTail(maxBytes: number, isCurrent: () => boolean = () => true): Promise<void> {
+    return this.#enqueue(async () => {
+      if (!this.#isLive() || !isCurrent() || !this.#tailIsShort()) return;
+      const throughSequence = this.#durableThrough;
+      if (throughSequence === null) return;
+      const page = await this.#handle.loadTranscriptPage({
+        source: 'durable',
+        direction: 'older',
+        throughSequence,
+        cursor: null,
+        anchorSequence: throughSequence + 1,
+        maxBytes,
+      });
+      await this.#withDecodedPage(page, (decoded) => {
+        if (!this.#isLive() || !isCurrent()) return;
+        this.#acceptRange(decoded.messages);
+        this.#installDurable(decoded.messages);
+        this.#hasOlder = decoded.nextCursor !== null;
+        this.#evictToBudget(
+          undefined,
+          page.protectedTurnSequence ?? decoded.messages.at(-1)?.identity,
+        );
+      });
+    });
+  }
+
+  /**
+   * Whether the cache holds less than the tail it is meant to hold. `#hasOlder`
+   * settles the case a Turn count cannot: a short Session whose whole durable
+   * transcript is resident is never short, however few Turns that is.
+   */
+  #tailIsShort(): boolean {
+    if (!this.#hasOlder) return false;
+    const turns = new Set<string>();
+    for (const entry of this.#durable.values()) turns.add(residentTurnKey(entry));
+    return turns.size < this.#maxResidentTurns;
+  }
+
   loadAround(
     sequence: number,
     maxBytes: number,

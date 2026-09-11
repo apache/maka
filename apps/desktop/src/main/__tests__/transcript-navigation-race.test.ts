@@ -114,6 +114,99 @@ test('a global cache trim empties the tail without publishing or reading history
   }
 });
 
+test('a tail the global cache trim emptied is read back before it answers follow latest', async () => {
+  const bootstrap = page(1);
+  const tail = page(1);
+  const reads: Array<{ direction: string; anchorSequence: number | null }> = [];
+  const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 1, overlayMessageCount: 0,
+      durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => ({
+      messages: [record(1)], nextCursor: candidate === bootstrap ? 'older' : null,
+    }),
+    loadTranscriptPage: async (request) => {
+      reads.push({ direction: request.direction, anchorSequence: request.anchorSequence });
+      return tail;
+    },
+    async close() {},
+  }));
+  try {
+    replica.trimDurable(0);
+    assert.deepEqual(replica.snapshot().durable, [], 'global memory pressure empties the tail');
+
+    await replica.refillTail(PAGE_BYTES);
+
+    assert.deepEqual(reads, [{ direction: 'older', anchorSequence: 2 }],
+      'the refill reads the newest page, not history');
+    const snapshot = replica.snapshot();
+    assert.deepEqual(snapshot.durable.map(({ sequence }) => sequence), [1]);
+    assert.equal(snapshot.durableThrough, replica.durableThrough);
+    const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+    for (const batch of encodeDesktopTranscriptSnapshot(snapshot)) store.accept(batch);
+    assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
+    assert.equal(store.range().hasNewer, false, 'the reader is at the tail, not short of it');
+
+    reads.length = 0;
+    await replica.refillTail(PAGE_BYTES);
+    assert.deepEqual(reads, [], 'a cache holding the whole transcript answers on its own');
+  } finally {
+    replica.close();
+  }
+});
+
+test('return to latest answers with a tail after reclaim emptied the cache', async () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  const eventsClosed = deferred<void>();
+  const bootstrap = page(1);
+  const tail = page(1);
+  const reads: Array<{ direction: string; anchorSequence: number | null }> = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(), transcript: Promise.resolve([]),
+      events: { async *[Symbol.asyncIterator]() { await eventsClosed.promise; } },
+      transcriptBootstrap: {
+        throughSequence: 1, overlayMessageCount: 0,
+        durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+      },
+      loadTranscriptOverlay: async () => [],
+      // What global reclaim leaves behind: the watermark stands, the rows are gone.
+      decodeTranscriptPage: async (candidate) => candidate === bootstrap
+        ? { messages: [], nextCursor: 'older' }
+        : { messages: [record(1)], nextCursor: null },
+      loadTranscriptPage: async (request) => {
+        reads.push({ direction: request.direction, anchorSequence: request.anchorSequence });
+        return tail;
+      },
+      async close() { eventsClosed.resolve(); },
+    }) },
+    emitSessionsChanged() {},
+  });
+  await observer.openTranscript('session-1', 'consumer-1', {
+    id: 1, once() {}, off() {},
+    send(_channel, batch) {
+      store.accept(batch);
+      queueMicrotask(() => observer.acknowledgeTranscript('consumer-1', batch.generation, batch.deliverySequence, 1));
+    },
+  });
+  assert.deepEqual(store.snapshot().messages, [], 'the window opens on the emptied cache');
+
+  const navigation = store.navigate();
+  await observer.loadTranscriptLatest({
+    consumerId: 'consumer-1', sessionId: 'session-1', hostEpoch: 'host-1',
+    anchorSequence: null, maxBytes: PAGE_BYTES, navigation,
+  }, 1);
+
+  assert.deepEqual(reads, [{ direction: 'older', anchorSequence: 2 }]);
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
+  assert.equal(store.range().hasNewer, false, 'the return-to-latest affordance is gone because the rows arrived');
+  await observer.close();
+});
+
 test('a superseded fragmented reset cannot clear or complete the next navigation', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
