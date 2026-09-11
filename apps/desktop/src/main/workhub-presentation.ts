@@ -98,7 +98,15 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function focusComposer(): void {
     focusPending = true;
-    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed() || !parent.isVisible()) return;
+    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed()) return;
+    // A cold summon stays hidden until the renderer has mounted its composer.
+    // Reuse focusPending so hide/disable can cancel it before ready arrives.
+    if (placement === 'floating' && progressRequest === undefined) {
+      if (parent.isMinimized()) parent.restore();
+      parent.show();
+      parent.focus();
+    }
+    if (!parent.isVisible()) return;
     if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
     view.webContents.send('workhub-presentation:focus-composer', expandOnFocus);
@@ -336,9 +344,6 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const current = target.getBounds();
     if (bounds.x !== current.x || bounds.y !== current.y || bounds.width !== current.width || bounds.height !== current.height) target.setBounds(bounds);
     fitFloating();
-    if (target.isMinimized()) target.restore();
-    target.show();
-    target.focus();
     focusComposer();
     changed();
   }
@@ -348,7 +353,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const dockVisible = placement === 'docked' && parent === main && main?.isVisible() && !main.isMinimized()
       && host.visible && !host.occluded && view?.getVisible();
     if (!controlTurnId || dismissedTurnId === controlTurnId || progressRequest !== undefined || dockVisible
-      || (placement === 'floating' && floating?.isVisible()) || !deps.isEnabled() || disposed) return;
+      || (placement === 'floating' && (floating?.isVisible() || focusPending)) || !deps.isEnabled() || disposed) return;
     ensureView();
     const target = ensureFloating();
     cancelFloatingAnimation();
@@ -468,7 +473,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         switch (command) {
           case 'snapshot': return getSnapshot();
           case 'ready':
-            if (!isMain) { rendererReady = true; if (focusPending) focusComposer(); }
+            if (!isMain) { rendererReady = true; if (focusPending) { focusComposer(); changed(); } }
             else {
               mainReady.add(event.sender);
               const pending = pendingNavigation.get(event.sender);
@@ -599,7 +604,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   async function toggle(positionAtDefault = false): Promise<void> {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     ++presentationRevision;
-    if (progressRequest === undefined && placement === 'floating' && floating?.isVisible()) {
+    if (progressRequest === undefined && placement === 'floating' && (floating?.isVisible() || focusPending)) {
       hideFloating();
     } else detach(positionAtDefault);
   }
@@ -638,6 +643,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     view = undefined;
     viewBounds = undefined;
     rendererReady = false;
+    focusPending = false;
     // Release this renderer's subscriptions and broadcasts before another view
     // can register. A delayed destroyed event must not release its replacement.
     previous?.webContents.removeListener('destroyed', releaseViewRegistration);
