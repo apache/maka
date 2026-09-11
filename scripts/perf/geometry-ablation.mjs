@@ -44,6 +44,7 @@ if (process.versions.electron) {
 } else {
   const { _electron, expect } = await import('@playwright/test');
   const { startStaticServer } = await import('../storybook-visual-smoke.mjs');
+  const { report, summarize } = await import('./report.mjs');
   const server = await startStaticServer('apps/desktop/storybook-static');
   let app;
   const output = path.resolve(process.env.GEOMETRY_OUTPUT ?? 'perf-results/geometry-ablation.json');
@@ -242,6 +243,9 @@ if (process.versions.electron) {
             trial,
             initial,
             readyMs: start,
+            // CDP duration counters reset on document navigation.
+            mountLayoutMs: metric(beforeCpu, 'LayoutDuration') * 1000,
+            mountTaskMs: metric(beforeCpu, 'TaskDuration') * 1000,
             firstRootMs: state.firstRootMs,
             heightDrift: Math.max(...heights) - Math.min(...heights),
             maxReverse,
@@ -296,6 +300,37 @@ if (process.versions.electron) {
         }
       }
     }
+    await report(
+      'frontend-geometry-ablation',
+      {
+        browser,
+        repetitions,
+        viewport: '1200x900',
+        conditions:
+          'One Electron process, rotating modes, fresh DOM. Mount metrics include document navigation and readiness polling; not disk-cold startup or screen presentation.',
+        limits:
+          'Synthetic fixed-range production components, no Host. Three samples per configuration by default; p95 is the maximum. Geometry report is diagnostic, not a default-product correctness gate.',
+      },
+      scenes.flatMap(([scene]) =>
+        modes.flatMap((mode) => {
+          const group = rows.filter((r) => r.scene === scene && r.mode === mode);
+          return [
+            'readyMs',
+            'mountLayoutMs',
+            'mountTaskMs',
+            'maxTaskMs',
+            'scrollMaxTaskMs',
+            'layoutMs',
+            'heightDrift',
+            'maxReverse',
+          ].map((metric) => ({
+            scenario: `${scene}/${mode}`,
+            metric,
+            ...summarize(group.map((r) => r[metric])),
+          }));
+        }),
+      ),
+    );
     console.log(`Report: ${output}`);
   } finally {
     await app?.close();
