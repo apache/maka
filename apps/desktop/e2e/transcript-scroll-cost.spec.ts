@@ -93,8 +93,6 @@ interface TranscriptBoundary {
   readonly mountedAfter: number;
   readonly grewPx: number;
   readonly scrolledPx: number;
-  readonly olderGapPx: string;
-  readonly newerGapPx: string;
   /** Turns present in both frames, so a reader position can be compared. */
   readonly carried: number;
   readonly worstTurnId: string | null;
@@ -197,15 +195,9 @@ async function observeDisplacement(page: Page): Promise<void> {
         const turnId = turn.dataset.turnId;
         if (turnId) tops.set(turnId, turn.getBoundingClientRect().top);
       }
-      const gap = (direction: string): number => {
-        const row = document.querySelector(`[data-transcript-gap="${direction}"]`);
-        return row ? row.getBoundingClientRect().height : 0;
-      };
       return {
         scrollTop: scroller.scrollTop,
         scrollHeight: scroller.scrollHeight,
-        olderGap: gap('older'),
-        newerGap: gap('newer'),
         tops,
         key: [...tops.keys()].join(','),
       };
@@ -268,8 +260,6 @@ async function observeDisplacement(page: Page): Promise<void> {
           mountedAfter: current.tops.size,
           grewPx: current.scrollHeight - before.scrollHeight,
           scrolledPx: scrolled,
-          olderGapPx: `${before.olderGap}->${current.olderGap}`,
-          newerGapPx: `${before.newerGap}->${current.newerGap}`,
           carried,
           worstTurnId,
           worstPx,

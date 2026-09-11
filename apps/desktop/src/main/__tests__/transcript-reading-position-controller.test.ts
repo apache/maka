@@ -108,7 +108,7 @@ test('an overlay-only bookmark stays available without loading another range', a
     type: 'assistant', id: 'answer-b', turnId: 'b', text: 'partial B', ts: 1, modelId: 'fixture',
   };
   for (const batch of encodeDesktopTranscriptSnapshot({
-    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1', windowEpoch: 0,
+    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
     durableThrough: null, durable: [], overlay: [overlay], hasOlder: false, hasNewer: false,
   })) store.accept(batch);
   const controller = createDesktopTranscriptRangeController(store, async () => ({

@@ -116,7 +116,7 @@ test('a global cache trim empties the tail without publishing or reading history
 
 test('a superseded fragmented reset cannot clear or complete the next navigation', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
-  acceptSnapshot(store, 0, 'generation-1', [record(1)]);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
   store.replaceWindow();
   const stale = [...encodeDesktopTranscriptSnapshot({
     ...identity, windowEpoch: 1, durableThrough: 1,
@@ -137,7 +137,7 @@ test('a superseded fragmented reset cannot clear or complete the next navigation
 
 test('a replica replacement is admitted whole, however far the window has navigated', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
-  acceptSnapshot(store, 0, 'generation-1', [record(1)]);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1)]);
   store.replaceWindow();
   const replacement = [...encodeDesktopTranscriptSnapshot({
     ...identity, generation: 'generation-2', durableThrough: 1,
@@ -153,9 +153,83 @@ test('a replica replacement is admitted whole, however far the window has naviga
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-0', 'message-1']);
 });
 
+test('an edge cannot be extended while the window under it is being replaced', async () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  const requests: Array<{ command: string; anchor: number | null }> = [];
+  const arrive = deferred<void>();
+  const handle: DesktopTranscriptHandle = {
+    ...identity, readThroughMessageId: null,
+    async loadBefore(anchor) { requests.push({ command: 'before', anchor }); },
+    async loadAfter(anchor) { requests.push({ command: 'after', anchor }); },
+    async loadAround(anchor, _bytes, navigation) {
+      requests.push({ command: 'around', anchor });
+      await arrive.promise;
+      acceptSnapshot(store, navigation.windowEpoch, 'generation-1', [record(9)]);
+    },
+    async loadLatest() { assert.fail('unexpected'); },
+    async close() {},
+  };
+  const controller = createDesktopTranscriptRangeController(store, async () => handle);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2)]);
+  const navigation = controller.loadAround(9);
+  await Promise.resolve();
+  // The rows on screen are still the window being left. Anchoring a fill on
+  // their edge and splicing it onto the replacement is how a hole opens.
+  await controller.loadBefore();
+  await controller.loadAfter();
+  assert.deepEqual(requests, [{ command: 'around', anchor: 9 }]);
+  arrive.resolve();
+  await navigation;
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-9']);
+  await controller.close();
+});
+
+test('a fill that left an edge where it found it is not asked again', async () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  let reads = 0;
+  const handle: DesktopTranscriptHandle = {
+    ...identity, readThroughMessageId: null,
+    // The window still has history, but this answer reaches none of it: the
+    // Host read past a retired generation, or the page came back refused.
+    async loadBefore() { reads += 1; },
+    async loadAfter() { assert.fail('unexpected'); },
+    async loadAround() { assert.fail('unexpected'); },
+    async loadLatest() { assert.fail('unexpected'); },
+    async close() {},
+  };
+  const controller = createDesktopTranscriptRangeController(store, async () => handle);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2)]);
+  assert.equal(store.range().hasOlder, true);
+
+  await controller.loadBefore();
+  await controller.loadBefore();
+  await controller.loadBefore();
+  assert.equal(reads, 1, 'the same edge is not read twice');
+
+  // Anything that moves the edge makes it worth asking again.
+  assert.equal(store.retain(2, 2), true);
+  await controller.loadBefore();
+  assert.equal(reads, 2);
+  await controller.close();
+});
+
+test('a fill anchored on the window a navigation replaced cannot splice onto it', () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  acceptSnapshot(store, undefined, 'generation-1', [record(8), record(9)]);
+  const stranded = store.windowEpoch();
+  const navigating = store.replaceWindow();
+  acceptSnapshot(store, navigating, 'generation-1', [record(1), record(2)]);
+  const settled = store.snapshot();
+  for (const batch of encodeDesktopTranscriptPage({ ...identity, windowEpoch: stranded }, {
+    durableThrough: 9, durable: [{ sequence: 9, message: record(9).message }], hasNewer: false,
+  })) assert.equal(store.accept(batch), false);
+  assert.strictEqual(store.snapshot(), settled);
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1', 'message-2']);
+});
+
 test('a replacement outlives the band trimming the window it was issued under', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
-  acceptSnapshot(store, 0, 'generation-1', [record(1), record(2)]);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2)]);
   const navigating = store.replaceWindow();
   assert.equal(store.retain(2, 2), true);
   const replacement = [...encodeDesktopTranscriptSnapshot({
@@ -181,7 +255,7 @@ test('a replacement outlives the band trimming the window it was issued under', 
 
 test('a page anchored on an edge the band has since dropped is refused', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
-  acceptSnapshot(store, 0, 'generation-1', [record(1), record(2), record(3)]);
+  acceptSnapshot(store, undefined, 'generation-1', [record(1), record(2), record(3)]);
   const anchored = store.windowEpoch();
   assert.equal(store.retain(3, 3), true);
   const answer = [...encodeDesktopTranscriptPage({ ...identity, windowEpoch: anchored }, {
@@ -366,7 +440,7 @@ test('a page naming a newer window does not discard the replacement in flight', 
 });
 
 const identity = { sessionId: 'session-1', hostEpoch: 'host-1', generation: 'generation-1' };
-function acceptSnapshot(store: DesktopTranscriptRangeStore, windowEpoch: number, generation: string, records: Array<ReturnType<typeof record>>) {
+function acceptSnapshot(store: DesktopTranscriptRangeStore, windowEpoch: number | undefined, generation: string, records: Array<ReturnType<typeof record>>) {
   for (const batch of encodeDesktopTranscriptSnapshot({
     ...identity, windowEpoch, generation, durableThrough: 1,
     durable: records.map(({ identity: sequence, message }) => ({ sequence, message })),

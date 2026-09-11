@@ -267,44 +267,6 @@ test('history loads follow the reader band, in both directions, once per directi
   assert.deepEqual(calls, ['down']);
 });
 
-test('a fill that moved nothing is not reissued until the reader moves again', async () => {
-  const { document, window } = parseHTML(
-    '<main id="mount"></main><section id="scroller"></section>',
-  );
-  installScrollTestEnvironment(document, window, { queueFrames: false });
-  const transcript = createTranscript(document, window, {
-    clientHeight: 600, turnHeight: 600, turnCount: 8,
-  });
-
-  let requests = 0;
-  function Harness() {
-    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
-    useChatScroll({
-      scrollRef,
-      sessionId: 'session-refused',
-      messages: [{ id: 'message-1' }] as StoredMessage[],
-      behavior: 'auto',
-      hasOlderHistory: true,
-      onPrefetchHistory: () => {
-        requests += 1;
-        return Promise.resolve(false);
-      },
-    });
-    return null;
-  }
-  mountedRoot = createRoot(document.querySelector('#mount')!);
-  await act(() => mountedRoot?.render(
-    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
-  ));
-
-  await act(async () => { transcript.readerScrollTo(0); });
-  // A read refused as stale leaves the window exactly as it was, so asking
-  // again in its own callback would ask forever.
-  assert.equal(requests, 1);
-  await act(async () => {});
-  assert.equal(requests, 1);
-});
-
 test('a failed fill is not reissued until the reader moves again', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',

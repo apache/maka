@@ -61,8 +61,8 @@ export function useChatScroll(input: {
    * intent, and it must reject when the read fails so this hook can tell a
    * filled window from a failed one.
    */
-  /** Fills an edge the reader is approaching; resolves false when it moved nothing. */
-  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean | void>;
+  /** Fills an edge the reader is approaching. Safe to call on every frame that wants it. */
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<void>;
   /** The turns the reader can still reach within the retained band; the rest may go. */
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
 }) {
@@ -206,14 +206,10 @@ export function useChatScroll(input: {
         .then(
           // Chaining pages needs a re-check here, because the render that the
           // landed rows caused ran while this direction still counted as in
-          // flight. A read that moved nothing — refused as stale, or failed —
-          // leaves the geometry and the history flags exactly as they were, so
-          // re-checking would issue the identical request forever. The reader's
-          // next movement, or the next range change, asks again.
-          (moved) => {
-            inFlight[direction] = false;
-            if (moved !== false) check();
-          },
+          // flight. Re-checking cannot spin: a fill that left the edge where it
+          // found it is refused by the range that holds the edge, so this
+          // resolves without another read until the reader moves.
+          () => { inFlight[direction] = false; check(); },
           () => { inFlight[direction] = false; },
         );
     };

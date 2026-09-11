@@ -50,7 +50,7 @@ export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
   returnToLatest(): Promise<void>;
-  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
+  prefetchHistory(edge: 'older' | 'newer'): Promise<void>;
   retainWindow(window: { firstTurnId: string; lastTurnId: string }): void;
 }
 
@@ -123,19 +123,18 @@ export function TranscriptReadingPositionController(props: {
      * `returnToLatest`: that one cancels restoration and clears the search
      * target, because a reader who asks to go somewhere has decided where to
      * be. Filling decides nothing, so it must leave an outstanding jump alone —
-     * the page it is waiting for can still be in flight — and it answers
-     * whether the window
-     * moved, so its caller can tell a filled window from a read that failed or
-     * was refused as stale and would fail again unchanged.
+     * the page it is waiting for can still be in flight.
+     *
+     * Safe to ask on every frame the geometry wants it: the range controller
+     * holds the edge, and refuses a read that would only re-answer where the
+     * edge already stands.
      */
     async prefetchHistory(edge) {
       const controller = props.rangeController.current;
       const { sessionId } = props;
-      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return false;
-      const before = controller.store.snapshot();
+      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
       if (edge === 'older') await controller.loadBefore();
       else await controller.loadAfter();
-      return controller.store.snapshot() !== before;
     },
     async returnToLatest() {
       const controller = props.rangeController.current;

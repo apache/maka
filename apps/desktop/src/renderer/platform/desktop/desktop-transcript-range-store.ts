@@ -54,10 +54,10 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
-  const extending: {
-    older?: { epoch: number; task: Promise<void> };
-    newer?: { epoch: number; task: Promise<void> };
-  } = {};
+  /** Where an edge stood: the window it belonged to and the row it ended on. */
+  type Edge = { epoch: number; anchor: number | null };
+  const extending: { older?: Edge & { task: Promise<void> }; newer?: Edge & { task: Promise<void> } } = {};
+  const spent: { older?: Edge; newer?: Edge } = {};
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
@@ -69,8 +69,10 @@ export function createDesktopTranscriptRangeController(
     // Mint before awaiting an open handle or any in-flight page.
     const windowEpoch = replace ? store.replaceWindow() : store.windowEpoch();
     const opening = handle;
-    // A navigation outlives the band trimming the window under it; it is only
-    // the next navigation that makes this one obsolete.
+    // A navigation outlives the band trimming the window under it: its answer
+    // discards the edges those trims protect, so only the next navigation makes
+    // it obsolete. An extension is anchored on an edge, so anything that
+    // replaces the window does.
     const epoch = replace ? () => store.navigationEpoch() : () => store.windowEpoch();
     const isCurrent = () => !closed && epoch() === windowEpoch && opening === handle;
     try {
@@ -81,27 +83,47 @@ export function createDesktopTranscriptRangeController(
       if (isCurrent()) throw error;
     }
   };
-  const extend = (edge: 'older' | 'newer', maxBytes: number): Promise<void> => {
+  /** Where an edge stands right now, or undefined while there is no window to ask about. */
+  const edgeAt = (edge: 'older' | 'newer'): Edge | undefined => {
+    // A navigation has claimed the window, but the rows describing its edges
+    // have not arrived: `range()` still answers for the window being left, and
+    // anchoring a read there would splice its answer onto what replaces it.
+    if (store.navigating()) return undefined;
     let range: DesktopTranscriptRangeState;
     try {
       range = store.range();
     } catch {
-      return Promise.resolve();
+      return undefined;
     }
-    // Sharing a read only holds while the window it was anchored on does.
+    if (edge === 'older' ? !range.hasOlder : !range.hasNewer) return undefined;
+    return {
+      epoch: store.windowEpoch(),
+      anchor: edge === 'older' ? range.oldestSequence : range.newestSequence,
+    };
+  };
+  const same = (left: Edge | undefined, right: Edge | undefined) =>
+    left !== undefined && right !== undefined &&
+    left.epoch === right.epoch && left.anchor === right.anchor;
+  const extend = (edge: 'older' | 'newer', maxBytes: number): Promise<void> => {
+    const at = edgeAt(edge);
+    if (!at) return Promise.resolve();
+    // Sharing a read only holds while the edge it was anchored on does.
     const pending = extending[edge];
-    if (pending && pending.epoch === store.windowEpoch()) return pending.task;
-    if (edge === 'older' ? !range.hasOlder : !range.hasNewer) return Promise.resolve();
-    const anchor = edge === 'older' ? range.oldestSequence : range.newestSequence;
-    const epoch = store.windowEpoch();
+    if (pending && same(pending, at)) return pending.task;
+    // A read that answered this exact edge and left it here answers the same
+    // way again. What makes it worth asking is the edge moving — which any
+    // page, trim or navigation does, and which is also what the reader is
+    // waiting for.
+    if (same(spent[edge], at)) return Promise.resolve();
     const task = command(false, (value, navigation) =>
       edge === 'older'
-        ? value.loadBefore(anchor, maxBytes, navigation)
-        : value.loadAfter(anchor, maxBytes, navigation),
+        ? value.loadBefore(at.anchor, maxBytes, navigation)
+        : value.loadAfter(at.anchor, maxBytes, navigation),
     ).finally(() => {
+      spent[edge] = edgeAt(edge) ?? at;
       if (extending[edge]?.task === task) extending[edge] = undefined;
     });
-    extending[edge] = { epoch, task };
+    extending[edge] = { ...at, task };
     return task;
   };
   return {
@@ -303,9 +325,9 @@ export class DesktopTranscriptRangeStore {
   readonly #durableOrder: number[] = [];
   readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
-  #mintedEpoch = 0;
   #windowEpoch = 0;
   #navigationEpoch = 0;
+  #navigating = false;
   readonly #retiredGenerations = new Set<string>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
@@ -334,8 +356,18 @@ export class DesktopTranscriptRangeStore {
     return this.#windowEpoch;
   }
 
+  /** The window the last navigation asked for, whether or not it has landed. */
   navigationEpoch(): number {
     return this.#navigationEpoch;
+  }
+
+  /**
+   * Whether a navigation is between being asked for and being fully installed.
+   * While one is, the rows on screen still belong to the window being left, so
+   * they name no edge another read may anchor on.
+   */
+  navigating(): boolean {
+    return this.#navigating;
   }
 
   /**
@@ -343,19 +375,14 @@ export class DesktopTranscriptRangeStore {
    * and drops the partially received records of the window being left behind.
    */
   replaceWindow(): number {
+    this.#navigating = true;
     this.#navigationEpoch = this.#mintWindow();
     return this.#navigationEpoch;
   }
 
-  /**
-   * The window a read must name to be spliced onto. A navigation's answer takes
-   * this back to the epoch it was issued under (see `#reset`), so the counter is
-   * kept apart from it: a number, once minted, names one window forever, and a
-   * read still in flight under a later one stays refusable.
-   */
+  /** Never reuses a number: every window ever named stays distinguishable. */
   #mintWindow(): number {
-    this.#mintedEpoch += 1;
-    this.#windowEpoch = this.#mintedEpoch;
+    this.#windowEpoch += 1;
     this.#pending.clear();
     this.#batchChanged = false;
     return this.#windowEpoch;
@@ -369,7 +396,9 @@ export class DesktopTranscriptRangeStore {
    * replacement of the window — navigating away, or the band trimming the edge
    * out — leaves its answer unable to reach what is left, and no edge cursor
    * can name the hole it would open. A replacement assumes nothing about the
-   * edges, because it discards them; only a newer navigation makes it stale.
+   * edges, because it discards them; only a newer navigation makes it stale,
+   * and its own remaining fragments keep arriving under the epoch it was asked
+   * for however many the band has minted since.
    *
    * Batches that name no epoch answer nothing: tail broadcasts apply to
    * whatever the window holds, and a snapshot replacing the transcript
@@ -380,7 +409,11 @@ export class DesktopTranscriptRangeStore {
     if (batch.reset) {
       return batch.windowEpoch === undefined || batch.windowEpoch === this.#navigationEpoch;
     }
-    if (batch.windowEpoch !== undefined && batch.windowEpoch !== this.#windowEpoch) return false;
+    if (
+      batch.windowEpoch !== undefined &&
+      batch.windowEpoch !== this.#windowEpoch &&
+      !(this.#navigating && batch.windowEpoch === this.#navigationEpoch)
+    ) return false;
     return batch.sessionId === this.#sourceSessionId &&
       batch.generation === this.#generation &&
       batch.hostEpoch === this.#hostEpoch;
@@ -422,6 +455,13 @@ export class DesktopTranscriptRangeStore {
     }
     this.#batchChanged = this.#batchChanged || changed;
     if (!batch.ready) return false;
+    // The navigation is installed. Its window is what the reader is on now, and
+    // it is named afresh: every read still in flight was anchored on an edge
+    // this answer threw away, so none of them may splice onto what replaced it.
+    if (this.#navigating && batch.windowEpoch === this.#navigationEpoch) {
+      this.#navigating = false;
+      this.#windowEpoch += 1;
+    }
     const committed = this.#batchChanged;
     this.#batchChanged = false;
     if (committed) this.#commit();
@@ -551,10 +591,6 @@ export class DesktopTranscriptRangeStore {
       }
       this.#liveGeneration = batch.generation;
     }
-    // The window this navigation was issued under is the window it installs,
-    // however many epochs the band minted while it was outstanding: it discards
-    // the edges those trims were protecting. Its remaining fragments extend it.
-    if (batch.windowEpoch !== undefined) this.#windowEpoch = batch.windowEpoch;
     this.#durable.clear();
     this.#overlay.clear();
     this.#durableOrder.length = 0;

@@ -909,11 +909,13 @@ test('retries a failed transcript recovery after a newer observation becomes rea
 
 test('forwards a larger logical history range without changing batch size', async () => {
   const store = transcriptStore();
+  // Rows below an open newer edge only install as a command's answer, so this
+  // snapshot has to be one: it is the window a navigation asked for.
   for (const batch of encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'generation-1',
     hostEpoch: 'host-1',
-    windowEpoch: 0,
+    windowEpoch: store.replaceWindow(),
     durableThrough: 4,
     durable: [
       { sequence: 1, message: assistantMessage('earlier') },

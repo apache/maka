@@ -30,7 +30,7 @@ import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
 import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
-import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { encodeDesktopTranscriptPage, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import type { AttachmentRef } from '@maka/core/events';
 import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
@@ -142,7 +142,7 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
           durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
         };
         for (const batch of encodeDesktopTranscriptSnapshot({
-          ...snapshot, windowEpoch: 0, durable: [{ sequence: 1, message: result }],
+          ...snapshot, durable: [{ sequence: 1, message: result }],
         })) onBatch({ ...batch, deliverySequence: 1 });
         return {
           ...snapshot, readThroughMessageId: result.id,
@@ -225,10 +225,17 @@ test('WorkHub proves a long historical Turn tail before caching its final result
           async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { windowEpoch: number }) {
             loadAfters += 1;
             assert.equal(anchor, 1);
-            emit(navigation.windowEpoch, [
-              { sequence: 2, message: final },
-              { sequence: 3, message: next },
-            ], false, true);
+            // An extension splices onto the window; only a navigation replaces it.
+            for (const batch of encodeDesktopTranscriptPage({
+              sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+              windowEpoch: navigation.windowEpoch,
+            }, {
+              durableThrough: 4, hasNewer: true,
+              durable: [
+                { sequence: 2, message: final },
+                { sequence: 3, message: next },
+              ],
+            })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
           },
           close: async () => undefined,
         };
@@ -350,7 +357,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;
-        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, windowEpoch: 0, durable: [] })) {
+        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, durable: [] })) {
           deliver(batch);
         }
         return { ...snapshot, readThroughMessageId: null };

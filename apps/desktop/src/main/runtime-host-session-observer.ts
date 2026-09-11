@@ -132,8 +132,6 @@ interface TranscriptConsumer {
   generation: string;
   /** The window the standing replacement installs; what a read must still reach. */
   windowEpoch: number;
-  /** The newest window the Renderer has named, replacing or extending. */
-  newestWindowEpoch: number;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
@@ -313,7 +311,6 @@ export class RuntimeHostSessionObserver {
       target,
       generation: replica.generation,
       windowEpoch: 0,
-      newestWindowEpoch: 0,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -424,10 +421,14 @@ export class RuntimeHostSessionObserver {
    * The Renderer mints a version for every window it can no longer splice onto
    * — navigating away, and the band trimming an edge out. Only the first of
    * those abandons a read already in flight: a replacement discards the edges,
-   * so a trim under it leaves it perfectly answerable. So the consumer's
-   * version is what the last replacement named, an extension that names a newer
-   * one is admitted without moving it, and only a version older than the
-   * standing replacement belongs to a window the Renderer has left.
+   * so a trim under it leaves it perfectly answerable.
+   *
+   * Which window the Renderer currently holds is not something Main can derive
+   * from the numbers it sees, and it does not need to: the Renderer refuses
+   * what it cannot splice. What Main tracks is the standing replacement, which
+   * is the only thing that abandons work — an extension naming a newer window
+   * is admitted without moving it, and a version below it named a window the
+   * Renderer has left.
    */
   #admitTranscriptNavigation(
     request: DesktopTranscriptRangeRequest,
@@ -438,29 +439,19 @@ export class RuntimeHostSessionObserver {
     const version = request.windowEpoch;
     if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
     if (version < consumer.windowEpoch) return { state, replica };
-    if (replaces) consumer.windowEpoch = version;
-    if (version > consumer.newestWindowEpoch) consumer.newestWindowEpoch = version;
-    this.#dropSupersededTranscriptPages(consumer);
+    if (replaces && version > consumer.windowEpoch) {
+      consumer.windowEpoch = version;
+      // Every queued answer was read for a window this replacement discards.
+      consumer.pendingPages.splice(0).forEach((page) =>
+        this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
+      );
+    }
     return { state, replica, consumer };
   }
 
-  /**
-   * Releases the delivery budget held by queued answers the window can no longer
-   * take. An extension is spliceable only onto the window it named, so any newer
-   * one strands it; a replacement installs its own window, so only a newer
-   * replacement does.
-   */
-  #dropSupersededTranscriptPages(consumer: TranscriptConsumer): void {
-    for (let index = consumer.pendingPages.length - 1; index >= 0; index -= 1) {
-      const page = consumer.pendingPages[index]!;
-      if (this.#deliversTranscriptPage(consumer, page)) continue;
-      consumer.pendingPages.splice(index, 1);
-      this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes);
-    }
-  }
-
-  #deliversTranscriptPage(consumer: TranscriptConsumer, page: PendingTranscriptPage): boolean {
-    return page.windowEpoch >= (page.replaces ? consumer.windowEpoch : consumer.newestWindowEpoch);
+  /** Asked before a read is started and again before its answer is sent. */
+  #deliversTranscriptPage(consumer: TranscriptConsumer, windowEpoch: number): boolean {
+    return windowEpoch >= consumer.windowEpoch;
   }
 
   async #runTranscriptRangeOperation(
@@ -480,7 +471,7 @@ export class RuntimeHostSessionObserver {
     const isCurrent = () =>
       state.replica === replica &&
       state.transcriptConsumers.get(request.consumerId) === consumer &&
-      consumer.windowEpoch <= request.windowEpoch;
+      this.#deliversTranscriptPage(consumer, request.windowEpoch);
     let answer: Awaited<ReturnType<typeof operation>>;
     try {
       answer = await operation(replica, isCurrent);
@@ -1310,7 +1301,7 @@ export class RuntimeHostSessionObserver {
           if (page) {
             try {
               if (
-                this.#deliversTranscriptPage(consumer, page) &&
+                this.#deliversTranscriptPage(consumer, page.windowEpoch) &&
                 page.generation === consumer.generation &&
                 state.replica?.generation === consumer.generation
               ) {
