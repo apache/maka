@@ -24,8 +24,10 @@ import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
   isRunNotificationKind,
   resolveNotificationContent,
+  resolveNotificationIncognito,
   shouldRaiseRunNotification,
 } from './notifications-policy.js';
+import type { PrivacyAuthority } from './notifications-policy.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
@@ -35,6 +37,12 @@ interface NotificationsIpcDeps {
   locale: Pick<DesktopLocaleAuthority, 'observe'>;
   mainWindowController: MainWindowController;
   e2e: boolean;
+  /**
+   * Runtime Host privacy authority (#4981). The local settings copy never
+   * receives privacy updates, so the gate always asks the notification's
+   * own host; an unknown or unreachable verdict suppresses the banner.
+   */
+  privacyAuthority: PrivacyAuthority;
 }
 
 /**
@@ -51,18 +59,22 @@ interface NotificationsIpcDeps {
 export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
   const target = deps.ipcMain ?? ipcMain;
   target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
-    const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
+    const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown; hostId?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
 
     const supported = Notification.isSupported();
     // Read the toggle lazily so a mid-session settings change takes
     // effect on the very next turn without any cache invalidation.
     const settings = await deps.settingsStore.get();
+    // The banner belongs to one host: only that host can authorize its
+    // content. A missing source stays unknown and suppresses (#4981).
+    const sourceHostId = typeof raw.hostId === 'string' && raw.hostId ? raw.hostId : undefined;
+    const incognito = await resolveNotificationIncognito(deps.privacyAuthority, sourceHostId);
     const gate = {
       enabled: settings.notifications.runComplete,
       supported,
       windowFocused: deps.mainWindowController.isFocused(),
-      incognito: settings.privacy.incognitoActive,
+      incognito,
       e2e: deps.e2e,
     };
     if (!shouldRaiseRunNotification(gate)) return;

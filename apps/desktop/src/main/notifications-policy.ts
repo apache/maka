@@ -18,6 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { RuntimeHostDesktopTargetState } from './runtime-host-desktop-manager.js';
 
 /**
  * Pure decision + copy helpers for desktop run-completion notifications.
@@ -124,6 +125,61 @@ function sanitizeLine(value: unknown, max: number): string {
   const collapsed = value.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= max) return collapsed;
   return `${collapsed.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Minimal host identity a notification carries to its privacy authority. */
+export type NotificationSourceHostId = string | undefined;
+
+/**
+ * Resolves whether the notification source host currently holds incognito.
+ * The argument is the originating host; an unknown source must suppress
+ * (fail-closed) because no other host can authorize the content (#4981).
+ */
+export interface PrivacyAuthority {
+  isIncognitoActive(sourceHostId: NotificationSourceHostId): Promise<boolean>;
+}
+
+/**
+ * Reads incognito from the authority (#4981). The local settings copy never
+ * receives privacy updates, so its value must not decide content-bearing
+ * notifications. An unknown or unreachable authority suppresses the
+ * notification rather than risking exposure (fail-closed).
+ */
+export async function resolveNotificationIncognito(
+  privacyAuthority: PrivacyAuthority,
+  sourceHostId: NotificationSourceHostId,
+): Promise<boolean> {
+  try {
+    return await privacyAuthority.isIncognitoActive(sourceHostId);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Builds the authority boot passes to the notification gate. Only the
+ * notification's own host is queried: session guests cannot resolve policy
+ * and must never decide local notifications, while a reconnecting source
+ * host keeps its unknown verdict (suppressed) instead of being dropped
+ * from the decision. No verdict is cached.
+ */
+export function createHostPrivacyAuthority(
+  listEntries: () => readonly RuntimeHostDesktopTargetState[],
+): PrivacyAuthority {
+  return {
+    async isIncognitoActive(sourceHostId) {
+      if (!sourceHostId) return true;
+      const entry = listEntries().find(
+        (candidate) =>
+          (candidate.readiness === 'ready'
+            ? candidate.candidate.client.hostId
+            : candidate.hostId) === sourceHostId,
+      );
+      if (!entry || entry.readiness !== 'ready') return true;
+      return (await entry.candidate.client.queryRuntimePolicy()).policy.privacy
+        .incognitoActive;
+    },
+  };
 }
 
 /**

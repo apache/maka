@@ -162,6 +162,7 @@ import { useAppShellProjectContext } from './use-project-context';
 import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
+  resolveRunEndedHostId,
 } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import { createAppShellChatActions } from './app-shell-chat-actions';
@@ -1944,9 +1945,12 @@ function AppShellContent({
       if (kind === 'completed' && activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
       const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
+      // The banner belongs to this session's host: only that host can
+      // authorize its content, so carry its identity to main (#4981).
+      const hostId = resolveRunEndedHostId(sessionId);
       // Best-effort: swallow any main-side failure so a missed banner
       // never surfaces as an unhandled promise rejection.
-      void window.maka.notifications.runEnded({ kind, title, body }).catch(() => {});
+      void window.maka.notifications.runEnded({ kind, title, body, ...(hostId ? { hostId } : {}) }).catch(() => {});
     },
   });
 
