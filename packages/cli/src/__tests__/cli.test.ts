@@ -46,17 +46,17 @@ describe('Maka CLI args', () => {
     const help = parseMakaCliArgs(['--help'], '0.1.0');
     assert.equal(help.kind, 'help');
     if (help.kind !== 'help') return;
-    assert.match(help.text, /^  maka              Start the TUI$/m);
+    assert.match(help.text, /^ {2}maka {2,}Start the TUI$/m);
     assert.doesNotMatch(help.text, /maka-agent/);
-    assert.match(help.text, /^  maka run /m);
-    assert.match(help.text, /^  maka activate /m);
-    assert.match(help.text, /^  maka eval /m);
-    assert.match(help.text, /^  maka update --target /m);
-    assert.match(
-      help.text,
-      /^  maka --acp      Serve ACP v1 over stdio \(initialize, session\/new, session\/list\)$/m,
-    );
-    assert.match(help.text, /^  maka runtime-host serve /m);
+    assert.match(help.text, /^ {2}maka run /m);
+    assert.match(help.text, /^ {2}maka activate /m);
+    assert.match(help.text, /^ {2}maka eval /m);
+    assert.match(help.text, /^ {2}maka update /m);
+    assert.match(help.text, /^ {2}maka --acp {2,}Serve ACP v1 over stdio /m);
+    // Runtime Host owns its own help; the root lists it once and points there.
+    assert.match(help.text, /^ {2}maka runtime-host \.\.\. {2,}Serve and manage a Runtime Host$/m);
+    assert.doesNotMatch(help.text, /^ {2}maka runtime-host (?:serve|service|access) /m);
+    assert.ok(help.text.split('\n').length < 30, 'the root help stays a single screen');
     assert.doesNotMatch(help.text, /cli:dev/);
   });
 
@@ -118,18 +118,27 @@ describe('Maka CLI args', () => {
     assert.equal(help.kind, 'help');
     if (help.kind === 'help') {
       assert.match(help.text, /^Usage: npm run cli:dev --$/m);
-      assert.match(
-        help.text,
-        /^  npm run cli:dev -- runtime-host access issue --principal <id> --preset /m,
-      );
-      assert.match(help.text, /^  npm run cli:dev -- runtime-host project list /m);
-      assert.match(
-        help.text,
-        /^  npm run cli:dev -- runtime-host profile set .*--ssh-destination /m,
-      );
-      assert.match(help.text, /^  npm run cli:dev -- runtime-host profile set .*--plaintext-url /m);
-      assert.doesNotMatch(help.text, /^  maka runtime-host /m);
+      assert.match(help.text, /^ {2}npm run cli:dev -- runtime-host \.\.\. /m);
+      assert.doesNotMatch(help.text, /^ {2}maka runtime-host /m);
       assert.doesNotMatch(help.text, /maka-agent/);
+    }
+    // The launcher name has to survive every layer, not just the root.
+    const hostHelp = parseMakaCliArgs(['runtime-host', '--help'], '0.1.0', 'npm run cli:dev --');
+    assert.equal(hostHelp.kind, 'help');
+    if (hostHelp.kind === 'help') {
+      assert.match(hostHelp.text, /^Usage: npm run cli:dev -- runtime-host <command>/m);
+    }
+    const accessHelp = parseMakaCliArgs(
+      ['runtime-host', 'access', '--help'],
+      '0.1.0',
+      'npm run cli:dev --',
+    );
+    assert.equal(accessHelp.kind, 'help');
+    if (accessHelp.kind === 'help') {
+      assert.match(
+        accessHelp.text,
+        /^ {2}npm run cli:dev -- runtime-host access issue --principal <id> --preset /m,
+      );
     }
     await assert.rejects(
       runMakaCli(['--version'], {
@@ -366,3 +375,74 @@ async function readClientInstanceId(path: string): Promise<string> {
   }
   return document.clientInstanceId;
 }
+
+describe('layered help coverage', () => {
+  const screens = (launcher = 'maka') => {
+    const texts: string[] = [];
+    const grab = (argv: string[]) => {
+      const command = parseMakaCliArgs(argv, '0.1.0', launcher);
+      if (command.kind === 'help') texts.push(command.text);
+    };
+    grab(['--help']);
+    grab(['update', '--help']);
+    grab(['session-export', '--help']);
+    grab(['session-import', '--help']);
+    grab(['runtime-host', '--help']);
+    for (const topic of [
+      'activate',
+      'serve',
+      'setup',
+      'service',
+      'access',
+      'project',
+      'plugin',
+      'profile',
+      'capability-provider',
+    ]) {
+      grab(['runtime-host', topic, '--help']);
+    }
+    return texts.join('\n');
+  };
+
+  test('every command the parser accepts has a help screen', () => {
+    const all = screens();
+    for (const command of [
+      'runtime-host activate',
+      'runtime-host serve',
+      'runtime-host setup',
+      'runtime-host service',
+      'runtime-host access',
+      'runtime-host project',
+      'runtime-host plugin',
+      'runtime-host profile',
+      'runtime-host capability-provider',
+      'session-export',
+      'session-import',
+      'update',
+    ]) {
+      assert.ok(all.includes(`maka ${command}`), `${command} is unreachable from any help screen`);
+    }
+  });
+
+  test('the credential environment variable stays documented', () => {
+    // Its only other home was the root screen, which the layering shrank.
+    assert.match(screens(), /MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL/);
+  });
+
+  test('every summary in the root screen shares one column', () => {
+    const help = parseMakaCliArgs(['--help'], '0.1.0');
+    assert.equal(help.kind, 'help');
+    if (help.kind !== 'help') return;
+    const summaryColumns = help.text
+      .split('\n')
+      .filter((line) => /^ {2}maka\b/.test(line))
+      .map((line) => line.search(/(?<= {2})\S(?!.*\s{2}\S)/u))
+      .filter((column) => column > 0);
+    assert.ok(summaryColumns.length > 5, 'the root screen should list several commands');
+    assert.equal(
+      new Set(summaryColumns).size,
+      1,
+      `summaries start at ${[...new Set(summaryColumns)].join(', ')}`,
+    );
+  });
+});
