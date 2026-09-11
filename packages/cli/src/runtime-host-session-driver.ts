@@ -863,13 +863,24 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (promptMessage.origin) {
       throw new Error(`Cannot rewind to turn ${turnId}: Host-triggered prompts are read-only.`);
     }
-    if ((promptMessage.quotes?.length ?? 0) > 0 || (promptMessage.attachments?.length ?? 0) > 0) {
+    const unsupported =
+      (promptMessage.quotes?.length ?? 0) > 0
+        ? 'rewind_unsupported_quotes'
+        : (promptMessage.attachments?.length ?? 0) > 0
+          ? 'rewind_unsupported_attachments'
+          : null;
+    if (unsupported) {
       // Refilling only the human-facing text would silently drop the turn's
       // structured context from the replacement submit (#5109). Fail closed
-      // until the TUI can carry it.
-      throw new Error(
-        `Cannot rewind to turn ${turnId}: it carries quotes or attachments that the TUI cannot restore into the replacement prompt. Edit this message in Desktop instead.`,
-      );
+      // until the TUI can carry it. The machine code lets the runner render
+      // a localized notice naming the carrier; the message text is the
+      // depth-of-defence fallback and deliberately promises nothing about
+      // other surfaces.
+      const error = new Error(
+        `Cannot rewind to turn ${turnId}: it carries structured context the TUI cannot restore into the replacement prompt.`,
+      ) as Error & { code?: string };
+      error.code = unsupported;
+      throw error;
     }
     const targetSessionId = this.#newId();
     for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {

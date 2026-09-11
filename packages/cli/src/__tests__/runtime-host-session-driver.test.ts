@@ -2175,8 +2175,14 @@ describe('Runtime Host Maka Session driver', () => {
     });
     await driver.switchSession('session-1');
 
-    await assert.rejects(driver.rewindToTurn('turn-quoted'), /carries quotes or attachments/);
-    await assert.rejects(driver.rewindToTurn('turn-attached'), /carries quotes or attachments/);
+    await assert.rejects(
+      driver.rewindToTurn('turn-quoted'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-attached'),
+      /carries structured context the TUI cannot restore/,
+    );
     assert.equal(
       connection.requests.some(({ operation }) => operation === 'session.revision.create'),
       false,
