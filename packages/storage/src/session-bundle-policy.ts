@@ -19,6 +19,7 @@
 
 import {
   copyFile,
+  link,
   lstat,
   mkdir,
   open,
@@ -27,15 +28,17 @@ import {
   realpath,
   rename,
   rm,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import type { StorageRootLease } from './root-authority.js';
 import {
   withOfflineContextSnapshot,
   copyContextSnapshot,
@@ -163,6 +166,16 @@ export interface SessionBundleExportInput extends SessionBundleRootLayoutInput {
    * asks a backup for.
    */
   omitDiagnostics?: boolean;
+  /**
+   * Authority the caller already holds, instead of electing it here.
+   *
+   * The Runtime Host owns the Storage Root for its whole lifetime and the
+   * owner lock is an election that refuses a second hold -- from any process,
+   * its own included. Lending the lease is the only way the Host can run this
+   * while it is up, which is the only way a user can reach it from the app.
+   * Omitted, the authority is elected exactly as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 
   // Every option above defaults to the behaviour this function had before it
   // learned to make portable bundles, so its existing callers are unchanged.
@@ -291,46 +304,49 @@ export async function planSessionBundleExport(
 export async function exportSessionBundleState(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
-  return withOfflineContextSnapshot(input.stateRoot, (contextLocked) =>
-    withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
-      const destinationRoot = resolve(input.destinationRoot);
-      await assertDestinationMissing(destinationRoot);
-      const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-      try {
-        await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-        // Take the private copy BEFORE anything is read. `lease.backup()` is
-        // what freezes the content; every decision after this -- schema, the
-        // subtree, the artifact list, quiescence, the manifest -- is made
-        // against this one file, so the bundle cannot describe two moments.
-        const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-        await backupOperationalState(stateRoot, databasePath);
-        const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-        for (const entry of plan.entries) {
-          if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-            continue;
+  return withOfflineContextSnapshot(
+    input.stateRoot,
+    (contextLocked) =>
+      withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+        const destinationRoot = resolve(input.destinationRoot);
+        await assertDestinationMissing(destinationRoot);
+        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+          // Take the private copy BEFORE anything is read. `lease.backup()` is
+          // what freezes the content; every decision after this -- schema, the
+          // subtree, the artifact list, quiescence, the manifest -- is made
+          // against this one file, so the bundle cannot describe two moments.
+          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+          await backupOperationalState(stateRoot, databasePath);
+          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+          for (const entry of plan.entries) {
+            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
+              continue;
+            }
+            const destination = resolveInside(stagingRoot, entry.relativePath);
+            if (entry.kind === 'directory') {
+              await mkdir(destination, { recursive: true });
+              continue;
+            }
+            await mkdir(dirname(destination), { recursive: true });
+            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
           }
-          const destination = resolveInside(stagingRoot, entry.relativePath);
-          if (entry.kind === 'directory') {
-            await mkdir(destination, { recursive: true });
-            continue;
-          }
-          await mkdir(dirname(destination), { recursive: true });
-          await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+            omitDiagnostics: input.omitDiagnostics === true,
+            requireQuiescent: input.requireQuiescent === true,
+          });
+          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+          await validateContextSnapshot(stagingRoot);
+          await mkdir(dirname(plan.destinationRoot), { recursive: true });
+          await rename(stagingRoot, plan.destinationRoot);
+          return plan;
+        } catch (error) {
+          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+          throw error;
         }
-        await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-          omitDiagnostics: input.omitDiagnostics === true,
-          requireQuiescent: input.requireQuiescent === true,
-        });
-        await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-        await validateContextSnapshot(stagingRoot);
-        await mkdir(dirname(plan.destinationRoot), { recursive: true });
-        await rename(stagingRoot, plan.destinationRoot);
-        return plan;
-      } catch (error) {
-        await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-        throw error;
-      }
-    }),
+      }),
+    input.lease ? { lease: input.lease } : {},
   );
 }
 
@@ -869,6 +885,16 @@ export interface SessionBundleImportInput {
   stateRoot: string;
   /** A hydrated bundle's state tree: the filtered database, artifacts, context. */
   bundleStateRoot: string;
+  /**
+   * Authority the caller already holds, instead of electing it here.
+   *
+   * The Runtime Host owns the Storage Root for its whole lifetime and the
+   * owner lock is an election that refuses a second hold -- from any process,
+   * its own included. Lending the lease is the only way the Host can run this
+   * while it is up, which is the only way a user can reach it from the app.
+   * Omitted, the authority is elected exactly as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 }
 
 export interface SessionBundleImportResult {
@@ -965,7 +991,10 @@ export async function importSessionBundleState(
           lease.close();
         }
       }),
-    { requireAuthority: bundleCarriesContext },
+    {
+      requireAuthority: bundleCarriesContext,
+      ...(input.lease ? { lease: input.lease } : {}),
+    },
   );
 }
 
@@ -1346,9 +1375,58 @@ async function copyContextValueTree(source: string, destination: string): Promis
       );
     }
     await mkdir(dirname(to), { recursive: true });
-    await copyFile(from, to, constants.COPYFILE_EXCL).catch((error: unknown) => {
+    await publishContextValue(from, to);
+  }
+}
+
+/**
+ * Publishes one payload the way the Context Store publishes its own: the bytes
+ * are assembled under a staging name and become visible at the final path by a
+ * single `link`.
+ *
+ * `copyFile` fills its destination progressively, so the final path is
+ * observable half-written -- measured at 38 distinct intermediate sizes while
+ * copying 64 MiB. Payloads are content-addressed, so a bundle and its target
+ * routinely name the same path, and that path is one another Session may be
+ * reading. It also decides what a retry sees: a copy interrupted midway leaves
+ * a truncated file AT the final path, and the previous `EEXIST`-is-fine rule
+ * accepted it as already present.
+ *
+ * The staging name is the Store's with a different suffix. Two imports cannot
+ * race -- both need the write authority, and it is exclusive -- but an import
+ * and the Store publishing the same blob can, and they must not share a name.
+ */
+async function publishContextValue(from: string, to: string): Promise<void> {
+  const staging = join(dirname(to), `.${basename(to)}.import.tmp`);
+  await rm(staging, { force: true });
+  try {
+    await copyFile(from, staging, constants.COPYFILE_EXCL);
+    // 'r+' rather than 'r': Windows flushes through the handle and refuses a
+    // read-only one, so a read handle would make this fail only on Windows.
+    const handle = await open(staging, 'r+');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await link(staging, to);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    });
+      // Reaching the final path now means the payload was already there, not
+      // that this import put it there. Content addressing says it should be
+      // byte-identical; if it is not, the store holds something this bundle
+      // cannot explain and overwriting it would destroy the other Session's
+      // payload.
+      if (!(await sameFileContent(from, to))) {
+        throw new SessionBundleImportError(
+          'conflict',
+          `Context payload already names different content: ${basename(to)}`,
+        );
+      }
+    }
+  } finally {
+    await unlink(staging).catch(() => {});
   }
 }
 

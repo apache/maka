@@ -18,9 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
@@ -833,5 +833,172 @@ test('accepts an identical artifact left by a crashed attempt, and only an ident
   } finally {
     await rm(source.root, { recursive: true, force: true });
     await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses a context payload whose path already holds different bytes', async () => {
+  const source = await makeWorkspace('maka-import-payload-source');
+  const target = await makeWorkspace('maka-import-payload-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+
+    // Payloads are addressed by the hash of their content, so the same path in
+    // two workspaces is supposed to mean the same bytes. When it does not, the
+    // target holds something this bundle cannot explain -- and the import used
+    // to swallow `EEXIST` and report success over it.
+    const occupied = join(target.workspaceRoot, 'context-offload-values', seeded.relativePath);
+    await mkdir(dirname(occupied), { recursive: true });
+    await writeFile(occupied, 'NOT-THE-SAME');
+
+    await assert.rejects(
+      () => importState(target.workspaceRoot, source.workspaceRoot),
+      /Context payload already names different content/,
+    );
+
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(occupied, 'utf8'), 'NOT-THE-SAME', 'the other payload survives');
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('publishes a context payload past a staging file a crashed attempt left', async () => {
+  const source = await makeWorkspace('maka-import-staging-source');
+  const target = await makeWorkspace('maka-import-staging-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+
+    // A payload now becomes visible by `link`, so an interrupted copy leaves its
+    // half-written bytes under the staging name rather than at the path other
+    // Sessions read. The retry has to get past its own leftover.
+    const values = join(target.workspaceRoot, 'context-offload-values');
+    const destination = join(values, seeded.relativePath);
+    const staging = join(dirname(destination), `.${basename(destination)}.import.tmp`);
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(staging, 'HALF');
+
+    const imported = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.equal(imported.contextRefs, 1);
+
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(destination, 'utf8'), 'ABC', 'the leftover was not published');
+    assert.deepEqual(
+      (await readdir(dirname(destination))).filter((name) => name.endsWith('.import.tmp')),
+      [],
+      'staging files do not outlive the import',
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('imports under authority the caller already holds', async () => {
+  const source = await makeWorkspace('maka-import-lease-source');
+  const target = await makeWorkspace('maka-import-lease-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+
+    const { resolveStorageRoot, tryAcquireInteractiveRootOwner } = await import(
+      '@maka/storage/root-authority'
+    );
+    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+
+    // What a Runtime Host is: it took this authority at startup and holds it
+    // for its lifetime.
+    const capability = await resolveStorageRoot({
+      path: target.workspaceRoot,
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'the probe must hold the authority for this test to mean anything');
+    try {
+      // The lock is an election, not a mutex: it refuses a second hold even
+      // from the process already holding it, so electing here cannot work.
+      await assert.rejects(
+        () =>
+          importSessionBundleState({
+            stateRoot: target.workspaceRoot,
+            bundleStateRoot: source.workspaceRoot,
+          }),
+        /offline Storage Root/,
+      );
+
+      const imported = await importSessionBundleState({
+        stateRoot: target.workspaceRoot,
+        bundleStateRoot: source.workspaceRoot,
+        lease: owner.lease,
+      });
+      assert.deepEqual([...imported.sessionIds], [sessionId]);
+      assert.equal(imported.contextRefs, 1);
+      const { readFile } = await import('node:fs/promises');
+      assert.equal(
+        await readFile(
+          join(target.workspaceRoot, 'context-offload-values', seeded.relativePath),
+          'utf8',
+        ),
+        'ABC',
+      );
+    } finally {
+      await owner?.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('refuses a lease that names a different Storage Root', async () => {
+  const source = await makeWorkspace('maka-import-wrong-lease-source');
+  const target = await makeWorkspace('maka-import-wrong-lease-target');
+  const other = await makeWorkspace('maka-import-wrong-lease-other');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await createSession(target.workspaceRoot, 'Unrelated');
+    await createSession(other.workspaceRoot, 'Elsewhere');
+
+    const { resolveStorageRoot, tryAcquireInteractiveRootOwner } = await import(
+      '@maka/storage/root-authority'
+    );
+    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+
+    // A valid lease is still only authority over the root it names. Accepting
+    // one for a different root would write to a directory nobody holds.
+    const capability = await resolveStorageRoot({ path: other.workspaceRoot, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    try {
+      await assert.rejects(
+        () =>
+          importSessionBundleState({
+            stateRoot: target.workspaceRoot,
+            bundleStateRoot: source.workspaceRoot,
+            lease: owner.lease,
+          }),
+        /does not name this Storage Root/,
+      );
+    } finally {
+      await owner?.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+    await rm(other.root, { recursive: true, force: true });
   }
 });

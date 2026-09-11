@@ -28,6 +28,7 @@ import {
   resolveStorageRoot,
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
+  type StorageRootLease,
 } from './root-authority.js';
 import {
   migrateSqliteContextOffloadDatabase,
@@ -58,6 +59,19 @@ export async function withOfflineContextSnapshot<T>(
      * runs unprotected.
      */
     requireAuthority?: boolean;
+    /**
+     * Run under authority the caller already holds instead of electing it.
+     *
+     * The owner lock is an election, not a mutex: it is taken with `tryLock`
+     * and refuses a second exclusive hold on the same file even from the same
+     * process. So a Runtime Host cannot reach this path by calling it -- it
+     * would be refused by its own lock -- and the only way it can prepare or
+     * accept a bundle is to lend the authority it took at startup.
+     *
+     * The lease must name this same root. A valid lease for a DIFFERENT root
+     * would otherwise authorise writing to a directory nobody holds.
+     */
+    lease?: StorageRootLease<'interactive', 'write'>;
   } = {},
 ): Promise<T> {
   if (
@@ -65,6 +79,13 @@ export async function withOfflineContextSnapshot<T>(
     !(await exists(join(root, CONTEXT_OFFLOAD_DATABASE_NAME)))
   ) {
     return operation(false);
+  }
+  const lease = options.lease;
+  if (lease) {
+    if ((await realpath(root).catch(() => resolve(root))) !== lease.canonicalPath) {
+      throw new Error('Context snapshot lease does not name this Storage Root');
+    }
+    return runWithStorageRootLease(lease, 'interactive', 'write', () => operation(true));
   }
   // Discovery finds a marked root; it does not make one. A workspace that has
   // never been opened is exactly the target an import writes to first, so when
