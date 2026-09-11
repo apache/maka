@@ -587,15 +587,17 @@ describe('external URL opener hardening', () => {
   });
 
   test('a missing opener binary fires the async error and the session survives it', async () => {
-    // Real child process, no mocks: xdg-open does not exist on most hosts
-    // this suite runs on, so libuv reports ENOENT asynchronously — exactly
-    // the path that surfaced as an uncaughtException before the fix.
-    // Observing the error through an extra listener proves the event fired;
-    // this test completing at all proves it was swallowed instead of ending
-    // the process.
+    // Real child process, no mocks: the opener is redirected to an absolute
+    // path that cannot exist, so libuv reports ENOENT asynchronously —
+    // exactly the path that surfaced as an uncaughtException before the fix.
+    // (CI images legitimately ship the real openers — the ubuntu runner has
+    // xdg-utils — so the opener name itself must not be relied on to be
+    // missing.) Observing the error through an extra listener proves the
+    // event fired; this test completing at all proves it was swallowed
+    // instead of ending the process.
     let child: ChildProcess | undefined;
     const recorder = ((command: string, args: readonly string[], options?: SpawnOptions) => {
-      child = spawn(command, args, options ?? {});
+      child = spawn(`/definitely/not/a/real/opener-${command}`, args, options ?? {});
       return child;
     }) as unknown as typeof SpawnFn;
     openExternalUrl('https://apache.org', 'linux', recorder);
