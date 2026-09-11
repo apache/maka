@@ -2581,9 +2581,9 @@ function AppShellContent({
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
-                          title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
-                          detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
-                          cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
+                          title: desktopConversationCopy.actions.revisionBannerTitle,
+                          detail: desktopConversationCopy.actions.revisionBannerDetail,
+                          cancelLabel: desktopConversationCopy.actions.revisionCancelLabel,
                           onCancel: () => { void cancelRevisionDraft(); },
                         }
                       : undefined
