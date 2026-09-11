@@ -18,13 +18,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { getStartupRecoveryCopy } from '../runtime-host-boot-copy.js';
+import test from 'node:test';
+import { nativeFileDialogCopy } from '../native-file-dialog-copy.js';
 
-test('startup recovery copy preserves Traditional Chinese', () => {
-  const copy = getStartupRecoveryCopy('zh-TW');
-  assert.equal(copy.storageRoot.title, 'Maka 工作區需要修復');
-  assert.match(copy.storageRoot.detail('C:\\Maka'), /磁碟識別碼/);
-  assert.equal(copy.runtimeHost.title, '預設 Runtime Host 無法連線');
-  assert.match(copy.runtimeHost.detail('失敗'), /設定中處理/);
+test('every native file dialog string is translated in each locale', () => {
+  const en = nativeFileDialogCopy('en');
+  for (const locale of ['zh-CN', 'zh-TW'] as const) {
+    const copy = nativeFileDialogCopy(locale);
+    for (const key of Object.keys(en) as Array<keyof typeof en>) {
+      assert.notEqual(copy[key], en[key], `${locale}: ${key} is still the English string`);
+      assert.match(copy[key], /[一-鿿]/u, `${locale}: ${key} carries no Han text`);
+    }
+  }
 });

@@ -46,6 +46,8 @@ import type {
   DesktopRuntimeHostClient,
   DesktopSkillCatalogSnapshot,
 } from "./runtime-host-client.js";
+import type { UiLocale } from "@maka/core/ui-locale";
+import { nativeFileDialogCopy } from "./native-file-dialog-copy.js";
 import { resolveSkillOpenPath } from "./skill-open-path.js";
 import {
   handleReconnectableRead,
@@ -68,6 +70,7 @@ interface RuntimeHostSkillsIpcDeps {
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
   readonly allowLocalPaths?: boolean;
+  readonly resolveLocale: () => Promise<UiLocale>;
 }
 
 interface GovernanceProjection {
@@ -182,12 +185,14 @@ export function registerRuntimeHostSkillsIpc(
     if (deps.allowLocalPaths === false) {
       throw new Error("Local Skill import is unavailable for a remote Runtime Host");
     }
+    const copy = nativeFileDialogCopy(await deps.resolveLocale());
     const result = await deps.mainWindowController.showOpenDialog({
-      title: "Import Skill source",
+      title: copy.importSkillSource,
       properties: ["openFile"],
+      // Format names identify a file format, not a product concept.
       filters: [
         { name: "Skill Markdown", extensions: ["md"] },
-        { name: "All Files", extensions: ["*"] },
+        { name: copy.allFiles, extensions: ["*"] },
       ],
     });
     if (result.canceled || result.filePaths.length === 0) {
