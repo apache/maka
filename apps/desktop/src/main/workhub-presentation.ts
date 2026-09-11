@@ -22,6 +22,7 @@ import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } 
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
@@ -32,6 +33,8 @@ export interface WorkHubPresentationDeps {
   ensureMainWindow(): Promise<BrowserWindow>;
   /** Applied client settings; showing the window must not wait for storage. */
   isEnabled(): boolean;
+  /** How far this run may go when a WorkHub command reveals a window. */
+  revealMode: WindowRevealMode;
   mainModuleDirectory: string;
   viteDevServerUrl?: string;
   preloadPath: string;
@@ -336,9 +339,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const current = target.getBounds();
     if (bounds.x !== current.x || bounds.y !== current.y || bounds.width !== current.width || bounds.height !== current.height) target.setBounds(bounds);
     fitFloating();
-    if (target.isMinimized()) target.restore();
-    target.show();
-    target.focus();
+    focusWindow(target, deps.revealMode);
     focusComposer();
     changed();
   }
@@ -390,9 +391,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     if (revision !== presentationRevision || (navigation.kind === 'workhub' && !deps.isEnabled())) return;
     attachMainWindow(main);
-    if (main.isMinimized()) main.restore();
-    main.show();
-    main.focus();
+    focusWindow(main, deps.revealMode);
     if (mainReady.has(main.webContents)) main.webContents.send('workhub-presentation:open-main', navigation);
     else pendingNavigation.set(main.webContents, { navigation, revision });
     return main;
@@ -515,7 +514,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
             if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
             if (payload === progressRequest && payload === presentationRevision && deps.isEnabled()) {
-              floating?.showInactive();
+              showWindowInactive(floating ?? null, deps.revealMode);
               view?.webContents.setBackgroundThrottling(true);
               changed();
             }

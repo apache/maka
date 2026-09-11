@@ -919,6 +919,7 @@ const workHubControl = createWorkHubControl({
 let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
   isEnabled: () => workHubEnabled,
+  revealMode,
   mainWindow: () => mainWindowController.browserWindow(),
   ensureMainWindow: async () => {
     await quitCoordinator.focusOrCreateWindow();
