@@ -655,7 +655,7 @@ export function useWorkbarController(
   }, [activeSessionId, input.available, input.shellObscured, openTool]);
 
   useEffect(() => {
-    if (!toolOutput?.preview?.visible) { openedOutput.current = undefined; return; }
+    if (!toolOutput?.preview) { openedOutput.current = undefined; return; }
     if (openedOutput.current === toolOutput.preview) return;
     openedOutput.current = toolOutput.preview;
     openTool('files');

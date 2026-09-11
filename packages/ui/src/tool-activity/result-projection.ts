@@ -27,7 +27,6 @@ import { redactSecrets } from '../redact.js';
 import { formatBytes, readResultText, webFetchReference } from './preview-utils.js';
 
 function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
-  if (result?.kind === 'file_write') return true;
   if (result?.kind !== 'json' || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return false;
   const record = result.value as Record<string, unknown>;
   const keys = Object.keys(record);

@@ -23,7 +23,7 @@ import { redactSecrets } from '../redact.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getToolActivityCopy } from './copy.js';
 
-export const TOOL_LINE_CAP = 500;
+const TOOL_LINE_CAP = 500;
 
 /** Read persists its file body inside a JSON content envelope. */
 export function readResultText(result: ToolResultContent | undefined): string | undefined {
@@ -36,29 +36,21 @@ export function readResultText(result: ToolResultContent | undefined): string | 
 
 export function capLines(
   text: string,
-  options: { lines?: number; chars?: number; tail?: boolean; paragraphs?: boolean } = {},
+  options: { lines?: number; chars?: number } = {},
 ): { body: string; capped: number; hiddenChars: number } {
   const limit = options.lines ?? TOOL_LINE_CAP;
   const lines = text.split('\n');
-  const kept = options.tail ? lines.slice(-limit) : lines.slice(0, limit);
+  const kept = lines.slice(0, limit);
   const joined = kept.join('\n');
   const chars = options.chars ?? Number.POSITIVE_INFINITY;
-  let body = options.tail ? joined.slice(-chars) : joined.slice(0, chars);
-  if (!options.tail && body.length < text.length) {
-    // Prefer complete paragraphs for prose, then complete lines. A single
-    // oversized line still needs a hard budget, but can end at a word boundary.
-    const paragraph = options.paragraphs ? body.lastIndexOf('\n\n') : -1;
+  let body = joined.slice(0, chars);
+  if (body.length < text.length) {
+    // Prefer complete lines. A single oversized line still needs a hard budget.
     const line = body.lastIndexOf('\n');
-    if (paragraph > 0) body = body.slice(0, paragraph);
-    else if (joined.length > chars && line > 0) body = body.slice(0, line);
-    else if (options.paragraphs && joined.length > chars) {
-      const word = body.search(/\s+\S*$/);
-      if (word > 0) body = body.slice(0, word);
-    }
+    if (joined.length > chars && line > 0) body = body.slice(0, line);
   }
   // Never leave half a surrogate at a display boundary.
-  if (options.tail && /^[\uDC00-\uDFFF]/.test(body)) body = body.slice(1);
-  if (!options.tail && /[\uD800-\uDBFF]$/.test(body)) body = body.slice(0, -1);
+  if (/[\uD800-\uDBFF]$/.test(body)) body = body.slice(0, -1);
   return { body, capped: Math.max(0, lines.length - body.split('\n').length), hiddenChars: text.length - body.length };
 }
 

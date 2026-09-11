@@ -73,7 +73,12 @@ describe('tool activity presentation', () => {
 
     assert.match(rowText(completed('WebFetch', { url: 'https://example.com/docs' }, { kind: 'text', text: '# API docs\nbody' })), /example\.com\/docs.*API docs|API docs.*example\.com\/docs/);
     assert.match(rowText(completed('Grep', { pattern: 'needle', path: '/repo' }, { kind: 'json', value: ['one', 'two'] })), /needle in \/repo.*2 items returned|2 items returned.*needle in \/repo/);
-    assert.match(rowText(completed('Write', { path: '/repo/out.txt' }, { kind: 'file_write', path: '/repo/out.txt', bytes: 42 })), /out\.txt.*42 B|42 B.*out\.txt/);
+    const write = completed('Write', { path: '/repo/out.txt' }, { kind: 'file_write', path: '/repo/out.txt', bytes: 42 });
+    assert.match(rowText(write), /out\.txt.*42 B|42 B.*out\.txt/);
+    const writeRow = parseHTML(renderToStaticMarkup(createElement(ToolTrow, { items: [write] }), 'en'))
+      .document.querySelector('[data-slot="chat-tool-call-row"]')!;
+    assert.equal(writeRow.getAttribute('aria-expanded'), 'false');
+    assert.match(renderToStaticMarkup(createElement(ToolCallDetail, { item: write }), 'en'), /\/repo\/out\.txt/);
     assert.match(rowText(completed('Read', { path: '/repo/index.ts' }, { kind: 'text', text: 'source\nsecond' })), /index\.ts.*2 lines|2 lines.*index\.ts/);
   });
 

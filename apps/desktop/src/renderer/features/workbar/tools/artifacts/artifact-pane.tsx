@@ -118,6 +118,7 @@ export function ArtifactPane(props: {
   const recordsSessionIdRef = useRef<string | undefined>(undefined);
   const pendingArtifactListRetryRef = useRef(false);
   const pendingArtifactActionRef = useRef<string | null>(null);
+  const closeToolOutput = toolOutput?.close;
 
   artifactPaneSessionIdRef.current = sessionId;
 
@@ -128,8 +129,12 @@ export function ArtifactPane(props: {
       artifactListRequestSeqRef.current += 1;
       pendingArtifactListRetryRef.current = false;
       pendingArtifactActionRef.current = null;
+      // Ignore StrictMode's effect replay; only a real pane unmount ends the selection.
+      queueMicrotask(() => {
+        if (!artifactPaneMountedRef.current) closeToolOutput?.();
+      });
     };
-  }, []);
+  }, [artifactPaneMountedRef, closeToolOutput]);
 
   useEffect(() => {
     setView({ kind: 'list' });
@@ -450,9 +455,9 @@ export function ArtifactPane(props: {
   }
 
   return <>
-    {toolOutput?.preview?.visible && <ToolOutputPreview key={toolOutput.preview.id} request={toolOutput.preview.request}
+    {toolOutput?.preview && <ToolOutputPreview key={toolOutput.preview.id} request={toolOutput.preview.request}
         onClose={() => { setView({ kind: 'list' }); toolOutput.hide(); }} />}
-    {!toolOutput?.preview?.visible && (
+    {!toolOutput?.preview && (
     <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
         <Banner

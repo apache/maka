@@ -26,7 +26,6 @@ export type ToolOutputSource =
 
 export interface ToolOutputOpenRequest {
   title: string;
-  truncated?: boolean;
   toolName?: string;
   source: ToolOutputSource;
 }

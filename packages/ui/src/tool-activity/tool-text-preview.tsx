@@ -33,7 +33,6 @@ import { capLines } from './preview-utils.js';
 export function SavedToolOutput(props: {
   source: ToolOutputSource;
   toolName?: string;
-  truncated?: boolean;
   actionIdentity?: string;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).detail;
@@ -46,7 +45,7 @@ export function SavedToolOutput(props: {
       // records this element before transferring focus into the viewer.
       event.currentTarget.focus();
       host?.({ title: props.actionIdentity ?? copy.viewSaved, toolName: props.toolName,
-        truncated: props.truncated, source: props.source });
+        source: props.source });
     }}
   /></span>;
 }
@@ -58,7 +57,6 @@ export function ToolTextPreview(props: {
   heading?: string;
   actionIdentity?: string;
   truncated?: boolean;
-  sourceTruncated?: boolean;
   toolName?: string;
   savedText?: string;
 }) {
@@ -72,8 +70,8 @@ export function ToolTextPreview(props: {
     <>
       <ToolCodeBlock code={code} title={props.heading} actionIdentity={props.actionIdentity} />
       {needsSavedOutput && <>
-        <p className="maka-tool-output-note">{props.sourceTruncated ? copy.sourceTruncated : copy.previewTruncated}</p>
-        <SavedToolOutput toolName={props.toolName} truncated={props.sourceTruncated}
+        <p className="maka-tool-output-note">{copy.previewTruncated}</p>
+        <SavedToolOutput toolName={props.toolName}
           source={{ kind: 'text', text: props.savedText ?? safe }} actionIdentity={props.actionIdentity} />
       </>}
     </>

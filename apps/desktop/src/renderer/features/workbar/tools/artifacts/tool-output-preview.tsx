@@ -53,7 +53,7 @@ export function ToolOutputPreview(props: { request: ToolOutputOpenRequest; onClo
       if (typeof raw !== 'string') { setResult(raw.reason); return; }
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch { /* Plain output is valid too. */ }
-      let partial = props.request.truncated === true;
+      let partial = false;
       // ArchiveRead wraps a retained page in protocol metadata. Only unwrap
       // successful body responses; ordinary JSON and diagnostics stay intact.
       if (props.request.toolName === 'ArchiveRead' && parsed && typeof parsed === 'object' && 'kind' in parsed && parsed.kind === 'tool_result_archive'
