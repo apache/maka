@@ -1076,7 +1076,7 @@ export const TUI_COPY_RESOURCES = {
         context: '檢視最近一次請求的上下文用量',
         copy: '複製最後一則回覆（或 /copy all）到剪貼簿',
         exit: '中斷此 TUI，保留已連線的 Host',
-        host: '查看 Host 狀態或停止、重新啟動本機擁有者',
+        host: '檢視 Host 狀態，或停止、重新啟動管理此 Host 的本機服務',
         update: '更新 npm 全域 CLI 及其本機 Host',
         goal: '檢視自主目標狀態',
         graph: '檢視、啟用、停用 Graph 模式，或執行一次 Graph 任務',

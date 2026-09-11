@@ -303,9 +303,9 @@ const TOOL_ACTIVITY_COPY = {
     },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了該呼叫中的至少一項操作。失敗前可能已經產生部分結果，請檢查輸出和工作區狀態後再決定是否重試。', copyAriaLabel: (label) => `${label}沙箱診斷資訊` },
     requiresBypass: {
-      title: '需要“繞過”模式',
-      description: '此操作會直接控制本機應用，無法在沙箱模式下執行。',
-      errorMessage: '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
+      title: '需要「繞過」模式',
+      description: '此操作會直接控制本機應用程式，無法在沙箱模式下執行。',
+      errorMessage: '需要「繞過」模式。此操作會直接控制本機應用程式，無法在沙箱模式下執行。',
       action: '切換並重試',
       pending: '正在切換…',
     },

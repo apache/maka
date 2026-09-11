@@ -130,10 +130,10 @@ const localeCases = [
   {
     locale: 'zh-TW', direct: '直接連線', transit: '成員轉送', save: '儲存供應商',
     slugErrors: {
-      required: '請填寫連線標識',
-      format: '連線標識只能包含小寫字母、數字和連字號',
-      too_long: '連線標識不能超過 64 個字元',
-      duplicate: '連線標識已存在',
+      required: '請填寫連線識別碼',
+      format: '連線識別碼只能包含小寫字母、數字和連字號',
+      too_long: '連線識別碼不能超過 64 個字元',
+      duplicate: '連線識別碼已存在',
     },
   },
   {
