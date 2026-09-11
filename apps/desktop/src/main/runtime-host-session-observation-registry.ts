@@ -28,6 +28,7 @@ import type {
 import type {
   DesktopTranscriptOpenResult,
   DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 
 type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & {
@@ -37,10 +38,12 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & 
     Pick<
       RuntimeHostSessionObserver,
       | 'acknowledgeTranscript'
+      | 'acknowledgeTranscriptTail'
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
       | 'loadTranscriptAfter'
+      | 'loadTranscriptLatest'
       | 'openTranscript'
     >
   >;
@@ -48,10 +51,12 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & 
 type TranscriptSource = Required<
   Pick<
     RuntimeHostSessionObserver,
+    | 'acknowledgeTranscriptTail'
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'openTranscript'
   >
 >;
@@ -75,9 +80,11 @@ function requireTranscriptSource(
 ): SessionObservationSource & TranscriptSource {
   if (
     !source?.openTranscript ||
+    !source.acknowledgeTranscriptTail ||
     !source.loadTranscriptBefore ||
     !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
+    !source.loadTranscriptLatest ||
     !source.closeTranscript
   ) {
     throw new Error('Runtime Host transcript source is unavailable');
@@ -99,19 +106,6 @@ function isMissingRuntimeHostSessionError(error: unknown): boolean {
   return error.code === "not_found";
 }
 
-function recoveredTranscriptRequest(
-  request: DesktopTranscriptRangeRequest,
-  hostEpoch: string,
-): DesktopTranscriptRangeRequest {
-  return {
-    ...request, preserveRange: false,
-    ...(request.hostEpoch === hostEpoch ? {} : {
-      hostEpoch, anchorSequence: null,
-      ...(request.readingTurnId === undefined ? { intent: 'followTail' as const } : {}),
-    }),
-  };
-}
-
 interface SessionObservationRegistration {
   readonly sessionId: string;
   readonly messageAdmissions: boolean;
@@ -128,14 +122,7 @@ interface TranscriptRegistration {
   readonly ready: TranscriptReadiness;
   restore: ObservationReadiness | undefined;
   restoreOpened: boolean;
-  hostEpoch?: string;
-  recoveredIdentity?: {
-    readonly source: SessionObservationSource;
-    readonly previousHostEpoch: string;
-    readonly hostEpoch: string;
-  };
   lifecycle: 'pending' | 'active';
-  navigation?: { readonly request: DesktopTranscriptRangeRequest };
 }
 
 interface TranscriptReadiness {
@@ -384,16 +371,15 @@ export class RuntimeHostSessionObservationRegistry {
     target.once('destroyed', destroyedListener);
     const source = this.#source;
     if (!source) return ready.promise;
-    const transcriptSource = requireTranscriptSource(source);
     try {
+      const transcriptSource = requireTranscriptSource(source);
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,
-        this.#bindTranscriptTarget(target),
+        this.#bindTarget(target),
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
-        registration.hostEpoch = result.hostEpoch;
         registration.ready.resolve(result);
       } else {
         await transcriptSource.closeTranscript(consumerId);
@@ -412,10 +398,8 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      accepted === request
-        ? source.loadTranscriptBefore(accepted, targetId)
-        : source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptBefore(request, targetId),
     );
   }
 
@@ -423,8 +407,8 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptAround(request, targetId),
     );
   }
 
@@ -432,11 +416,27 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      accepted === request
-        ? source.loadTranscriptAfter(accepted, targetId)
-        : source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptAfter(request, targetId),
     );
+  }
+
+  async loadTranscriptLatest(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptLatest(request, targetId),
+    );
+  }
+
+  async acknowledgeTranscriptTail(
+    request: DesktopTranscriptTailAcknowledgement,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request, async (source) => {
+      source.acknowledgeTranscriptTail(request, targetId);
+    });
   }
 
   acknowledgeTranscript(
@@ -527,47 +527,26 @@ export class RuntimeHostSessionObservationRegistry {
   }
 
   async #runTranscriptOperation(
-    request: DesktopTranscriptRangeRequest,
-    operation: (
-      source: SessionObservationSource & TranscriptSource,
-      accepted: DesktopTranscriptRangeRequest,
-    ) => Promise<void>,
+    request: { readonly consumerId: string },
+    operation: (source: SessionObservationSource & TranscriptSource) => Promise<void>,
   ): Promise<void> {
     const consumerId = request.consumerId;
     const registration = this.#transcripts.get(consumerId);
     if (!registration) {
       throw new Error('Desktop transcript consumer does not exist');
     }
-    if ((request.navigationVersion ?? 0) < (registration.navigation?.request.navigationVersion ?? 0)) return;
-    const navigation = { request };
-    registration.navigation = navigation;
     const source = requireTranscriptSource(this.#source);
     try {
       const restore = registration.restore;
       if (restore && !registration.restoreOpened) await restore.promise;
-      if (
-        this.#source !== source ||
-        this.#transcripts.get(consumerId) !== registration ||
-        registration.navigation !== navigation
-      ) {
+      if (this.#source !== source || this.#transcripts.get(consumerId) !== registration) {
         return;
       }
-      const recovered = registration.recoveredIdentity;
-      if (recovered?.source === source && request.hostEpoch === recovered.previousHostEpoch) {
-        // A successful open proves this consumer moved to this source. Its
-        // preload may still await the replay snapshot before learning the new
-        // epoch; admit a newer intent without accepting arbitrary stale epochs.
-        navigation.request = recoveredTranscriptRequest(request, recovered.hostEpoch);
-      }
-      await operation(source, navigation.request);
+      await operation(source);
     } catch (error) {
       // Once either owner changes, this rejection belongs to stale work and
       // must not escape as a failure of the current renderer intent.
-      if (
-        this.#source !== source ||
-        this.#transcripts.get(consumerId) !== registration ||
-        registration.navigation !== navigation
-      ) {
+      if (this.#source !== source || this.#transcripts.get(consumerId) !== registration) {
         return;
       }
       throw error;
@@ -596,30 +575,14 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         registration.sessionId,
         consumerId,
-        this.#bindTranscriptTarget(registration.target),
+        this.#bindTarget(registration.target),
       );
       if (
         this.#source === source &&
         this.#transcripts.get(consumerId) === registration &&
         registration.restore === restore
       ) {
-        const previousHostEpoch = registration.hostEpoch;
-        if (previousHostEpoch && previousHostEpoch !== result.hostEpoch) {
-          registration.recoveredIdentity = { source, previousHostEpoch, hostEpoch: result.hostEpoch };
-        }
-        registration.hostEpoch = result.hostEpoch;
         registration.restoreOpened = true;
-        // Reconnection owns no new navigation intent. Reapply only the latest
-        // command admitted while the old source was alive or recovery waited.
-        const navigation = registration.navigation;
-        if (navigation) {
-          const request = recoveredTranscriptRequest(navigation.request, result.hostEpoch);
-          await transcriptSource.loadTranscriptAround(request, registration.target.id);
-          if (this.#source !== source || registration.restore !== restore) {
-            restore.resolve();
-            return;
-          }
-        }
         registration.lifecycle = 'active';
         registration.ready.resolve(result);
         registration.restore = undefined;
@@ -666,10 +629,6 @@ export class RuntimeHostSessionObservationRegistry {
     registration.restore?.resolve();
     registration.target.off('destroyed', registration.destroyedListener);
     registration.ready.reject(error);
-  }
-
-  #bindTranscriptTarget(target: RuntimeHostTranscriptTarget): RuntimeHostTranscriptTarget {
-    return this.#bindTarget(target);
   }
 
   #assertOpen(): void {

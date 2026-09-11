@@ -19,7 +19,7 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { WorkbarServices } from '../../features/workbar';
-import { readSettledMessagesFrom } from '../../session-message-settlement.js';
+import { readSettledMessagesFrom } from './session-message-settlement.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
@@ -120,7 +120,7 @@ export function createDesktopWorkbarServices(
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
       readSettledMessages: (sessionId, options) =>
-        dependencies.readSettledMessages(bridge.transcripts, sessionId, options),
+        dependencies.readSettledMessages(bridge, sessionId, options),
       branchFromTurn: (sessionId, input) =>
         bridge.sessions.branchFromTurn(sessionId, input),
       cleanupSessionCopy: (sessionId) =>

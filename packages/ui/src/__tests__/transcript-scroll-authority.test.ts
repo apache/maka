@@ -23,6 +23,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
 
+interface FakeTurn {
+  turnId: string;
+  /** Offset within the scrolled content, which `scrollTop` then shifts. */
+  top: number;
+  height: number;
+}
+
 interface FakeRoot {
   ownerDocument: EventTarget;
   style: { overflowAnchor: string };
@@ -31,6 +38,10 @@ interface FakeRoot {
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
+  /** Mounted Turns, laid out relative to `scrollTop`. */
+  turns: FakeTurn[];
+  getBoundingClientRect(): DOMRect;
+  querySelectorAll(selector: string): readonly unknown[];
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener(type: string, listener: (event: unknown) => void): void;
   input(deltaY: number, modifiers?: { ctrlKey?: boolean; metaKey?: boolean }): void;
@@ -55,6 +66,15 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
+    turns: [],
+    getBoundingClientRect: () => ({ top: 0 }) as DOMRect,
+    querySelectorAll: () => root.turns.map((turn) => ({
+      getAttribute: () => turn.turnId,
+      getBoundingClientRect: () => ({
+        top: turn.top - root.scrollTop,
+        bottom: turn.top + turn.height - root.scrollTop,
+      }) as DOMRect,
+    })),
     addEventListener(type, listener) {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type)!.add(listener);
@@ -99,8 +119,9 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
  *
  * End-of-operation frame callbacks are advanced explicitly.
  */
-function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T {
+function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: () => void) => T): T {
   const observers = new Set<() => void>();
+  const mutations = new Set<() => void>();
   const frames: FrameRequestCallback[] = [];
   const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
   const originalResize = globals.ResizeObserver;
@@ -122,13 +143,20 @@ function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T 
   // The set of children only changes when the transcript mounts or unmounts
   // one, and `resize` already stands for every box in that set changing.
   globals.MutationObserver = class {
-    observe(): void {}
-    disconnect(): void {}
+    constructor(private readonly callback: () => void) {}
+    observe(): void {
+      mutations.add(this.callback);
+    }
+    disconnect(): void {
+      mutations.delete(this.callback);
+    }
   };
   try {
     return run(() => {
       for (const observer of [...observers]) observer();
-    }, () => { for (const callback of frames.splice(0)) callback(0); });
+    }, () => { for (const callback of frames.splice(0)) callback(0); }, () => {
+      for (const mutation of [...mutations]) mutation();
+    });
   } finally {
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
@@ -179,7 +207,7 @@ test('identical shrink/grow geometry follows only when no reader input intervene
       const authority = createTranscriptScrollAuthority();
       authority.attach(root as unknown as HTMLElement);
       let readerMoves = 0;
-      authority.subscribeToReaderScroll((_direction, phase) => {
+      authority.subscribeToReaderScroll((phase) => {
         if (phase === 'scroll') readerMoves += 1;
       });
       if (readerInput) root.input(-100);
@@ -361,13 +389,13 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
   });
 });
 
-test('reports both directions even when the reader returns to the last written offset', () => {
+test('reports both moves even when the reader returns to the last written offset', () => {
   withObservers(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    const directions: string[] = [];
-    authority.subscribeToReaderScroll((direction, phase) => { if (phase === 'scroll') directions.push(direction); });
+    let readerMoves = 0;
+    authority.subscribeToReaderScroll((phase) => { if (phase === 'scroll') readerMoves += 1; });
     root.emitScroll();
     root.input(-100);
     root.scrollTop = 900;
@@ -376,7 +404,7 @@ test('reports both directions even when the reader returns to the last written o
     root.scrollTop = 2_400;
     root.emitScroll();
     root.end();
-    assert.deepEqual(directions, ['up', 'down']);
+    assert.equal(readerMoves, 2);
   });
 });
 
@@ -457,12 +485,63 @@ test('content landing above a released reader does not re-pin them', () => {
   });
 });
 
+test('the reading position names the Turn crossing the top of the scrollport', () => {
+  withObservers((resize, _frame, mutate) => {
+    const root = fakeRoot();
+    root.turns = [
+      { turnId: 'turn-1', top: 0, height: 1_000 },
+      { turnId: 'turn-2', top: 1_000, height: 1_000 },
+      { turnId: 'turn-3', top: 2_000, height: 1_000 },
+    ];
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    let publications = 0;
+    authority.subscribe(() => { publications += 1; });
+
+    // Attached pinned, so the authority wrote the tail under the reader.
+    assert.equal(root.scrollTop, 2_400);
+    assert.equal(authority.getSnapshot().readingTurnId, 'turn-3');
+
+    root.input(-100);
+    root.scrollTop = 1_200;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().readingTurnId, 'turn-2');
+    assert.ok(publications > 0, 'a new reading position is published');
+
+    // Same Turn still under the top edge: nothing new to say.
+    const published = publications;
+    root.scrollTop = 1_400;
+    root.emitScroll();
+    assert.equal(publications, published);
+
+    // A Turn arriving above the reader moves the position without the reader.
+    for (const turn of root.turns) turn.top += 500;
+    root.turns.unshift({ turnId: 'turn-0', top: 0, height: 500 });
+    root.grow(500);
+    root.scrollTop = 1_900;
+    mutate();
+    assert.equal(authority.getSnapshot().readingTurnId, 'turn-2');
+    root.scrollTop = 400;
+    resize();
+    assert.equal(authority.getSnapshot().readingTurnId, 'turn-0');
+  });
+});
+
+test('a transcript without Turns has no reading position', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(authority.getSnapshot().readingTurnId, undefined);
+  });
+});
+
 test('only the reader\'s own movement reaches a reader-scroll listener', () => {
   withObservers(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     let heard = 0;
-    const stop = authority.subscribeToReaderScroll((_direction, phase) => {
+    const stop = authority.subscribeToReaderScroll((phase) => {
       if (phase === 'scroll') heard += 1;
     });
     authority.attach(root as unknown as HTMLElement);

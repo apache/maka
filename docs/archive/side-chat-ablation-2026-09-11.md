@@ -94,4 +94,12 @@ npm run prototype:side-chat-ablation -- --interactive
 - Renderer 架构 checker 的 103 项 fixture 测试通过；移出一次性脚本后，当前树与对照提交的架构检查通过。
 - 没有执行全仓测试、真实 Electron 断连/多后续消息手工验收或穷举异步时序；不能据此声称所有竞态已消除或实现已达到理论最简。
 
+## 9 月 12 日主线合并复核
+
+- 同步主线 `12d3fb9332`（含 Renderer transcript window 重构），保留上述五项简化。旧的 Turn-ID history 导航已被主线删除，因此定向恢复改为通过现有 Host `listTurns` 取得 `firstSequence`，再使用新的 `loadAround` / `loadAfter` 读取到目标终态；仍受 settlement 时限约束，不将缺少位置或回复视为完成。
+- 将现有 settlement 实现迁入 `platform/desktop/session-message-settlement.ts`，更新调用方并删除旧实现与冗余内部转发。没有新增 Host 协议，也没有恢复主线删除的导航接口；架构清单同步移除了旧的 platform-to-legacy 依赖。
+- 补充跨页终态、缺少索引位置用例。清理旧 `dist` 并重新构建后，Desktop 全量 2527 / 2527、共享 UI 419 / 419 测试通过；全仓 build / typecheck、lint / format、Desktop 与 UI knip、103 项架构 fixture 和相对主线的架构检查通过。此次相关回归为 209 项，计数变化包含主线替换旧 transcript 测试。
+- 逐项核对 PR #4901 的 3 条讨论评论、18 次 review 提交和 6 个行内线程。6 个线程均已关闭，其中正常 handoff 的 P1 已由 reviewer 撤回；迟到回执、终态/多后继恢复、pending 真正退休、64-ID 分批、等待 Host 准入均有实现和回归覆盖。review 正文提出的窗口外回复恢复也已按主线新接口重新验证。
+- 仍不声称完成真实 Desktop 的 Enter / Shift+Enter、多条追问、编辑/重排/撤回及断连重连手工验收；独立人工批准也尚未获得。线程关闭不等同于界面验收或批准合并。
+
 Generated-by: Codex

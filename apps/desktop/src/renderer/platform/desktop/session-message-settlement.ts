@@ -18,8 +18,9 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import type { MakaBridge } from '../preload/bridge-contract.js';
-import { DesktopTranscriptRangeStore } from './platform/desktop/desktop-transcript-range-store.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../../../preload/transcript-contract.js';
+import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 
 const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
 
@@ -29,27 +30,22 @@ export interface RefreshMessagesOptions {
   signal?: AbortSignal;
 }
 
-export type TranscriptSettlementSource = Pick<MakaBridge['transcripts'], 'open'>;
-
-export async function readSettledMessagesFrom(
-  transcripts: TranscriptSettlementSource,
-  sessionId: string,
-  options: RefreshMessagesOptions = {},
-): Promise<{ messages: StoredMessage[]; settled: boolean }> {
-  return readSettledMessagesUsing(transcripts, sessionId, options);
-}
+export type TranscriptSettlementSource = {
+  transcripts: Pick<MakaBridge['transcripts'], 'open'>;
+  sessions: Pick<MakaBridge['sessions'], 'listTurns'>;
+};
 
 export async function readSettledMessages(
   sessionId: string,
   options: RefreshMessagesOptions = {},
 ): Promise<{ messages: StoredMessage[]; settled: boolean }> {
-  return readSettledMessagesUsing(window.maka.transcripts, sessionId, options);
+  return readSettledMessagesFrom(window.maka, sessionId, options);
 }
 
-async function readSettledMessagesUsing(
-  transcripts: TranscriptSettlementSource,
+export async function readSettledMessagesFrom(
+  source: TranscriptSettlementSource,
   sessionId: string,
-  options: RefreshMessagesOptions,
+  options: RefreshMessagesOptions = {},
 ): Promise<{ messages: StoredMessage[]; settled: boolean }> {
   const deadline = Date.now() + COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS;
   const store = new DesktopTranscriptRangeStore(sessionId);
@@ -78,7 +74,7 @@ async function readSettledMessagesUsing(
     () => cancel(new Error('Desktop transcript settlement timed out while opening')),
     Math.max(0, deadline - Date.now()),
   );
-  const opening = transcripts.open(
+  const opening = source.transcripts.open(
     sessionId,
     (batch) => {
       if (!store.accept(batch)) return;
@@ -102,15 +98,25 @@ async function readSettledMessagesUsing(
       !transcriptRecordsTerminalTurn(store.snapshot().messages, requiredTurnId)
     ) {
       retainedDurable = store.durableEntries();
-      const navigation = {
-        navigationVersion: 1,
-        intent: 'history' as const,
-        preserveRange: true,
-        readingTurnId: requiredTurnId,
+      const readHandle = handle;
+      const recoverTurn = async () => {
+        // Main now reads sequence-anchored ranges, not Turn identities. Resolve
+        // the Host's existing Turn index, then extend only this bounded window
+        // until the requested terminal record arrives or settlement times out.
+        const turns = await source.sessions.listTurns(sessionId);
+        const firstSequence = turns.find((turn) => turn.turnId === requiredTurnId)?.firstSequence;
+        if (firstSequence === undefined || cancelled || Date.now() >= deadline) return;
+        await readHandle.loadAround(firstSequence, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, store.navigate());
+        let previousSequence: number | null = null;
+        while (!cancelled && Date.now() < deadline) {
+          if (transcriptRecordsTerminalTurn(store.snapshot().messages, requiredTurnId)) return;
+          const range = store.range();
+          if (!range.hasNewer || range.newestSequence === previousSequence) return;
+          previousSequence = range.newestSequence;
+          await readHandle.loadAfter(range.newestSequence, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, store.navigation());
+        }
       };
-      store.expectNavigation(navigation.navigationVersion);
-      const targetedRead = handle.loadAround(null, undefined, navigation);
-      void targetedRead.catch(() => undefined);
+      void recoverTurn().catch(() => undefined);
     }
     while (true) {
       const snapshot = store.snapshot();
@@ -137,6 +143,7 @@ async function readSettledMessagesUsing(
       ]);
     }
   } finally {
+    cancelled = true;
     globalThis.clearTimeout(openTimeout);
     options.signal?.removeEventListener('abort', abort);
     await handle?.close().catch(() => undefined);

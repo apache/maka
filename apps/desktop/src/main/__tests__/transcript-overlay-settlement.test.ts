@@ -19,11 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deferred } from '@maka/core/test-only/async-primitives';
 import { markPersisted } from '@maka/core/persisted-value';
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionTranscriptPage,
   type SessionTranscriptPageInput,
 } from '@maka/runtime-host/protocol';
 import { ClientSessionSubscription } from '../../../../../packages/runtime-host/dist/client/session-subscription.js';
@@ -32,9 +32,12 @@ import {
   readSessionTranscriptPage,
   updateSubscriberTranscriptHighWater,
 } from '../../../../../packages/runtime-host/dist/server/session-transcript-pager.js';
-import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import type { DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
-import { encodeDesktopTranscriptChange, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
+import {
+  encodeDesktopTranscriptChange,
+  encodeDesktopTranscriptPage,
+  encodeDesktopTranscriptSnapshot,
+} from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 import { openTranscriptNavigationLedger } from './transcript-navigation-test-fixture.js';
@@ -48,37 +51,81 @@ const B_COMPLETED_THROUGH = 'completed-b';
 const C_COMPLETED_THROUGH = 'completed-c';
 
 for (const coalesced of [false, true]) {
-  test(`settles a bootstrap overlay outside history through ${coalesced ? 'a coalesced B+C watermark' : 'separate B and C watermarks'}`, async () => {
+  test(`settles a bootstrap overlay through ${coalesced ? 'a coalesced B+C watermark' : 'separate B and C watermarks'}`, async () => {
     const fixture = await openFixture();
     try {
-      const { replica, renderer, changes } = fixture;
+      const { replica, renderer } = fixture;
       assert.equal(replica.snapshot().overlay.find(({ id }) => id === 'answer-b')?.id, 'answer-b');
-      await replica.loadAround(fixture.history[0]!.sequence, PAGE_BYTES);
-      assertHistoryRange(fixture);
-      const before = changes.length;
 
       if (!coalesced) {
         await fixture.advance(B_COMPLETED_THROUGH);
-        assertHistoryRange(fixture);
         assert.deepEqual(replica.snapshot().overlay, []);
       }
       await fixture.advance(C_COMPLETED_THROUGH);
-      assertHistoryRange(fixture);
       assert.equal(replica.durableThrough, fixture.watermark(C_COMPLETED_THROUGH));
       assert.deepEqual(replica.snapshot().overlay, []);
-      assert.deepEqual(changes.slice(before).flatMap((change) => change.completedOverlayMessageIds), ['user-b', 'answer-b']);
-      assert.ok(changes.slice(before).every((change) => change.durableUpserts.length === 0));
-      assert.deepEqual(renderer.snapshot().messages.map(({ id }) => id), ['user-a', 'answer-a', 'completed-a']);
-
-      await replica.followLatest(PAGE_BYTES);
-      assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id), ['user-c', 'answer-c', 'completed-c']);
-      assert.equal(replica.snapshot().hasNewer, false);
-      assert.deepEqual(renderer.snapshot().messages.map(({ id }) => id), ['user-c', 'answer-c', 'completed-c']);
+      assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id),
+        ['user-c', 'answer-c', 'completed-c']);
+      assert.equal(
+        renderer.snapshot().messages.some((message) => message.type === 'assistant' && message.text === 'B partial'),
+        false,
+        'the durable row replaced the partial overlay answer',
+      );
+      assert.ok(renderer.snapshot().messages.some(({ id }) => id === 'answer-c'));
     } finally {
       await fixture.close();
     }
   });
 }
+
+test('a window parked off the tail reads the completed Turn back through its own edge', async () => {
+  const fixture = await openFixture();
+  try {
+    const { replica, renderer } = fixture;
+    // Reading history: the window dropped the newest rows to meet its budget,
+    // so its newer edge is a gap and tail growth is no longer its business.
+    const oldest = renderer.range().oldestSequence;
+    assert.ok(oldest !== null);
+    renderer.retain(oldest, oldest);
+    assert.equal(renderer.range().hasNewer, true);
+    assert.equal(
+      renderer.snapshot().messages.some(({ id }) => id === 'answer-b'), false,
+      'the overlay is a fact about the tail, and this window no longer reaches it',
+    );
+
+    await fixture.advance(B_COMPLETED_THROUGH);
+    await fixture.advance(C_COMPLETED_THROUGH);
+
+    assert.deepEqual(
+      renderer.durableEntries().map(({ sequence }) => sequence), [oldest],
+      'tail growth has nothing to join onto, so the window stays the range it was trimmed to',
+    );
+    assert.equal(renderer.range().hasNewer, true);
+
+    // Paging back: each read is anchored on the edge the last one left, which
+    // is the only thing that makes the rows spliceable.
+    for (let read = 0; read < 8 && renderer.range().hasNewer; read += 1) {
+      const anchor = renderer.range().newestSequence;
+      const page = await replica.loadAfter(anchor, PAGE_BYTES);
+      assert.ok(page);
+      for (const batch of encodeDesktopTranscriptPage({
+        sessionId: replica.sessionId,
+        generation: replica.generation,
+        hostEpoch: replica.hostEpoch,
+      }, page, { direction: 'newer', anchor })) renderer.accept(batch);
+    }
+
+    assert.deepEqual(
+      renderer.snapshot().messages.flatMap((message) =>
+        message.type === 'assistant' && message.turnId === 'b' ? [message.text] : []),
+      ['B partial and completed answer'],
+      'reading forward from the edge brings the completed body back',
+    );
+    assert.equal(replica.snapshot().overlay.length, 0);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test('a completed live answer remains unique after a fresh transcript subscription', async () => {
   const fixture = await openFixture();
@@ -107,220 +154,108 @@ test('a completed live answer remains unique after a fresh transcript subscripti
   }
 });
 
-test('retains an unfinished overlay through runtime checkpoints and skips scans after settlement', async () => {
+test('retains an unfinished overlay through runtime checkpoints', async () => {
+  const fixture = await openFixture();
+  try {
+    const { replica, renderer } = fixture;
+    await fixture.advance(B_STEERING_THROUGH);
+    assert.equal(replica.durableThrough, fixture.bootstrapThrough, 'running B has no durable ending yet');
+    const unfinished = replica.snapshot().overlay.find(({ id }) => id === 'answer-b');
+    assert.equal(unfinished?.type === 'assistant' ? unfinished.text : undefined, 'B partial');
+
+    await fixture.advance(B_COMPLETED_THROUGH);
+    assert.deepEqual(
+      replica.snapshot().overlay,
+      [],
+      'the Turn ending retires exactly the overlay rows it made durable',
+    );
+    assert.deepEqual(
+      renderer.snapshot().messages.flatMap((message) =>
+        message.type === 'assistant' && message.turnId === 'b' ? [message.text] : []),
+      ['B partial and completed answer'],
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('catch-up retires the completed overlay in one notification', async () => {
   const fixture = await openFixture();
   try {
     const { replica, changes, requests } = fixture;
-    await replica.loadAround(fixture.history[0]!.sequence, PAGE_BYTES);
-    await fixture.advance(B_STEERING_THROUGH);
-    assert.equal(replica.durableThrough, fixture.bootstrapThrough, 'running B has no durable ending yet');
-    assertHistoryRange(fixture);
-    const unfinished = replica.snapshot().overlay.find(({ id }) => id === 'answer-b');
-    assert.equal(unfinished?.type === 'assistant' ? unfinished.text : undefined, 'B partial');
-    assert.deepEqual(changes.flatMap((change) => change.completedOverlayMessageIds), []);
-
-    await fixture.advance(B_COMPLETED_THROUGH);
-    assert.deepEqual(replica.snapshot().overlay, []);
     const before = requests.length;
-    await fixture.advance(C_COMPLETED_THROUGH);
-    assert.equal(requests.length, before, 'history with no pending overlay needs no durable page read');
-    assertHistoryRange(fixture);
-  } finally {
-    await fixture.close();
-  }
-});
-
-test('a latest range jump settles skipped overlays without waiting for another advance', async () => {
-  const fixture = await openFixture();
-  try {
-    const { replica } = fixture;
-    await replica.loadAround(fixture.history[0]!.sequence, PAGE_BYTES);
-    await fixture.announce(C_COMPLETED_THROUGH);
-    // Both commands are queued synchronously. The range jump owns the newer
-    // navigation before the queued catch-up starts handling the watermark.
-    const latest = replica.followLatest(PAGE_BYTES);
-    const advance = replica.advance(fixture.watermark(C_COMPLETED_THROUGH));
-    await latest;
-    assert.deepEqual(replica.snapshot().overlay, []);
-    assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id), ['user-c', 'answer-c', 'completed-c']);
-    await advance;
-  } finally {
-    await fixture.close();
-  }
-});
-
-for (const intent of ['followTail', 'history'] as const) {
-  test(`the ${intent} range retires the completed overlay in one notification`, async () => {
-    const fixture = await openFixture();
-    try {
-      const { replica, changes, requests } = fixture;
-      if (intent === 'history') await replica.readAt(fixture.history[0]!.sequence);
-      const before = requests.length;
-      await fixture.advance(B_COMPLETED_THROUGH);
-      const settled = changes.filter((change) => change.completedOverlayMessageIds.includes('answer-b'));
-      assert.equal(settled.length, 1);
-      if (intent === 'followTail') {
-        assert.ok(settled[0]!.durableUpserts.some(({ message }) => message.id === 'answer-b'));
-        const answer = replica.messages().find(({ id }) => id === 'answer-b');
-        assert.equal(answer?.type === 'assistant' ? answer.text : undefined, 'B partial and completed answer');
-      } else {
-        assertHistoryRange(fixture);
-        assert.equal(settled[0]!.durableUpserts.length, 0, 'settlement preserves the selected oversized history Turn');
-      }
-      assert.equal(requests.length - before, 1, 'normal catch-up settles through the same page it installs');
-      assert.deepEqual(replica.snapshot().overlay, []);
-    } finally {
-      await fixture.close();
-    }
-  });
-}
-
-for (const coalesced of [false, true]) {
-  test(`reading an overlay-only B survives ${coalesced ? 'coalesced B+C completion' : 'B completion followed by oversized C'}`, async () => {
-    const fixture = await openFixture();
-    const { replica, renderer } = fixture;
-    const navigations: Array<{ anchor: number | null; navigation: DesktopTranscriptNavigation }> = [];
-    // Only the process boundary is in-process here: controller invalidation,
-    // replica ownership, Host cursors, SQLite ledger, and renderer batches all
-    // use their production implementations.
-    const controller = createDesktopTranscriptRangeController(renderer, async () => ({
-      sessionId: replica.sessionId, generation: replica.generation,
-      hostEpoch: replica.hostEpoch, readThroughMessageId: null,
-      async loadBefore(anchor, maxBytes = PAGE_BYTES, navigation) {
-        assert.ok(navigation);
-        fixture.acceptNavigation(navigation);
-        await replica.loadBefore(anchor, maxBytes, replica.setNavigation(navigation.intent));
-      },
-      async loadAfter(anchor, maxBytes = PAGE_BYTES, navigation) {
-        assert.ok(navigation);
-        fixture.acceptNavigation(navigation);
-        await replica.loadAfter(anchor, maxBytes, replica.setNavigation(navigation.intent));
-      },
-      async loadAround(anchor, maxBytes = PAGE_BYTES, navigation) {
-        assert.ok(navigation);
-        navigations.push({ anchor, navigation });
-        fixture.acceptNavigation(navigation);
-        const token = replica.setNavigation(navigation.intent);
-        if (navigation.preserveRange) await replica.readAt(anchor, token, navigation.readingTurnId);
-        else if (navigation.intent === 'followTail') await replica.followLatest(maxBytes, token);
-        else {
-          assert.notEqual(anchor, null);
-          await replica.loadAround(anchor!, maxBytes, token);
-        }
-      },
-      async close() {},
-    }));
-    try {
-      await controller.ready();
-      assert.equal(renderer.sequenceForTurn('b'), null,
-        'a running ledger invocation has no durable user sequence to use as a bookmark');
-      assert.ok(renderer.snapshot().messages.some(({ id }) => id === 'answer-b'));
-      await controller.setReadingAnchor(renderer.sequenceForTurn('b'), 'b');
-      assert.equal(navigations[0]?.anchor, null, 'the old A sequence cannot impersonate B');
-      assert.equal(navigations[0]?.navigation.readingTurnId, 'b');
-      assert.equal(navigations[0]?.navigation.intent, 'history');
-
-      const expectedB = ['user-b', 'steering-b', 'answer-b', 'completed-b'];
-      if (!coalesced) {
-        await fixture.advance(B_COMPLETED_THROUGH);
-        assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id), expectedB);
-        assert.ok(renderer.sequenceForTurn('b') !== null, 'the selected Turn now resolves to its own durable sequence');
-      }
-      await fixture.advance(C_COMPLETED_THROUGH);
-      assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id), expectedB);
-      assert.deepEqual(replica.snapshot().overlay, []);
-      assert.equal(replica.snapshot().hasNewer, true);
-      assert.deepEqual(renderer.snapshot().messages.map(({ id }) => id), expectedB);
-      const answer = renderer.snapshot().messages.find(({ id }) => id === 'answer-b');
-      assert.equal(answer?.type === 'assistant' ? answer.text : undefined, 'B partial and completed answer');
-      assert.equal(renderer.snapshot().messages.some(({ turnId }) => turnId === 'c'), false,
-        'finishing C cannot replace the reader-selected B range');
-
-      await controller.loadLatest();
-      assert.deepEqual(renderer.snapshot().messages.map(({ id }) => id), ['user-c', 'answer-c', 'completed-c']);
-      assert.equal(replica.snapshot().hasNewer, false);
-    } finally {
-      await controller.close();
-      await fixture.close();
-    }
-  });
-}
-
-test('a fresh replica restores B from an overlay-only bookmark after oversized C owns the tail', async () => {
-  const fixture = await openFixture();
-  let reopened: Awaited<ReturnType<typeof openSettledReplica>> | undefined;
-  try {
-    const bookmark = { turnId: 'b', sequence: fixture.renderer.sequenceForTurn('b') };
-    assert.equal(bookmark.sequence, null);
-    await fixture.replica.readAt(bookmark.sequence, undefined, bookmark.turnId);
     await fixture.advance(B_COMPLETED_THROUGH);
-    await fixture.advance(C_COMPLETED_THROUGH);
-
-    reopened = await openSettledReplica(fixture.ledger);
-    assert.deepEqual(reopened.replica.snapshot().durable.map(({ message }) => message.id),
-      ['user-c', 'answer-c', 'completed-c']);
-    assert.deepEqual(reopened.replica.snapshot().overlay, []);
-    const before = reopened.requests.length;
-    await reopened.replica.readAt(bookmark.sequence, undefined, bookmark.turnId);
-    assert.deepEqual(reopened.replica.snapshot().durable.map(({ message }) => message.id),
-      ['user-b', 'steering-b', 'answer-b', 'completed-b']);
-    assert.ok(reopened.requests.slice(before).some((request) => request.direction === 'older'),
-      'a no-sequence bookmark finds its durable Turn through the real bounded pager');
-    assert.ok(reopened.requests.slice(before).every((request) => request.maxBytes <= 512 * 1024));
-    assert.equal(reopened.replica.snapshot().hasNewer, true);
-    await reopened.replica.advance(fixture.watermark(C_COMPLETED_THROUGH));
-    assert.deepEqual(new Set(reopened.replica.snapshot().durable.map(({ message }) => message.turnId)), new Set(['b']));
-  } finally {
-    await reopened?.close();
-    await fixture.close();
-  }
-});
-
-test('superseded settlement pages cannot retire overlays or skip the current navigation retry', async () => {
-  const firstStarted = deferred<void>();
-  const releaseFirst = deferred<void>();
-  const secondStarted = deferred<void>();
-  const releaseSecond = deferred<void>();
-  let settlementReads = 0;
-  const fixture = await openFixture(async (request) => {
-    if (request.direction !== 'newer' || request.anchorSequence !== fixture.bootstrapThrough) return;
-    settlementReads += 1;
-    if (settlementReads === 1) {
-      firstStarted.resolve();
-      await releaseFirst.promise;
-    } else if (settlementReads === 2) {
-      secondStarted.resolve();
-      await releaseSecond.promise;
-    }
-  });
-  try {
-    const { replica, changes } = fixture;
-    await replica.loadAround(fixture.history[0]!.sequence, PAGE_BYTES);
-    const advance = fixture.advance(C_COMPLETED_THROUGH);
-    await firstStarted.promise;
-    const latest = replica.followLatest(PAGE_BYTES);
-    releaseFirst.resolve();
-    await secondStarted.promise;
-    assert.equal(replica.snapshot().overlay.find(({ id }) => id === 'answer-b')?.id, 'answer-b');
-    assert.deepEqual(changes.flatMap((change) => change.completedOverlayMessageIds), []);
-    releaseSecond.resolve();
-    await latest;
-    await advance;
-    assert.equal(settlementReads, 2, 'the new command retries from the last actually checked overlay watermark');
+    const settled = changes.filter((change) =>
+      change.durableUpserts.some(({ message }) => message.id === 'answer-b'));
+    assert.equal(settled.length, 1);
+    const answer = replica.messages().find(({ id }) => id === 'answer-b');
+    assert.equal(answer?.type === 'assistant' ? answer.text : undefined, 'B partial and completed answer');
+    assert.equal(requests.length - before, 1, 'catch-up settles through the same page it installs');
     assert.deepEqual(replica.snapshot().overlay, []);
-    assert.deepEqual(replica.snapshot().durable.map(({ message }) => message.id), ['user-c', 'answer-c', 'completed-c']);
-    assert.deepEqual(changes.flatMap((change) => change.completedOverlayMessageIds), ['user-b', 'answer-b']);
   } finally {
-    releaseFirst.resolve();
-    releaseSecond.resolve();
     await fixture.close();
   }
 });
 
-function assertHistoryRange(fixture: Awaited<ReturnType<typeof openFixture>>): void {
-  assert.deepEqual(fixture.replica.snapshot().durable, fixture.history);
-  assert.equal(fixture.replica.snapshot().hasNewer, fixture.replica.durableThrough! > fixture.bootstrapThrough);
-}
+test('a window page read retires the tail overlay copy without notifying other windows', async () => {
+  const older: StoredMessage = {
+    type: 'assistant', id: 'answer-older', turnId: 'older', ts: 1,
+    text: 'Older answer', modelId: 'fixture-model',
+  };
+  const newest: StoredMessage = {
+    type: 'assistant', id: 'answer-newest', turnId: 'newest', ts: 2,
+    text: 'Newest answer', modelId: 'fixture-model',
+  };
+  const durablePage = (): SessionTranscriptPage => ({
+    kind: 'page', sessionId: 'session-1', source: 'durable', direction: 'older',
+    throughSequence: 2, rawBytes: 1, fragments: [], rangeBoundarySequence: null,
+    protectedTurnSequence: null, nextCursor: null,
+  });
+  const bootstrap = durablePage();
+  const decoded = new Map<SessionTranscriptPage, {
+    messages: Array<{ identity: number; message: StoredMessage }>;
+    nextCursor: string | null;
+  }>([[bootstrap, { messages: [{ identity: 2, message: newest }], nextCursor: null }]]);
+  const changes: DesktopTranscriptReplicaChange[] = [];
+  const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
+    snapshot: {
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      session: { sessionId: 'session-1', metadataRevision: 1, status: 'active', createdAt: 1, isArchived: false },
+      projectionRevision: 1, rootTurn: null, goal: null,
+      queue: { hostEpoch: HOST_EPOCH, queueRevision: 0, steering: [], followup: [] },
+      interactions: { pending: [] },
+    },
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 2, overlayMessageCount: 1,
+      durable: bootstrap, overlay: { ...bootstrap, source: 'overlay' },
+    },
+    // The Host was still streaming the older answer when the subscription
+    // opened, so bootstrap holds an overlay copy of an already durable row.
+    loadTranscriptOverlay: async () => [older],
+    loadTranscriptPage: async () => {
+      const page = durablePage();
+      decoded.set(page, { messages: [{ identity: 1, message: older }], nextCursor: null });
+      return page;
+    },
+    decodeTranscriptPage: async (page) => decoded.get(page)!,
+    async close() {},
+  }), { onChange: (_replica, change) => changes.push(change) });
+  try {
+    assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), ['answer-older']);
+
+    const page = await replica.loadBefore(2, PAGE_BYTES);
+
+    assert.ok(page);
+    assert.deepEqual(page.durable.map(({ message }) => message.id), ['answer-older']);
+    assert.deepEqual(replica.snapshot().overlay, [], 'the durable row retires the tail overlay copy');
+    assert.deepEqual(changes, [], 'a window page changes nothing another window holds');
+    assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [2]);
+  } finally {
+    replica.close();
+  }
+});
 
 async function openFixture(beforePage?: (request: SessionTranscriptPageInput) => Promise<void>) {
   const messages: StoredMessage[] = [
@@ -361,7 +296,6 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
   });
   const decodeMessage = (value: unknown) => decodeStoredMessage(markPersisted<StoredMessage>(value));
   const changes: DesktopTranscriptReplicaChange[] = [];
-  let navigationVersion = 0;
   const renderer = new DesktopTranscriptRangeStore(JSON.stringify(['local', sessionId]));
   const replica = await DesktopTranscriptReplica.prepare(runtimeHostSessionFixture({
     snapshot: subscription.snapshot, activeAssistantStreams, events: subscription,
@@ -375,7 +309,13 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
   }), {
     onChange: (current, change) => {
       changes.push(change);
-      for (const batch of encodeDesktopTranscriptChange({ ...current.snapshot(), navigationVersion }, change)) renderer.accept(batch);
+      // Tail growth is broadcast to every consumer and carries no navigation.
+      const identity = {
+        sessionId: current.sessionId,
+        generation: current.generation,
+        hostEpoch: current.hostEpoch,
+      };
+      for (const batch of encodeDesktopTranscriptChange(identity, change)) renderer.accept(batch);
     },
   });
   for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) renderer.accept(batch);
@@ -401,7 +341,6 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
   };
   return {
     replica, renderer, changes, requests, announce, history, bootstrapThrough, ledger,
-    acceptNavigation: (navigation: DesktopTranscriptNavigation) => { navigationVersion = navigation.navigationVersion; },
     watermark: (checkpoint: string) => {
       const value = watermarks.get(checkpoint);
       assert.notEqual(value, undefined);
@@ -409,7 +348,7 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
     },
     async advance(messageId: string) {
       await announce(messageId);
-      await replica.advance(watermarks.get(messageId)!);
+      await replica.advance(watermarks.get(messageId) ?? bootstrapThrough);
     },
     async close() {
       replica.close();

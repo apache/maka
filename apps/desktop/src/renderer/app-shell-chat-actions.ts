@@ -60,7 +60,7 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import type { RefreshMessagesOptions } from './session-message-settlement.js';
+import type { RefreshMessagesOptions } from './platform/desktop/session-message-settlement.js';
 import type { MessageListUpdater } from './session-workspace-actions.js';
 
 export type { RefreshMessagesOptions };

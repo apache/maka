@@ -315,7 +315,7 @@ describe('createDesktopWorkbarServices', () => {
       's',
       'cursor-1',
     ]);
-    assert.equal(settledReads[0]?.[0], bridge.transcripts);
+    assert.equal(settledReads[0]?.[0], bridge);
     assert.deepEqual(settledReads[0]?.slice(1), [
       's',
       { requiredAssistantMessageId: 'message', requiredTurnId: 'turn' },

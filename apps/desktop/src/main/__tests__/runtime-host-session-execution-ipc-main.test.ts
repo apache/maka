@@ -97,25 +97,33 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('forward transcript paging is an observation operation scoped to the renderer', async () => {
+test('window transcript reads are observation operations scoped to the renderer', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.loadTranscriptAfter = async (request, targetId) => { calls.push({ request, targetId }); };
+  observations.loadTranscriptAfter = async (request, targetId) => { calls.push({ command: 'after', request, targetId }); };
+  observations.loadTranscriptLatest = async (request, targetId) => { calls.push({ command: 'latest', request, targetId }); };
   registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
   const request = {
     consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
-    anchorSequence: 42, maxBytes: 512 * 1024,
-    navigationVersion: 7, intent: 'history' as const, preserveRange: false,
-    readingTurnId: 'reading-turn',
+    anchorSequence: 42, maxBytes: 512 * 1024, navigation: 7,
   };
   await ipc.invoke('sessions:transcript:load-after', request);
-  assert.deepEqual(calls, [{ request, targetId: 9 }]);
+  await ipc.invoke('sessions:transcript:load-latest', { ...request, anchorSequence: null });
+  assert.deepEqual(calls, [
+    { command: 'after', request, targetId: 9 },
+    { command: 'latest', request: { ...request, anchorSequence: null }, targetId: 9 },
+  ]);
   await assert.rejects(
     ipc.invoke('sessions:transcript:load-after', { ...request, anchorSequence: -1 }),
     /Invalid Desktop transcript range anchor/,
   );
-  assert.equal(calls.length, 1);
+  // The Renderer owns the window, so every read must name the version it reads for.
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:load-after', { ...request, navigation: undefined }),
+    /Invalid Desktop transcript navigation/,
+  );
+  assert.equal(calls.length, 2);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {
@@ -165,6 +173,8 @@ test('treats pending transcript teardown as IPC cancellation', async () => {
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
@@ -208,6 +218,8 @@ for (const teardown of ['forgetSession', 'close'] as const) {
       async loadTranscriptBefore() {},
       async loadTranscriptAround() {},
       async loadTranscriptAfter() {},
+      async loadTranscriptLatest() {},
+      acknowledgeTranscriptTail() {},
       async closeTranscript() {},
     });
     const ipc = observationIpcHarness(observations);
@@ -248,6 +260,8 @@ test('preserves genuine Session observation initialization failures', async () =
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
@@ -259,6 +273,28 @@ test('preserves genuine Session observation initialization failures', async () =
   await assert.rejects(
     ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
     (error) => error === transcriptFailure,
+  );
+  await observations.close();
+});
+
+test('releases a transcript registration whose source lacks the window contract', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  await observations.attach({
+    async observe() {},
+    async unobserve() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    /transcript source is unavailable/,
+  );
+  assert.deepEqual(observations.trackedSessionIds(), []);
+  // Reusing the consumer id must reach the same missing-source failure rather
+  // than the duplicate-identity guard, which only a leaked registration trips.
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    /transcript source is unavailable/,
   );
   await observations.close();
 });
@@ -280,6 +316,8 @@ test('returns explicit ready results for Session observation IPC', async () => {
     async loadTranscriptBefore() {},
     async loadTranscriptAround() {},
     async loadTranscriptAfter() {},
+    async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);

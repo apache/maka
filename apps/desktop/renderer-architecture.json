@@ -120,7 +120,6 @@
     "src/renderer/session-error-presentation.ts",
     "src/renderer/session-event-health.ts",
     "src/renderer/session-health-notice.ts",
-    "src/renderer/session-message-settlement.ts",
     "src/renderer/session-read-state.ts",
     "src/renderer/session-status-presentation.ts",
     "src/renderer/session-workspace-actions.ts",
@@ -276,9 +275,7 @@
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/theme",
     "src/renderer/features/workbar/ui/workbar-surface.tsx -> src/renderer/work-board-panel"
   ],
-  "legacyPlatformImports": [
-    "src/renderer/platform/desktop/create-workbar-services.ts -> src/renderer/session-message-settlement"
-  ],
+  "legacyPlatformImports": [],
   "controllerOwners": [
     {
       "implementation": "src/renderer/features/app-update/controller/use-app-update-controller.ts",
@@ -499,7 +496,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3816
+        "nonTriviaTokens": 3801
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
@@ -579,8 +576,8 @@
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1,
           "./locales/shell-copy.js": 1,
+          "./platform/desktop/session-message-settlement.js": 1,
           "./session-copy-attempt.js": 1,
-          "./session-message-settlement.js": 1,
           "./session-workspace-errors.js": 1,
           "@maka/core/session": 1
         },
@@ -710,7 +707,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 70,
+        "importDeclarations": 69,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -775,7 +772,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 6,
-          "useState": 14,
+          "useState": 13,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -786,7 +783,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../preload/transcript-contract.js": 1,
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
@@ -871,8 +867,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 108,
-        "nonTriviaTokens": 13695
+        "importSpecifiers": 107,
+        "nonTriviaTokens": 13669
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -2206,22 +2202,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1
-        }
-      },
-      "src/renderer/session-message-settlement.ts": {
-        "bridgePaths": {
-          "window.maka.transcripts": 1
-        },
-        "environmentCapabilities": {
-          "window.clearTimeout": 2,
-          "window.setTimeout": 2
-        },
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./platform/desktop/desktop-transcript-range-store.js": 1
         }
       },
       "src/renderer/session-read-state.ts": {
