@@ -1238,6 +1238,128 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  for (const modelState of ['loading', 'failed', 'models'] as const) {
+    test(`Esc returns authenticated OAuth to refreshed providers (${modelState})`, async () => {
+      const terminal = new FakeTerminal();
+      const discovery = deferred<OnboardingVerifyResult>();
+      const refresh = deferred<OnboardingProviderEntry[]>();
+      const finalRefresh = deferred<OnboardingProviderEntry[]>();
+      const reauthorization = deferred<OnboardingOAuthResult>();
+      const loginTargets: OnboardingProviderEntry['target'][] = [];
+      const connection = {
+        connectionId: 'codex-work-id',
+        slug: 'codex-work',
+        providerType: 'openai-codex' as const,
+      };
+      const existing: OnboardingProviderEntry = {
+        providerType: connection.providerType,
+        label: 'Work Codex · codex-work',
+        requiresBaseUrl: false,
+        setupMethod: 'oauth',
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        connectionSlug: connection.slug,
+        enabledModelIds: [],
+      };
+      let listCalls = 0;
+      const firstRun = modelState === 'loading';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver: new SlashCommandDriver(),
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        terminal,
+        firstRun,
+        onboarding: {
+          ...fakeOnboardingSurface({
+            loginOAuth: async ({ target }) => {
+              loginTargets.push(target);
+              return loginTargets.length === 1
+                ? { kind: 'authenticated', connection }
+                : reauthorization.promise;
+            },
+            verify: async () => discovery.promise,
+            save: async () => assert.fail('Going back must not save model selection'),
+          }),
+          listProviders: async () => {
+            listCalls += 1;
+            if (listCalls === 1) return [oauthCreateProvider([])];
+            return listCalls === 2 ? refresh.promise : finalRefresh.promise;
+          },
+        },
+      });
+      const screen = () => plainTerminalOutput(terminal.screenOutput());
+
+      try {
+        if (!firstRun) {
+          await waitForTuiPaint(terminal);
+          terminal.input('/setup');
+          terminal.input('\r');
+        }
+        await waitFor(() => screen().includes('1/4'));
+        terminal.input('\r');
+        terminal.input('\r');
+        terminal.input('\r');
+        await waitFor(() => screen().includes('Signed in'));
+        if (modelState === 'failed') {
+          discovery.resolve({ kind: 'failed', errorClass: 'network' });
+          await waitFor(() => screen().includes('Enter retries model loading'));
+        } else if (modelState === 'models') {
+          discovery.resolve({ kind: 'ok', models: [{ id: 'gpt-5.5' }] });
+          await waitFor(() => screen().includes('4/4'));
+          terminal.input('\x1b');
+          await waitFor(() => screen().includes('Enter to continue to models'));
+        }
+
+        terminal.input('\x1b');
+        await waitFor(() => screen().includes('Search providers'), 'Esc returns before refresh');
+        assert.equal(terminal.stopCalls, 0);
+        assert.equal(loginTargets.length, 1);
+        assert.equal(listCalls, 2);
+        terminal.input('Work');
+        refresh.resolve([oauthCreateProvider([]), existing]);
+        await waitFor(() => screen().includes(existing.label));
+        assert.doesNotMatch(screen(), /OpenAI OAuth \(ChatGPT \/ Codex\)/);
+
+        terminal.input('\r');
+        await waitFor(() => screen().includes('Preparing sign-in'));
+        assert.deepEqual(loginTargets[1], existing.target);
+        assert.match(screen(), /2\/3/);
+        // An old discovery must not advance the newly selected account's login.
+        discovery.resolve({ kind: 'ok', models: [{ id: 'gpt-5.5' }] });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.match(screen(), /Preparing sign-in/);
+        reauthorization.resolve({ kind: 'authenticated', connection });
+        await waitFor(() => !screen().includes('Preparing sign-in'));
+        if (modelState !== 'failed') {
+          await waitFor(() => screen().includes('3/3'));
+          terminal.input('\x1b');
+        }
+        terminal.input('\x1b');
+        await waitFor(() => screen().includes('Search providers'));
+        if (modelState === 'failed') {
+          finalRefresh.reject(new Error('catalog unavailable'));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.match(screen(), /Work Codex/);
+        }
+        terminal.input('\x1b');
+        if (firstRun) await run;
+        else await waitFor(() => !screen().includes('Set Up Provider'));
+        finalRefresh.resolve([existing]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!firstRun) assert.doesNotMatch(screen(), /Set Up Provider/);
+      } finally {
+        discovery.resolve({ kind: 'ok', models: [] });
+        refresh.resolve([]);
+        finalRefresh.resolve([]);
+        reauthorization.resolve({ kind: 'cancelled' });
+        if (terminal.stopCalls === 0) exitMaka(terminal);
+        await run;
+      }
+    });
+  }
+
   test('retries model discovery after OAuth without signing in again', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();

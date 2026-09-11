@@ -2708,6 +2708,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onContinueOAuth: continueWizardOAuth,
+      onReturnToProviders: () => {
+        const targetWizard = wizard;
+        const attempt = ++wizardAttempt;
+        requestRender();
+        if (!targetWizard || !input.onboarding) return;
+        void input.onboarding.listProviders().then(
+          (providers) => {
+            if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+            targetWizard.setProviders(providers);
+            requestRender();
+          },
+          () => {
+            // Keep the cached list usable if refreshing the saved account fails.
+          },
+        );
+      },
       onSubmitModels: submitWizardModels,
       onCancel: () => {
         closeWizard();

@@ -121,6 +121,7 @@ interface TuiPickerCopy {
   readonly submitAction: string;
   readonly verifyingKey: string;
   readonly oauthHint: string;
+  readonly oauthBackHint: string;
   readonly oauthCodeLabel: string;
   readonly oauthStarting: string;
   readonly oauthWaiting: string;
@@ -1277,6 +1278,8 @@ export interface OnboardingWizardInput {
   /** Models may return to an already-authenticated OAuth step; Enter retries
    *   model discovery without authenticating or creating again. */
   onContinueOAuth: () => void;
+  /** Leaving a durable OAuth login refreshes the list to include its Connection. */
+  onReturnToProviders: () => void;
   /** models submit: save the curated enabled set (≥1 model). */
   onSubmitModels: (enabledModelIds: readonly string[]) => void;
   /** search Esc / Ctrl+C: close (first-run closes the TUI). */
@@ -1518,6 +1521,11 @@ export class OnboardingWizard implements Component {
     if (next === this.filtered) return;
     this.filtered = next;
     this.list = this.buildList();
+  }
+
+  setProviders(providers: readonly OnboardingProviderEntry[]): void {
+    this.input.providers = providers;
+    this.applyQuery(this.searchEditor.getText());
   }
 
   private applyModelQuery(text: string): void {
@@ -1821,7 +1829,11 @@ export class OnboardingWizard implements Component {
         this.input.onCancelOAuth();
         return;
       }
-      if (this.oauthStatus.kind === 'error') {
+      if (this.oauthStatus.kind === 'authenticated') {
+        this.phase = 'search';
+        this.picked = undefined;
+        this.input.onReturnToProviders();
+      } else if (this.oauthStatus.kind === 'error') {
         this.setOAuthCancelled();
         this.input.onBack();
       }
@@ -2071,7 +2083,7 @@ export class OnboardingWizard implements Component {
       ),
       padLine(
         this.oauthStatus.kind === 'authenticated'
-          ? ''
+          ? ansi.dim(this.copy.oauthBackHint)
           : ansi.dim(
               this.oauthStatus.kind === 'unconfirmed'
                 ? this.copy.oauthRecheckAction
