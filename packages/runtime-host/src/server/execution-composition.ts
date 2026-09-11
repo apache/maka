@@ -158,6 +158,7 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -2262,6 +2263,16 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     scheduledTaskTool = scheduledTasks.modelTool;
+    // Export and import run inside this process because the authority they
+    // need is already held here: the Storage Root owner lock is an election
+    // that refuses a second exclusive hold, its own process included, so the
+    // Host lends the lease rather than electing again.
+    const sessionBundles = new HostSessionBundleCoordinator({
+      lease: context.owner.lease,
+      fenceSubtree: (sessionId, operation) =>
+        requireSessionManager(manager).runSessionSubtreeQuiescentMutation(sessionId, operation),
+      onImported: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+    });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
       admission: sessionAdmission,
@@ -2417,7 +2428,12 @@ export async function createExecutionRuntimeHostComposition(
       }),
       createRuntimeHostDomainModule({
         id: 'session',
-        handlers: [sessionCatalog.handlers, externalSessions.handlers, sessionRevisions.handlers],
+        handlers: [
+          sessionCatalog.handlers,
+          externalSessions.handlers,
+          sessionBundles.handlers,
+          sessionRevisions.handlers,
+        ],
         recovery: {
           state: () => externalSessions.recover(),
           resources: async () => {

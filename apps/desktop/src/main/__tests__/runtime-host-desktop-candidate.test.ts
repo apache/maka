@@ -1259,6 +1259,10 @@ function deps(
   },
 ): DesktopRuntimeHostCandidateDeps {
   return {
+    mainWindowController: {
+      showSaveDialog: async () => ({ canceled: true }),
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+    },
     ipcMain,
     workspaceRoot: '/workspace',
     attachmentApprovals: createAttachmentApprovalRegistry(),

@@ -1013,6 +1013,20 @@ export class DesktopRuntimeHostClient {
     return requireSessionProjection(result.session);
   }
 
+  exportSessionBundle(input: {
+    readonly sessionId: string;
+    readonly destination: string;
+    readonly expectedSubtreeDigest?: string;
+  }): Promise<{ readonly sessionCount: number; readonly compressedBytes: number }> {
+    return this.request("session-bundle.export", input);
+  }
+
+  importSessionBundle(input: {
+    readonly source: string;
+  }): Promise<{ readonly sessionCount: number; readonly artifactFiles: number }> {
+    return this.request("session-bundle.import", input);
+  }
+
   updateSessionMetadata(
     sessionId: string,
     patch: SessionMetadataPatch,
