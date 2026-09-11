@@ -278,6 +278,13 @@ export const LongIntentGroupNarrow: Story = {
     await userEvent.click(disclosure!);
     await waitFor(() => expect(disclosure).toHaveAttribute('aria-expanded', 'true'));
     expect(getComputedStyle(disclosure!).position).toBe('static');
+    const callRow = group!.querySelector<HTMLElement>(
+      ':scope > [role="button"] + div [role="button"][aria-expanded="false"]',
+    );
+    expect(callRow).not.toBeNull();
+    await userEvent.click(callRow!);
+    await waitFor(() => expect(callRow).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(callRow!).position).toBe('static');
     const rows = Array.from(group!.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
       turn.clientWidth + 8,

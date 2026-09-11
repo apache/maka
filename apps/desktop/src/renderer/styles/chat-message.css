@@ -177,27 +177,20 @@
    read. Tool-call disclosures remain in normal flow: pinning both the group
    header and an expanded call row creates a floating two-tier stack that
    visually detaches from the transcript around adjacent messages. */
-.maka-turn .maka-deep-thinking {
-  --maka-activity-sticky-top: var(--space-2);
-}
-
-.maka-turn .maka-activity-card-header[aria-expanded="true"] {
+.maka-turn .maka-deep-thinking .maka-activity-card-header[aria-expanded="true"] {
   position: sticky;
-  top: var(--maka-activity-sticky-top);
+  top: var(--space-2);
   z-index: var(--z-sticky);
   background: var(--surface-raised);
   border-radius: var(--radius-element);
   box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
 }
 
-/* Astryx clips the animated group body with overflow:hidden. `clip` preserves
-   that visual boundary. The inner wrapper is also a grid item: without an
-   explicit zero minimum its long, nowrap call preview becomes the track's
-   minimum size and stretches every expanded row past the turn instead of
-   ellipsizing it. */
+/* The inner wrapper is a grid item: without an explicit zero minimum its long,
+   nowrap call preview becomes the track's minimum size and stretches every
+   expanded row past the turn instead of ellipsizing it. */
 .maka-turn .maka-tool-activity-card > [role="button"] + div > div {
   min-width: 0;
-  overflow: clip;
 }
 
 /* Cursor for tool/reasoning disclosure triggers is owned by
