@@ -19,8 +19,10 @@
 
 /**
  * The rail's current tick is the reading position the scroll authority
- * publishes, and nothing else. Mounted through the real layout, because that
- * is what hands the authority the scroller the reader scrolls.
+ * publishes — the newest Turn while pinned to the tail, otherwise the Turn
+ * crossing the top of the scrollport — and nothing else. Mounted through the
+ * real layout, because that is what hands the authority the scroller the
+ * reader scrolls.
  */
 
 import assert from 'node:assert/strict';
@@ -190,8 +192,16 @@ test('the current tick follows the reading position the authority publishes', as
   });
   const scroller = probe.scroller();
 
-  // The reader takes the transcript to the third Turn's box.
+  // Pinned to the tail, the reader is on the newest Turn.
+  probe.viewport.scrollTop = TURN_COUNT * TURN_HEIGHT - SCROLLPORT_HEIGHT;
+  assert.equal(activeTickTurnId(probe.mount), 'turn-5');
+
+  // The reader takes the transcript to the third Turn's box. A wheel first:
+  // a scroll the reader did not cause leaves the pin, and the newest Turn, alone.
   await act(() => {
+    const wheel = new probe.window.Event('wheel', { bubbles: true });
+    Object.defineProperty(wheel, 'deltaY', { value: -120 });
+    scroller.dispatchEvent(wheel);
     probe.viewport.scrollTop = TURN_HEIGHT * 2 + 100;
     scroller.dispatchEvent(new probe.window.Event('scroll'));
   });
