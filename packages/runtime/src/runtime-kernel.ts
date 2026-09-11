@@ -364,6 +364,7 @@ type BackendDisposalOutcome = { ok: true } | { ok: false; error: unknown };
 
 interface BackendInvalidationState {
   readonly outcome: Promise<BackendDisposalOutcome>;
+  readonly activations: Set<PendingExecutionClaim>;
   resolve(outcome: BackendDisposalOutcome): void;
   disposal?: Promise<void>;
   failure?: Error;
@@ -380,6 +381,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly active = new Map<string, BackendGeneration>();
   private readonly backendGenerations = new Map<number, BackendGeneration>();
   private readonly backendActivationBuilds = new Map<string, Promise<BackendGeneration>>();
+  private readonly backendActivations = new Set<PendingExecutionClaim>();
   private readonly stopOperations = new Map<string, StopOperation>();
   private readonly stopAttempts = new Map<string, Promise<void>>();
   private readonly executionClaims = new Map<string, Set<PendingExecutionClaim>>();
@@ -404,8 +406,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
-  private async runBackendActivation<T>(operation: () => Promise<T> | T): Promise<T> {
-    return await (this.deps.runBackendActivation?.(operation) ?? operation());
+  private async runBackendActivation<T>(
+    execution: PendingExecutionClaim,
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    const activate = async () => {
+      this.backendActivations.add(execution);
+      try {
+        return await operation();
+      } finally {
+        this.backendActivations.delete(execution);
+        this.backendInvalidations.get(execution.sessionId)?.activations.delete(execution);
+        await this.flushBackendInvalidation(execution.sessionId);
+      }
+    };
+    return await (this.deps.runBackendActivation?.(activate) ?? activate());
   }
 
   claimExecution(sessionId: string): RuntimeExecutionClaim {
@@ -1171,7 +1186,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           runId: run.runId,
         });
       }
-      begin = await this.runBackendActivation(async () => {
+      begin = await this.runBackendActivation(execution, async () => {
         run.bindProviderStateIdentity(
           await this.prepareBackendForExecution(sessionId, header, execution),
         );
@@ -1274,7 +1289,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     header: SessionHeader,
     execution: PendingExecutionClaim,
   ): Promise<BackendGeneration> {
-    const active = await this.runBackendActivation(() =>
+    const active = await this.runBackendActivation(execution, () =>
       this.ensureActive(sessionId, header, execution),
     );
     if (!active.backend.compactHistory) {
@@ -1312,7 +1327,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           runId: run.runId,
         });
       }
-      begin = await this.runBackendActivation(async () => {
+      begin = await this.runBackendActivation(execution, async () => {
         await prepareBackendActivation?.();
         run.bindProviderStateIdentity(
           await this.prepareBackendForExecution(sessionId, run.headerSnapshot(), execution),
@@ -1457,7 +1472,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     let begin: Awaited<ReturnType<AgentRun['beginContinuation']>>;
     try {
       if (messageOwner) owners.bindMessage(this.deps.messageAuthority, messageOwner);
-      begin = await this.runBackendActivation(async () => {
+      begin = await this.runBackendActivation(execution, async () => {
         if (!revalidateSafety) {
           throw new Error('Durable continuation omitted final safety revalidation');
         }
@@ -2240,6 +2255,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const sessionIds = new Set(
       [...this.backendGenerations.values()].map((generation) => generation.sessionId),
     );
+    for (const execution of this.backendActivations) sessionIds.add(execution.sessionId);
     for (const sessionId of this.backendInvalidations.keys()) sessionIds.add(sessionId);
     await Promise.all(
       [...sessionIds].map(async (sessionId) => {
@@ -2811,7 +2827,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async flushBackendInvalidation(sessionId: string): Promise<void> {
     const invalidation = this.backendInvalidations.get(sessionId);
-    if (!invalidation || this.hasActiveRuns(sessionId)) return;
+    if (!invalidation || invalidation.activations.size > 0 || this.hasActiveRuns(sessionId)) return;
     await this.startBackendDisposal(sessionId, invalidation);
   }
 
@@ -2858,8 +2874,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     const invalidation = this.backendInvalidations.get(sessionId);
     if (!invalidation) return;
+    // This activation was already admitted when the refresh arrived. Let it
+    // reserve its Run; invalidation must survive until that Run exits (or the
+    // activation fails), rather than disposing a not-yet-reserved generation.
+    if (invalidation.activations.has(execution)) return;
     await this.flushBackendInvalidation(sessionId);
-    if (this.hasActiveRuns(sessionId)) {
+    if (invalidation.activations.size > 0 || this.hasActiveRuns(sessionId)) {
       throw new Error(`Backend generation is quarantined for session ${sessionId}`);
     }
     await this.startBackendDisposal(sessionId, invalidation);
@@ -2896,14 +2916,29 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private ensureBackendInvalidation(sessionId: string): BackendInvalidationState {
     const existing = this.backendInvalidations.get(sessionId);
-    if (existing) return existing;
+    if (existing) {
+      if (!existing.disposal) this.retainBackendActivations(sessionId, existing);
+      return existing;
+    }
     let resolve!: (outcome: BackendDisposalOutcome) => void;
     const outcome = new Promise<BackendDisposalOutcome>((resolvePromise) => {
       resolve = resolvePromise;
     });
-    const invalidation = { outcome, resolve };
+    const invalidation: BackendInvalidationState = { outcome, resolve, activations: new Set() };
+    this.retainBackendActivations(sessionId, invalidation);
     this.backendInvalidations.set(sessionId, invalidation);
     return invalidation;
+  }
+
+  private retainBackendActivations(
+    sessionId: string,
+    invalidation: BackendInvalidationState,
+  ): void {
+    // A cold backend has no generation or activeRuns yet. Retain the entire
+    // prepare/build/reservation interval, not just the shared factory promise.
+    for (const execution of this.backendActivations) {
+      if (execution.sessionId === sessionId) invalidation.activations.add(execution);
+    }
   }
 
   private async updateStatus(
