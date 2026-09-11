@@ -2201,7 +2201,6 @@ function AppShellContent({
     activeId !== undefined || taskEntry.selectors.target !== undefined;
   // #4804: attachment-only sends are opt-in per host surface, and the Desktop
   // host now admits them. The pickers share the same edit-mode condition.
-  const allowAttachmentOnlySend = canStageComposerContext;
   const contextPickEnabled =
     canStageComposerContext &&
     !(revisionDraft && activeId === revisionDraft.draftSessionId);
@@ -2591,9 +2590,8 @@ function AppShellContent({
                   }
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
-                  allowAttachmentOnlySend={allowAttachmentOnlySend}
-                  onRemoveAttachment={removeAttachment}
-                  pendingQuotes={pendingQuotes}
+                  allowAttachmentOnlySend={canStageComposerContext}
+                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
                   onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
