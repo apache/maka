@@ -44,10 +44,10 @@ import { isSandboxDeniedToolResult } from './sandbox-denial.js';
  * mono/command output. Tokens only: foreground-3 + border + radius-surface.
  * Body type uses font-size-base (the body tier), not caption.
  */
-export const TOOL_OUTPUT_PANEL_CLASS =
+const TOOL_OUTPUT_PANEL_CLASS =
   'maka-tool-output-panel';
 
-export const TOOL_OUTPUT_COMMAND_CLASS =
+const TOOL_OUTPUT_COMMAND_CLASS =
   'maka-tool-output-command';
 
 export const TOOL_OUTPUT_BODY_CLASS =
@@ -285,7 +285,6 @@ export function ToolResultPreview(props: {
           // and it can be an archive ref — repeating it here wraps a raw URI
           // across the block's title slot.
           text={formatUserVisibleToolText(redactSecrets(content.text), locale)}
-          sourceTruncated={content.truncated}
           savedText={content.text}
           actionIdentity={props.actionIdentity}
         />

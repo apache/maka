@@ -36,10 +36,8 @@ export interface ToolActivityCopy {
     outputRegion: string;
     archivedResult: string;
     previewTruncated: string;
-    jsonHidden: string;
     lines: (count: number) => string;
     readFailure: Record<ArtifactReadFailureReason, string>;
-    sourceTruncated: string;
     returned: ((count: number) => string);
   };
   errorLabel: string;
@@ -210,10 +208,8 @@ const TOOL_ACTIVITY_COPY = {
       outputRegion: '工具输出',
       archivedResult: '归档结果',
       previewTruncated: '预览已截断',
-      jsonHidden: '部分内容未展示',
       lines: (count) => `${count} 行`,
       readFailure: { not_found: '输出不存在或已删除', not_allowed: '输出未通过访问或完整性校验', too_large: '输出超过查看器的 4 MB 上限', read_failed: '读取输出失败，请重试' },
-      sourceTruncated: '工具输出已截断，以下仅为已保留内容',
       returned: (count) => `返回 ${count} 项`,
     },
     errorLabel: '错误',
@@ -335,10 +331,8 @@ const TOOL_ACTIVITY_COPY = {
       outputRegion: '工具輸出',
       archivedResult: '封存結果',
       previewTruncated: '預覽已截斷',
-      jsonHidden: '部分內容未顯示',
       lines: (count) => `${count} 行`,
       readFailure: { not_found: '輸出不存在或已刪除', not_allowed: '輸出未通過存取或完整性校驗', too_large: '輸出超過檢視器的 4 MB 上限', read_failed: '讀取輸出失敗，請重試' },
-      sourceTruncated: '工具輸出已截斷，以下僅為已保留內容',
       returned: (count) => `傳回 ${count} 項`,
     },
     errorLabel: '錯誤',
@@ -460,10 +454,8 @@ const TOOL_ACTIVITY_COPY = {
       outputRegion: 'Tool output',
       archivedResult: 'Archived result',
       previewTruncated: 'Preview truncated',
-      jsonHidden: 'Some content is not shown',
       lines: (count) => `${count} lines`,
       readFailure: { not_found: 'Output does not exist or was deleted', not_allowed: 'Output failed access or integrity validation', too_large: 'Output exceeds the viewer’s 4 MB limit', read_failed: 'Could not read output; try again' },
-      sourceTruncated: 'Tool output was truncated; only retained content is available',
       returned: (count) => `${count} items returned`,
     },
     errorLabel: 'Error',

@@ -21,7 +21,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
 import { ToolResultHostProvider, type ToolOutputOpenRequest } from '@maka/ui';
 
 const ToolOutputPreviewContext = createContext<{
-  preview?: { request: ToolOutputOpenRequest; id: number; visible: boolean };
+  preview?: { request: ToolOutputOpenRequest; id: number };
   close(): void;
   hide(): void;
 } | undefined>(undefined);
@@ -30,16 +30,18 @@ export const useToolOutputPreview = () => useContext(ToolOutputPreviewContext);
 
 /** Retained tool output is a transient selection in the existing Files viewer. */
 export function ToolOutputPreviewProvider(props: { children?: ReactNode }) {
-  const [preview, setPreview] = useState<{ request: ToolOutputOpenRequest; id: number; visible: boolean }>();
+  const [preview, setPreview] = useState<{ request: ToolOutputOpenRequest; id: number }>();
+  const nextId = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const close = useCallback(() => { setPreview(undefined); opener.current = null; }, []);
   const hide = useCallback(() => {
-    setPreview(current => current ? { ...current, visible: false } : current);
+    setPreview(undefined);
     if (opener.current?.isConnected) opener.current.focus();
+    opener.current = null;
   }, []);
   const openOutput = useCallback((request: ToolOutputOpenRequest) => {
       opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setPreview(current => ({ request, id: (current?.id ?? 0) + 1, visible: true }));
+      setPreview({ request, id: ++nextId.current });
   }, []);
   const value = useMemo(() => ({ preview, close, hide }), [preview, close, hide]);
   return <ToolOutputPreviewContext.Provider value={value}>
