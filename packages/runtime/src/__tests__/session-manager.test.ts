@@ -22,6 +22,10 @@ import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createSessionStore } from '@maka/storage/session-store';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import {
   buildInvocationOpenedEvent,
@@ -47,8 +51,10 @@ import {
   isSandboxBoundaryRestartClosure,
 } from '@maka/core/sandbox-boundary';
 import {
+  canReadPath,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
+  isReadOnlyPermissionProfile,
 } from '@maka/core/permission-profile';
 import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
@@ -4795,6 +4801,114 @@ describe('SessionManager permission mode updates', () => {
 
     await manager.transitionSessionConfiguration(session.id, narrowing);
     assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
+  });
+
+  test('restoring Explore revokes an approved outside read through the durable configuration path', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-explore-read-revocation-'));
+    const store = createSessionStore(root);
+    t.after(async () => {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    });
+    const gate = makeGate();
+    const calls: string[] = [];
+    const backends = new BackendRegistry();
+    const runStore = new MemoryAgentRunStore();
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, gate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(988),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('test') };
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const workspaceRoot = join(root, 'workspace');
+    const outsidePath = join(root, 'approved', 'input.txt');
+    const session = await manager.createSession(
+      makeInput({ permissionMode: 'explore', cwd: workspaceRoot }),
+    );
+    const updatePermissionMode = async (permissionMode: PermissionMode) => {
+      const current = await store.readHeaderRecordSnapshot(session.id);
+      return manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: current.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(current.header, { permissionMode }),
+      });
+    };
+    await store.createSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId: 'outside-read',
+      turnId: 'turn-approval',
+      runId: 'run-approval',
+      expansion: {
+        filesystem: { entries: [{ path: outsidePath, access: 'read', scope: 'exact' }] },
+      },
+      justification: 'Read the approved input outside the workspace.',
+    });
+    const settlement = await store.settleSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId: 'outside-read',
+      decision: 'allow',
+    });
+    assert.strictEqual(settlement.request.status, 'approved');
+    await updatePermissionMode('ask');
+    const expanded = await store.readExecutionBoundary(session.id);
+    assert.strictEqual(expanded.kind, 'managed');
+    if (expanded.kind !== 'managed') throw new Error('Expected a managed boundary');
+    assert.strictEqual(expanded.profile.name, 'read-only');
+    assert.strictEqual(isReadOnlyPermissionProfile(expanded.profile), true);
+    assert.strictEqual(
+      canReadPath(expanded.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+      true,
+    );
+    assert.deepStrictEqual(calls, []);
+
+    const activeTurn = manager
+      .sendMessage(session.id, { turnId: 'turn-expanded-read', text: 'keep reading' })
+      [Symbol.asyncIterator]();
+    try {
+      await activeTurn.next();
+      await assert.rejects(updatePermissionMode('explore'), (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'session_busy');
+        return true;
+      });
+      assert.deepStrictEqual(await store.readExecutionBoundary(session.id), expanded);
+      assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+      assert.deepStrictEqual(calls, []);
+    } finally {
+      gate.release();
+      while (!(await activeTurn.next()).done) {}
+    }
+
+    await updatePermissionMode('explore');
+    assert.deepStrictEqual(calls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    const narrowed = await store.readExecutionBoundary(session.id);
+    assert.strictEqual(narrowed.kind, 'managed');
+    if (narrowed.kind !== 'managed') throw new Error('Expected a managed boundary');
+    assert.deepStrictEqual(narrowed.profile, createReadOnlyPermissionProfile());
+    assert.strictEqual(
+      canReadPath(narrowed.profile, outsidePath, { workspaceRoots: [workspaceRoot] }),
+      false,
+    );
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'explore');
   });
 

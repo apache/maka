@@ -70,7 +70,7 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
-import { isReadOnlyPermissionProfile } from '@maka/core/permission-profile';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -5188,7 +5188,9 @@ function narrowsExecutionAuthority(
 ): boolean {
   if (nextPermissionMode === 'bypass') return false;
   if (boundary.kind !== 'managed') return true;
-  return nextPermissionMode === 'explore' && !isReadOnlyPermissionProfile(boundary.profile);
+  return (
+    nextPermissionMode === 'explore' && !isCanonicalReadOnlyPermissionProfile(boundary.profile)
+  );
 }
 
 function agentRunStatusForSpawnResult(
