@@ -29,6 +29,7 @@ import {
   createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
+  TranscriptReadSupersededError,
 } from '../../renderer/features/conversation/index.js';
 import {
   createTranscriptRestoreLifecycle,
@@ -188,6 +189,58 @@ test('filling an edge leaves an outstanding jump alone', async () => {
   assert.equal(cleared, 0);
 });
 
+for (const known of [true, false]) {
+test(`a bookmark ${known ? 'survives' : 'cannot outlive'} a Host epoch change`, async () => {
+  const fixture = controllerFixture();
+  const landmarks = known ? [{ turnId: 'turn-t', sequence: 77, label: 'T' }] : [];
+  let range = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  fixture.controller.store.range = () => range;
+  fixture.props.listTurnLandmarks = async () => ({ throughSequence: 80, landmarks });
+  const loaded: number[] = [];
+  fixture.controller.loadAround = async (sequence: number) => { loaded.push(sequence); };
+  await fixture.render();
+  fixture.props.sessionUi.setTranscriptReadingAnchor('session-1', { turnId: 'turn-t', sequence: 10 });
+
+  range = { sessionId: 'session-1', generation: 'generation-2', hostEpoch: 'host-2' };
+  fixture.props.messages = [];
+  await fixture.render();
+  await act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+
+  // The old epoch's sequence names a different row, so only the Turn resolved
+  // in the new epoch may be navigated to.
+  assert.deepEqual(loaded, known ? [77] : []);
+  assert.deepEqual(
+    fixture.props.sessionUi.transcriptReadingAnchorBySessionRef.current['session-1'],
+    { turnId: 'turn-t', sequence: known ? 77 : 10 },
+  );
+});
+}
+
+test('a read superseded by a Host epoch change leaves the bookmark alone', async () => {
+  const sessionId = 'session-1';
+  const lifecycle = createTranscriptRestoreLifecycle();
+  const controller = {
+    store: {
+      sessionId,
+      range: () => ({ sessionId }),
+      sequenceForTurn: () => null,
+      newestDurableUserSequence: () => null,
+      snapshot: () => ({ messages: [] }),
+    },
+    loadAround: async () => {
+      throw new TranscriptReadSupersededError('Desktop transcript host epoch changed; reopen the transcript');
+    },
+  };
+  restoreSessionTranscriptRange({
+    lifecycle, sessionId, controller, readingAnchor: { turnId: 'turn-t', sequence: 10 },
+    isCurrent: () => true,
+    setReadingAnchor: () => assert.fail('a superseded read must not clear the bookmark'),
+    onRestoreUnavailable: () => assert.fail('a superseded read decides nothing about the bookmark'),
+    onError: (error) => assert.fail(String(error)),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test('retaining the reader window trims the store to the visible Turns', async () => {
   const fixture = controllerFixture();
   const retained: Array<[number | null, number | null]> = [];
@@ -207,7 +260,7 @@ function controllerFixture() {
   const { root } = installReactRenderer();
   const commands = createRef<TranscriptReadingPositionCommands>();
   const controller = {
-    loadAround: async () => {},
+    loadAround: async (_sequence: number) => {},
     loadBefore: async () => true,
     loadAfter: async () => true,
     loadLatest: async () => {},

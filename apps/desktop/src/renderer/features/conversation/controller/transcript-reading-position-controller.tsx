@@ -28,6 +28,7 @@ import {
   prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
+  TranscriptReadSupersededError,
 } from './transcript-reading-position.js';
 
 type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']> & {
@@ -78,6 +79,10 @@ export function TranscriptReadingPositionController(props: {
   >(undefined);
   const isCurrent = (sessionId: string, controller: object) =>
     props.currentSessionId.current === sessionId && props.rangeController.current === controller;
+  const reportNavigationError = (error: unknown, sessionId: string, controller: object) => {
+    if (error instanceof TranscriptReadSupersededError) return;
+    if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
+  };
   const cancel = (sessionId: string, clearAnchor = false) => {
     lifecycle.cancel(sessionId);
     if (props.searchTarget?.sessionId === sessionId) props.clearSearchTarget();
@@ -143,7 +148,7 @@ export function TranscriptReadingPositionController(props: {
       try {
         await controller.loadLatest();
       } catch (error) {
-        if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
+        reportNavigationError(error, sessionId, controller);
       }
     },
   }));
@@ -186,14 +191,35 @@ export function TranscriptReadingPositionController(props: {
     const previous = lastLiveGeneration.current;
     lastLiveGeneration.current = { sessionId, generation: range.generation, hostEpoch: range.hostEpoch };
     if (!previous || previous.sessionId !== sessionId || previous.generation === range.generation) return;
-    // Sequences only mean the same rows within one Host epoch.
-    if (previous.hostEpoch !== range.hostEpoch) return;
     const anchor = props.sessionUi.transcriptReadingAnchorBySessionRef.current[sessionId];
-    if (anchor?.sequence === undefined) return;
-    if (controller.store.sequenceForTurn(anchor.turnId) !== null) return;
-    void controller.loadAround(anchor.sequence).catch((error) => {
-      if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
-    });
+    if (!anchor || controller.store.sequenceForTurn(anchor.turnId) !== null) return;
+    const navigate = (sequence: number) => {
+      void controller.loadAround(sequence).catch((error) => {
+        reportNavigationError(error, sessionId, controller);
+      });
+    };
+    if (previous.hostEpoch === range.hostEpoch) {
+      if (anchor.sequence !== undefined) navigate(anchor.sequence);
+      return;
+    }
+    // Sequences only name the same rows within one Host epoch, so a bookmark
+    // carried across one has to be found again by Turn. The landmark index in
+    // hand still names the epoch that is gone, hence the refresh first.
+    if (landmarkSessionId !== sessionId) return;
+    const { turnId } = anchor;
+    let disposed = false;
+    void props.listTurnLandmarks(sessionId).then((snapshot) => {
+      if (disposed || !isCurrent(sessionId, controller)) return;
+      props.setTurnIndex({ sessionId, throughSequence: snapshot.throughSequence, turns: snapshot.landmarks });
+      // A reader who has gone somewhere else since owns the position now.
+      if (props.sessionUi.transcriptReadingAnchorBySessionRef.current[sessionId]?.turnId !== turnId) return;
+      const landmark = snapshot.landmarks.find((turn) => turn.turnId === turnId);
+      // A Turn the new epoch does not name leaves the reader where the reset put them.
+      if (!landmark) return;
+      props.sessionUi.setTranscriptReadingAnchor(sessionId, { turnId, sequence: landmark.sequence });
+      navigate(landmark.sequence);
+    }, () => undefined);
+    return () => { disposed = true; };
   }, [props.sessionId, props.messages]);
   return null;
 }

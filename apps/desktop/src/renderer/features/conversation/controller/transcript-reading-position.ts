@@ -37,6 +37,21 @@ interface TranscriptRangeController<Message> {
   loadAround(sequence: number): Promise<void>;
 }
 
+/**
+ * A read the Host refused because the window it was stamped for belongs to a
+ * Runtime Host epoch that is gone. Nothing the reader asked for failed: the
+ * replacement reset carries the new epoch, and the cross-epoch re-anchor finds
+ * the bookmarked Turn in it. The platform adapter that speaks to the Host
+ * raises this; every reading-position path treats it as a read that was
+ * superseded rather than one that went wrong.
+ */
+export class TranscriptReadSupersededError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'TranscriptReadSupersededError';
+  }
+}
+
 interface SearchTarget {
   readonly sessionId: string;
   readonly turnId: string;
@@ -304,6 +319,13 @@ export function restoreSessionTranscriptRange<Message>(options: {
       }
     })
     .catch((error) => {
+      if (error instanceof TranscriptReadSupersededError) {
+        // The sequence this command carries names a row of the epoch that is
+        // gone, so retrying it would land somewhere else entirely. Consume the
+        // command and leave the position to the cross-epoch re-anchor.
+        command.completed = true;
+        return;
+      }
       if (current()) options.onError(error, sessionId);
     })
     .finally(() => {

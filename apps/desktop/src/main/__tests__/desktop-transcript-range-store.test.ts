@@ -36,6 +36,7 @@ import {
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
+import { TranscriptReadSupersededError } from '../../renderer/features/conversation/index.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
 import { readSettledMessages } from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
@@ -1368,6 +1369,42 @@ test('cached fallback remains readable and retries once per observation generati
   assert.equal(store.range().generation, 'live-generation');
   assert.deepEqual(errors, []);
   await controller.close();
+});
+
+test('a read refused for a Host epoch that moved is superseded, not failed', async () => {
+  const store = transcriptStore();
+  const errors: unknown[] = [];
+  let opens = 0;
+  const otherFailure = new Error('the older page failed');
+  const controller = createRecoveringDesktopTranscriptRangeController(store, async () => {
+    opens += 1;
+    const identity = { sessionId: 'session-1', generation: 'live-generation', hostEpoch: 'host-1' };
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage('live') }],
+      overlay: [], hasOlder: true, hasNewer: false,
+    })) store.accept(batch);
+    return {
+      ...identity, readThroughMessageId: null,
+      acknowledgeTail: async () => {},
+      loadBefore: async () => { throw otherFailure; },
+      loadAfter: async () => {},
+      loadAround: async () => {
+        throw new Error("Error invoking remote method 'sessions:transcript:load-around': Error: Desktop transcript host epoch changed; reopen the transcript");
+      },
+      loadLatest: async () => {}, close: async () => {},
+    };
+  }, { onError: (error) => errors.push(error) });
+  try {
+    await controller.ready();
+    await assert.rejects(controller.loadAround(1), TranscriptReadSupersededError);
+    await assert.rejects(controller.loadBefore(), (error) => error === otherFailure);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(errors, [], 'a superseded read must not reach the error surface');
+    assert.equal(opens, 1, 'the replacement reset carries the new epoch, so nothing is reopened');
+  } finally {
+    await controller.close();
+  }
 });
 
 test('live transcript open failures without cache still report the original error', async () => {

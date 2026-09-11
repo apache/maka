@@ -27,6 +27,7 @@ import {
   type DesktopTranscriptHandle,
   type DesktopTranscriptNavigation,
 } from '../../../preload/transcript-contract.js';
+import { TranscriptReadSupersededError } from '../../features/conversation/index.js';
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
 
@@ -279,6 +280,15 @@ export interface RecoveringDesktopTranscriptRangeController
   observationChanged(phase: 'pending' | 'ready'): void;
 }
 
+/**
+ * Main raises the epoch mismatch as a plain `Error` and `ipcRenderer.invoke`
+ * carries nothing but its message across, so the text is the only thing left to
+ * recognise it by.
+ */
+function isHostEpochChanged(error: unknown): error is Error {
+  return error instanceof Error && error.message.includes('Desktop transcript host epoch changed');
+}
+
 export function createRecoveringDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
   open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
@@ -298,6 +308,17 @@ export function createRecoveringDesktopTranscriptRangeController(
   const requireLive = () => {
     if (cached()) throw new Error('The cached transcript is waiting for Host reconnection');
   };
+  /**
+   * A read the Host refused because its epoch moved under the request says
+   * nothing about the reader: the replacement replica has already asked every
+   * consumer to reset, and that reset carries the new epoch, so reopening here
+   * would only throw the answer away. Retype it so the reading position treats
+   * the read as superseded instead of failed.
+   */
+  const superseding = <T>(run: () => Promise<T>): Promise<T> => run().catch((error: unknown) => {
+    if (!isHostEpochChanged(error)) throw error;
+    throw new TranscriptReadSupersededError(error.message, { cause: error });
+  });
   const recovery = createDesktopTranscriptReconnectRecovery({
     async reload() {
       await controller.reload();
@@ -310,6 +331,10 @@ export function createRecoveringDesktopTranscriptRangeController(
   void controller.ready().then(requireLive).catch(recovery.transcriptFailed);
   return {
     ...controller,
+    loadBefore: (maxBytes) => superseding(() => controller.loadBefore(maxBytes)),
+    loadAfter: (maxBytes) => superseding(() => controller.loadAfter(maxBytes)),
+    loadAround: (sequence, maxBytes) => superseding(() => controller.loadAround(sequence, maxBytes)),
+    loadLatest: () => superseding(() => controller.loadLatest()),
     observationChanged: recovery.observationChanged,
     async close() {
       recovery.close();
