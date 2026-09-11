@@ -887,17 +887,35 @@ describe('runtimeEventHasModelVisibleContent', () => {
     );
   });
 
-  test('treats whitespace-only inline text as contentless everywhere (#4815 review)', () => {
-    // The desktop guard trims before judging; the shared predicate must trim
-    // too, or a whitespace-only message is admitted by the Host and then
-    // dropped by the desktop path — the same one-layer-accepts split this
-    // predicate exists to prevent.
+  test('keeps whitespace-only persisted text model-visible, without trimming (#4815 review)', () => {
+    // Replay visibility must stay compatible with everything admission has
+    // ever accepted. Trimming here would re-read stored whitespace-only
+    // events as invisible and block replay on them — #4804's own failure.
+    // Surfaces that want the trimmed judgement trim at their own boundary.
     assert.strictEqual(
       runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '   ' } })),
-      false,
+      true,
     );
-    assert.strictEqual(hasMeaningfulMessageContent({ text: '   ' }), false);
-    assert.strictEqual(hasMeaningfulMessageContent({ text: '   ', quotes: [{ text: 'q' }] }), true);
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '   ' }), true);
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '' }), false);
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '', quotes: [{ text: 'q' }] }), true);
+  });
+
+  test('counts directory references as a content carrier (#4815 review)', () => {
+    assert.strictEqual(
+      runtimeEventHasModelVisibleContent(
+        baseEvent({
+          role: 'user',
+          content: {
+            kind: 'text',
+            text: '',
+            directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }],
+          },
+        }),
+      ),
+      true,
+    );
+    assert.strictEqual(hasMeaningfulMessageContent({ text: '', directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }] }), true);
   });
 });
 

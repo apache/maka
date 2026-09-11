@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-11T13:05:40.121Z",
+  "sessionId": "sess_df0ba8ff-b766-4dfb-b495-da7c17a31a3d",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "E:\\guahub\\gh\\fork\\maka\\packages\\runtime\\src\\__tests__\\ai-sdk-backend.test.ts",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 8,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

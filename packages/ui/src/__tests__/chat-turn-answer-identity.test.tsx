@@ -389,10 +389,9 @@ test('renders a quote-only user message without an empty bubble but with metadat
   const quotes = container.querySelector('.maka-user-quotes');
   assert.ok(quotes, 'the staged quote still renders');
   assert.match(quotes?.textContent ?? '', /selected excerpt/);
-  assert.equal(
+  assert.ok(
     container.querySelector('.maka-message-meta'),
-    null,
-    'diagnostic: the metadata render is reverted while the rail regression is bisected',
+    'a structured-only message keeps its metadata row',
   );
 });
 

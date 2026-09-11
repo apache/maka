@@ -1952,13 +1952,12 @@ describe('Runtime Host bootstrap protocol', () => {
         attachments: [attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' })],
       }),
     );
-    // A Message with nothing but empty text is still an invalid frame — and
-    // whitespace-only text judges the same way: the shared meaningful-content
-    // predicate trims, matching the desktop guard, so a whitespace-only
-    // submit cannot be admitted here and dropped one layer down (#4815
-    // review).
+    // A Message with nothing but empty text is still an invalid frame.
+    // Whitespace-only text stays admissible: replay visibility must remain
+    // compatible with everything admission has ever accepted, so the
+    // predicate does not trim (#4815 review).
     assert.throws(() => submit({ text: '' }), isInvalidFrame);
-    assert.throws(() => submit({ text: '   ' }), isInvalidFrame);
+    assert.doesNotThrow(() => submit({ text: '   ' }));
   });
 
   test('admitted structured-only Messages survive queue and steering read-back (#4804)', () => {

@@ -2242,6 +2242,46 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('a persisted quote-only user event replays its excerpt into the provider prompt (#4804)', async () => {
+    // The headline behaviour of #4804 measured at the production seam: a
+    // stored user event whose text is empty but whose quotes carry the turn
+    // must reach the provider prompt as the excerpt itself, not be skipped
+    // as invisible or summarized as a count.
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+    } as never);
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'and the current ask',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-quote',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: '',
+              quotes: [{ text: 'the deploy failed at step three' }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const historical = prompt[0]?.content as Array<{ type: string; text?: string }>;
+    const joined = JSON.stringify(historical);
+    assert.match(joined, /the deploy failed at step three/, 'the excerpt reaches the prompt');
+    assert.match(joined, /quoted_excerpt/, 'the excerpt renders in its canonical envelope');
+  });
+
   test('current-turn image attachment keeps its Read reference unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
