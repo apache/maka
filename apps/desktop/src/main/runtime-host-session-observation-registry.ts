@@ -371,8 +371,8 @@ export class RuntimeHostSessionObservationRegistry {
     target.once('destroyed', destroyedListener);
     const source = this.#source;
     if (!source) return ready.promise;
-    const transcriptSource = requireTranscriptSource(source);
     try {
+      const transcriptSource = requireTranscriptSource(source);
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,

@@ -276,6 +276,28 @@ test('preserves genuine Session observation initialization failures', async () =
   await observations.close();
 });
 
+test('releases a transcript registration whose source lacks the window contract', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  await observations.attach({
+    async observe() {},
+    async unobserve() {},
+  });
+  const ipc = observationIpcHarness(observations);
+
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    /transcript source is unavailable/,
+  );
+  assert.deepEqual(observations.trackedSessionIds(), []);
+  // Reusing the consumer id must reach the same missing-source failure rather
+  // than the duplicate-identity guard, which only a leaked registration trips.
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    /transcript source is unavailable/,
+  );
+  await observations.close();
+});
+
 test('returns explicit ready results for Session observation IPC', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const transcript = {
