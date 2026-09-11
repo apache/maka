@@ -2053,3 +2053,53 @@ function testPeerReachability(peerId: string) {
     signature: Buffer.from('signature').toString('base64url'),
   };
 }
+
+test('managed WSL handoff uses its verified adapter and reconnects without local process ownership', { timeout: 5_000 }, async () => {
+  const local = candidateHarness({ hostId: 'local-host' });
+  const remote = candidateHarness({ hostId: 'wsl-host', ownership: 'external' });
+  let replaced = false;
+  const target = {
+    profile: {
+      id: 'ubuntu', name: 'Ubuntu', kind: 'environment' as const,
+      rootId: 'a'.repeat(64), provider: { kind: 'wsl' as const, distribution: 'Ubuntu' },
+      operator: { kind: 'node' as const, platform: 'posix' as const, nodePath: '/usr/bin/node', modulePath: '/operator.mjs' },
+    },
+  };
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      if (replaced) return ready(remote.candidate);
+      throw new RuntimeHostRemoteCompatibilityError('ubuntu', {
+        kind: 'incompatible', hostEpoch: 'old-wsl', compatibilityEpoch: 1,
+        protocolMin: 0, protocolMax: 0, compositionId: 'interactive',
+        compositionRevision: 'old', state: 'ready', replacement: 'blocked_by_residency',
+      });
+    },
+    handoffSurface: decideHandoff((view) => {
+      assert.equal(view.reason, 'replacement_required');
+      return 'replace';
+    }),
+    resolveWslHostHandoff: async (profile, error) => {
+      assert.equal(profile.id, 'ubuntu');
+      assert.equal(error.hostEpoch, 'old-wsl');
+      return {
+        identity: 'deployment/old-wsl', target: { name: 'Ubuntu', location: 'remote' },
+        reason: 'upgrade', mayExitNaturally: false, manualRecheck: true,
+        replacement: {
+          kind: 'replace', canReplaceIdle: true, canInterrupt: true, requiresExplicitSelection: true,
+          execute: async (policy, _progress, consent) => {
+            assert.equal(policy, 'refuse_active_work'); assert.equal(consent, 'explicit');
+            replaced = true; return { kind: 'completed' };
+          },
+        },
+      };
+    },
+    resolveLocalHostReplacement: async () => assert.fail('WSL must not use local ownership'),
+    forceTerminateObservedHost: async () => assert.fail('WSL must not terminate a raw PID'),
+  });
+  try {
+    await manager.enable(target);
+    assert.equal(replaced, true);
+    assert.ok(manager.entries().some((entry) => entry.target.profile.id === 'ubuntu' && entry.readiness === 'ready'));
+  } finally { await manager.close(); }
+});

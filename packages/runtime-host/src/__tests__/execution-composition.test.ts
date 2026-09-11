@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
@@ -83,16 +84,22 @@ import {
   runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
+  type ExecutionRuntimeHostComposition,
 } from '../server/execution-composition.js';
 import { RuntimeHostKernel, type RuntimeHostCompositionContext } from '../server/host-kernel.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
+const workHubRoutingDecisions = new WeakMap<
+  ExecutionRuntimeHostComposition,
+  Map<string, WorkHubRoutingDecision>
+>();
 const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   composerId: 'test.handoff',
   composerRevision: '1',
@@ -1001,7 +1008,7 @@ test('WorkHub creates new work through the production assignment composition', a
           actionId: 'workhub-create-stop-action',
           userText: 'Stop Login stability',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId },
           },
         },
@@ -1141,7 +1148,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-resume',
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-resume-stop-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1185,7 +1192,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         actionId: 'workhub-resume-stop-resume',
         userText: 'Resume Payments',
         proposal: {
-          disposition: 'resume_work' as const,
+          operation: 'resume' as const,
           resumesActionId: 'workhub-resume-stop-delegation',
           expects: { targetSessionId: target.id },
         },
@@ -1243,7 +1250,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-stop',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1340,7 +1347,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
           actionId,
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-disabled-resume-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1459,7 +1466,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
           actionId: 'workhub-stop-shared-action',
           userText: `Stop ${sourceCandidate.sessionName}`,
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: source.id },
           },
         },
@@ -1510,7 +1517,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         userText: `No, move this to ${correctionDestination.sessionName} instead`,
         candidateSetId: correctionCandidates.result.candidateSetId,
         proposal: {
-          disposition: 'replace',
+          operation: 'correct',
           replacesActionId: assignment.actionId,
           target: {
             disposition: 'delegate_existing',
@@ -2444,6 +2451,7 @@ async function createCapturedExecutionComposition(
   const primaryBackendFactory =
     options.primaryBackendFactory ?? ((context) => new FakeBackend(context));
   const residencies = options.residencies;
+  const routingDecisions = new Map<string, WorkHubRoutingDecision>();
   let manager: SessionManager | undefined;
   SessionManager.prototype.recoverInterruptedSessionsStrict = async function (stores) {
     manager = this;
@@ -2476,10 +2484,18 @@ async function createCapturedExecutionComposition(
                 }
               })(context)
             : primaryBackendFactory(context),
+        workHubRoutingModel: {
+          decide: async ({ turnId }) => {
+            const decision = routingDecisions.get(turnId);
+            if (!decision) throw new Error(`Missing fake WorkHub routing decision for ${turnId}`);
+            return decision;
+          },
+        },
       },
     );
     await composition.recover();
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
+    workHubRoutingDecisions.set(composition, routingDecisions);
     return { composition, manager };
   } finally {
     if (originalSafeBoundaryResume === undefined) {
@@ -2671,27 +2687,77 @@ async function actWorkHub(
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
 ) {
-  const { userText, attachments, ...action } = input;
-  const turnId = randomUUID();
-  const started = await composition.handlers['workhub.coordination.answer'](
-    { turnId, text: userText, ...(attachments ? { attachments } : {}) },
-    context,
+  const desktop = composition.clientCapabilities!.attachConnection(
+    clientCapabilityConnectionIdentity(context.connectionId),
+    { send: async () => {} },
   );
-  assert.ok(started.ok, JSON.stringify(started));
   try {
-    return await composition.handlers['workhub.coordination.actFromTurn'](
-      { ...action, turnId },
+    const registered = await composition.handlers['client.capability.replace'](
+      {
+        registrationId: randomUUID(),
+        offers: [
+          {
+            offerId: 'desktop-workhub',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'Desktop WorkHub',
+            tools: ['control', 'tasks'].map((name) => ({
+              serverId: 'desktop_workhub',
+              name,
+              inputSchema: { type: 'object', additionalProperties: false },
+            })),
+          },
+        ],
+      },
       context,
     );
+    assert.ok(registered.ok, JSON.stringify(registered));
+    const { userText, attachments, ...action } = input;
+    const turnId = randomUUID();
+    const decisions = workHubRoutingDecisions.get(composition);
+    assert.ok(decisions, 'Production composition is missing its fake WorkHub routing model');
+    decisions.set(turnId, routingDecisionForAction(action));
+    const started = await composition.handlers['workhub.coordination.answer'](
+      { turnId, text: userText, ...(attachments ? { attachments } : {}) },
+      context,
+    );
+    assert.ok(started.ok, JSON.stringify(started));
+    try {
+      return await composition.handlers['workhub.coordination.actFromTurn'](
+        { ...action, turnId },
+        context,
+      );
+    } finally {
+      const run = await composition.handlers['turn.query'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
+        context,
+      );
+      assert.ok(run.ok, JSON.stringify(run));
+      await composition.handlers['turn.stop'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
+        context,
+      );
+    }
   } finally {
-    const run = await composition.handlers['turn.query'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
-      context,
-    );
-    assert.ok(run.ok, JSON.stringify(run));
-    await composition.handlers['turn.stop'](
-      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
-      context,
-    );
+    await desktop.close();
   }
+}
+
+function routingDecisionForAction(
+  action: Omit<WorkHubAdmittedAction, 'userText' | 'attachments'>,
+): WorkHubRoutingDecision {
+  if ('operation' in action.proposal) {
+    return { kind: 'linked', operation: action.proposal.operation };
+  }
+  if (action.proposal.disposition === 'create_new') {
+    return { kind: 'routing', disposition: 'create_new' };
+  }
+  assert.ok(action.candidateSetId, 'Delegation requires a candidate set');
+  return {
+    kind: 'routing',
+    disposition: 'delegate_existing',
+    candidateSetId: action.candidateSetId,
+    candidateRef: action.proposal.candidateRef,
+  };
 }

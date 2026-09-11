@@ -28,18 +28,11 @@ import {
   settleLiveTurnStep,
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  type LiveTurnProjection,
-  type InteractionQueues,
-  type TransientUserMessageProjection,
 } from '@maka/ui';
+import type { LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
-import {
-  isNoRealConnectionEvent,
-  noRealConnectionReasonFromEvent,
-  noRealConnectionSetupDescription,
-  sessionEventErrorMessage,
-} from './model-connection-errors.js';
+import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 type RefBox<T> = { current: T };
@@ -86,10 +79,6 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
-  projectQueuedTransientMessages?: (
-    sessionId: string,
-    messages: readonly TransientUserMessageProjection[],
-  ) => void;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -118,7 +107,6 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
-    projectQueuedTransientMessages,
     removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -325,26 +313,9 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
-        projectQueuedTransientMessages?.(
-          sessionId,
-          (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
-            .filter((entry) => entry.state === 'queued')
-            .map((entry) => ({
-              id: entry.messageId,
-              transientPlacement: entry.placement,
-              ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
-              ts: event.ts,
-              text: entry.content.displayText ?? entry.content.text,
-              ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-              ...(entry.content.directoryReferences && {
-                directoryReferences: entry.content.directoryReferences,
-              }),
-              ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-              ...(entry.content.inlineReferences && {
-                inlineReferences: [...entry.content.inlineReferences],
-              }),
-            })),
-        );
+        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          removeTransientMessage?.(sessionId, entry.messageId);
+        }
         setMessageQueueBySession?.((current) => {
           if (!event.steering.length && !event.followup.length) {
             if (!current[sessionId]) return current;
@@ -369,9 +340,8 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire the renderer-owned tail row and its pending-queue card; a
-        // later nack queue_update will project both again if the Host returns
-        // the message to the queue.
+        // Retire the local submission placeholder; a later nack is represented
+        // by the Host queue alone.
         removeTransientMessage?.(sessionId, event.messageId);
         setMessageQueueBySession?.((current) => {
           const queue = current[sessionId];
@@ -414,10 +384,10 @@ export function createAppShellSessionEventHandlers(options: {
       case 'error':
         onInteractionChanged?.(sessionId);
         if (activeIdRef.current === sessionId) {
-          if (isNoRealConnectionEvent(event)) {
-            const reason = noRealConnectionReasonFromEvent(event);
+          if (modelConnectionErrors.isNoRealConnectionEvent(event)) {
+            const reason = modelConnectionErrors.noRealConnectionReasonFromEvent(event);
             showModelSetupToast(
-              noRealConnectionSetupDescription(reason, uiLocale),
+              modelConnectionErrors.noRealConnectionSetupDescription(reason, uiLocale),
               reason,
               { sessionId },
             );
@@ -425,13 +395,13 @@ export function createAppShellSessionEventHandlers(options: {
             const copy = getDesktopConversationCopy(uiLocale).actions;
             toastApi.error(
               copy.conversationErrorTitle,
-              sessionEventErrorMessage(event, uiLocale),
+              modelConnectionErrors.sessionEventErrorMessage(event, uiLocale),
               sessionEventDiagnosticDetails(sessionId, event),
               { sessionId, turnId: event.turnId, eventId: event.id },
             );
           }
         }
-        notifyRunEnded?.({ kind: 'errored', sessionId, body: sessionEventErrorMessage(event, uiLocale) });
+        notifyRunEnded?.({ kind: 'errored', sessionId, body: modelConnectionErrors.sessionEventErrorMessage(event, uiLocale) });
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;

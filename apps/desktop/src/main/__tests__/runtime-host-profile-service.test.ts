@@ -332,7 +332,7 @@ test("keeps Local enabled while a new remote Host connects", async () => {
   );
 });
 
-test("reuses the existing WSL profile when the same managed Host is added again", async () => {
+test("reuses the existing WSL profile when the same managed Host is added again", { timeout: 5_000 }, async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
   const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
@@ -357,6 +357,8 @@ test("reuses the existing WSL profile when the same managed Host is added again"
     states: () => [connectingLocal()],
     enable: async (target) => {
       enabled.push(target.profile.id);
+      const binding = await service.resolveManagedService(target.profile.id);
+      assert.equal(binding?.deployment.deploymentId, '11111111-1111-4111-8111-111111111111');
     },
     disable: async () => undefined,
     setDefault: () => undefined,

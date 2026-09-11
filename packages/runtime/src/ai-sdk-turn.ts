@@ -1514,16 +1514,23 @@ export class AiSdkTurn {
                 ? []
                 : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
           });
+          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
+            ({ text }) => ({ role: 'user', content: text }),
+          );
+          const contextualRequestMessages =
+            dynamicContextMessages.length === 0
+              ? requestMessages
+              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: requestMessages,
+                messages: contextualRequestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? requestMessages;
+          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
@@ -3077,7 +3084,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;

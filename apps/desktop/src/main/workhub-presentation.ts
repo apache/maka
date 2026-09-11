@@ -25,6 +25,7 @@ import { installMainWindowPermissionPolicy } from './main-window-permission-poli
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
+const RESIZE_DURATION = 420;
 
 export interface WorkHubPresentationDeps {
   mainWindow(): BrowserWindow | undefined;
@@ -64,6 +65,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let expandedHeight = 720;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeTarget: Electron.Rectangle | undefined;
+  let resizeViewportHeight: number | undefined;
+  let viewportInset = 0;
+  let floatingRadius: number | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   const mainReady = new WeakSet<Electron.WebContents>();
   const pendingNavigation = new WeakMap<Electron.WebContents, { navigation: WorkHubMainNavigation; revision: number }>();
@@ -139,38 +143,58 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     return view;
   }
 
-  function cancelFloatingAnimation(): void {
+  function cancelFloatingAnimation(preserveViewport = false): void {
+    const restoreViewport = resizeViewportHeight !== undefined;
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = undefined;
     resizeTarget = undefined;
+    resizeViewportHeight = undefined;
+    if (preserveViewport) return;
+    setViewportInset(0);
+    // Cancellation can precede an asynchronous dock. Restore native coordinates
+    // immediately without remembering an intermediate height as the expanded size.
+    if (restoreViewport && floating && !floating.isDestroyed() && parent === floating) {
+      const { width, height } = floating.getContentBounds();
+      setViewBounds({ x: 0, y: 0, width, height });
+    }
   }
 
   function resizeFloating(bounds: Electron.Rectangle, animate: boolean): void {
     const window = floating!;
+    if (resizeTarget && bounds.x === resizeTarget.x && bounds.y === resizeTarget.y &&
+      bounds.width === resizeTarget.width && bounds.height === resizeTarget.height) return;
     const initial = window.getBounds();
-    cancelFloatingAnimation();
+    const previousViewportHeight = resizeViewportHeight;
+    cancelFloatingAnimation(true);
     if (!animate || !window.isVisible() || systemPreferences.getAnimationSettings().prefersReducedMotion) {
       window.setBounds(bounds);
       fitFloating();
       return;
     }
     resizeTarget = bounds;
+    // Move a stable canvas through the native window instead of relaying every
+    // height sample through Blink layout. The native bounds still own hit testing.
+    resizeViewportHeight = Math.max(initial.height, bounds.height, previousViewportHeight ?? 0);
+    fitFloating();
     const started = performance.now();
     const frequency = screen.getDisplayMatching(bounds).displayFrequency;
     const frameDuration = 1000 / (Number.isFinite(frequency) && frequency > 0 ? frequency : 60);
+    let frame = 0;
     let previous = initial;
     const tick = () => {
       if (disposed || window.isDestroyed() || floating !== window || placement !== 'floating') {
         cancelFloatingAnimation();
         return;
       }
-      const progress = Math.min(1, (performance.now() - started) / 240);
-      // Shrinking a fully visible conversation needs a gentle start as well
-      // as a gentle landing; expansion reveals its content after growing.
-      const eased = bounds.height < initial.height ? progress * progress * (3 - 2 * progress) : 1 - (1 - progress) ** 3;
+      const progress = Math.min(1, (performance.now() - started) / RESIZE_DURATION);
+      // A critically damped response gives the glass a soft start and a long
+      // landing without overshooting the screen or scaling the live editor.
+      const eased = (1 - (1 + 7 * progress) * Math.exp(-7 * progress)) / (1 - 8 * Math.exp(-7));
       const height = Math.round(initial.height + (bounds.height - initial.height) * eased);
+      const width = Math.round(initial.width + (bounds.width - initial.width) * eased);
+      const center = initial.x + initial.width / 2 + (bounds.x + bounds.width / 2 - initial.x - initial.width / 2) * eased;
       const bottom = Math.round(initial.y + initial.height + (bounds.y + bounds.height - initial.y - initial.height) * eased);
-      const next = { ...bounds, height, y: bottom - height };
+      const next = { width, height, x: Math.round(center - width / 2), y: bottom - height };
       if (next.x !== previous.x || next.y !== previous.y || next.width !== previous.width || next.height !== previous.height) {
         window.setBounds(next);
         fitFloating();
@@ -180,10 +204,13 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         // Keep frame deadlines independent of native resize work; do not add
         // another full frame's delay after every setBounds/resize callback.
         const elapsed = performance.now() - started;
-        const nextFrame = Math.min(240, (Math.floor(elapsed / frameDuration) + 1) * frameDuration);
+        // Timers can fire just before their deadline. Always advance the frame
+        // index so an early callback cannot submit two native resizes per frame.
+        frame = Math.max(frame + 1, Math.floor(elapsed / frameDuration) + 1);
+        const nextFrame = Math.min(RESIZE_DURATION, frame * frameDuration);
         resizeTimer = setTimeout(tick, Math.max(1, nextFrame - elapsed));
       }
-      else cancelFloatingAnimation();
+      else { cancelFloatingAnimation(); fitFloating(); }
     };
     tick();
   }
@@ -195,11 +222,26 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     viewBounds = bounds;
   }
 
+  function setViewportInset(inset: number): void {
+    if (viewportInset === inset) return;
+    viewportInset = inset;
+    if (view && !view.webContents.isDestroyed()) view.webContents.send('workhub-presentation:viewport-inset', inset / view.webContents.getZoomFactor());
+  }
+
   function fitFloating(): void {
-    if (!floating || floating.isDestroyed() || parent !== floating || !view || progressRequest !== undefined) return;
+    if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
-    setViewBounds({ x: 0, y: 0, width, height });
-    if (conversationExpanded && !resizeTarget) expandedHeight = height;
+    // Clip in the native parent so resizing does not rebuild a renderer mask.
+    // CSS supplies the larger resting radius; this is its minimum moving edge.
+    const radius = Math.floor((progressRequest === undefined ? 20 : 18) * view.webContents.getZoomFactor());
+    if (radius !== floatingRadius) {
+      floating.contentView.setBorderRadius(radius);
+      floatingRadius = radius;
+    }
+    const canvasHeight = resizeViewportHeight ?? height;
+    setViewportInset(canvasHeight - height);
+    setViewBounds({ x: 0, y: height - canvasHeight, width, height: canvasHeight });
+    if (progressRequest === undefined && conversationExpanded && !resizeTarget) expandedHeight = height;
   }
 
   function ensureFloating(): BrowserWindow {
@@ -212,11 +254,13 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       type: process.platform === 'darwin' ? 'panel' : undefined,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: Math.min(360, width), minHeight: Math.min(80, height),
+      resizable: conversationExpanded,
       alwaysOnTop: true, autoHideMenuBar: true, maximizable: false, fullscreenable: false,
       frame: false, transparent: true, backgroundColor: '#00000000',
       hasShadow: true, roundedCorners: true,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
+    floatingRadius = undefined;
     // A macOS panel can accompany fullscreen apps without turning Maka into
     // a Dock-less accessory application.
     if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
@@ -279,7 +323,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // Summoning follows the pointer's display, including an existing window
     // that was last used on another monitor.
     const old = conversationBounds ?? target.getBounds();
-    if (conversationBounds) target.setResizable(true);
+    target.setResizable(conversationExpanded);
     conversationBounds = undefined;
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(old.width, area.width);
@@ -317,12 +361,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     placement = 'floating';
     attach(target);
     view!.setVisible(true);
-    // Preserve the parked conversation's viewport. The native window clips the
-    // small card; no transcript layout or composer state needs to be replaced.
-    setViewBounds({ x: 0, y: 0, width: Math.max(360, viewBounds?.width ?? 520), height: Math.max(112, viewBounds?.height ?? 720) });
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(360, area.width), height = Math.min(112, area.height);
     target.setBounds({ width, height, x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96) });
+    fitFloating();
     // The renderer acknowledges its painted card before showInactive, avoiding
     // one frame of the old full conversation in the compact native window.
     changed();
@@ -413,6 +455,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         return { main, isMain };
       };
       authorize();
+      if (command === 'show-conversation' && payload !== undefined) {
+        if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
+        if (payload !== progressRequest) return;
+      }
       const changesPresentation = command === 'detach' || command === 'show-conversation' || command === 'dock' || command === 'hide' || command === 'session';
       const revision = changesPresentation ? ++presentationRevision : presentationRevision;
       return enqueue(async () => {
@@ -474,11 +520,44 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
               changed();
             }
             return;
-          case 'show-conversation':
+          case 'progress-layout': {
+            if (isMain) throw new Error('Only the WorkHub view can size its progress card');
+            const value = payload as { request?: unknown; height?: unknown } | null;
+            if (!value || typeof value.request !== 'number' || !Number.isSafeInteger(value.request) ||
+              typeof value.height !== 'number' || !Number.isFinite(value.height) || value.height <= 0) throw new Error('Invalid WorkHub progress layout');
+            if (value.request !== progressRequest || !floating || !deps.isEnabled()) return;
+            const bounds = resizeTarget ?? floating.getBounds();
+            const area = screen.getDisplayMatching(bounds).workArea;
+            const height = Math.min(Math.max(112, Math.ceil(value.height)), area.height);
+            if (height !== bounds.height) resizeFloating({ ...bounds, height, y: Math.max(area.y, bounds.y + bounds.height - height) }, true);
+            return;
+          }
+          case 'show-conversation': {
+            if (payload !== undefined && payload !== progressRequest) return;
             conversationExpanded = true;
             expandOnFocus = true;
+            if (progressRequest !== undefined && floating) {
+              const current = floating.getBounds();
+              const area = screen.getDisplayMatching(current).workArea;
+              const width = Math.min(conversationBounds?.width ?? 520, area.width);
+              const height = Math.min(expandedHeight, area.height);
+              clearProgressRequest();
+              conversationBounds = undefined;
+              floating.setResizable(true);
+              changed();
+              resizeFloating({
+                width, height,
+                x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
+                y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
+              }, true);
+              // A send acknowledgement can arrive after the user has switched
+              // apps. Growing the conversation must not steal focus back.
+              if (floating.isFocused()) focusComposer();
+              return;
+            }
             detach(true);
             return;
+          }
           case 'detach': detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');
@@ -496,6 +575,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const area = screen.getDisplayMatching(bounds).workArea;
             const height = Math.min(area.height, value.expanded ? expandedHeight : compactHeight);
             const animate = conversationExpanded !== value.expanded || !!resizeTarget;
+            if (conversationExpanded !== value.expanded) floating.setResizable(value.expanded);
             conversationExpanded = value.expanded;
             if (bounds.height !== height) {
               resizeFloating({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
