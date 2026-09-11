@@ -21,7 +21,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { EnvironmentRuntimeHostProfile, HostHandoffBlocker, HostHandoffPhase, RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator';
 import type { DesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
-import { runtimeHostSetupPackageVersion, type DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
+import { runtimeHostSetupPackageDisplayVersion, runtimeHostSetupPackageVersion, type DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
 import { runDesktopRuntimeHostWslManagement, runDesktopRuntimeHostWslUpdate } from './runtime-host-wsl-controller.js';
 
 /** A WSL route is a capability only after its persisted management binding is validated. */
@@ -68,6 +68,7 @@ export async function resolveDesktopWslHostHandoff(
   }
   const setupPackage = await deps.resolvePackage(signal);
   const targetVersion = runtimeHostSetupPackageVersion(setupPackage);
+  const targetDisplayVersion = runtimeHostSetupPackageDisplayVersion(setupPackage);
   if (targetVersion && (/(?:-|\.)dev-[0-9a-f]{12}$/u.test(status.service.installedVersion) || compareProductReleaseVersions(targetVersion, status.service.installedVersion) <= 0)) {
     return { ...base, operatorStep: guidance.target };
   }
@@ -79,7 +80,10 @@ export async function resolveDesktopWslHostHandoff(
   const identity = JSON.stringify([base.identity, binding.deployment, expectedHost, currentVersion, expectedConfigFingerprint, setupPackage]);
   return {
     ...base, identity,
-    packageChange: { current: currentVersion, target: targetVersion ?? (setupPackage.kind === 'development_archive' ? setupPackage.integrity : setupPackage.specifier) },
+    packageChange: {
+      current: currentVersion,
+      target: targetDisplayVersion ?? guidance.development,
+    },
     replacement: {
       kind: 'replace', canReplaceIdle: true, canInterrupt: true, requiresExplicitSelection: true,
       execute: async (policy, progress, _consent, retirementSignal) => {
@@ -112,17 +116,20 @@ const GUIDANCE = {
     binding: 'The WSL management binding is unavailable. Restore it through Runtime Host settings before updating.',
     source: 'The installed WSL operator could not verify the running on-demand Host. Recheck its service status in Runtime Host settings.',
     target: 'This Desktop cannot verify a suitable replacement package. Update Desktop or manage the selected development artifact explicitly; the existing Host will be preserved.',
+    development: 'selected development build',
   },
   'zh-CN': {
     client: '请更新 Desktop，使它与此 Host 兼容。不会降级现有 Host。',
     binding: 'WSL 管理绑定不可用。请先在 Runtime Host 设置中恢复管理入口，再进行更新。',
     source: '已安装的 WSL 管理程序无法验证正在运行的按需 Host。请在 Runtime Host 设置中检查服务状态。',
     target: '当前 Desktop 无法验证合适的替换包。请更新 Desktop，或通过开发环境明确管理选定的开发包；现有 Host 会被保留。',
+    development: '选定的开发构建',
   },
   'zh-TW': {
     client: '請更新 Desktop，使它與此 Host 相容。不會降級現有 Host。',
     binding: 'WSL 管理綁定不可用。請先在 Runtime Host 設定中恢復管理入口，再進行更新。',
     source: '已安裝的 WSL 管理程式無法驗證正在執行的按需 Host。請在 Runtime Host 設定中檢查服務狀態。',
     target: '目前 Desktop 無法驗證合適的替換套件。請更新 Desktop，或透過開發環境明確管理選定的開發套件；現有 Host 會被保留。',
+    development: '選定的開發構建',
   },
 } as const;
