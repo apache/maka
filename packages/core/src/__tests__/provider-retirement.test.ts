@@ -22,7 +22,7 @@ import { describe, it } from 'node:test';
 import {
   isRetiredProvider,
   RETIRED_PROVIDER_TYPES,
-} from '../provider-retirement.ts';
+} from '../provider-retirement.js';
 
 describe('provider retirement', () => {
   it('owns a known retired provider', () => {
