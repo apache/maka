@@ -89,15 +89,19 @@ function recordingEditor(lines: string[] = ['╭─╮', '│ │', '╰─╯']
   };
 }
 
-function makePendingQueue(state: ReturnType<typeof createMakaPiTranscriptState>): MakaPendingQueueComponent {
+function makePendingQueue(
+  state: ReturnType<typeof createMakaPiTranscriptState>,
+): MakaPendingQueueComponent {
   // The post-merge pending queue takes a UiLocale for localized copy; the
   // branch's predates it and ignores the argument. Going through a variadic
   // constructor view keeps this file compiling in both trees, and 'en' is the
   // catalog these structural assertions see either way.
-  return new (MakaPendingQueueComponent as unknown as new (
-    state: ReturnType<typeof createMakaPiTranscriptState>,
-    locale?: 'en' | 'zh',
-  ) => MakaPendingQueueComponent)(state, 'en');
+  return new (
+    MakaPendingQueueComponent as unknown as new (
+      state: ReturnType<typeof createMakaPiTranscriptState>,
+      locale?: 'en' | 'zh',
+    ) => MakaPendingQueueComponent
+  )(state, 'en');
 }
 
 function snapshot(overrides: Partial<TranscriptWindowSnapshot> = {}): TranscriptWindowSnapshot {
