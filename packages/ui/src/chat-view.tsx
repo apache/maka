@@ -754,10 +754,7 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        {/* First child on purpose: the rail pins itself with a sticky anchor,
-            and a sticky box only takes an offset from its own static position
-            onward. Rendered after the transcript it would stay parked at the
-            bottom of the conversation until the reader scrolled there. */}
+        {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
           turns={promptRailTurns}
           onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}

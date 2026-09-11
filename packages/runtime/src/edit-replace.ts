@@ -186,10 +186,10 @@ export function computeEditedSource(
   ): EditMatch {
     const index = content.indexOf(span);
     const before = content.slice(0, index);
-    const startLine = before.split('\n').length;
+    const startLine = countOccurrences(before, '\n') + 1;
     // A trailing newline in the span is the last line's terminator, not an
     // extra line, so it must not bump endLine.
-    const spanLineCount = span.split('\n').length - (span.endsWith('\n') ? 1 : 0);
+    const spanLineCount = countOccurrences(span, '\n') + 1 - (span.endsWith('\n') ? 1 : 0);
     const endLine = startLine + Math.max(spanLineCount, 1) - 1;
     // slice-join (not String.replace) so `$&`/`$1` in newString are literal.
     const next = before + replacement + content.slice(index + span.length);

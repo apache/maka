@@ -18,6 +18,8 @@
  */
 
 import {
+  createContext,
+  useContext,
   memo,
   useEffect,
   useMemo,
@@ -27,6 +29,7 @@ import {
   type CSSProperties,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { useUiLocale } from './locale-context.js';
@@ -154,8 +157,12 @@ export function selectPromptRailTick(input: {
     : null;
 }
 
+/** The scroll layout owns the rail's full-width sticky anchor. */
+export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
+
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
 export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+  const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
@@ -223,7 +230,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         activeVisibilityFrame.current = 0;
       }
     };
-  }, [activeRailTurnId]);
+  }, [activeRailTurnId, host]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -263,7 +270,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const rail = railRef.current;
     if (!rail) return;
     return observeActivePromptRailVisibility(rail);
-  }, [orderedTurnIds]);
+  }, [orderedTurnIds, host]);
 
   function jumpTo(turn: PromptAnchorRailTurn): void {
     const root = scrollRef.current;
@@ -286,9 +293,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   }
 
   // A rail is only useful once there are a few prompts to jump between.
-  if (railTurns.length < 3) return null;
+  if (railTurns.length < 3 || !host) return null;
 
-  return (
+  const rail = (
     <div
       className="maka-prompt-rail-anchor"
       style={
@@ -359,4 +366,5 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       </nav>
     </div>
   );
+  return createPortal(rail, host);
 });

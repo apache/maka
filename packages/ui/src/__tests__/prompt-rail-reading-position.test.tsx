@@ -35,6 +35,8 @@ import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
+import { PromptAnchorRail } from '../prompt-anchor-rail.js';
+import { TranscriptScrollAuthorityProvider } from '../transcript-scroll-authority.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
@@ -212,4 +214,33 @@ test('the current tick follows the reading position the authority publishes', as
     scroller.dispatchEvent(new probe.window.Event('scroll'));
   });
   assert.equal(activeTickTurnId(probe.mount), 'turn-4');
+});
+
+test('portals unloaded landmarks into the layout host and keeps them actionable', async () => {
+  const { mount } = harness();
+  const root = createRoot(mount);
+  mountedRoot = root;
+  const rail = createElement(PromptAnchorRail, {
+    turns: [
+      { turnId: 'turn-1', label: 'Prompt 1', sequence: 0 },
+      { turnId: 'turn-2', label: 'Prompt 2', sequence: 2 },
+      { turnId: 'turn-3', label: 'Prompt 3', sequence: 4 },
+    ],
+    scrollRef: { current: null },
+  });
+  // The rail reads its tick from the scroll authority, so the host-less render
+  // still needs one — otherwise this would assert the absence of a rail that
+  // threw rather than one that found no host.
+  await act(() => root.render(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(TranscriptScrollAuthorityProvider, { children: rail }),
+  })));
+  assert.equal(mount.querySelector('.maka-prompt-rail'), null, 'no inline rail before a host exists');
+  await act(() => root.render(createElement(LocaleProvider, {
+    locale: 'en', children: createElement(ChatSurfaceLayout, { composer: null, children: rail }),
+  })));
+  assert.equal(mount.querySelectorAll('.maka-prompt-rail-host .maka-prompt-rail').length, 1);
+  assert.match(mount.innerHTML, /data-prompt-turn-id="turn-2"/);
+  assert.doesNotMatch(mount.innerHTML, /data-resident|Not currently loaded|aria-disabled="true"/);
+  assert.match(mount.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
 });

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WorkHubDock, WorkHubControlOverlay, WorkHubMainNavigation } from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -339,10 +339,11 @@ function AppShellContent({
   const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;
   const sharedSessionActive = activeCatalogSession?.shared === true;
   const ownerActiveId = sharedSessionActive ? undefined : activeHostSession?.id;
-  const interactionHydrationEpochRef = useRef(new Map<string, number>());
+  // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
+  const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
-    const epochs = interactionHydrationEpochRef.current;
-    epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+    const pending = interactionHydrationRef.current;
+    if (pending?.sessionId === sessionId) interactionHydrationRef.current = null;
   }, []);
 
   const {
@@ -424,6 +425,7 @@ function AppShellContent({
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
+  const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
     setNavigationState((current) => selectNavigation(
       current,
@@ -1025,23 +1027,20 @@ function AppShellContent({
   // active session changes (#2072).
   useEffect(() => {
     if (!ownerActiveId) return;
-    let cancelled = false;
-    const hydrationEpoch = interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0;
+    const pending = { sessionId: ownerActiveId };
+    interactionHydrationRef.current = pending;
+    const release = () => {
+      if (interactionHydrationRef.current === pending) interactionHydrationRef.current = null;
+    };
     void window.maka.sessions
       .listActiveInteractions(ownerActiveId)
       .then((requests) => {
-        if (
-          cancelled ||
-          (interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0) !== hydrationEpoch
-        ) {
-          return;
-        }
+        if (interactionHydrationRef.current !== pending) return;
         sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, ownerActiveId, requests));
       })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => {})
+      .finally(release);
+    return release;
   }, [ownerActiveId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
@@ -1364,7 +1363,7 @@ function AppShellContent({
     [toastApi],
   );
   const workbarAvailable =
-    navSelection.section === 'sessions' && !workHubActive && Boolean(activeId);
+    sessionsSelected && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
     available: workbarAvailable,
     layoutSessionId: activeId,
@@ -2210,7 +2209,7 @@ function AppShellContent({
     activeId,
   );
   const homeSurfaceActive =
-    navSelection.section === 'sessions' &&
+    sessionsSelected &&
     messages.length === 0 &&
     !hasLiveTurnContent &&
     !activeMessageLoadError;
@@ -2373,7 +2372,7 @@ function AppShellContent({
                 summary loads, and the name this replaced (the context layer's) was
                 showing through that window. Hung on the real record alone, 新任务
                 was named nowhere for the length of it. */}
-            {navSelection.section === 'sessions' && !workHubActive && activeSessionForView && (
+            {sessionsSelected && !workHubActive && activeSessionForView && (
               <TitlebarSessionIdentity
                 /* Keyed by session: the open rename is local state and the field is
                    uncontrolled, so a switch that left the instance mounted would
@@ -2478,7 +2477,7 @@ function AppShellContent({
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
               <ModuleHub.ModuleHubHost />
               <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock enabled={workHubEnabled} visible={workHubActive && navSelection.section === 'sessions' && !shellObscured} />
+              <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -2491,7 +2490,7 @@ function AppShellContent({
                 onReturnToTail={activeTranscriptRange?.hasNewer
                   ? () => transcriptReadingCommands.current?.returnToLatest()
                   : undefined}
-                hidden={workHubActive || navSelection.section !== 'sessions'}
+                hidden={workHubActive || !sessionsSelected}
                 composer={
                   <>
                     {ownerActiveId ? (
@@ -2501,7 +2500,7 @@ function AppShellContent({
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {navSelection.section === 'sessions' &&
+                    {sessionsSelected &&
                     ownerActiveId &&
                     activeSessionForView &&
                     !isLinkedSubagentSession(activeSessionForView) ? (
@@ -2512,7 +2511,11 @@ function AppShellContent({
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {!sharedSessionActive && navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    <WorkHubReturnButton
+                      visible={workHubEnabled && Boolean(activeId) && !onboardingComposerHidden}
+                      onReturn={openWorkHub}
+                    />
                     {sharedSessionActive && activeId ? (
                       <SessionCollaboration.SessionTurnRequestComposer
                         sessionId={activeId}
@@ -2523,7 +2526,7 @@ function AppShellContent({
                           <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
-                  active={navSelection.section === 'sessions'}
+                  active={sessionsSelected}
                   onboardingComposerHidden={
                     onboardingComposerHidden
                   }
@@ -2672,7 +2675,7 @@ function AppShellContent({
                   </>
                 }
               >
-                {navSelection.section === 'sessions' ? (
+                {sessionsSelected ? (
                   <SessionCollaboration.SessionGuestTurnActionBoundary
                     sessionId={sharedSessionActive ? activeId : undefined}
                     deriveTurnPresentation={deriveTurnPresentation}

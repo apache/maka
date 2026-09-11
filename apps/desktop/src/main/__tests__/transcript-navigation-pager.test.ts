@@ -84,12 +84,18 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     assertRecords(replica, second);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      // An oversized Turn fills a client range on its own, so a reset anchored
+      // on the oldest row ends at that range boundary rather than at the tail.
+      // Reachability is carried by the newer edge and the page behind it.
       const around = await replica.loadAround(first[0]!.sequence, PAGE_BYTES);
       assert.ok(around);
-      assert.deepEqual(around.durable, complete,
-        'a reset anchored on the oldest row reaches the current tail in one page');
+      assert.deepEqual(around.durable, first);
       assert.equal(around.hasOlder, false);
-      assert.equal(around.hasNewer, false);
+      assert.equal(around.hasNewer, true);
+      const newer = await replica.loadAfter(first.at(-1)!.sequence, PAGE_BYTES);
+      assert.ok(newer);
+      assert.deepEqual(newer.durable, second, 'the page past the boundary reaches the current tail');
+      assert.equal(newer.hasNewer, false);
       assertRecords(replica, second);
     }
   } finally {

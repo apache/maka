@@ -33,3 +33,4 @@ export { WorkHubSurfaceSwitch } from './ui/workhub-surface-switch.js';
 export { WorkHubControlOverlay } from './ui/control-overlay.js';
 export { WorkHubMainNavigation } from './ui/main-navigation.js';
 export { startWorkHubCoordinationLifecycle, type WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+export { WorkHubReturnButton } from './ui/return-button.js';

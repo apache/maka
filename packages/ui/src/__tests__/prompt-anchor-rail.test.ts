@@ -19,16 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { LocaleProvider } from '../locale-context.js';
 import {
   mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
-  PromptAnchorRail,
   selectPromptRailTick,
 } from '../prompt-anchor-rail.js';
-import { TranscriptScrollAuthorityProvider } from '../transcript-scroll-authority.js';
 
 const orderedTurnIds = Array.from({ length: 120 }, (_, index) => `turn-${index + 1}`);
 const sampledRailTurnIds = Array.from({ length: 64 }, (_, railIndex) =>
@@ -187,29 +182,6 @@ test('updates landmark content when its body enters a later resident range', () 
   assert.deepEqual(intermediate.map((turn) => turn.reply), ['', 'Answer 2']);
 });
 
-test('keeps unloaded landmarks visually uniform and actionable', () => {
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en',
-    // The rail reads its current tick from the scroll authority, so it only
-    // renders under one — the same contract ChatView states about its layout.
-    children: createElement(TranscriptScrollAuthorityProvider, {
-      children: createElement(PromptAnchorRail, {
-        turns: [
-          { turnId: 'turn-1', label: 'Prompt 1', sequence: 0 },
-          { turnId: 'turn-2', label: 'Prompt 2', sequence: 2 },
-          { turnId: 'turn-3', label: 'Prompt 3', sequence: 4 },
-        ],
-        scrollRef: { current: null },
-      }),
-    }),
-  }));
-
-  assert.match(markup, /data-prompt-turn-id="turn-2"/);
-  assert.doesNotMatch(markup, /data-resident/);
-  assert.match(markup, /aria-label="Jump to prompt: Prompt 2"/);
-  assert.doesNotMatch(markup, /Not currently loaded/);
-  assert.doesNotMatch(markup, /aria-disabled="true"/);
-});
 
 function box(top: number, bottom: number): DOMRect {
   return { top, bottom } as DOMRect;

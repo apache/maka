@@ -217,6 +217,9 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
     },
   ]));
 
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
   const body = container.querySelector('.maka-chat-reasoning-content');
   assert.ok(body);
   assert.match(body.textContent ?? '', /First observation\nSecond observation/);

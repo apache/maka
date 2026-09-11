@@ -25,37 +25,17 @@
    The hover preview is Astryx's HoverCard; only the two lines inside it are
    styled here. */
 
-/* Astryx's ChatLayout is the scroll container and the transcript — chat shell
-   and all — renders inside it, so `position: absolute` resolves against a box
-   as tall as the whole conversation: the rail used to be laid out across
-   ~32000px and scroll away with the content instead of staying on screen.
-
-   This zero-height sticky anchor is what pins it. It costs no flow space and
-   holds the scrollport's top edge at every scroll position — the same sticky
-   mechanism Astryx uses for the composer dock. It only works from the anchor's
-   own static position onward, so ChatView renders it as the first child of
-   `.maka-chat-shell`.
-
-   `top: 0` rather than the centreline, deliberately: a sticky offset is
-   clamped by its containing block, and this one's is the chat shell, which
-   ends where the transcript does — above the scrollport's bottom edge, since
-   the dock's own box follows it in flow. An anchor parked mid-scrollport
-   therefore gets dragged upward as the reader reaches the end of a
-   conversation, taking the rail off the top of the scrollport with it (CI
-   caught -62px at a 500px window). Pinned to the top edge the clamp cannot
-   engage while any transcript is on screen, and the rail does its own
-   centring from the measured band below.
-
-   `--maka-prompt-rail-scrollport` / `--maka-prompt-rail-dock` /
-   `--maka-prompt-rail-height` are measured in prompt-anchor-rail.tsx; see the
-   rail's own rule for what they buy. */
-.maka-prompt-rail-anchor {
+/* ChatLayout scrolls the entire transcript. A zero-height sticky host gives
+   the absolute rail a viewport anchor instead of the full transcript height.
+   Keep top: 0: a centreline offset is clamped by messageArea's bottom edge
+   above the in-flow dock and can pull the rail offscreen at the tail.
+   prompt-anchor-rail.tsx measures scrollport/dock; it identifies the dock via
+   root.lastElementChild, so Astryx's child order is part of this contract. */
+.maka-prompt-rail-host {
   position: sticky;
   top: 0;
   height: 0;
   z-index: var(--z-panel-action);
-  /* The anchor spans the full chat column; only the rail inside it is a
-     target, or it would swallow clicks across the transcript. */
   pointer-events: none;
 }
 
