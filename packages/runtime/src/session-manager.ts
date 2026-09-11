@@ -1687,19 +1687,28 @@ export class SessionManager {
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
     const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const narrows = narrowsExecutionAuthority(current, kind === 'bypass' ? 'bypass' : 'ask');
+    const header = await this.deps.store.readHeader(sessionId);
+    // Managed includes Explore. Match Storage's default projection, then pass
+    // it explicitly so classification and commit describe the same transition.
+    const permissionMode =
+      kind === 'bypass'
+        ? 'bypass'
+        : header.permissionMode === 'bypass'
+          ? 'ask'
+          : header.permissionMode;
+    const narrows = narrowsExecutionAuthority(current, permissionMode);
     if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
     }
-    const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
     }
     const boundary = await this.commitExecutionBoundaryTransition(
       sessionId,
       current,
-      kind === 'bypass' ? 'bypass' : 'ask',
-      async () => () => this.deps.store.setExecutionBoundaryKind(sessionId, kind),
+      permissionMode,
+      async () => () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
     );
     return boundary;
   }
