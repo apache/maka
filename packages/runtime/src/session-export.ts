@@ -44,6 +44,7 @@ import {
   type SessionBundleFileErrorDetails,
   type SessionBundleLimits,
 } from '@maka/storage/session-bundle-contract';
+import type { StorageRootLease } from '@maka/storage/root-authority';
 import { createSessionBundleFileService } from '@maka/storage/session-bundle-file-service';
 import {
   exportSessionBundleState,
@@ -93,6 +94,15 @@ export interface ExportSessionBundleInput {
   destination: string;
   limits?: SessionBundleLimits;
   now?: () => number;
+  /**
+   * Storage Root authority the caller already holds.
+   *
+   * The Runtime Host takes it at startup and holds it for its lifetime, and
+   * the lock is an election that refuses a second hold -- so the Host can only
+   * do this by lending what it has. A caller with no authority of its own, the
+   * CLI included, omits it and the authority is elected as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 }
 
 export type ExportSessionBundleFailure =
@@ -148,6 +158,7 @@ export async function exportSessionBundle(
         allowShared: true,
         destinationRoot: stateRoot,
         sessionId: input.sessionId,
+        ...(input.lease ? { lease: input.lease } : {}),
         requireQuiescent: true,
         includeSubtree: true,
         omitDiagnostics: true,

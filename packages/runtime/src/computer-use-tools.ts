@@ -1281,6 +1281,7 @@ export function buildComputerUseTools(deps: {
       release();
       if (invocationQueues.get(sessionId) === current) {
         invocationQueues.delete(sessionId);
+        presentationGenerations.delete(sessionId);
       }
     }
   }
@@ -2821,7 +2822,9 @@ export function buildComputerUseTools(deps: {
   }
   const tools = [tool] as ComputerUseToolSet;
   tools.clearSession = (sessionId: string) => {
-    presentationGenerations.set(sessionId, (presentationGenerations.get(sessionId) ?? 0) + 1);
+    if (invocationQueues.has(sessionId)) {
+      presentationGenerations.set(sessionId, (presentationGenerations.get(sessionId) ?? 0) + 1);
+    }
     for (const wake of presentationQueueWaiters.get(sessionId) ?? []) wake();
     for (const wake of presentationWaiters.get(sessionId) ?? []) wake();
     const current = sessionStates.get(sessionId);
