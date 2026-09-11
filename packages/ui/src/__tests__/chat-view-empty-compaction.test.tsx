@@ -133,11 +133,31 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   await act(() => t.mock.timers.tick(2_000));
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
   await render({
-    transientMessages: [],
-    messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
+    liveTurn: undefined,
+    activeSession: { ...activeSession, runningTurnIds: [liveTurn.turnId] },
+    transientMessages: [
+      pending,
+      { ...pending, id: 'other-pending', hostTurnId: 'other-turn', ts: now + 1_000 },
+    ],
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
-  await render({ liveTurn: undefined, runningStatus: false, transientMessages: [] });
+  await render({
+    liveTurn: undefined,
+    activeSession: { ...activeSession, runningTurnIds: [liveTurn.turnId] },
+    transientMessages: [],
+    messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
+  });
+  const runningTurn = container.querySelector(`[data-turn-id="${liveTurn.turnId}"]`)!;
+  assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  assert.match(runningTurn.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
+  await act(() => t.mock.timers.tick(1_000));
+  assert.match(runningTurn.querySelector('.maka-turn-elapsed')?.textContent ?? '', /3s/);
+  await render({
+    liveTurn: undefined,
+    runningStatus: false,
+    activeSession: { ...activeSession, runningTurnIds: [liveTurn.turnId] },
+    transientMessages: [],
+  });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
 });
