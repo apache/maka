@@ -2850,6 +2850,10 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
   render: () => <HistoryHarness turns={16} />,
   play: async () => {
     const root = tailScroller();
+    // Measure history publication against rendered content, not the cold
+    // Markdown module's temporary plain-text layout.
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     // Writing zero while the scroller is still at zero is a no-op, so require
     // the initial pin to have provably moved before exercising the real one.
     await waitFor(() => {
@@ -2866,6 +2870,7 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     wheelUp(root);
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
 
     expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
