@@ -39,6 +39,7 @@ import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE,
   DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
@@ -1568,7 +1569,9 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript consumer belongs to another session');
     }
     if (replica.hostEpoch !== request.hostEpoch) {
-      throw new Error('Desktop transcript host epoch changed; reopen the transcript');
+      throw new Error(
+        `${DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE}: Desktop transcript host epoch changed; reopen the transcript`,
+      );
     }
     return { state, replica, consumer };
   }

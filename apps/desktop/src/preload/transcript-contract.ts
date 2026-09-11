@@ -22,6 +22,12 @@ export const DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES = 512 * 1024;
 /** Turns the Main tail cache keeps for the projector and for the tail the Renderer opens with. */
 export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+/**
+ * Main rejects a read whose Host epoch moved under it. `ipcRenderer.invoke`
+ * carries nothing across but the Error's message, so both sides name the
+ * rejection by this code rather than by matching prose.
+ */
+export const DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE = 'DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED';
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface DesktopTranscriptNavigation {

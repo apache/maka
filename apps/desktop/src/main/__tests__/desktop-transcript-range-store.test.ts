@@ -27,6 +27,7 @@ import {
 } from '../desktop-transcript-ipc.js';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE,
   DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
   DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS,
 } from '../../preload/transcript-contract.js';
@@ -1389,7 +1390,7 @@ test('a read refused for a Host epoch that moved is superseded, not failed', asy
       loadBefore: async () => { throw otherFailure; },
       loadAfter: async () => {},
       loadAround: async () => {
-        throw new Error("Error invoking remote method 'sessions:transcript:load-around': Error: Desktop transcript host epoch changed; reopen the transcript");
+        throw new Error(`Error invoking remote method 'sessions:transcript:load-around': Error: ${DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE}: Desktop transcript host epoch changed; reopen the transcript`);
       },
       loadLatest: async () => {}, close: async () => {},
     };

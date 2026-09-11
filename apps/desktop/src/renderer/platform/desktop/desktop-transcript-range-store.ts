@@ -21,6 +21,7 @@ import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE,
   type DesktopTranscriptBatchPayload,
   type DesktopTranscriptExtension,
   type DesktopTranscriptFragment,
@@ -275,13 +276,9 @@ export interface RecoveringDesktopTranscriptRangeController
   observationChanged(phase: 'pending' | 'ready'): void;
 }
 
-/**
- * Main raises the epoch mismatch as a plain `Error` and `ipcRenderer.invoke`
- * carries nothing but its message across, so the text is the only thing left to
- * recognise it by.
- */
 function isHostEpochChanged(error: unknown): error is Error {
-  return error instanceof Error && error.message.includes('Desktop transcript host epoch changed');
+  return error instanceof Error &&
+    error.message.includes(`${DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE}:`);
 }
 
 export function createRecoveringDesktopTranscriptRangeController(
