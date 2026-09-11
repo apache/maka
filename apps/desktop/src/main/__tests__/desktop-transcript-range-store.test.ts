@@ -229,6 +229,7 @@ test('cached reload snapshots allow the same live transcript generation to resum
     publish(identity.generation, `live-${opens}`);
     return {
       ...identity, readThroughMessageId: null,
+      async acknowledgeTail() {},
       async loadBefore() {},
       async loadAfter() {},
       async loadAround(_sequence, _maxBytes, navigation) {
@@ -940,6 +941,7 @@ test('reopens a failed transcript range with a fresh generation', async () => {
       generation: 'reloaded',
       hostEpoch: 'host-2',
       readThroughMessageId: null,
+      async acknowledgeTail() {},
       async loadBefore() {},
       async loadAfter() {},
       async loadAround() {},
@@ -1023,6 +1025,7 @@ test('forwards a larger logical history range without changing batch size', asyn
     generation: 'generation-1',
     hostEpoch: 'host-1',
     readThroughMessageId: 'assistant-1',
+    async acknowledgeTail() {},
     async loadBefore(anchorSequence, maxBytes) {
       request = { anchorSequence, maxBytes };
     },
@@ -1147,6 +1150,7 @@ test('a fill is issued once per window and again as soon as the window moves', a
   const controller = createDesktopTranscriptRangeController(store, async () => ({
     sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
     readThroughMessageId: null,
+    async acknowledgeTail() {},
     async loadBefore() { reads += 1; },
     async loadAfter() {}, async loadAround() {}, async loadLatest() {}, async close() {},
   }));
@@ -1166,6 +1170,44 @@ test('a fill is issued once per window and again as soon as the window moves', a
   assert.equal(store.retain(2, 2), true);
   assert.equal(await controller.loadBefore(), true);
   assert.equal(reads, 2);
+  await controller.close();
+});
+
+test('reports each tail the window reaches once, and none while it is parked', async () => {
+  const identity = { sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1' };
+  const store = transcriptStore();
+  const acknowledged: number[] = [];
+  const controller = createDesktopTranscriptRangeController(store, async () => ({
+    ...identity, readThroughMessageId: null,
+    async acknowledgeTail(through) { acknowledged.push(through); },
+    async loadBefore() {}, async loadAfter() {}, async loadAround() {},
+    async loadLatest() {}, async close() {},
+  }));
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  // Opening a Session at the tail: the read marker still moves on open.
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    ...identity, durableThrough: 1, hasOlder: true, hasNewer: false, overlay: [],
+    durable: [{ sequence: 1, message: assistantMessage('first') }],
+  })) store.accept(batch);
+  await settle();
+  assert.deepEqual(acknowledged, [1]);
+
+  for (const batch of encodeDesktopTranscriptChange(identity, {
+    coversFrom: 1, durableThrough: 2,
+    durableUpserts: [{ sequence: 2, message: assistantMessage('second', 'assistant-2') }],
+  })) store.accept(batch);
+  await settle();
+  assert.deepEqual(acknowledged, [1, 2], 'a window that joined the tail reports it once');
+
+  // A trim reopens the newer edge, so the next change cannot join the window.
+  assert.equal(store.retain(1, 1), true);
+  for (const batch of encodeDesktopTranscriptChange(identity, {
+    coversFrom: 2, durableThrough: 3,
+    durableUpserts: [{ sequence: 3, message: assistantMessage('third', 'assistant-3') }],
+  })) store.accept(batch);
+  await settle();
+  assert.deepEqual(acknowledged, [1, 2], 'a parked window reports no tail');
   await controller.close();
 });
 
@@ -1302,6 +1344,7 @@ test('cached fallback remains readable and retries once per observation generati
     })) store.accept(batch);
     return {
       ...identity, readThroughMessageId: null,
+      acknowledgeTail: async () => {},
       loadBefore: async () => {}, loadAfter: async () => {}, loadAround: async () => {},
       loadLatest: async () => {}, close: async () => {},
     };

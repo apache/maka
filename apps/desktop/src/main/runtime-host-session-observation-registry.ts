@@ -28,6 +28,7 @@ import type {
 import type {
   DesktopTranscriptOpenResult,
   DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 
 type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & {
@@ -37,6 +38,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & 
     Pick<
       RuntimeHostSessionObserver,
       | 'acknowledgeTranscript'
+      | 'acknowledgeTranscriptTail'
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
@@ -49,6 +51,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & 
 type TranscriptSource = Required<
   Pick<
     RuntimeHostSessionObserver,
+    | 'acknowledgeTranscriptTail'
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
@@ -73,6 +76,7 @@ function requireTranscriptSource(
 ): SessionObservationSource & TranscriptSource {
   if (
     !source?.openTranscript ||
+    !source.acknowledgeTranscriptTail ||
     !source.loadTranscriptBefore ||
     !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
@@ -422,6 +426,15 @@ export class RuntimeHostSessionObservationRegistry {
     );
   }
 
+  async acknowledgeTranscriptTail(
+    request: DesktopTranscriptTailAcknowledgement,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request, async (source) => {
+      source.acknowledgeTranscriptTail(request, targetId);
+    });
+  }
+
   acknowledgeTranscript(
     consumerId: string,
     generation: string,
@@ -506,7 +519,7 @@ export class RuntimeHostSessionObservationRegistry {
   }
 
   async #runTranscriptOperation(
-    request: DesktopTranscriptRangeRequest,
+    request: { readonly consumerId: string },
     operation: (source: SessionObservationSource & TranscriptSource) => Promise<void>,
   ): Promise<void> {
     const consumerId = request.consumerId;

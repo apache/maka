@@ -128,6 +128,37 @@ export function createDesktopTranscriptRangeController(
     await task;
     return true;
   };
+  /**
+   * Main marks the Session read from these and from nothing else, so the window
+   * reports every watermark it actually reaches, once. A window with newer
+   * history beyond it reports nothing: the reader is parked off the tail.
+   */
+  let acknowledged: number | undefined;
+  const acknowledgeTail = () => {
+    let range: DesktopTranscriptRangeState;
+    try {
+      range = store.range();
+    } catch {
+      return;
+    }
+    // A cached window's watermark is a fact about the local cache, not about
+    // the live replica an acknowledgement moves.
+    if (
+      !range.ready || range.hasNewer || range.durableThrough === null ||
+      range.generation.startsWith('cached:')
+    ) return;
+    const through = range.durableThrough;
+    if (acknowledged === through) return;
+    acknowledged = through;
+    void (async () => {
+      try {
+        await (await current()).acknowledgeTail(through);
+      } catch {
+        if (acknowledged === through) acknowledged = undefined;
+      }
+    })();
+  };
+  const unsubscribe = store.subscribe(acknowledgeTail);
   return {
     store,
     async ready() { await current(); },
@@ -149,6 +180,8 @@ export function createDesktopTranscriptRangeController(
     },
     async reload() {
       const previous = handle;
+      // The replacement consumer has heard nothing yet.
+      acknowledged = undefined;
       openController.abort();
       const replacement = previous
         .then((value) => value.close())
@@ -164,6 +197,7 @@ export function createDesktopTranscriptRangeController(
     async close() {
       if (closed) return;
       closed = true;
+      unsubscribe();
       openController.abort();
       await handle.then((value) => value.close()).catch(() => undefined);
     },

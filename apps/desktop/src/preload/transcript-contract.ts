@@ -88,7 +88,20 @@ export interface DesktopTranscriptRangeRequest {
   readonly maxBytes: number;
 }
 
+/**
+ * The Renderer reporting that its window now holds every durable row through
+ * `through`. Main cannot derive this: a consumer only proves the Session is
+ * open, and a tail change a parked window refuses moves no window.
+ */
+export interface DesktopTranscriptTailAcknowledgement {
+  readonly consumerId: string;
+  readonly sessionId: string;
+  readonly hostEpoch: string;
+  readonly through: number;
+}
+
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
+  acknowledgeTail(through: number): Promise<void>;
   loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
   loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
   loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;

@@ -59,6 +59,7 @@ test('sending before transcript open completes supersedes the queued bookmark wi
   };
   const handle: DesktopTranscriptHandle = {
     sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
+    acknowledgeTail: async () => {},
     loadBefore: async () => {}, loadAfter: async () => {}, close: async () => {},
     async loadAround(sequence, _maxBytes, navigation) { publish(sequence, navigation); },
     async loadLatest(navigation) { publish(null, navigation); },
@@ -113,6 +114,7 @@ test('an overlay-only bookmark stays available without loading another range', a
   })) store.accept(batch);
   const controller = createDesktopTranscriptRangeController(store, async () => ({
     sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
+    acknowledgeTail: async () => {},
     loadBefore: async () => {}, loadAfter: async () => {}, close: async () => {},
     loadAround: async () => assert.fail('an overlay-only bookmark has no page to load'),
     loadLatest: async () => assert.fail('an overlay-only bookmark has no page to load'),

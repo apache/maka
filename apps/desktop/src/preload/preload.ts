@@ -2554,6 +2554,7 @@ const makaBridge = {
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...cachedIdentity, sessionId, readThroughMessageId: null,
+            acknowledgeTail: unavailable,
             loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
             loadLatest: unavailable,
             close: async () => {},
@@ -2589,6 +2590,18 @@ const makaBridge = {
       return {
         ...opened,
         sessionId,
+        acknowledgeTail: (through) => {
+          const currentIdentity = identity;
+          if (!currentIdentity) {
+            throw new Error('Desktop transcript identity is unavailable');
+          }
+          return ipcRenderer.invoke('sessions:transcript:acknowledge-tail', consumerScope, {
+            consumerId,
+            sessionId: opened.sessionId,
+            hostEpoch: currentIdentity.hostEpoch,
+            through,
+          }) as Promise<void>;
+        },
         loadBefore: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
         loadAfter: (anchorSequence, maxBytes, navigation) =>

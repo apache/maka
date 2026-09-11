@@ -451,6 +451,7 @@ test('restores transcript consumers across Host replacement', async () => {
     async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const first = source('first');
@@ -510,6 +511,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
     async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const first = source('first');
@@ -541,6 +543,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
     async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     acknowledgeTranscript() {
       transcriptAcknowledged = true;
     },
@@ -607,6 +610,7 @@ test('fences transcript range failures to the current registration and Host sour
     async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async loadTranscriptLatest() {},
+    acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const request = (consumerId: string, generation: string) => ({
@@ -863,14 +867,26 @@ test('broadcasts durable admission and transcript changes from the same message'
       id: 19 + index,
       send(_channel, batch) {
         batches.push(batch);
-        queueMicrotask(() =>
+        queueMicrotask(() => {
           observer.acknowledgeTranscript(
             consumerId,
             batch.generation,
             batch.deliverySequence!,
             19 + index,
-          ),
-        );
+          );
+          // Stand in for a Renderer window that installs what it is sent.
+          if (batch.ready && batch.durableThrough !== null) {
+            observer.acknowledgeTranscriptTail(
+              {
+                consumerId,
+                sessionId: 'session-1',
+                hostEpoch: batch.hostEpoch,
+                through: batch.durableThrough,
+              },
+              19 + index,
+            );
+          }
+        });
       },
       once() {},
       off() {},
@@ -887,10 +903,10 @@ test('broadcasts durable admission and transcript changes from the same message'
     throughSequence: 0,
   });
   await waitFor(() =>
-    markers.length === 1 && transcriptBatches.every((batches) => batches.length > 0),
+    markers.length > 0 && transcriptBatches.every((batches) => batches.length > 0),
   );
 
-  assert.deepEqual(markers, ['ticket-1']);
+  assert.deepEqual([...new Set(markers)], ['ticket-1']);
   assert.deepEqual(transcriptBatches[1], transcriptBatches[0]);
   assert.deepEqual(
     eventConsumer.events
@@ -898,6 +914,102 @@ test('broadcasts durable admission and transcript changes from the same message'
       .map((event) => ({ turnId: event.turnId, messageId: event.messageId })),
     [{ turnId: 'turn-1', messageId: 'ticket-1' }],
   );
+  await observer.close();
+});
+
+test('moves the read marker only as far as the Renderer window reports reaching', async () => {
+  const events = new AsyncFrameQueue();
+  const markers: string[] = [];
+  const rows: StoredMessage[] = [
+    { type: 'assistant', id: 'answer-1', turnId: 'turn-1', ts: 1, text: 'One', modelId: 'test-model' },
+    { type: 'assistant', id: 'answer-2', turnId: 'turn-2', ts: 2, text: 'Two', modelId: 'test-model' },
+  ];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async (input) => ({
+            kind: 'page',
+            sessionId: 'session-1',
+            source: 'durable',
+            direction: 'newer',
+            throughSequence: input.throughSequence ?? null,
+            rawBytes: 1,
+            fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
+            nextCursor: null,
+          }),
+          // One durable row per catch-up target; the bootstrap page carries none.
+          decodeTranscriptPage: async (page) => {
+            const identity = page.throughSequence;
+            return identity === null
+              ? { messages: [], nextCursor: null }
+              : { messages: [{ identity, message: rows[identity]! }], nextCursor: null };
+          },
+          async close() {
+            events.end();
+          },
+        }),
+      setSessionReadMarker: async (_sessionId, messageId) => {
+        markers.push(messageId);
+        return undefined as never;
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumer: RuntimeHostTranscriptTarget = {
+    id: 31,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-parked',
+          batch.generation,
+          batch.deliverySequence!,
+          31,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  };
+  const opened = await observer.openTranscript('session-1', 'consumer-parked', consumer);
+  const acknowledgeTail = (through: number) =>
+    observer.acknowledgeTranscriptTail(
+      { consumerId: 'consumer-parked', sessionId: 'session-1', hostEpoch: opened.hostEpoch, through },
+      31,
+    );
+  const advance = async (sequence: number, throughSequence: number) => {
+    const delivered = batches.length;
+    events.push({
+      kind: 'subscription.transcript_advanced',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sessionId: 'session-1',
+      sequence,
+      throughSequence,
+    });
+    await waitFor(() => batches.length > delivered);
+  };
+
+  await advance(1, 0);
+  assert.deepEqual(markers, [], 'delivery alone is not proof the reader reached the tail');
+  acknowledgeTail(0);
+  assert.deepEqual(markers, ['answer-1']);
+
+  // The reader is parked off the tail: the change is broadcast, but the window
+  // it names never joins, so nothing acknowledges the new watermark.
+  await advance(2, 1);
+  acknowledgeTail(0);
+  assert.deepEqual(markers, ['answer-1'], 'an unread Turn stays unread while the reader is parked');
+
+  acknowledgeTail(1);
+  assert.deepEqual(markers, ['answer-1', 'answer-2']);
   await observer.close();
 });
 

@@ -157,7 +157,7 @@ test('a fill landing under a pending jump joins the window it was anchored on', 
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   const arrive = deferred<void>();
   const handle: DesktopTranscriptHandle = {
-    ...identity, readThroughMessageId: null,
+    ...identity, readThroughMessageId: null, acknowledgeTail: async () => {},
     async loadBefore(anchor) {
       for (const batch of encodeDesktopTranscriptPage(identity, {
         durableThrough: 1, durable: [{ sequence: 0, message: record(0).message }], hasOlder: false,
@@ -192,7 +192,7 @@ test('a fill that left an edge where it found it is not asked again', async () =
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   let reads = 0;
   const handle: DesktopTranscriptHandle = {
-    ...identity, readThroughMessageId: null,
+    ...identity, readThroughMessageId: null, acknowledgeTail: async () => {},
     // The window still has history, but this answer reaches none of it: the
     // Host read past a retired generation, or the page came back refused.
     async loadBefore() { reads += 1; },
@@ -272,7 +272,7 @@ test('follow latest invalidates an in-flight history navigation before open reso
   const opening = deferred<DesktopTranscriptHandle>();
   const requests: Array<{ command: 'around' | 'latest'; anchor: number | null; navigation: number }> = [];
   const handle = (generation: string): DesktopTranscriptHandle => ({
-    ...identity, generation, readThroughMessageId: null,
+    ...identity, generation, readThroughMessageId: null, acknowledgeTail: async () => {},
     async loadBefore() { assert.fail('an obsolete history request was replayed'); },
     async loadAfter() { assert.fail('an obsolete newer request was replayed'); },
     async loadAround(anchor, _bytes, navigation) {
@@ -301,7 +301,7 @@ test('a rejected older navigation cannot fail the newer latest command', async (
   let rejectHistory!: (error: Error) => void;
   const historyResult = new Promise<void>((_resolve, reject) => { rejectHistory = reject; });
   const controller = createDesktopTranscriptRangeController(store, async () => ({
-    ...identity, readThroughMessageId: null,
+    ...identity, readThroughMessageId: null, acknowledgeTail: async () => {},
     async loadBefore() {}, async loadAfter() {},
     async loadAround(anchor) {
       assert.equal(anchor, 0);

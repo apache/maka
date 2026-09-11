@@ -497,6 +497,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...snapshot, readThroughMessageId: null,
+            acknowledgeTail: async () => {},
             loadBefore: unavailable, loadAfter: unavailable, loadLatest: unavailable,
             loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigation),
             close: async () => { closedCount++; },

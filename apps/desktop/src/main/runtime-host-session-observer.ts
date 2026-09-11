@@ -44,6 +44,7 @@ import {
   type DesktopTranscriptBatchPayload,
   type DesktopTranscriptOpenResult,
   type DesktopTranscriptRangeRequest,
+  type DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 import {
   type PreparedSessionSubscription,
@@ -136,6 +137,8 @@ interface TranscriptConsumer {
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
   resetRequested: boolean;
+  /** The newest durable watermark the Renderer window has reported reaching. */
+  acknowledgedThrough?: number;
   /**
    * Set only when the reset answers a navigation command, and stamped on that
    * snapshot so the window can tell its own answer from a replacement it did
@@ -333,7 +336,6 @@ export class RuntimeHostSessionObserver {
         throw new Error('Desktop transcript replica changed while opening');
       }
       this.#touchReplica(state);
-      this.#markTranscriptRead(state, currentReplica);
       const readThroughMessageId = currentReplica.latestDurableVisibleMessageId();
       return {
         sessionId,
@@ -522,6 +524,33 @@ export class RuntimeHostSessionObserver {
     this.#detachTranscriptConsumer(state, consumer);
     this.#touchReplica(state);
     await this.#closeIfIdle(state);
+  }
+
+  /**
+   * The Renderer window reached `through`. Only this proves the reader received
+   * the rows: a change a parked window refuses still leaves it off the tail, so
+   * the read marker moves here and nowhere along delivery.
+   */
+  acknowledgeTranscriptTail(
+    request: DesktopTranscriptTailAcknowledgement,
+    targetId?: number,
+  ): void {
+    const state = this.#transcriptConsumers.get(request.consumerId);
+    const consumer = state?.transcriptConsumers.get(request.consumerId);
+    const replica = state?.replica;
+    if (!state || !consumer || !replica?.resident) return;
+    if (targetId !== undefined && consumer.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    // Sequences only name the same rows within one Session and Host epoch.
+    if (state.sessionId !== request.sessionId || replica.hostEpoch !== request.hostEpoch) return;
+    if (consumer.acknowledgedThrough !== undefined && request.through <= consumer.acknowledgedThrough) {
+      return;
+    }
+    consumer.acknowledgedThrough = request.through;
+    const durableThrough = replica.durableThrough;
+    if (durableThrough === null || request.through < durableThrough) return;
+    this.#markTranscriptRead(state, replica);
   }
 
   acknowledgeTranscript(
@@ -1238,9 +1267,6 @@ export class RuntimeHostSessionObserver {
       this.#broadcast(state.sessionId, event);
     }
     this.#sendTranscriptChange(state, replica, change);
-    if (change.durableUpserts.length > 0) {
-      this.#markTranscriptRead(state, replica);
-    }
     this.#touchReplica(state);
     void this.#closeIfIdle(state);
   }
@@ -1596,7 +1622,6 @@ export class RuntimeHostSessionObserver {
   }
 
   #markTranscriptRead(state: ObservedSessionState, replica: DesktopTranscriptReplica): void {
-    if (state.transcriptConsumers.size === 0) return;
     const messageId = replica.latestDurableVisibleMessageId();
     if (!messageId) return;
     const update = this.#client.setSessionReadMarker?.(state.sessionId, messageId);
