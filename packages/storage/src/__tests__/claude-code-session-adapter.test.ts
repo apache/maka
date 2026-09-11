@@ -385,6 +385,44 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
+  test('a batch past the pool width lists every session in update order', async () => {
+    // Listing derives summaries through a bounded pool, so both completeness
+    // and the final order must survive completion order. Twenty-four
+    // transcripts across three projects is past the pool width, and each
+    // session's last timestamp is distinct so update order is total.
+    await withClaudeHome(async (home) => {
+      const ids: string[] = [];
+      for (let index = 0; index < 24; index++) {
+        const id = `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, '0')}`;
+        ids.push(id);
+        const minute = String(index).padStart(2, '0');
+        await seed(
+          home,
+          id,
+          [
+            { ...userRecord('common prompt'), timestamp: `2026-08-01T01:${minute}:00.000Z` },
+            {
+              ...assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+              timestamp: `2026-08-01T01:${minute}:01.000Z`,
+            },
+          ],
+          `/Users/someone/project-${index % 3}`,
+        );
+      }
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      const listed = await adapter.listSessions();
+      assert.equal(listed.length, 24);
+      // Newest first: the sessions were seeded with ascending last
+      // timestamps, so the catalog must come back in reverse seed order.
+      assert.deepEqual(
+        listed.map((summary) => summary.id),
+        [...ids].reverse(),
+      );
+      await adapter.readSession(ids[5]!);
+    });
+  });
+
   test('a project query tolerates a trailing separator', async () => {
     // The adapter compared raw strings, so the same project reached with a
     // trailing slash answered "no such project". Both sources now share one

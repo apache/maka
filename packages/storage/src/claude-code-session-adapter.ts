@@ -65,6 +65,34 @@ export const CLAUDE_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
  *  joined onto a path. */
 const SESSION_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/u;
 
+/** Transcript derivations in flight during one listing. The point of
+ *  concurrency is to overlap the thread-pool round trips (stat, read) with
+ *  the parsing, not to hold every transcript at once: an unbounded fan-out
+ *  would keep every file's bytes and an open file descriptor per session —
+ *  bounded only by the corpus size, which is exactly what the per-file cap
+ *  above refuses to let a single file do. A pool of 8 keeps libuv's default
+ *  4-thread pool saturated while capping peak buffers at 8 × the file cap. */
+const LIST_CONCURRENCY = 8;
+
+/** Maps with at most `limit` of `worker`'s promises in flight, results in
+ *  input order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index]!);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
 export interface ClaudeCodeSessionAdapterOptions {
   /** Overrides `~/.claude`. */
   claudeHome?: string;
@@ -120,8 +148,8 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     // touches the cache at distinct keys (one file per session id), so the
     // calls are independent. Results keep `files` order and the sort below is
     // stable, so the list is the same one the sequential loop produced.
-    const derived = await Promise.all(
-      files.map((file) => this.#summaryOf(file.path, file.sessionId)),
+    const derived = await mapWithConcurrency(files, LIST_CONCURRENCY, (file) =>
+      this.#summaryOf(file.path, file.sessionId),
     );
     const summaries: ExternalSessionSummary[] = [];
     for (const summary of derived) {
@@ -213,20 +241,19 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     }
     // Listing one project and stating one file are each a round trip through
     // the thread pool, so the walk is concurrent rather than one await at a
-    // time — the cost of a full scan is latency-bound, not work-bound. A
-    // project that fails to list or a file that vanishes mid-scan is dropped
-    // per item, exactly as the sequential loop dropped it.
-    const listings = await Promise.all(
-      projects.map(async (project) => {
-        try {
-          return (await readdir(join(root, project), { withFileTypes: true })).filter(
-            (entry) => entry.isFile() && entry.name.endsWith('.jsonl'),
-          );
-        } catch {
-          return [];
-        }
-      }),
-    );
+    // time — the cost of a full scan is latency-bound, not work-bound. The
+    // pool cap bounds open directory handles during the walk. A project that
+    // fails to list or a file that vanishes mid-scan is dropped per item,
+    // exactly as the sequential loop dropped it.
+    const listings = await mapWithConcurrency(projects, LIST_CONCURRENCY, async (project) => {
+      try {
+        return (await readdir(join(root, project), { withFileTypes: true })).filter(
+          (entry) => entry.isFile() && entry.name.endsWith('.jsonl'),
+        );
+      } catch {
+        return [];
+      }
+    });
     const resolvedRoot = resolve(root);
     const candidates: { path: string; sessionId: string }[] = [];
     for (const [index, project] of projects.entries()) {
@@ -240,15 +267,13 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
         candidates.push({ path, sessionId });
       }
     }
-    const mtimes = await Promise.all(
-      candidates.map(async (candidate) => {
-        try {
-          return (await stat(candidate.path)).mtimeMs;
-        } catch {
-          return undefined;
-        }
-      }),
-    );
+    const mtimes = await mapWithConcurrency(candidates, LIST_CONCURRENCY, async (candidate) => {
+      try {
+        return (await stat(candidate.path)).mtimeMs;
+      } catch {
+        return undefined;
+      }
+    });
     // Keyed by session id: the same id can legitimately exist under more than
     // one project directory after a workspace move or a resumed session. Two
     // files with one id are two candidates for the same source session, and
