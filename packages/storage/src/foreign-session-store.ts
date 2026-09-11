@@ -80,6 +80,7 @@ import {
   type ForeignSessionSource,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
+import type { ExternalSessionSummary } from '@maka/core/external-session';
 import { OpenCodeSessionAdapter } from './opencode-session-adapter.js';
 
 export interface ForeignSessionScanOptions {
@@ -277,10 +278,19 @@ class FileForeignSessionStore implements ForeignSessionStore {
   ): Promise<ForeignSessionSummary[]> {
     // The adapter owns every opencode read (schema introspection, child/parent
     // rules, transcript conversion); the scan layers the #1057 bounds on top.
+    // The adapter throws on an unreadable database — right for a
+    // user-initiated import, wrong here: one failed source must not empty
+    // the whole catalog, so its failure degrades to an empty opencode row
+    // set while Claude Code and Codex keep listing (#5125 review).
     const adapter = new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome });
-    const externals = await adapter.listSessions(
-      options.cwd !== undefined ? { cwd: options.cwd } : undefined,
-    );
+    let externals: readonly ExternalSessionSummary[];
+    try {
+      externals = await adapter.listSessions(
+        options.cwd !== undefined ? { cwd: options.cwd } : undefined,
+      );
+    } catch {
+      return [];
+    }
     const dbPath = join(this.opencodeHome, 'opencode.db');
     const results: ForeignSessionSummary[] = [];
     for (const session of externals) {
@@ -306,7 +316,10 @@ class FileForeignSessionStore implements ForeignSessionStore {
       throw new Error('opencode session id is not usable');
     }
     const adapter = new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome });
-    const session = await adapter.readSession(summary.id);
+    const { session, truncated } = await adapter.readSessionBounded(
+      summary.id,
+      FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
+    );
     const acc = createDigestAccumulator();
     for (const message of session.messages) {
       if (message.type === 'user') {
@@ -316,14 +329,25 @@ class FileForeignSessionStore implements ForeignSessionStore {
         // the #1057 contract excludes thinking blocks.
         if (message.text.length > 0) pushDigestMessage(acc, 'assistant', message.text);
       } else if (message.type === 'tool_call') {
+        // OpenCode names its file argument `filePath` (1.18) / `path`
+        // (newer) — never Claude's `file_path`/`notebook_path`; and only
+        // the single-file tools name a file at all. `glob`/`grep`/`list`
+        // carry an optional search *directory* that must not masquerade
+        // as a touched file (#5125 review).
+        if (!['read', 'write', 'edit', 'patch'].includes(String(message.toolName))) continue;
         const args = message.args as Record<string, unknown>;
-        for (const key of ['file_path', 'path', 'notebook_path']) {
+        for (const key of ['filePath', 'path', 'file_path']) {
           const value = args?.[key];
           if (typeof value === 'string' && value.length > 0) {
             pushDigestFile(acc, sanitizeForeignText(value, FOREIGN_SESSION_PATH_MAX_CODE_POINTS));
           }
         }
       }
+    }
+    if (truncated) {
+      acc.warnings.push(
+        `transcript exceeded ${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES} bytes; only the leading ${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES} bytes were read`,
+      );
     }
     return finishDigest(acc, {
       source: 'opencode',

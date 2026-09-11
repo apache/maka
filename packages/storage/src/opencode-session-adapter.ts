@@ -124,6 +124,38 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     };
   }
 
+  /**
+   * The digest path needs the #1057 read bound the import path does not:
+   * part payloads carry full tool output, so an unbounded read of a large
+   * session blocks the synchronous SQLite caller while materializing
+   * megabytes that a capped digest throws away. Reads stop once
+   * `maxReadBytes` of raw row payload have been consumed and the
+   * truncation is reported to the caller (#5125 review).
+   */
+  async readSessionBounded(
+    sessionId: string,
+    maxReadBytes: number,
+  ): Promise<{ session: ExternalMakaSession; truncated: boolean }> {
+    if (!SESSION_ID_PATTERN.test(sessionId)) {
+      throw new Error(`opencode session id is not usable: ${sessionId}`);
+    }
+    const rows = await this.#readSessions();
+    const row = rows.find((candidate) => candidate.id === sessionId);
+    if (!row) throw new Error(`opencode session not found: ${sessionId}`);
+    if (row.parentId !== undefined) {
+      throw new Error(`opencode session is a child of another session: ${sessionId}`);
+    }
+    const { messages, parts, truncated } = await this.#readTranscript(sessionId, maxReadBytes);
+    return {
+      session: {
+        sourceSessionId: sessionId,
+        metadata: { name: row.title || sessionId, cwd: row.directory },
+        messages: convertTranscript(sessionId, messages, parts),
+      },
+      truncated,
+    };
+  }
+
   #databasePath(): string {
     return join(this.#home, 'opencode.db');
   }
@@ -192,23 +224,54 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
 
   async #readTranscript(
     sessionId: string,
-  ): Promise<{ messages: readonly MessageRow[]; parts: readonly PartRow[] }> {
+    maxReadBytes?: number,
+  ): Promise<{
+    messages: readonly MessageRow[];
+    parts: readonly PartRow[];
+    truncated: boolean;
+  }> {
     return await this.#withDatabase((db) => {
       // A row that will not decode is not skipped. Dropping one silently
       // yields a transcript missing a message or a part while the import
       // reports success — a history that reads as complete and is not. A
       // selected import either carries what the session recorded or fails.
-      const messages = db
+      // Bounded reads (digest) stop at the budget instead, and report the
+      // cut: that caller consumes a capped projection, not the import.
+      let bytesRead = 0;
+      let truncated = false;
+      const messages: MessageRow[] = [];
+      const messageRows = db
         .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
-        .all(sessionId)
-        .map((row, index) => requireRow(toMessageRow(row), 'message', index));
+        .all(sessionId);
+      for (const [index, row] of messageRows.entries()) {
+        const data = typeof (row as { data?: unknown }).data === 'string'
+          ? ((row as { data: string }).data.length)
+          : 0;
+        if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
+          truncated = true;
+          break;
+        }
+        bytesRead += data;
+        messages.push(requireRow(toMessageRow(row), 'message', index));
+      }
       // Ordered by the message they belong to and then by their own id, which
       // is how the writer orders them; `time_created` ties within one step.
-      const parts = db
+      const partRows = db
         .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
-        .all(sessionId)
-        .map((row, index) => requireRow(toPartRow(row), 'part', index));
-      return { messages, parts };
+        .all(sessionId);
+      const parts: PartRow[] = [];
+      for (const [index, row] of partRows.entries()) {
+        const data = typeof (row as { data?: unknown }).data === 'string'
+          ? ((row as { data: string }).data.length)
+          : 0;
+        if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
+          truncated = true;
+          break;
+        }
+        bytesRead += data;
+        parts.push(requireRow(toPartRow(row), 'part', index));
+      }
+      return { messages, parts, truncated };
     });
   }
 }
