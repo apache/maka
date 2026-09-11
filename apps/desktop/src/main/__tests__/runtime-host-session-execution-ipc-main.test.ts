@@ -62,7 +62,7 @@ test('registers Session observation as one reconnectable operation', () => {
 
 for (const phase of ['connecting', 'seeding'] as const) {
   for (const cancellation of ['unobserve', 'renderer destruction'] as const) {
-    test(`Session observation IPC completes normally after ${cancellation} while ${phase}`, async () => {
+    test(`Session observation IPC returns cancellation after ${cancellation} while ${phase}`, async () => {
       const errors: unknown[] = [];
       const observations = new RuntimeHostSessionObservationRegistry((error) => errors.push(error));
       const ipc = ipcHarness();
@@ -86,7 +86,7 @@ for (const phase of ['connecting', 'seeding'] as const) {
       else ipc.rendererDestroyed();
       finishSeed();
 
-      assert.deepEqual(await observing, []);
+      assert.deepEqual(await observing, { kind: 'cancelled' });
       assert.deepEqual(observations.observedSessionIds(), []);
       assert.deepEqual(await observations.attach(source), []);
       assert.equal(seeds, phase === 'seeding' ? 1 : 0);

@@ -510,7 +510,7 @@ export class RuntimeHostSessionObservationRegistry {
       observerId,
       registration,
       new RuntimeHostObservationCancelledError(
-        "Session observation ended before it became ready",
+        "Session observation was cancelled before it became ready",
       ),
     );
   }
@@ -651,7 +651,7 @@ export class RuntimeHostSessionObservationRegistry {
       consumerId,
       registration,
       new RuntimeHostObservationCancelledError(
-        'Transcript observation ended before it became ready',
+        'Transcript observation was cancelled before it became ready',
       ),
     );
   }
