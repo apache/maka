@@ -197,37 +197,23 @@
   font-size: 0.75rem;
 }
 
-/* The meta row holds two different kinds of thing, so it gets two different
-   rules. The time is content — a fact about the message — and stays put; gating
-   it on hover is what hid it from touch and from assistive tech. The actions are
-   chrome and only surface on hover or focus. Astryx already splits these into a
-   `timestamp` and a `footer` slot; the gate belongs on the slot, not on the row
-   that contains both.
+/* Under both senders, the time and delivery status are content and stay put;
+   the actions and the turn meta are chrome and surface on hover or focus of
+   the message they belong to. A live footer shows its activity row outright.
 
-   The `· ` between the two slots is Astryx's own separator, rendered whenever
-   the timestamp has something to be separated FROM. It is dropped rather than
-   gated: the two slots already read as separate at rest, since one is text and
-   the other a row of controls that fades in beside it, so the bullet adds a mark
-   without adding a distinction. The slots carry no class of their own, so it is
-   addressed positionally — the timestamp is the first child span and the
-   separator the one right after it (the footer's own children are buttons).
-
-   A transparent action still takes clicks, here and on the assistant footer.
-   `pointer-events: none` looks like the fix and is not obviously safe: it makes
-   the pointer fall through to the ancestor whose `:hover` is what restores the
-   button, so being clickable again depends on the browser redoing hit-testing
-   on a later mouse event. Continuous movement gets there; a jump that lands and
-   stops was not something this surface could be made to reproduce. Left as-is
-   rather than traded for a failure mode that could not be demonstrated. */
-.maka-message-meta > span + span {
-  display: none;
-}
-.maka-message-meta .maka-turn-footer-action {
+   A transparent action still takes clicks. `pointer-events: none` looks like
+   the fix and is not obviously safe: it makes the pointer fall through to the
+   ancestor whose `:hover` is what restores the button, so being clickable
+   again depends on the browser redoing hit-testing on a later mouse event. */
+.maka-turn-footer-action,
+.maka-turn-footer-meta {
   opacity: 0;
   transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
-.maka-user-message:hover .maka-message-meta .maka-turn-footer-action,
-.maka-user-message:focus-within .maka-message-meta .maka-turn-footer-action {
+.maka-chat-message:hover .maka-turn-footer-action,
+.maka-chat-message:focus-within .maka-turn-footer-action,
+.maka-chat-message:hover .maka-turn-footer-meta,
+.maka-chat-message:focus-within .maka-turn-footer-meta {
   opacity: 1;
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
@@ -887,32 +873,10 @@
 .maka-turn-footer {
   min-height: var(--size-element-sm, 28px);
   margin-top: var(--space-0-5);
-  padding: 0;
-  opacity: 0;
-  transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
-
-.maka-assistant-answer:hover .maka-turn-footer,
-.maka-turn-footer[data-live-streaming="true"],
-.maka-turn-footer:focus-within { opacity: 1; }
 
 .maka-turn-footer .maka-turn-processing,
 .maka-turn-footer .maka-turn-provider-retry { margin-top: 0; }
-
-.maka-turn-footer-action {
-  border: 0;
-  border-radius: var(--radius-surface);
-  color: var(--muted-foreground);
-}
-
-.maka-turn-footer-action[data-pending="true"] {
-  cursor: progress;
-  opacity: 0.78;
-}
-
-.maka-turn-footer-action[aria-disabled="true"][data-pending="true"] { opacity: 0.78; }
-.maka-turn-footer-action[data-copy-feedback="copied"] { color: var(--link); }
-.maka-turn-footer-action[data-copy-feedback="failed"] { color: var(--destructive); }
 
 .maka-overlay-preview {
   font: var(--maka-text-supporting);

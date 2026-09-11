@@ -146,6 +146,8 @@ export class HostArtifactCoordinator {
   ): Promise<OperationOutcome<'artifact.ingest'>> {
     try {
       if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        // Session removal can race an upload; release only this owner's staged bytes.
+        this.#uploads.abort(uploadKey(input.sessionId, input.uploadId), context);
         return ingestFailure('not_found', 'Session was not found');
       }
       switch (input.kind) {

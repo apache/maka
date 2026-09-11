@@ -31,6 +31,7 @@ import {
 } from '../apply-patch-file.js';
 
 import { computeEditedSource } from '../edit-replace.js';
+import { readTextLineWindow } from '../text-line-window.js';
 import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
@@ -152,12 +153,10 @@ export async function executeFilesystemOperation(
         }
       }
       const content = await fs.readFile(path, 'utf8');
-      if (operation.offset === undefined && operation.limit === undefined)
-        return { kind: 'read', content };
-      const lines = content.split('\n');
-      const start = operation.offset ?? 0;
-      const end = operation.limit ? start + operation.limit : lines.length;
-      return { kind: 'read', content: lines.slice(start, end).join('\n') };
+      return {
+        kind: 'read',
+        content: readTextLineWindow(content, operation.offset, operation.limit),
+      };
     }
     case 'write': {
       const path = await resolveWritableAllowed(

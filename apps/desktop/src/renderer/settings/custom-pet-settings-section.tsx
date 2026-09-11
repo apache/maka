@@ -209,7 +209,11 @@ export function CustomPetSettingsSection() {
             label={mutation === 'disable' ? copy.disabling : copy.disable}
           />
         ) : (
-          <Badge variant="neutral" label={copy.disabled} />
+          <Badge
+            className="settingsActionSlotBadge"
+            variant="neutral"
+            label={copy.disabled}
+          />
         )}
       />
 
@@ -233,7 +237,11 @@ export function CustomPetSettingsSection() {
             end={(
               <>
                 {isSelected ? (
-                  <Badge variant="neutral" label={copy.selected} />
+                  <Badge
+                    className="settingsActionSlotBadge"
+                    variant="neutral"
+                    label={copy.selected}
+                  />
                 ) : (
                   <Button
                     variant="secondary"

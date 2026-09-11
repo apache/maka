@@ -27,7 +27,9 @@ import {
   matchesWorkHubFilter,
   MAX_WORKHUB_ANCHORS,
   WorkHubNavigationRail,
+  WorkHubResultCard,
   workHubLinkedWork,
+  workHubTurnResultPreview,
 } from "../../renderer/features/workhub/index.js";
 import { getWorkHubRailCopy } from "../../renderer/locales/workhub-copy.js";
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
@@ -46,6 +48,41 @@ test('durable task results restore Host-scoped work links without treating faile
     { ...result, toolUseId: 'other-tool' },
     { ...result, content: { kind: 'json', value: { disposition: 'stop_work', targetSessionKey: target } } },
   ], [], 'Work'), []);
+});
+
+test('a completed delegation returns its bounded result in the WorkHub conversation', () => {
+  const target = JSON.stringify(['host-a', 'task-a']);
+  const markup = renderToStaticMarkup(createElement(WorkHubResultCard, {
+    work: {
+      id: 'delegation-record',
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: target,
+      targetSessionName: 'Release checklist',
+      targetMessageId: 'delegated-message',
+      targetTurnId: 'target-turn',
+      state: 'completed',
+      resultPreview: 'All release checks passed. The report is ready.',
+    },
+    locale: 'en',
+    highlighted: false,
+    onHighlight: () => undefined,
+    onOpenWork: () => undefined,
+  }));
+
+  assert.match(markup, /Completed/u);
+  assert.match(markup, /All release checks passed\. The report is ready\./u);
+  assert.match(markup, /Open result/u);
+});
+
+test('delegated result previews select the exact Turn and stay character-bounded', () => {
+  const preview = workHubTurnResultPreview([
+    { type: 'assistant', id: 'other-answer', turnId: 'other-turn', ts: 1, modelId: 'model', text: 'wrong result' },
+    { type: 'assistant', id: 'target-answer', turnId: 'target-turn', ts: 2, modelId: 'model', text: `  ${'界'.repeat(700)}  ` },
+  ], 'target-turn');
+
+  assert.equal(Array.from(preview ?? '').length, 600);
+  assert.equal(preview?.endsWith('…'), true);
+  assert.doesNotMatch(preview ?? '', /wrong result/u);
 });
 
 function session(

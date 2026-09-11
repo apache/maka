@@ -141,3 +141,14 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   await render({ liveTurn: undefined, runningStatus: false, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
 });
+
+
+test('ChatSurfaceLayout preserves the public emptyState for absent children', () => {
+  for (const children of [null, undefined, false, []]) {
+    const markup = renderToStaticMarkup(
+      <ChatSurfaceLayout composer={null} emptyState={<p>Empty layout</p>} children={children} />,
+    );
+    assert.match(markup, /Empty layout/);
+    assert.doesNotMatch(markup, /maka-prompt-rail-host/);
+  }
+});

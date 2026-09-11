@@ -127,14 +127,14 @@ test('delegation content is optional, bounded, and unavailable to stop or resume
         actionId: 'stop-content',
         turnId: 'active-turn',
         delegationText: 'Unrelated work',
-        proposal: { disposition: 'stop_work', expects: { targetSessionId: 'payments' } },
+        proposal: { operation: 'stop', expects: { targetSessionId: 'payments' } },
       }),
     RuntimeHostProtocolError,
   );
 });
 
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
-  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 110);
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 136);
   const result = decodeWorkHubCoordinationCandidatesResult({
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [
@@ -179,16 +179,16 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
     {
       proposal: {
-        disposition: 'replace',
+        operation: 'correct',
         replacesActionId: 'source',
         target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
       },
       candidateSetId,
     },
-    { proposal: { disposition: 'stop_work', expects: { targetSessionId: 'target' } } },
+    { proposal: { operation: 'stop', expects: { targetSessionId: 'target' } } },
     {
       proposal: {
-        disposition: 'resume_work',
+        operation: 'resume',
         resumesActionId: 'source',
         expects: { targetSessionId: 'target' },
       },
@@ -208,13 +208,13 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
     {
       proposal: {
-        disposition: 'stop_work',
+        operation: 'stop',
         expects: { targetSessionId: 'target', activeActionIds: ['forged'] },
       },
     },
     {
       proposal: {
-        disposition: 'resume_work',
+        operation: 'resume',
         resumesActionId: 'source',
         expects: { targetSessionId: 'target' },
       },
@@ -222,6 +222,23 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
   ])
     assert.throws(() => decodeWorkHubCoordinationActFromTurnInput({ ...base, ...fields }));
+  for (const legacyProposal of [
+    {
+      disposition: 'replace',
+      replacesActionId: 'source',
+      target: { disposition: 'create_new', title: 'Legacy' },
+    },
+    { disposition: 'stop_work', expects: { targetSessionId: 'target' } },
+    {
+      disposition: 'resume_work',
+      resumesActionId: 'source',
+      expects: { targetSessionId: 'target' },
+    },
+  ])
+    assert.throws(
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...base, proposal: legacyProposal }),
+      RuntimeHostProtocolError,
+    );
   const attachments = [
     {
       name: 'brief.txt',

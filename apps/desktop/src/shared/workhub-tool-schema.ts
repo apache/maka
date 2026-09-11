@@ -187,7 +187,7 @@ export const workHubTasksSchema = z.discriminatedUnion("operation", [
     ),
   z
     .object({
-      operation: z.literal("replace"),
+      operation: z.literal("correct"),
       replacesActionId: z.string().min(1),
       candidateSetId: z.string().min(1).optional(),
       target: delegationTarget,

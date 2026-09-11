@@ -217,6 +217,9 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
     },
   ]));
 
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
   const body = container.querySelector('.maka-chat-reasoning-content');
   assert.ok(body);
   assert.match(body.textContent ?? '', /First observation\nSecond observation/);
@@ -441,11 +444,11 @@ test('footer copy preserves raw text, blocks overlapping writes and resets succe
   assert.equal(writeText.mock.callCount(), 1);
   assert.equal(writeText.mock.calls[0]?.arguments[0], text);
   assert.equal(button.getAttribute('data-copy-feedback'), 'pending');
-  assert.equal(button.getAttribute('data-pending'), 'true');
+  assert.equal(button.getAttribute('aria-busy'), 'true');
 
   await act(async () => pending.resolve());
   assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
-  assert.equal(button.hasAttribute('data-pending'), false);
+  assert.notEqual(button.getAttribute('aria-busy'), 'true');
   await act(async () => t.mock.timers.tick(1399));
   assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
   await act(async () => t.mock.timers.tick(1));

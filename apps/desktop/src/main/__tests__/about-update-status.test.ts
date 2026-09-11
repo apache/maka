@@ -59,14 +59,22 @@ test('the row only offers a check where the service would honour one', () => {
     aboutUpdateRow({ state: 'checking', currentVersion: current }, copy).action,
     'checking',
   );
-  // The service returns the current status untouched for these, so a check
-  // button here was a control that did nothing when pressed.
-  for (const state of ['available', 'verifying', 'downloaded', 'installing'] as const) {
+  // The service returns the current status untouched for these, so the check
+  // button is disabled rather than a control that does nothing when pressed.
+  for (const state of ['available', 'verifying', 'installing'] as const) {
     assert.equal(
       aboutUpdateRow({ state, currentVersion: current, latestVersion: latest }, copy).action,
-      'none',
+      'busy',
       state,
     );
+  }
+});
+
+test('the version lives on the second line, so the label never truncates against the button', () => {
+  for (const state of ['available', 'verifying', 'downloaded', 'installing'] as const) {
+    const row = aboutUpdateRow({ state, currentVersion: current, latestVersion: latest }, copy);
+    assert.equal(row.label.includes(latest), false, state);
+    assert.ok(row.description.includes(`v${latest}`), state);
   }
 });
 
@@ -81,21 +89,19 @@ test('the nightly steady states each read as themselves', () => {
     copy,
   );
   assert.deepEqual(downloading, {
-    label: '正在下载 v0.2.0-dev.12.20260901（42%）',
-    description: null,
-    action: 'none',
+    label: '正在下载（42%）',
+    description: 'v0.2.0-dev.12.20260901，完成后可在这里重启安装。',
+    action: 'busy',
   });
 
-  // The restart lives in the sidebar footer; the row says so instead of
-  // growing a second install handshake.
   const downloaded = aboutUpdateRow(
     { state: 'downloaded', currentVersion: current, latestVersion: latest },
     copy,
   );
   assert.deepEqual(downloaded, {
-    label: 'v0.2.0-dev.12.20260901 已下载',
-    description: '在侧栏底部重启即可安装。',
-    action: 'none',
+    label: '新版本已下载',
+    description: 'v0.2.0-dev.12.20260901，重启 Maka 即可完成安装。',
+    action: 'install',
   });
 });
 
