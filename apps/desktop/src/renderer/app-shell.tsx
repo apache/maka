@@ -98,7 +98,6 @@ import type { TaskEntryShellProjection } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
-import { NEW_TASK_PENDING_KEY } from './pending-items';
 import {
   desktopSlashCommandAvailability,
   parseDesktopSlashCommand,
@@ -190,7 +189,11 @@ import {
 import * as liveContent from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
-import { useComposerAttachments, desktopSlashCommandPresentation } from './features/conversation/index.js';
+import {
+  NEW_TASK_PENDING_KEY,
+  desktopSlashCommandPresentation,
+  useComposerAttachments,
+} from './features/conversation/index.js';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
   type ComposerMentionsSurfaceInput,

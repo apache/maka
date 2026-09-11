@@ -710,7 +710,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 70,
+        "importDeclarations": 69,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -832,7 +832,6 @@
           "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
           "./nav-selection": 1,
-          "./pending-items": 1,
           "./pending-session-view": 1,
           "./plan-mode-panel": 1,
           "./scroll-motion-policy": 1,
@@ -871,8 +870,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 109,
-        "nonTriviaTokens": 13678
+        "importSpecifiers": 108,
+        "nonTriviaTokens": 13674
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
