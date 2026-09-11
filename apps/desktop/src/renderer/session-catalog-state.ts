@@ -40,6 +40,7 @@ export interface SessionCatalogState {
   readonly sessions: readonly DesktopSessionSummary[];
   readonly revision: number;
   readonly activeSessionId: string | undefined;
+  readonly automaticQueryBlockedSessionIds: ReadonlySet<string>;
 }
 
 export function createSessionCatalogController() {
@@ -47,11 +48,51 @@ export function createSessionCatalogController() {
     sessions: [],
     revision: 0,
     activeSessionId: undefined,
+    automaticQueryBlockedSessionIds: new Set(),
   });
+  const automaticQueryBlockCounts = new Map<string, number>();
+  const publishAutomaticQueryBlocks = () => {
+    const current = state.getState();
+    const next = new Set(automaticQueryBlockCounts.keys());
+    if (
+      current.automaticQueryBlockedSessionIds.size === next.size
+      && [...next].every((id) => current.automaticQueryBlockedSessionIds.has(id))
+    ) {
+      return;
+    }
+    state.replaceState({ ...current, automaticQueryBlockedSessionIds: next });
+  };
 
   return {
     getState: state.getState,
     subscribe: state.subscribe,
+    isAutomaticQueryBlocked(sessionId: string): boolean {
+      return (
+        state.getState().automaticQueryBlockedSessionIds.has(sessionId) ||
+        state.getState().sessions.some((session) => session.id === sessionId && session.isArchived)
+      );
+    },
+    acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void } {
+      const ids = [...new Set(sessionIds)];
+      for (const id of ids) {
+        automaticQueryBlockCounts.set(id, (automaticQueryBlockCounts.get(id) ?? 0) + 1);
+      }
+      publishAutomaticQueryBlocks();
+
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          for (const id of ids) {
+            const count = automaticQueryBlockCounts.get(id) ?? 0;
+            if (count <= 1) automaticQueryBlockCounts.delete(id);
+            else automaticQueryBlockCounts.set(id, count - 1);
+          }
+          publishAutomaticQueryBlocks();
+        },
+      };
+    },
     commitSessions(next: readonly DesktopSessionSummary[]): void {
       const current = state.getState();
       state.replaceState({ ...current, sessions: next, revision: current.revision + 1 });

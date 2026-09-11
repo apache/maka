@@ -49,6 +49,10 @@ import { withScopedMakaBridge } from './maka-bridge';
 const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';
 const MENU_LABEL = '命令和技能';
 const SESSION_ID = 'session-slash-menu';
+const automaticQueryGate = {
+  subscribe: () => () => {},
+  isAutomaticQueryBlocked: () => false,
+};
 
 /**
  * What app-shell.tsx builds for `slashCommands`, from the same three
@@ -155,6 +159,7 @@ function SlashMenuHarness({
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
       <ComposerMentionsProvider
+        automaticQueryGate={automaticQueryGate}
         skillCatalogRevision={0}
         sessionId={hasSession ? SESSION_ID : undefined}
         projectPath="/workspace/maka-agent"
@@ -185,6 +190,7 @@ function ContextSwitchHarness(): React.ReactElement {
       </button>
       <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
         <ComposerMentionsProvider
+          automaticQueryGate={automaticQueryGate}
           skillCatalogRevision={0}
           sessionId={hasSession ? SESSION_ID : undefined}
           projectPath="/workspace/maka-agent"

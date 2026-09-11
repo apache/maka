@@ -28,6 +28,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { PlanControlIpcResult } from '../../shared/plan-mode-ipc.js';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { usePlanModeState, type PlanModeState } from '../../renderer/plan-mode-panel.js';
+import { createSessionCatalogController } from '../../renderer/session-catalog-state.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -96,9 +97,10 @@ test('plan controls stay pending until the bridge promise settles', async () => 
   const root = createRoot(container);
   mountedRoot = root;
 
+  const catalog = createSessionCatalogController();
   let controller: PlanModeState | undefined;
   function Harness() {
-    controller = usePlanModeState({ id: 'session-1' } as SessionSummary);
+    controller = usePlanModeState({ id: 'session-1' } as SessionSummary, catalog);
     return null;
   }
   await act(async () => {

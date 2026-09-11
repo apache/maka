@@ -59,6 +59,10 @@ export interface ComposerMentionsSurface {
   /** Handed over by the Module Hub boundary to invalidate Runtime's projection. */
   skillCatalogRevision: number;
   sessionId?: string;
+  automaticQueryGate: {
+    subscribe(listener: () => void): () => void;
+    isAutomaticQueryBlocked(sessionId: string): boolean;
+  };
   projectPath?: string;
   newSessionModel?: { llmConnectionSlug: string; model: string };
   newSessionCollaborationMode?: 'agent' | 'plan';
@@ -84,6 +88,7 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
   const {
     projectPath,
     sessionId,
+    automaticQueryGate,
     skillCatalogRevision,
     newSessionModel,
     newSessionCollaborationMode,
@@ -147,8 +152,11 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
+    const blocked = () => !!sessionId && automaticQueryGate.isAutomaticQueryBlocked(sessionId);
+    let queryBlocked = blocked();
     const refresh = () => {
       const version = ++requestVersion;
+      if (queryBlocked) return;
       setCatalog((previous) =>
         previous.contextKey === contextKey
           ? // A same-context refresh keeps both its settled verdict and the
@@ -178,7 +186,7 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
           : Promise.resolve([]);
       void request.then(
         (next) => {
-          if (cancelled || version !== requestVersion) return;
+          if (cancelled || version !== requestVersion || queryBlocked) return;
           setCatalog((previous) => ({
             contextKey,
             loading: false,
@@ -196,12 +204,18 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
           // Direct `/skill:<id>` input still reaches the same Runtime resolver.
-          if (cancelled || version !== requestVersion) return;
+          if (cancelled || version !== requestVersion || queryBlocked) return;
           setCatalog({ contextKey, loading: false, settled: 'empty', skills: EMPTY_SKILLS });
         },
       );
     };
     refresh();
+    const unsubscribeQueryGate = automaticQueryGate.subscribe(() => {
+      const next = blocked();
+      if (next === queryBlocked) return;
+      queryBlocked = next;
+      refresh();
+    });
     const unsubscribeSessions = window.maka.sessions.subscribeChanges((event) => {
       if (
         sessionId &&
@@ -220,12 +234,14 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
     return () => {
       cancelled = true;
       requestVersion += 1;
+      unsubscribeQueryGate();
       unsubscribeSessions();
       unsubscribeContext();
     };
   }, [
     newTaskProjectPath,
     sessionId,
+    automaticQueryGate,
     skillCatalogRevision,
     newTaskModel?.llmConnectionSlug,
     newTaskModel?.model,

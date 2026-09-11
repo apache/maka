@@ -109,6 +109,11 @@ function installCatalogRenderer(t: TestContext) {
     }
   });
 
+  const automaticQueryGate = {
+    subscribe: () => () => {},
+    isAutomaticQueryBlocked: () => false,
+  };
+
   return {
     observations,
     latest() {
@@ -124,6 +129,7 @@ function installCatalogRenderer(t: TestContext) {
         sessionId,
         projectPath,
         skillCatalogRevision,
+        automaticQueryGate,
         children: createElement(Consumer, { sessionId }),
       })));
     },
