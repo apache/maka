@@ -286,16 +286,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      if (
-        !Array.isArray(messageIds)
-        || messageIds.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES
-      ) {
-        throw new Error('Invalid Message identities');
-      }
-      const normalizedMessageIds = messageIds.map(requiredMessageId);
-      if (new Set(normalizedMessageIds).size !== normalizedMessageIds.length) {
-        throw new Error('Duplicate Message identities');
-      }
+      const normalizedMessageIds = requiredMessageIds(messageIds);
       // Keep the transport limit at the Runtime Host seam so renderer callers
       // can query their complete optimistic projection as one operation.
       const cancelledMessageIds: string[] = [];
@@ -321,13 +312,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     'sessions:queryMessageExecutions',
     async (_event, sessionId: string, messageIds: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      if (!Array.isArray(messageIds) || messageIds.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
-        throw new Error('Invalid Message identities');
-      }
-      const normalizedMessageIds = messageIds.map(requiredMessageId);
-      if (new Set(normalizedMessageIds).size !== normalizedMessageIds.length) {
-        throw new Error('Duplicate Message identities');
-      }
+      const normalizedMessageIds = requiredMessageIds(messageIds);
       const resolutions: TurnMessageExecutionResolution[] = [];
       for (
         let from = 0;
@@ -1032,6 +1017,17 @@ function requiredId(value: unknown, label: string): string {
     throw new Error(`Invalid ${label} identity`);
   }
   return value;
+}
+
+function requiredMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
+    throw new Error('Invalid Message identities');
+  }
+  const messageIds = value.map(requiredMessageId);
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw new Error('Duplicate Message identities');
+  }
+  return messageIds;
 }
 
 function requiredMessageId(value: unknown): string {

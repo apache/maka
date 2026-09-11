@@ -418,8 +418,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     syncPendingUserMessages();
   }, [syncPendingUserMessages]);
 
-  const reconcilePendingUserMessages = useCallback((durable: readonly StoredMessage[]) => {
-    reconcileTransientMessages(pendingUserMessagesRef.current, durable);
+  const reconcilePendingUserMessages = useCallback(() => {
+    reconcileTransientMessages(pendingUserMessagesRef.current, allMessagesRef.current.filter(
+      (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
+    ));
     syncPendingUserMessages();
   }, [syncPendingUserMessages]);
 
@@ -427,11 +429,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const next = mergeSettledMessages(allMessagesRef.current, messages);
     allMessagesRef.current = next;
     setAllMessages(next);
-    reconcilePendingUserMessages(
-      next.filter(
-        (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
-      ),
-    );
+    reconcilePendingUserMessages();
   }, [reconcilePendingUserMessages]);
 
   // Retire the optimistic bubble for a message id. Called when a send is
@@ -454,11 +452,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     setHasContent(true);
     ownTurnIdsRef.current.add(turnId);
     setOwnTurnTick((tick) => tick + 1);
-    reconcilePendingUserMessages(
-      allMessagesRef.current.filter(
-        (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
-      ),
-    );
+    reconcilePendingUserMessages();
   }, [reconcilePendingUserMessages]);
 
   const adoptOwnedTurn = useCallback((turnId: string) => {
@@ -518,11 +512,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           }
         }
       }
-      const renderable = allMessagesRef.current.filter(
-        (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
-      );
-      reconcileTransientMessages(pendingUserMessagesRef.current, renderable);
-      syncPendingUserMessages();
+      reconcilePendingUserMessages();
       if (cancelled.size > 0) {
         setMessageQueue((current) => ({
           ...current,
@@ -532,7 +522,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
-  }, [mergeDurableMessages, mountedRef, sideChat, syncPendingUserMessages]);
+  }, [mergeDurableMessages, mountedRef, reconcilePendingUserMessages, sideChat]);
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
@@ -722,23 +712,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       return true;
     };
-    let messages: StoredMessage[];
-    try {
-      ({ messages } = await sideChat.readSettledMessages(forkId, {
-        requiredTurnId: turnId,
-      }));
-      if (!mountedRef.current || companionIdRef.current !== forkId) {
-        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
-        return false;
-      }
-    } catch {
-      if (!mountedRef.current || companionIdRef.current !== forkId) {
-        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
-        return false;
-      }
-      // Without canonical terminal proof, the Host's started receipt remains
-      // the best available authority and preserves the existing live path.
-      return retainOrArmTurn();
+    // A failed read contributes no terminal proof; retained evidence still does.
+    const { messages } = await sideChat.readSettledMessages(forkId, {
+      requiredTurnId: turnId,
+    }).catch(() => ({ messages: [] as StoredMessage[] }));
+    if (!mountedRef.current || companionIdRef.current !== forkId) {
+      if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
+      return false;
     }
 
     if (
@@ -785,15 +765,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     // A subscription can fail before the first send. Keep that failure
     // observable to a later send without creating an unhandled rejection now.
     void ready.catch(() => undefined);
-    void sideChat.readSettledMessages(forkId)
-      .then(({ messages }) => {
-        if (mountedRef.current) {
-          mergeDurableMessages(messages);
-        }
-      })
-      .catch(() => {
-        if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
-      });
     const observationSeeded = () => {
       resolveReady();
       void sideChat.readSettledMessages(forkId)
@@ -854,13 +825,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           return;
         }
         if (admission) {
-          if (
-            event.type === 'message_admission' &&
-            event.messageId === admission.messageId
-          ) {
-            admission.events.push(event);
-            resolveAdmission(forkId, admission, admission.messageId, true);
-          } else if (event.turnId === activeTurnIdRef.current) {
+          if (event.turnId === activeTurnIdRef.current) {
             applyOwnedEvent(forkId, event);
           } else {
             admission.events.push(event);
