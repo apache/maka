@@ -22,11 +22,14 @@ import { Container, type Component, type Terminal } from '@earendil-works/pi-tui
 // compare the same canonical lines pi-tui diffs, and pi-tui normalizes Thai/Lao
 // AM sequences before its diff. Pinned to pi-tui 0.80.3.
 import { normalizeTerminalOutput } from '@earendil-works/pi-tui/dist/utils.js';
-// Separate statement, anchored below the deep import rather than appended to
+// Separate statements, anchored below the deep import rather than appended to
 // the Container import: upstream inserts its UiLocale import directly after
-// the Container line, and an import here keeps the two changes in different
-// diff gaps so the three-way merge resolves cleanly.
-import { ScrollView } from '@earendil-works/pi-tui';
+// the Container line and its TranscriptDocument import after the
+// pi-transcript block, and imports in this gap keep this PR's changes out of
+// both of those diff gaps so the three-way merge resolves cleanly.
+import { ScrollView, type ScrollViewOptions } from '@earendil-works/pi-tui';
+import type { UnreadOutputFeed } from './fullscreen-mode.js';
+import { renderUnreadIndicator, UnreadOutputCounter } from './fullscreen-mode.js';
 import {
   renderMakaPiActivityStrip,
   renderMakaPiPendingQueue,
@@ -36,9 +39,6 @@ import {
   type MakaPiTranscriptMetadata,
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
-import type { ScrollViewOptions } from '@earendil-works/pi-tui';
-import type { UnreadOutputFeed } from './tui-fullscreen.js';
-import { renderUnreadIndicator, UnreadOutputCounter } from './tui-fullscreen.js';
 
 interface ViewportAwareEditor extends Component {
   setViewportRows(rows: number): void;
@@ -55,6 +55,30 @@ export function fitPendingQueueLines(lines: readonly string[], maxRows: number):
   if (rowBudget === 0) return [];
   if (rowBudget === 1) return [`… ${lines.length} more`];
   return [...lines.slice(0, rowBudget - 1), `… ${lines.length - rowBudget + 1} more`];
+}
+
+/**
+ * The fullscreen chrome's editor/pending-queue row account, isolated in one
+ * function so the budget and its consumers cannot drift apart: from the rows
+ * available below the transcript, reserve the editor's minimum viewport while
+ * the autocomplete is open (the queue trims first), then give the editor
+ * whatever remains. `rowsAvailable` is everything already carved out of the
+ * terminal rows — the chrome subtracts the status line, activity strip, unread
+ * indicator, and the reserved transcript row before calling. The main-screen
+ * layout keeps its own (upstream-owned) accounting; its contract is identical,
+ * so the two can be unified onto this function after merge.
+ */
+function budgetEditorAndPendingRows(
+  rowsAvailable: number,
+  allPendingLines: readonly string[],
+  editor: ViewportAwareEditor,
+): { pendingLines: string[]; editorRows: number } {
+  const budget = Math.max(0, Math.floor(rowsAvailable));
+  const pendingRowsAvailable = editor.isShowingAutocomplete()
+    ? Math.max(0, budget - editor.minimumViewportRows())
+    : allPendingLines.length;
+  const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
+  return { pendingLines, editorRows: Math.max(0, budget - pendingLines.length) };
 }
 
 export class MakaTranscriptComponent implements Component {
@@ -380,22 +404,22 @@ export class MakaFullscreenChromeComponent implements Component {
     const activityRows = allActivityLines.some((line) => line.length > 0) ? allActivityLines : [];
     const allPendingLines = this.pendingQueue.render(width);
     const statusLines = this.statusLine.render(width);
-    // Same editor/autocomplete fixed-point as MakaPiLayoutComponent, with the
-    // transcript's minimum row and the indicator reserved up front so the
-    // chrome's intrinsic height can never push the transcript below one row.
-    const editorBudget = Math.max(
-      0,
+    // Same row account as MakaPiLayoutComponent via budgetEditorAndPendingRows,
+    // with the unread indicator and the transcript's minimum row reserved up
+    // front so the chrome's intrinsic height can never push the transcript
+    // below one row.
+    const editorBudget =
       this.terminal.rows -
-        indicatorLines.length -
-        activityRows.length -
-        statusLines.length -
-        FULLSCREEN_TRANSCRIPT_MIN_ROWS,
+      indicatorLines.length -
+      activityRows.length -
+      statusLines.length -
+      FULLSCREEN_TRANSCRIPT_MIN_ROWS;
+    const { pendingLines, editorRows } = budgetEditorAndPendingRows(
+      editorBudget,
+      allPendingLines,
+      this.editor,
     );
-    const pendingRowsAvailable = this.editor.isShowingAutocomplete()
-      ? Math.max(0, editorBudget - this.editor.minimumViewportRows())
-      : allPendingLines.length;
-    const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
-    this.editor.setViewportRows(Math.max(0, editorBudget - pendingLines.length));
+    this.editor.setViewportRows(editorRows);
     const editorLines = this.editor.render(width);
     // #1064's separator, fullscreen edition: keep "Working… Ns" from touching
     // the last visible transcript line when a turn is running.

@@ -81,7 +81,7 @@ import {
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import { stripAnsi } from '../tui-ansi.js';
-import { TUI_FULLSCREEN_ENV } from '../tui-fullscreen.js';
+import { TUI_FULLSCREEN_ENV } from '../fullscreen-mode.js';
 import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {

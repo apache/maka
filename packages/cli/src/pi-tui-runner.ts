@@ -28,7 +28,6 @@ import {
   VStack,
   isKeyRelease,
   isKeyRepeat,
-  isViewportTUI,
   matchesKey,
   type Component,
   type OverlayHandle,
@@ -148,7 +147,7 @@ import {
   MakaTranscriptDocumentComponent,
   MakaTranscriptScrollView,
 } from './pi-tui-layout.js';
-import { openExternalUrl, resolveTuiFullscreen, TUI_FULLSCREEN_ENV } from './tui-fullscreen.js';
+import { openExternalUrl, resolveTuiFullscreen, TUI_FULLSCREEN_ENV } from './fullscreen-mode.js';
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
@@ -207,7 +206,7 @@ export interface MakaPiTuiInput {
   /**
    * Explicit fullscreen-TUI decision for embeddings and tests. When omitted,
    * the nightly trial switch decides: `MAKA_TUI_FULLSCREEN` overrides, else
-   * the mode follows the build channel (`buildVersion`). See tui-fullscreen.ts
+   * the mode follows the build channel (`buildVersion`). See fullscreen-mode.ts
    * and issue #4136.
    */
   tuiFullscreen?: boolean;
@@ -636,10 +635,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // ScrollView (follow-end, app-owned wheel/keyboard scrolling, chaining
   // overscroll), the chrome is an intrinsic-height VStack entry below it, so
   // the composer and status line stay anchored while history scrolls. The
-  // main-screen layout keeps owning the regular mode.
+  // main-screen layout below is still constructed and mounted in both modes;
+  // with a layout root set, TuiAltScreen renders and routes only the root
+  // (getMountedRoots), so the main layout stays inert in fullscreen.
   const transcriptDocument = new MakaTranscriptDocumentComponent(transcript);
   let transcriptScroll: MakaTranscriptScrollView | undefined;
-  if (tuiFullscreen && isViewportTUI(tui)) {
+  // Constructed above exactly when the fullscreen trial is on, so this both
+  // narrows the TUI type for setLayoutRoot and reads correctly in both arms.
+  if (tui instanceof TuiAltScreen) {
     transcriptScroll = new MakaTranscriptScrollView(transcriptDocument, {
       follow: 'end',
       primary: true,
@@ -676,17 +679,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       tui.requestRender();
     };
   }
-  const layout = tuiFullscreen
-    ? undefined
-    : new MakaPiLayoutComponent(
-        state,
-        transcript,
-        activityStrip,
-        pendingQueue,
-        editorSurface,
-        statusLine,
-        terminal,
-      );
+  const layout = new MakaPiLayoutComponent(
+    state,
+    transcript,
+    activityStrip,
+    pendingQueue,
+    editorSurface,
+    statusLine,
+    terminal,
+  );
   const attention = new AttentionController(terminal, {
     baseTitle: input.title,
     ...(input.attentionLongTurnThresholdMs !== undefined
@@ -3959,16 +3960,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // again within EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS applies the collapsed
   // default to those blocks too and pays one scrollback-clearing full redraw
   // (requestRender(true)), re-anchoring the viewport at the tail.
-  //
-  // Fullscreen mode (#4136) mounts differently: the layout root set at
-  // construction owns the screen (the transcript scroll view preserves the
-  // user's position and the chrome re-renders freely — no untouchable
-  // scrollback), so the main-screen layout component and its
-  // clear-on-shrink protection do not apply.
-  if (!tuiFullscreen && layout) {
-    tui.setClearOnShrink(false);
-    tui.addChild(layout);
-  }
+  tui.setClearOnShrink(false);
+  tui.addChild(layout);
   tui.setFocus(editorSurface);
   try {
     tui.start();

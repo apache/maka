@@ -113,12 +113,6 @@ export class UnreadOutputCounter {
     this.lastDocumentLines = window.documentLines;
     return this.unreadLines;
   }
-
-  /** Discards the accumulated count (e.g. after the user jumps to the bottom). */
-  reset(): void {
-    this.unreadLines = 0;
-    this.lastDocumentLines = undefined;
-  }
 }
 
 /** The rendered unread line: accent-colored, one row, empty when nothing is new. */
@@ -165,27 +159,52 @@ export function isOpenableExternalUrl(url: string): boolean {
  *
  * Failures are swallowed — a dead link must never take the TUI down.
  */
+/**
+ * Spawns a detached, fire-and-forget opener process. `spawn` reports a
+ * missing binary (and other spawn failures) asynchronously via the child's
+ * `error` event — with no listener attached, Node re-emits it as an
+ * uncaughtException, which the TUI's handler treats as fatal and begins
+ * session teardown. The child is therefore kept and its error swallowed: a
+ * dead link must degrade to "nothing opened", never end the session.
+ * Synchronous throws (invalid arguments) are swallowed here as well.
+ */
+function spawnDetached(
+  spawnProcess: typeof spawn,
+  command: string,
+  args: string[],
+  windowsHide = false,
+): void {
+  try {
+    const child = spawnProcess(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      ...(windowsHide ? { windowsHide: true } : {}),
+    });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // Best-effort only; the terminal may also offer its own link handling.
+  }
+}
+
 export function openExternalUrl(
   url: string,
   platform: NodeJS.Platform = process.platform,
   spawnProcess: typeof spawn = spawn,
 ): void {
   if (!isOpenableExternalUrl(url)) return;
-  try {
-    if (platform === 'darwin') {
-      spawnProcess('open', [url], { detached: true, stdio: 'ignore' }).unref();
-      return;
-    }
-    if (platform === 'win32') {
-      spawnProcess('rundll32', ['url.dll,FileProtocolHandler', url], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      }).unref();
-      return;
-    }
-    spawnProcess('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
-  } catch {
-    // Best-effort only; the terminal may also offer its own link handling.
+  if (platform === 'darwin') {
+    spawnDetached(spawnProcess, 'open', [url]);
+    return;
   }
+  if (platform === 'win32') {
+    // Never cmd.exe: `spawn`'s argument quoting does not escape shell
+    // metacharacters, and `cmd /c start` would let a model-authored `&`
+    // start a second command. rundll32 receives the URL as a single argv
+    // element and hands it to ShellExecute; the DLL/entrypoint half is a
+    // compile-time constant, so a hostile URL cannot redirect what runs.
+    spawnDetached(spawnProcess, 'rundll32', ['url.dll,FileProtocolHandler', url], true);
+    return;
+  }
+  spawnDetached(spawnProcess, 'xdg-open', [url]);
 }

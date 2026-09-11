@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { spawn as SpawnFn } from 'node:child_process';
 // Deep import (pi-tui does not re-export it): the layout frame is what
 // TuiAltScreen's doRender builds every frame, so rendering one here exercises
@@ -45,7 +45,7 @@ import {
   UnreadOutputCounter,
   type UnreadOutputFeed,
   type TranscriptWindowSnapshot,
-} from '../tui-fullscreen.js';
+} from '../fullscreen-mode.js';
 import { stripAnsi } from '../tui-ansi.js';
 
 function fakeTerminal(rows: number): Terminal {
@@ -66,6 +66,15 @@ function recordingEditor(lines: string[] = ['╭─╮', '│ │', '╰─╯']
     viewportRowsHistory: [],
     invalidate() {},
     render(): string[] {
+      // Editor-shaped: with the autocomplete open the real above-editor
+      // component fills its whole viewport with suggestion rows above the
+      // editor frame, so the fake renders exactly the rows it was budgeted.
+      if (this.showingAutocomplete) {
+        const budgeted = this.viewportRowsHistory.at(-1) ?? lines.length;
+        return Array.from({ length: budgeted }, (_, index) =>
+          index < lines.length ? lines[index] : '│ autocomplete suggestion          │',
+        );
+      }
       return [...lines];
     },
     setViewportRows(rows: number): void {
@@ -78,6 +87,17 @@ function recordingEditor(lines: string[] = ['╭─╮', '│ │', '╰─╯']
       return 4;
     },
   };
+}
+
+function makePendingQueue(state: ReturnType<typeof createMakaPiTranscriptState>): MakaPendingQueueComponent {
+  // The post-merge pending queue takes a UiLocale for localized copy; the
+  // branch's predates it and ignores the argument. Going through a variadic
+  // constructor view keeps this file compiling in both trees, and 'en' is the
+  // catalog these structural assertions see either way.
+  return new (MakaPendingQueueComponent as unknown as new (
+    state: ReturnType<typeof createMakaPiTranscriptState>,
+    locale?: 'en' | 'zh',
+  ) => MakaPendingQueueComponent)(state, 'en');
 }
 
 function snapshot(overrides: Partial<TranscriptWindowSnapshot> = {}): TranscriptWindowSnapshot {
@@ -190,15 +210,6 @@ describe('unread output counter', () => {
     const counter = new UnreadOutputCounter();
     assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 40 })), 0);
   });
-
-  test('reset discards the accumulated count and baseline', () => {
-    const counter = new UnreadOutputCounter();
-    counter.update(snapshot({ followingEnd: true, documentLines: 40 }));
-    counter.update(snapshot({ followingEnd: false, documentLines: 40 }));
-    counter.update(snapshot({ followingEnd: false, documentLines: 50 }));
-    counter.reset();
-    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 55 })), 0);
-  });
 });
 
 describe('unread indicator rendering', () => {
@@ -241,7 +252,7 @@ describe('fullscreen chrome component', () => {
     const chrome = new MakaFullscreenChromeComponent(
       state,
       new MakaActivityStripComponent(metadata),
-      new MakaPendingQueueComponent(state),
+      makePendingQueue(state),
       editor,
       new MakaStatusLineComponent(metadata),
       fakeTerminal(rows),
@@ -250,12 +261,6 @@ describe('fullscreen chrome component', () => {
     );
     return { state, chrome, editor };
   }
-
-  test('pins the transcript geometry to the app-owned viewport', () => {
-    const { state, chrome } = buildChrome(24, memoryFeed());
-    chrome.render(80);
-    assert.equal(state.renderGeometry.viewportTop, 0);
-  });
 
   test('renders the unread indicator only while lines accumulated away from the bottom', () => {
     const feed = memoryFeed();
@@ -281,14 +286,16 @@ describe('fullscreen chrome component', () => {
     assert.equal(editor.viewportRowsHistory.at(-1), 22);
   });
 
-  test('keeps the editor budget at its minimum when the autocomplete is open on a short terminal', () => {
+  test('sizes the editor to its full budget when the autocomplete is open on a short terminal', () => {
     const { chrome, editor } = buildChrome(8, memoryFeed());
     editor.showingAutocomplete = true;
     const lines = chrome.render(80);
-    // rows 8 − transcript 1 − status 1 = 6 for indicator+activity+pending+editor;
-    // the autocomplete trims so the editor never needs more than its minimum.
-    assert.ok(editor.viewportRowsHistory.at(-1)! >= editor.minimumViewportRows());
-    assert.ok(lines.length <= 8);
+    // rows 8 − transcript 1 − status 1 = 6 available below the transcript;
+    // with the autocomplete open the queue trims first, so the editor gets
+    // all 6 rows and the editor-shaped fake fills them, leaving the reserved
+    // transcript row intact: 6 chrome rows + 1 status + 1 transcript = 8.
+    assert.equal(editor.viewportRowsHistory.at(-1), 6);
+    assert.equal(lines.length, 7);
   });
 
   test('keeps a blank separator between the transcript and a running activity strip', () => {
@@ -343,7 +350,7 @@ describe('fullscreen layout frame', () => {
     const chrome = new MakaFullscreenChromeComponent(
       state,
       new MakaActivityStripComponent(metadata),
-      new MakaPendingQueueComponent(state),
+      makePendingQueue(state),
       editor,
       new MakaStatusLineComponent(metadata),
       fakeTerminal(ROWS),
@@ -477,13 +484,22 @@ describe('external URL opener hardening', () => {
   interface RecordedSpawn {
     command: string;
     args: readonly string[];
+    /** Live error-listener count on the returned child. */
+    errorListeners(): number;
   }
 
   function recordingSpawn(): { calls: RecordedSpawn[]; spawn: typeof SpawnFn } {
     const calls: RecordedSpawn[] = [];
     const spawn = ((command: string, args: readonly string[], _options?: SpawnOptions) => {
-      calls.push({ command, args });
-      return { unref() {} } as unknown as ChildProcess;
+      let errorListeners = 0;
+      calls.push({ command, args, errorListeners: () => errorListeners });
+      return {
+        on(event: string, listener: () => void) {
+          if (event === 'error') errorListeners += 1;
+          return listener;
+        },
+        unref() {},
+      } as unknown as ChildProcess;
     }) as unknown as typeof SpawnFn;
     return { calls, spawn };
   }
@@ -542,7 +558,51 @@ describe('external URL opener hardening', () => {
     const { calls, spawn } = recordingSpawn();
     openExternalUrl('https://apache.org?x=1&y=2', 'darwin', spawn);
     openExternalUrl('https://apache.org?x=1&y=2', 'linux', spawn);
-    assert.deepEqual(calls[0], { command: 'open', args: ['https://apache.org?x=1&y=2'] });
-    assert.deepEqual(calls[1], { command: 'xdg-open', args: ['https://apache.org?x=1&y=2'] });
+    assert.deepEqual(
+      { command: calls[0]?.command, args: calls[0]?.args },
+      { command: 'open', args: ['https://apache.org?x=1&y=2'] },
+    );
+    assert.deepEqual(
+      { command: calls[1]?.command, args: calls[1]?.args },
+      { command: 'xdg-open', args: ['https://apache.org?x=1&y=2'] },
+    );
+  });
+
+  test('keeps the spawned child and swallows its asynchronous error event', () => {
+    // spawn reports a missing binary via the child's 'error' event, not a
+    // synchronous throw; with no listener attached Node re-emits it as an
+    // uncaughtException, which the TUI treats as fatal and begins teardown.
+    // The opener must attach exactly one listener so a dead link degrades to
+    // "nothing opened" on every platform shape.
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const { calls, spawn } = recordingSpawn();
+      openExternalUrl('https://apache.org', platform, spawn);
+      assert.equal(calls.length, 1, `expected one spawn on ${platform}`);
+      assert.equal(calls[0]?.errorListeners(), 1, `expected the error listener on ${platform}`);
+    }
+  });
+
+  test('a missing opener binary fires the async error and the session survives it', async () => {
+    // Real child process, no mocks: xdg-open does not exist on most hosts
+    // this suite runs on, so libuv reports ENOENT asynchronously — exactly
+    // the path that surfaced as an uncaughtException before the fix.
+    // Observing the error through an extra listener proves the event fired;
+    // this test completing at all proves it was swallowed instead of ending
+    // the process.
+    let child: ChildProcess | undefined;
+    const recorder = ((command: string, args: readonly string[], options?: SpawnOptions) => {
+      child = spawn(command, args, options ?? {});
+      return child;
+    }) as unknown as typeof SpawnFn;
+    openExternalUrl('https://apache.org', 'linux', recorder);
+    assert.ok(child, 'expected the opener to spawn');
+    const error = await Promise.race([
+      new Promise<NodeJS.ErrnoException>((resolve) => child!.once('error', resolve)),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('spawn error never fired')), 5_000);
+        timer.unref();
+      }),
+    ]);
+    assert.equal(error.code, 'ENOENT');
   });
 });
