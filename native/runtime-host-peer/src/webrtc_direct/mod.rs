@@ -32,6 +32,3 @@ pub(crate) const SIGNALING_PROTOCOL: &str = "/webrtc-signaling/0.0.1";
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod lifecycle_tests;

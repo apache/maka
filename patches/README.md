@@ -40,10 +40,7 @@ cleanup are preserved; the generic undo stack used by Input stays unchanged.
 Snapshot creation and storage are private, with no published clone policy
 that product code can configure.
 
-`packages/cli/src/__tests__/tui-editor-undo-pastes.test.ts` checks the actual Maka
-editor through public editing methods and ordinary keystrokes, including a
-GC-enabled child that retains a large paste through 60 undo steps. Delete the
-patch when these tests pass against the unpatched dependency.
+Delete the patch when upstream shares immutable paste strings across undo snapshots.
 
 ## `zod@4.5.4`
 
@@ -55,10 +52,7 @@ parse context and restores allocation state in `finally`, including a pending
 outer allocation during reentrant parsing. Recursive cycles and shared aliases
 still use the existing per-parse memoization.
 
-`packages/core/src/__tests__/zod-memoizer-lifetime.test.ts` verifies ESM and CJS
-semantics and collection after successful, invalid, and throwing parses while
-schemas remain alive. Delete the patch when those tests pass against unpatched
-Zod.
+Delete the patch when upstream releases completed parse state in both ESM and CJS.
 
 ## `@modelcontextprotocol/client@2.0.0`
 
@@ -70,10 +64,7 @@ errors still remove progress handlers, and cancellation send errors still reach
 `onerror`; queued frames and connection behavior stay intact. The private SDK
 request funnel has no public observer-lifetime hook for a call-site fix.
 
-`packages/mcp/src/__tests__/sdk-request-send-lifetime.test.ts` verifies both
-published entries with retained pending sends, active-request ownership, and
-settled-object GC, plus legacy and modern cancellation/error semantics. Delete
-the patch when these tests pass against the unpatched dependency.
+Delete the patch when upstream releases settled request observers despite transport backpressure.
 
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
@@ -113,9 +104,7 @@ label can also be a sliced string retaining its entire Markdown message after
 unmount. Unknown labels keep their plain-text fallback, and known languages
 keep reusing compiled regexes. A call-site language filter would duplicate the
 dependency's language list, discard the displayed label, and miss the shared
-CodeEditor path. `packages/ui/src/__tests__/astryx-tokenizer-cache.test.ts` checks
-the installed tokenizer's semantics and cache lifetime; delete this hunk when
-those tests pass against unpatched Astryx.
+CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
 
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft

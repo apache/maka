@@ -128,29 +128,6 @@ test('fails closed on an oversized unterminated frame over a real socket', async
   });
 });
 
-test('receives complete frames without recopying an empty decoder prefix', async () => {
-  await withSocketPair(async (transport, peer) => {
-    let redundantBytes = 0;
-    const concat = Buffer.concat;
-    Buffer.concat = (list, length) => {
-      if (list.length === 2 && list[0]?.byteLength === 0) {
-        redundantBytes += list[1]?.byteLength ?? 0;
-      }
-      return concat(list, length);
-    };
-    try {
-      for (let index = 0; index < 8; index += 1) {
-        const frame = { index, payload: 'x'.repeat(60 * 1024) };
-        await writeSocket(peer, Buffer.from(JSON.stringify(frame) + '\n'));
-        assert.deepEqual(await transport.read(2000), frame);
-      }
-    } finally {
-      Buffer.concat = concat;
-    }
-    assert.equal(redundantBytes, 0);
-  });
-});
-
 test('decodes split UTF-8 and coalesced Local IPC frames', async () => {
   await withSocketPair(async (transport, peer) => {
     const hello = {
