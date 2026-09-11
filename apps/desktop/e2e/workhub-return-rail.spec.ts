@@ -29,6 +29,8 @@ async function sendPrompts(page: Page, prefix: string) {
     await expect(page.getByText(`Fake backend received: ${text}`, { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
   }
+  await expect(page.locator('.maka-prompt-rail [data-prompt-turn-id]')).toHaveCount(3);
+  await expect(page.locator('.maka-prompt-rail')).toBeVisible();
 }
 
 async function railGeometry(page: Page) {
@@ -55,15 +57,18 @@ test('WorkHub prompt rail uses the scrollport edge and the shared reading width'
     return page.evaluate(() => innerWidth);
   }).toBe(contentWidth);
   await sendPrompts(page, 'Session navigation');
+  const sessionRail = await railGeometry(page);
   const ordinary = await page.locator('.maka-turn').first().evaluate((element) => element.getBoundingClientRect().width);
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
+  await workhub.setViewportSize({ width: 1600, height: 800 });
   await sendPrompts(workhub, 'WorkHub navigation');
   await workhub.screenshot({ path: testInfo.outputPath('workhub-wide.png'), scale: 'css' });
   const geometry = await railGeometry(workhub);
   expect(geometry.width).toBeGreaterThan(0);
   expect(geometry.rightInset).toBeGreaterThanOrEqual(10);
   expect(geometry.rightInset).toBeLessThanOrEqual(32);
+  expect(Math.abs(geometry.rightInset - sessionRail.rightInset)).toBeLessThanOrEqual(1);
   // Both surfaces apply their shared transcript gutters exactly once.
   const hubWidth = await workhub.locator('.maka-turn').first().evaluate((element) => element.getBoundingClientRect().width);
   expect(Math.abs(hubWidth - ordinary)).toBeLessThanOrEqual(2);

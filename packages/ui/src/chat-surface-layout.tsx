@@ -74,6 +74,8 @@ export function ChatSurfaceLayout({
         : undefined,
     [scrollToBottomLabel],
   );
+  // Mirror Astryx ChatLayout's hasVisibleContent check to preserve the public
+  // emptyState prop: a host fragment would otherwise count as visible content.
   const hasContent = children != null && children !== false
     && !(Array.isArray(children) && children.length === 0);
   const layout = (

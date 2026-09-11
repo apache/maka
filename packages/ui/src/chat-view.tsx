@@ -806,8 +806,7 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns.
-            Keep it first here for standalone ChatView's sticky fallback. */}
+        {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
           turns={promptRailTurns}
           onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}

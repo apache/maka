@@ -737,7 +737,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   }
 
   // A rail is only useful once there are a few prompts to jump between.
-  if (railTurns.length < 3) return null;
+  if (railTurns.length < 3 || !host) return null;
 
   const rail = (
     <div
@@ -810,5 +810,5 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       </nav>
     </div>
   );
-  return host ? createPortal(rail, host) : rail;
+  return createPortal(rail, host);
 });

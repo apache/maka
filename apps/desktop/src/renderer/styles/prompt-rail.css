@@ -25,25 +25,21 @@
    The hover preview is Astryx's HoverCard; only the two lines inside it are
    styled here. */
 
-/* The full-width message-area host pins the rail to the scrollport's top
-   edge without adding flow space. Keeping it outside bounded transcript
-   columns gives Session and WorkHub the same right edge. Standalone ChatView
-   retains its sticky anchor. The rail measures the scrollport and dock to
-   centre itself in the visible transcript band. */
-.maka-prompt-rail-host,
-.maka-prompt-rail-anchor {
+/* ChatLayout scrolls the entire transcript. A zero-height sticky host gives
+   the absolute rail a viewport anchor instead of the full transcript height.
+   Keep top: 0: a centreline offset is clamped by messageArea's bottom edge
+   above the in-flow dock and can pull the rail offscreen at the tail.
+   prompt-anchor-rail.tsx measures scrollport/dock; it identifies the dock via
+   root.lastElementChild, so Astryx's child order is part of this contract. */
+.maka-prompt-rail-host {
   position: sticky;
   top: 0;
   height: 0;
   z-index: var(--z-panel-action);
-  /* The anchor spans the full chat column; only the rail inside it is a
-     target, or it would swallow clicks across the transcript. */
   pointer-events: none;
 }
 
-/* The layout anchor is outside capped transcript columns and context banners.
-   A standalone ChatView keeps its own sticky anchor as a fallback. */
-.maka-prompt-rail-host > .maka-prompt-rail-anchor { position: relative; }
+.maka-prompt-rail-anchor { position: relative; }
 
 .maka-prompt-rail {
   position: absolute;
