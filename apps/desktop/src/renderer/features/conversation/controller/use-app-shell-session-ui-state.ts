@@ -45,6 +45,28 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
     range: ReturnType<TranscriptSource['range']> | undefined;
   }>({ messages: [], range: undefined });
 
+  // These actions capture only lifetime-stable refs, setters and the workspace
+  // callback that dispatches through its actions ref. Keep their identities as
+  // stable as the other workspace actions consumers receive.
+  const [actions] = useState(() => ({
+    setMessagesState(messages: StoredMessage[]) {
+      setView({
+        messages,
+        range: messages.length
+          ? currentTranscriptRange(transcriptRangeRef.current, activeIdRef.current)
+          : undefined,
+      });
+    },
+    publishTranscript(sessionId: string, store: TranscriptSource, isDisposed: () => boolean, onReady: () => void) {
+      controller.transcriptViewportNavigation.commitRange(sessionId, () => {
+        if (isDisposed() || activeIdRef.current !== sessionId) return;
+        const snapshot = store.snapshot();
+        publishMessages([...snapshot.messages]);
+        if (snapshot.ready) onReady();
+      });
+    },
+  }));
+
   return {
     controller,
     publication: {
@@ -52,22 +74,7 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
       messagesRef,
       messages: view.messages,
       publishedTranscriptRange: view.range,
-      setMessagesState(messages: StoredMessage[]) {
-        setView({
-          messages,
-          range: messages.length
-            ? currentTranscriptRange(transcriptRangeRef.current, activeIdRef.current)
-            : undefined,
-        });
-      },
-      publishTranscript(sessionId: string, store: TranscriptSource, isDisposed: () => boolean, onReady: () => void) {
-        controller.transcriptViewportNavigation.commitRange(sessionId, () => {
-          if (isDisposed() || activeIdRef.current !== sessionId) return;
-          const snapshot = store.snapshot();
-          publishMessages([...snapshot.messages]);
-          if (snapshot.ready) onReady();
-        });
-      },
+      ...actions,
     },
   };
 }
