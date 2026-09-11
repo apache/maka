@@ -370,7 +370,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
               : selected.slug === defaultSlug
               ? (
                 <Badge
-                  className="settingsDefaultActionBadge"
+                  className="settingsActionSlotBadge"
                   variant="neutral"
                   label={copy.default}
                 />

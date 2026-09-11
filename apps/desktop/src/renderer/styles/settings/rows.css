@@ -147,10 +147,10 @@
   max-width: var(--settings-row-end-cap);
 }
 
-/* A default badge can replace a neighboring "set as default" action in the
-   same slot. Keep its label on the action type tier so the settled state does
-   not visually shrink after the user clicks the button. */
-.settingsDefaultActionBadge {
+/* A badge can replace a neighboring action in the same slot. Keep its label
+   on the action type tier so the settled state does not visually shrink after
+   the user clicks the button. */
+.settingsActionSlotBadge {
   font: var(--maka-text-label);
 }
 
