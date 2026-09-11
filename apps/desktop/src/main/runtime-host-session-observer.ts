@@ -137,8 +137,6 @@ interface TranscriptConsumer {
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
   resetRequested: boolean;
-  /** The newest durable watermark the Renderer window has reported reaching. */
-  acknowledgedThrough?: number;
   /**
    * Set only when the reset answers a navigation command, and stamped on that
    * snapshot so the window can tell its own answer from a replacement it did
@@ -559,10 +557,6 @@ export class RuntimeHostSessionObserver {
     }
     // Sequences only name the same rows within one Session and Host epoch.
     if (state.sessionId !== request.sessionId || replica.hostEpoch !== request.hostEpoch) return;
-    if (consumer.acknowledgedThrough !== undefined && request.through <= consumer.acknowledgedThrough) {
-      return;
-    }
-    consumer.acknowledgedThrough = request.through;
     const durableThrough = replica.durableThrough;
     if (durableThrough === null || request.through < durableThrough) return;
     this.#markTranscriptRead(state, replica);
