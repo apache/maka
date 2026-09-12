@@ -215,7 +215,11 @@ export function useWorkHubController() {
       void Promise.all([services.listSessions(), sessionId ? services.getSession(sessionId) : undefined])
         .then(([next, coordination]) => {
           if (!disposed && read === revision) {
-            setSessions(coordination ? [...next, coordination] : next);
+            setSessions((current) => {
+              if (!coordination) return next;
+              const known = current.find((entry) => entry.id === coordination.id);
+              return [...next, known && known.revision > coordination.revision ? known : coordination];
+            });
             for (const turnId of coordination?.runningTurnIds ?? []) reconcileAdmission(sessionId!, turnId);
           }
         })
@@ -486,11 +490,19 @@ export function useWorkHubController() {
           model: input.model,
         },
       });
-      refreshSessions.current();
       if (result.kind === 'revision_conflict')
         throw new Error(workHubLiveCopy[localeRef.current].modelConflict);
+      // Complete the selection only after its authoritative model and revision
+      // are available to the next pick. Older background reads must not undo it.
+      const updated = await services.getSession(sessionId);
+      if (currentSessionId.current !== sessionId) return;
+      setSessions((current) => current.map((entry) =>
+        entry.id === sessionId && entry.revision <= updated.revision ? updated : entry,
+      ));
       setError(undefined);
     } catch (reason) {
+      if (currentSessionId.current !== sessionId) return;
+      refreshSessions.current();
       report(reason);
     }
   }

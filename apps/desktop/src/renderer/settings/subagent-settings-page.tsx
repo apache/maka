@@ -53,11 +53,12 @@ import {
   Button,
   EmptyState,
   IconButton,
+  ModelWheelPicker,
   Selector,
   Switch,
   TextArea,
   TextInput,
-  type SelectorOptionData,
+  type ModelWheelOption,
   useToast,
   useUiLocale,
 } from '@maka/ui';
@@ -413,7 +414,7 @@ function SubagentPresetEditor(props: {
       disabled: true,
     });
   }
-  const modelOptions: SelectorOptionData[] = offerableModels.map((entry) => ({
+  const modelOptions: ModelWheelOption[] = offerableModels.map((entry) => ({
     value: entry.id,
     label: entry.displayName?.trim() || entry.id,
   }));
@@ -597,21 +598,21 @@ function SubagentPresetEditor(props: {
         <SettingsRow
           label={copy.editor.model}
           end={(
-            <Selector
-              label={copy.editor.model}
-              isLabelHidden
-              value={draft.model}
-              options={modelOptions}
-              width="100%"
-              isDisabled={props.isSaving || offerableModels.length === 0}
-              disabledMessage={offerableModels.length === 0 ? copy.editor.noModel : undefined}
-              // The route is two choices, so it gets two errors: an enabled
-              // connection with no model selected is the model's problem.
-              status={submitted && validConnection && !validModel
-                ? { type: 'error', message: copy.editor.invalidModel }
-                : undefined}
-              onChange={(model) => setDraft((current) => ({ ...current, model, thinkingLevel: '' }))}
-            />
+            <VStack gap={1}>
+              <ModelWheelPicker
+                ariaLabel={copy.editor.model}
+                label={modelOptions.find((option) => option.value === draft.model)?.label ?? copy.editor.noModel}
+                value={draft.model}
+                options={modelOptions}
+                size="md"
+                triggerClassName="settingsModelPickerTrigger"
+                disabled={props.isSaving || offerableModels.length === 0}
+                tooltip={offerableModels.length === 0 ? copy.editor.noModel : undefined}
+                onValueChange={(model) => setDraft((current) => ({ ...current, model, thinkingLevel: '' }))}
+              />
+              {submitted && validConnection && !validModel
+                ? <Banner status="error" title={copy.editor.invalidModel} /> : null}
+            </VStack>
           )}
         />
         {thinkingLevels.length > 0 ? (

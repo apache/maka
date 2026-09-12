@@ -292,7 +292,6 @@ export function WorkHubRoot() {
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
-              modelPickerPresentation={showConversation ? 'menu' : 'wheel'}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchHasHistory={transcript.messages.length > 0}

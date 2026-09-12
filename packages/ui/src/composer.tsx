@@ -351,8 +351,6 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    /** Inline browsing for compact windows that cannot fit a popup menu. */
-    modelPickerPresentation?: 'menu' | 'wheel';
     /** Maximum input height in the upstream editor's row units. */
     maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
@@ -544,7 +542,7 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id, props.modelPickerPresentation]);
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -2120,7 +2118,6 @@ export const Composer = forwardRef<
               <div className="maka-model-selection-controls">
                 {props.activeSession ? (
                   <ChatModelSwitcher
-                    presentation={props.modelPickerPresentation}
                     activeSession={props.activeSession}
                     activeModelConnectionId={props.activeModelConnectionId}
                     activeModelConnectionSlug={props.activeModelConnectionSlug}

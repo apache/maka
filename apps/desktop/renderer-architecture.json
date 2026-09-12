@@ -502,7 +502,6 @@
         "importDeclarations": 7,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "window": 2,
           "window.addEventListener": 1,
           "window.removeEventListener": 1
         },
@@ -528,7 +527,7 @@
           "react": 1
         },
         "importSpecifiers": 11,
-        "nonTriviaTokens": 977
+        "nonTriviaTokens": 962
       },
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
@@ -3457,7 +3456,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../locales/settings-shared-copy": 1,
-          "./settings-nav": 1,
           "./settings-surface": 1,
           "@maka/ui": 1,
           "react": 1
