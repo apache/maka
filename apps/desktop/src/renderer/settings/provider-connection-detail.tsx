@@ -780,7 +780,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 value={facts}
                 actionLabel={copy.declareCapabilities}
                 actionAriaLabel={copy.declareCapabilitiesAria(label)}
-                beforeAction={modelEnableSwitch(id, label)}
+                afterAction={modelEnableSwitch(id, label)}
                 isEditing={editingModelId === id}
                 isDisabled={allActionsBusy}
                 canSave={hasRelayProfileChanges}
