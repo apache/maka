@@ -183,7 +183,6 @@ apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/bot.css
-apps/desktop/src/renderer/styles/settings/connection.css
 apps/desktop/src/renderer/styles/settings/form.css
 apps/desktop/src/renderer/styles/settings/health.css
 apps/desktop/src/renderer/styles/settings/memory.css

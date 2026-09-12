@@ -40,7 +40,7 @@ import type {
 } from '../../src/renderer/features/connection-settings';
 import { getProviderSettingsCopy } from '../../src/renderer/features/connection-settings';
 
-const NOW = Date.parse('2026-07-01T08:00:00Z');
+const NOW = Date.parse('2026-09-12T08:00:00Z');
 const detailCopy = getProviderSettingsCopy('zh-CN').detail;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -172,7 +172,7 @@ const staticCatalogConnections = [
   },
 ];
 
-// A relay with independent capability declarations for each enabled model.
+// Relay examples from https://openrouter.ai/rankings (2026-09-12); declarations stay connection-scoped.
 const relayConnections = [
   {
     ...makeConnection({
@@ -180,18 +180,18 @@ const relayConnections = [
       name: 'House Relay',
       providerType: 'openai-compatible',
       baseUrl: 'https://relay.example.com/v1',
-      defaultModel: 'deepseek-r2',
+      defaultModel: 'openai/gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
-        { id: 'deepseek-r2' },
-        { id: 'deepseek-v4' },
-        { id: 'qwen3-max-thinking' },
-        { id: 'kimi-k2.6' },
+        { id: 'openai/gpt-5.6-luna' },
+        { id: 'deepseek/deepseek-v4-flash-0731' },
+        { id: 'z-ai/glm-5.3-flash' },
+        { id: 'google/gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['deepseek-r2', 'deepseek-v4', 'qwen3-max-thinking'],
-    modelOverrides: { 'deepseek-r2': { thinkingLevels: ['low', 'high'] as const } },
+    enabledModelIds: ['openai/gpt-5.6-luna', 'deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
+    modelOverrides: { 'openai/gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
   },
 ];
 
@@ -341,13 +341,16 @@ function createBridge(input: {
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
     async fetchModels(identity) {
-      return {
-        models: [
-          { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
-          { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
-        ],
-        source: 'fetched',
-      };
+      const current = connections.find((connection) => connection.connectionId === identity.connectionId);
+      if (!current) throw new Error('Connection not found');
+      const models = current.slug === 'relay-house'
+        ? [...(current.models ?? []).filter((model) => model.id !== 'z-ai/glm-5.3'), { id: 'z-ai/glm-5.3' }]
+        : [...(current.models ?? [])];
+      const updated = { ...current, models, modelSource: 'fetched' as const, updatedAt: NOW };
+      connections = connections.map((connection) => connection.connectionId === identity.connectionId
+        ? { ...updated, catalogEntries: resolveConnectionModelCatalog(updated) }
+        : connection);
+      return { models, source: 'fetched', fetchedAt: NOW };
     },
     async hasSecret() {
       return true;
@@ -874,11 +877,32 @@ export const ModelCapabilities: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*deepseek-r2/i });
+    const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*gpt-5.6-luna/i });
     configure.click();
-    await waitFor(() => expect(canvasElement.querySelector('.providerCapabilityFields')).not.toBeNull());
+    await waitFor(() => expect(canvasElement.querySelector('.settingsExpandableEditor .astryx-form-layout')).not.toBeNull());
     const pane = canvasElement.querySelector('.settingsMainPane');
     if (pane) pane.scrollTop = 0;
+  },
+};
+
+// Settings → Models → relay → refresh the remote catalog, then configure a disabled discovery.
+export const RefreshModelCatalog: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const refresh = await canvas.findByRole('button', { name: /^(?:更新模型目录|更新模型目錄|Update model catalog)$/i });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      refresh.click();
+      await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*z-ai\/glm-5\.3$/i });
+      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
+      await waitFor(() => expect(refresh).not.toBeDisabled());
+    }
+    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(3);
   },
 };
 

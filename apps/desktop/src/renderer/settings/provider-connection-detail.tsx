@@ -22,6 +22,7 @@ import {
   Badge,
   Banner,
   HStack,
+  Icon,
   Link,
   Switch,
   Text,
@@ -614,9 +615,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   options object: handing it the click event would pass a
                   MouseEvent as `opts`. */}
               {supportsRemoteDiscovery && (
-                <Button variant="secondary" size="sm" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
+                <Button variant="ghost" size="sm" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
               )}
-              <Button variant="secondary" size="sm" isDisabled={allActionsBusy} onClick={() => openRow('add-model')} label={copy.addModel} />
+              <Button variant="primary" size="sm" isDisabled={allActionsBusy} onClick={() => openRow('add-model')} label={copy.addModel} />
             </HStack>
           )}
         >
@@ -656,17 +657,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             const numericInputs = typeof editingRow === 'object' && editingRow?.model === id ? editingRow.numericInputs : undefined;
             const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
             const declared: ModelOverride | undefined = modelParameters[id];
-            // One supporting line, the facts separated by dots: the id when it
-            // differs from the name, then what the model can do. Plain text,
-            // not a token per fact — three pills under a name and a badge read
-            // as clutter, and none of these is a state to scan for.
-            const factParts = [
-              label !== id ? id : null,
-              entry?.contextWindow !== undefined ? copy.contextToken(formatTokenCount(entry.contextWindow)) : null,
-              entry?.supportsVision ? copy.visionToken : null,
-              entry !== undefined && entry.thinkingLevels.length > 0 ? copy.thinkingToken : null,
-            ].filter((part): part is string => part !== null);
-            const facts = factParts.length > 0 ? factParts.join(' · ') : undefined;
             const rowLabel = entry?.isDefault ? (
               <HStack gap={2} vAlign="center">
                 <span>{label}</span>
@@ -677,7 +667,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <SettingsExpandableRow
                 key={id}
                 label={rowLabel}
-                value={facts}
+                value={undefined}
+                actionIcon={<Icon icon="wrench" size="sm" />}
                 actionLabel={copy.declareCapabilities}
                 actionAriaLabel={copy.declareCapabilitiesAria(label)}
                 afterAction={modelEnableSwitch(id, label)}
@@ -709,7 +700,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   contextWindowInputInvalid={contextWindowInputInvalid}
                   disabled={allActionsBusy}
                   showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
-                  reportedContextWindow={connection.models?.find((model) => model.id === id)?.contextWindow}
                   defaultVision={connection.catalogEntries.find((model) => model.id === id)?.defaultSupportsVision}
                   onContextWindowInput={(input) => changeContextWindow(id, input)}
                 />
@@ -817,12 +807,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       </SettingsSection>
     </VStack>
   );
-}
-
-/** 128000 → 128k, 1048576 → 1M: the token count as a model page prints it. */
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
-  return `${Math.round(value / 1000)}k`;
 }
 
 function OAuthReloginNotice(props: {

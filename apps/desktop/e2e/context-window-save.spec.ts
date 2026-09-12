@@ -26,21 +26,21 @@ const MODEL_ID = 'custom-reasoner';
 test('one save persists integer and abbreviated context windows while focused', async ({
   requestHeaderRowWindow: page,
 }, testInfo) => {
-  const tokenField = (label: string) => page.getByLabel(label).and(page.locator('input'));
+  const tokenField = (label: string) => page.getByRole('textbox', { name: label, exact: true });
   await page.locator('[data-connection-slug="no-models"] button').first().click();
   await page.getByRole('button', { name: copy.addModel }).click();
   await page.getByRole('textbox', { name: copy.addModelIdField }).fill(MODEL_ID);
-  await tokenField(`${copy.contextWindow} — ${MODEL_ID}`).fill('128000');
+  await tokenField(copy.contextWindow).fill('128000');
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
   await expect(
     page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }),
   ).toBeVisible();
   await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
 
-  const contextWindow = tokenField(`${copy.contextWindow} — ${MODEL_ID}`);
+  const contextWindow = tokenField(copy.contextWindow);
   await contextWindow.fill('258000');
-  await tokenField(`${copy.compactionThreshold} — ${MODEL_ID}`).fill('200K');
-  await tokenField(`${copy.maxOutputTokens} — ${MODEL_ID}`).fill('8K');
+  await tokenField(copy.compactionThreshold).fill('200K');
+  await tokenField(copy.maxOutputTokens).fill('8K');
   const save = page.getByRole('button', { name: copy.save, exact: true });
   // Keep the field focused and exercise the physical gesture: Save is below
   // the scroll viewport, so scroll it into view without letting Playwright's
@@ -72,12 +72,12 @@ test('one save persists integer and abbreviated context windows while focused', 
   for (const [input, message] of [
     ['1MB', copy.contextWindowInputInvalid],
   ] as const) {
-    await tokenField(`${copy.contextWindow} — ${suffixModel}`).fill(input);
+    await tokenField(copy.contextWindow).fill(input);
     await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
     await expect(page.getByRole('dialog').getByText(message, { exact: true })).toBeVisible();
     await expect(page.getByRole('textbox', { name: copy.addModelIdField })).toHaveValue(suffixModel);
   }
-  await tokenField(`${copy.contextWindow} — ${suffixModel}`).fill('1M');
+  await tokenField(copy.contextWindow).fill('1M');
   await page.getByRole('dialog').screenshot({ path: testInfo.outputPath('context-window-units-add.png') });
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
   await expect(page.getByRole('button', { name: copy.declareCapabilitiesAria(suffixModel) })).toBeVisible();
@@ -90,7 +90,7 @@ test('one save persists integer and abbreviated context windows while focused', 
 
   const edit = page.getByRole('button', { name: copy.declareCapabilitiesAria(suffixModel) });
   await edit.click();
-  const suffixWindow = tokenField(`${copy.contextWindow} — ${suffixModel}`);
+  const suffixWindow = tokenField(copy.contextWindow);
   await suffixWindow.fill(' 1.5m ');
   await expect(suffixWindow).toBeFocused();
   await page.screenshot({ path: testInfo.outputPath('context-window-units-edit.png') });

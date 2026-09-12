@@ -29,16 +29,16 @@ test('adding and configuring a disabled model preserves its parameters and selec
   await page.locator('[data-connection-slug="no-models"] button').first().click();
   await page.getByRole('button', { name: copy.addModel }).click();
   await page.getByRole('textbox', { name: copy.addModelIdField }).fill(MODEL_ID);
-  await page.getByRole('textbox', { name: `${copy.contextWindow} — ${MODEL_ID}` }).fill('128K');
-  const vision = page.getByRole('combobox', { name: `${copy.visionInput} — ${MODEL_ID}` });
+  await page.getByRole('textbox', { name: copy.contextWindow }).fill('128K');
+  const vision = page.getByRole('combobox', { name: copy.visionInput });
   await vision.click();
   await page
     .getByRole('listbox')
     .getByRole('option', { name: copy.visionEnabledOption })
     .click();
-  await page.getByRole('button', { name: `${copy.thinkingEffort} — ${MODEL_ID}` }).click();
+  await page.getByRole('button', { name: copy.thinkingEffort }).click();
   await page.getByRole('menuitemcheckbox', { name: `${MODEL_ID} low` }).click();
-  await page.getByRole('button', { name: `${copy.thinkingEffort} — ${MODEL_ID}` }).press('Escape');
+  await page.getByRole('button', { name: copy.thinkingEffort }).press('Escape');
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
 
   await expect

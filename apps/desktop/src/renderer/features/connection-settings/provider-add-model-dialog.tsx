@@ -22,7 +22,6 @@ import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connectio
 import { supportsRelayFastServiceTier, type ModelOverride } from '@maka/core/model-thinking';
 import { CapabilityEditor } from './provider-capability-editor';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
-import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, HStack, TextInput, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
@@ -43,8 +42,12 @@ export function AddModelDialog(props: {
   const [profile, setProfile] = useState<ModelOverride>({});
   const [contextWindowInput, setContextWindowInput] = useState('');
   const contextWindow = parseContextWindowInput(contextWindowInput);
-  const [numericInputs, setNumericInputs] = useState<Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>>>({});
-  const numericInvalid = Object.values(numericInputs).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
+  const [numericInputs, setNumericInputs] = useState<
+    Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>>
+  >({});
+  const numericInvalid = Object.values(numericInputs).some(
+    (input) => input.trim() !== '' && parseContextWindowInput(input) === null,
+  );
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isSaving, setSaving] = useState(false);
 
@@ -54,8 +57,10 @@ export function AddModelDialog(props: {
     : props.existingModelIds.includes(trimmedId)
       ? copy.addModelIdDuplicate
       : null;
-  const contextWindowError = contextWindowInput.trim() !== '' && contextWindow === null
-    ? copy.contextWindowInputInvalid : null;
+  const contextWindowError =
+    contextWindowInput.trim() !== '' && contextWindow === null
+      ? copy.contextWindowInputInvalid
+      : null;
 
   function close() {
     setId('');
@@ -77,10 +82,16 @@ export function AddModelDialog(props: {
     setSaving(true);
     try {
       const { serviceTier, ...parameters } = profile;
-      if (await props.onSubmit(trimmedId, {
-        ...parameters, ...(contextWindow === null ? {} : { contextWindow }),
-        ...(supportsRelayFastServiceTier(props.providerType, trimmedId) && serviceTier ? { serviceTier } : {}),
-      })) close();
+      if (
+        await props.onSubmit(trimmedId, {
+          ...parameters,
+          ...(contextWindow === null ? {} : { contextWindow }),
+          ...(supportsRelayFastServiceTier(props.providerType, trimmedId) && serviceTier
+            ? { serviceTier }
+            : {}),
+        })
+      )
+        close();
     } finally {
       setSaving(false);
     }
@@ -95,7 +106,7 @@ export function AddModelDialog(props: {
         if (!open && !isSaving) close();
       }}
       purpose="form"
-      width={640}
+      width={560}
     >
       <Layout
         header={
@@ -109,11 +120,27 @@ export function AddModelDialog(props: {
         content={
           <LayoutContent>
             <form id="maka-add-model-form" onSubmit={(event) => void submit(event)}>
-              <FormLayout>
-                {/* The exact id, kept verbatim through selection and inference
-                    — `deepseek-v4-pro-beta` is a different model from
-                    `deepseek-v4-pro`, and only the user knows which one their
-                    plan actually serves. */}
+              <CapabilityEditor
+                copy={copy}
+                modelId={trimmedId}
+                isRelay={isRelayProviderType(props.providerType)}
+                declared={profile}
+                onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
+                contextWindowInput={contextWindowInput}
+                contextWindowInputInvalid={submitAttempted && contextWindowError !== null}
+                contextWindowError={contextWindowError ?? undefined}
+                numericInputs={numericInputs}
+                onNumericInput={(field, input) => {
+                  setNumericInputs((current) => ({ ...current, [field]: input }));
+                  const value = parseContextWindowInput(input);
+                  if (value !== null || input.trim() === '')
+                    setProfile((current) => ({ ...current, [field]: value ?? undefined }));
+                }}
+                disabled={isSaving}
+                showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
+                defaultVision={undefined}
+                onContextWindowInput={setContextWindowInput}
+              >
                 <TextInput
                   label={copy.addModelIdField}
                   description={copy.addModelIdFieldHelp}
@@ -127,28 +154,7 @@ export function AddModelDialog(props: {
                     submitAttempted && idError ? { type: 'error', message: idError } : undefined
                   }
                 />
-                <CapabilityEditor
-                  copy={copy}
-                  modelId={trimmedId}
-                  isRelay={isRelayProviderType(props.providerType)}
-                  declared={profile}
-                  onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
-                  contextWindowInput={contextWindowInput}
-                  contextWindowInputInvalid={submitAttempted && contextWindowError !== null}
-                  contextWindowError={contextWindowError ?? undefined}
-                  numericInputs={numericInputs}
-                  onNumericInput={(field, input) => {
-                    setNumericInputs((current) => ({ ...current, [field]: input }));
-                    const value = parseContextWindowInput(input);
-                    if (value !== null || input.trim() === '') setProfile((current) => ({ ...current, [field]: value ?? undefined }));
-                  }}
-                  disabled={isSaving}
-                  showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
-                  reportedContextWindow={undefined}
-                  defaultVision={undefined}
-                  onContextWindowInput={setContextWindowInput}
-                />
-              </FormLayout>
+              </CapabilityEditor>
             </form>
           </LayoutContent>
         }
