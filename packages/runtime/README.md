@@ -40,7 +40,7 @@ The main integration points are:
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
-Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../../packages/runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
+Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
 
 ## Extension rules
 
