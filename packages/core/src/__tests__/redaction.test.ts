@@ -363,6 +363,7 @@ describe('generalizedErrorMessageForLocale', () => {
     const timeout = new Error('request timeout after 30s');
     assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'en'), 'Request timed out');
     assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'zh-CN'), '请求超时');
+    assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'ko'), '요청 시간 초과');
     assert.equal(
       generalizedErrorMessageForLocale(new Error('unclassified'), '操作失败', 'zh-CN'),
       '操作失败',
@@ -384,6 +385,10 @@ describe('generalizedErrorMessageForLocale', () => {
       assert.equal(
         generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'zh-TW'),
         '網路錯誤',
+      );
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'ko'),
+        '네트워크 오류',
       );
     }
   });
@@ -480,6 +485,60 @@ describe('generalizedErrorMessageForLocale zh-CN', () => {
   });
 });
 
+describe('generalizedErrorMessageForLocale ko', () => {
+  test('maps provider failures to Korean categories without leaking secrets', () => {
+    for (const [raw, expected] of [
+      ['Request timeout after 30s', '요청 시간 초과'],
+      ['HTTP 429 Too Many Requests', '모델 속도 제한 초과'],
+      ['OpenAI rate limit reached for model gpt-4', '모델 속도 제한 초과'],
+      ['rate exceeded', '모델 속도 제한 초과'],
+      ['401 Unauthorized', '인증 실패'],
+      ['HTTP 403 forbidden', '인증 실패'],
+      ['Authentication failed', '인증 실패'],
+      ['HTTP 500 Internal Server Error', '모델 제공자 오류'],
+      ['Provider returned 503', '모델 제공자 오류'],
+      ['Bad gateway 502', '모델 제공자 오류'],
+      ['fetch failed', '네트워크 오류'],
+      ['ECONNREFUSED', '네트워크 오류'],
+      ['ENOTFOUND api.example.test', '네트워크 오류'],
+      ['network unreachable', '네트워크 오류'],
+      ['something weird happened', '작업에 실패했습니다'],
+      ['401 Authorization: Bearer sk-live-secret-token-value', '인증 실패'],
+    ]) {
+      const message = generalizedErrorMessageForLocale(new Error(raw), '작업에 실패했습니다', 'ko');
+      assert.equal(message, expected);
+      assert.match(message, /[가-힣]/);
+      assert.doesNotMatch(message, /sk-live-secret-token-value/);
+    }
+    assert.equal(
+      generalizedErrorMessageForLocale('non-Error string input', '작업에 실패했습니다', 'ko'),
+      '작업에 실패했습니다',
+    );
+  });
+
+  test('uses a caller-supplied Korean fallback for unknown errors', () => {
+    assert.equal(
+      generalizedErrorMessageForLocale(
+        new Error('something weird happened'),
+        '세션은 생성되었지만 전송에 실패했습니다. 다시 시도해 주세요.',
+        'ko',
+      ),
+      '세션은 생성되었지만 전송에 실패했습니다. 다시 시도해 주세요.',
+    );
+  });
+
+  test('does not mistake runtime authority errors for authentication failures', () => {
+    assert.equal(
+      generalizedErrorMessageForLocale(
+        new Error('Conversation copy contains durable runtime authority facts'),
+        '이 컨텍스트로는 새 세션을 만들 수 없습니다.',
+        'ko',
+      ),
+      '이 컨텍스트로는 새 세션을 만들 수 없습니다.',
+    );
+  });
+});
+
 describe('localized generalized error messages', () => {
   test('routes one shared classification through each locale catalog', () => {
     const error = new Error('HTTP 503 from provider');
@@ -489,6 +548,7 @@ describe('localized generalized error messages', () => {
     );
     assert.equal(generalizedErrorMessageForLocale(error, '後備', 'zh-CN'), '模型服务返回错误');
     assert.equal(generalizedErrorMessageForLocale(error, '備援', 'zh-TW'), '模型服務傳回錯誤');
+    assert.equal(generalizedErrorMessageForLocale(error, '대체 문구', 'ko'), '모델 제공자 오류');
   });
 
   test('uses Taiwan terminology for Traditional Chinese categories', () => {
@@ -508,6 +568,10 @@ describe('localized generalized error messages', () => {
     const error = new Error('something weird happened');
     assert.equal(generalizedErrorMessageForLocale(error, '简中后备', 'zh-CN'), '简中后备');
     assert.equal(generalizedErrorMessageForLocale(error, '繁中備援', 'zh-TW'), '繁中備援');
+    assert.equal(
+      generalizedErrorMessageForLocale(error, '한국어 대체 문구', 'ko'),
+      '한국어 대체 문구',
+    );
     assert.equal(
       generalizedErrorMessageForLocale(error, 'English fallback', 'en'),
       'English fallback',
