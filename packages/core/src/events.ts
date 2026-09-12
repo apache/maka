@@ -167,6 +167,30 @@ const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
   ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
+
+/**
+ * A Turn message is meaningful when at least one of its four content carriers
+ * is present: inline text, an inline excerpt, an attachment reference, or a
+ * directory reference. Admission, compaction estimates, replay visibility,
+ * and recap projection must share this one predicate (#4804) — restating it
+ * per layer is how a quote-only message ends up admitted by one boundary and
+ * silently dropped by the next.
+ *
+ * The inline text is deliberately NOT trimmed. Admission asks "is this frame
+ * legal"; replay visibility asks "will the model see this already-persisted
+ * event", and that answer must stay compatible with everything admission has
+ * ever accepted — trimming here retroactively re-reads stored history as
+ * invisible and blocks replay on it (#4815 review). Surfaces that want the
+ * trimmed judgement (the desktop guard) trim at their own boundary.
+ */
+export function hasMeaningfulMessageContent(content: MessageContent): boolean {
+  return (
+    content.text.length > 0 ||
+    (content.quotes?.length ?? 0) > 0 ||
+    (content.attachments?.length ?? 0) > 0 ||
+    (content.directoryReferences?.length ?? 0) > 0
+  );
+}
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],

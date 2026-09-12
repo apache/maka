@@ -245,6 +245,7 @@ export interface SideChatSessionPort {
     placement: MessageQueuePlacement,
     text: string,
     admissionId: string,
+    content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
   ): Promise<SideChatFollowUpResult>;
   queryMessageExecutions(
     sessionId: string,

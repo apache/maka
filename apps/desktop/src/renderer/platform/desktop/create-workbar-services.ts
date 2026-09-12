@@ -62,6 +62,7 @@ export function createDesktopWorkbarServices(
     placement,
     text,
     admissionId,
+    content,
   ) => {
     const result = await bridge.sessions.submitMessage(
       sessionId,
@@ -69,6 +70,11 @@ export function createDesktopWorkbarServices(
       {
         messageId: admissionId,
         text,
+        // A structured-only follow-up (a staged quote or a submitted
+        // attachment with no text) rides the one Message admission channel
+        // with its structured content (#4804).
+        ...(content?.quotes ? { quotes: content.quotes } : {}),
+        ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
       },
       { waitForHostAdmission: true },
     );

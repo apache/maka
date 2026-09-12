@@ -2152,6 +2152,11 @@ function AppShellContent({
 
   const canStageComposerContext =
     activeId !== undefined || taskEntry.selectors.target !== undefined;
+  // #4804: attachment-only sends are opt-in per host surface, and the Desktop
+  // host now admits them. The pickers share the same edit-mode condition.
+  const contextPickEnabled =
+    canStageComposerContext &&
+    !(revisionDraft && activeId === revisionDraft.draftSessionId);
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
   const activeTranscriptReadingAnchor = activeId
@@ -2518,31 +2523,21 @@ function AppShellContent({
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
-                          title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
-                          detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
-                          cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
+                          title: desktopConversationCopy.actions.revisionBannerTitle,
+                          detail: desktopConversationCopy.actions.revisionBannerDetail,
+                          cancelLabel: desktopConversationCopy.actions.revisionCancelLabel,
                           onCancel: () => { void cancelRevisionDraft(); },
                         }
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
-                  onRemoveAttachment={removeAttachment}
-                  pendingQuotes={pendingQuotes}
+                  allowAttachmentOnlySend={canStageComposerContext}
+                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
                   onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
-                  onPickAttachments={
-                    !canStageComposerContext ||
-                      (revisionDraft && activeId === revisionDraft.draftSessionId)
-                      ? undefined
-                      : pickAttachments
-                  }
-                  onAttachFilePaths={
-                    !canStageComposerContext ||
-                      (revisionDraft && activeId === revisionDraft.draftSessionId)
-                      ? undefined
-                      : attachFilePaths
-                  }
+                  onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
+                  onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
                   modelLabel={activeModelLabel ?? newChatModelLabel}
                   activeSession={activeSessionForView}
                   activeModelConnectionId={activeSessionForModelControls?.llmConnectionId}

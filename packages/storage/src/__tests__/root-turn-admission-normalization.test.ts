@@ -101,3 +101,39 @@ test('root admission preserves and validates each source Skill outcome', () => {
     ]),
   );
 });
+
+test('admits a quote-only root Turn input (#4804)', () => {
+  const content = {
+    text: '',
+    quotes: [{ text: 'quoted passage worth answering' }],
+  } as const;
+  const normalized = normalizeRootTurnAdmissionPayload(content, []);
+
+  assert.ok(normalized.normalizedInput);
+  assert.equal(normalized.normalizedInput?.quotes?.[0]?.text, 'quoted passage worth answering');
+});
+
+test('admits an attachment-only root Turn input (#4804)', () => {
+  const content = {
+    text: '',
+    attachments: [
+      {
+        kind: 'image' as const,
+        name: 'diagram.png',
+        mimeType: 'image/png',
+        bytes: 1024,
+        ref: { kind: 'workspace_file', relativePath: 'blobs/diagram.png' },
+      },
+    ],
+  } as const;
+  const normalized = normalizeRootTurnAdmissionPayload(content, []);
+
+  assert.equal(normalized.normalizedInput?.attachments?.[0]?.name, 'diagram.png');
+});
+
+test('still rejects a truly contentless root Turn input', () => {
+  assert.throws(
+    () => normalizeRootTurnAdmissionPayload({ text: '' }, []),
+    /Invalid root turn normalized input/u,
+  );
+});

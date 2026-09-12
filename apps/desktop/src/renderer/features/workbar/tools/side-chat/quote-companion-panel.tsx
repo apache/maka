@@ -306,7 +306,33 @@ export function QuoteCompanionPanel(props: {
                   followUpMode: metadata?.followUpMode,
                   compact: companion.compact,
                   queue: companion.queue,
-                  steer: companion.steer,
+                  steer: async (text) => {
+                    // Same staged-attachment validation as `send`: an unusable
+                    // attachment rejects here with the localized toast instead
+                    // of dying later on the steer path.
+                    try {
+                      preflightAttachmentItems(pendingAttachments);
+                    } catch (error) {
+                      toast.error(
+                        copy.errors.sendRejected,
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
+                      );
+                      return false;
+                    }
+                    // Submitted attachments retire on the confirmed-admission
+                    // boundary, not on the hook's optimistic return: an unknown
+                    // outcome keeps them staged for retry (#4804).
+                    const submitted = pendingAttachments;
+                    const submittedItems =
+                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
+                    return companion.steer(
+                      text,
+                      submittedItems,
+                      submittedItems
+                        ? () => clearSubmittedAttachments(submitted)
+                        : undefined,
+                    );
+                  },
                   send: async () => {
                     try {
                       preflightAttachmentItems(pendingAttachments);
@@ -317,16 +343,20 @@ export function QuoteCompanionPanel(props: {
                       );
                       return false;
                     }
+                    // Same admission-boundary retirement as `steer` above.
+                    const submitted = pendingAttachments;
+                    const submittedItems =
+                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     const accepted = await companion.send(
                       text,
-                      pendingAttachments.length > 0
-                        ? toComposerIngestItems(pendingAttachments)
+                      submittedItems,
+                      submittedItems
+                        ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
                     if (accepted) {
                       props.onPromptAccepted?.(props.panelId, text);
                     }
-                    if (accepted) clearSubmittedAttachments(pendingAttachments);
                     return accepted;
                   },
                 })
@@ -346,6 +376,8 @@ export function QuoteCompanionPanel(props: {
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
+              // The side chat submits staged context without a prompt (#4804).
+              allowAttachmentOnlySend
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
               mentionSkills={mentions?.mentionSkills}

@@ -43,6 +43,7 @@ import {
   WorkbarServicesProvider,
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
+  type WorkbarIngestInput,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
 
@@ -60,6 +61,11 @@ const originalGlobals = {
 let mountedRoot: Root | undefined;
 const SOURCE_SESSION = session('source-session');
 type SideChatStopTarget = Parameters<WorkbarServices['sideChat']['stop']>[1];
+type SteerFn = (
+  text: string,
+  attachmentItems?: WorkbarIngestInput[],
+  onAdmitted?: () => void,
+) => Promise<boolean>;
 type QueueUpdate = Extract<SessionEvent, { type: 'queue_update' }>;
 type QueueEntry = NonNullable<QueueUpdate['steeringEntries']>[number];
 
@@ -127,7 +133,7 @@ async function renderProbe(
     onSend?: (send: (text: string) => Promise<boolean>) => void;
     onProjection?: (companion: ReturnType<typeof useQuoteCompanion>) => void;
     onQueue?: (queue: (text: string) => Promise<boolean>) => void;
-    onSteer?: (steer: (text: string) => Promise<boolean>) => void;
+    onSteer?: (steer: SteerFn) => void;
     onStop?: (stop: () => Promise<void>) => void;
     onDeleteQueuedEntry?: (deleteEntry: (entryId: string) => Promise<void>) => void;
     onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
@@ -198,7 +204,7 @@ async function renderOwnershipProbe(
   let send!: (text: string) => Promise<boolean>;
   let projection!: ReturnType<typeof useQuoteCompanion>;
   let queue!: (text: string) => Promise<boolean>;
-  let steer!: (text: string) => Promise<boolean>;
+  let steer!: SteerFn;
   let stop!: () => Promise<void>;
   let deleteQueuedEntry!: (entryId: string) => Promise<void>;
   let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
@@ -238,7 +244,8 @@ async function renderOwnershipProbe(
     ...rendered,
     send: (text: string) => send(text),
     queue: (text: string) => queue(text),
-    steer: (text: string) => steer(text),
+    steer: (text: string, attachmentItems?: WorkbarIngestInput[], onAdmitted?: () => void) =>
+      steer(text, attachmentItems, onAdmitted),
     stop: () => stop(),
     deleteQueuedEntry: (entryId: string) => deleteQueuedEntry(entryId),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
@@ -1988,6 +1995,66 @@ test('recovers the Host-edited Side Conversation steer from the queue projection
   assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), '');
 });
 
+test('consumes a steered attachment when the started turn binds the admission', async () => {
+  const pendingSteer = deferred<{ kind: 'started'; turnId: string }>();
+  let admissionId: string | undefined;
+  let admitted = 0;
+  let steerPayload: { attachmentItems?: readonly WorkbarIngestInput[] } | undefined;
+  const attachmentItem: WorkbarIngestInput = { approvalId: 'approval-1', name: 'kept.png' };
+  const { container, emit, send, steer, hostTurn } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, requestedAdmissionId, payload) => {
+      assert.equal(placement, 'current_turn');
+      admissionId = requestedAdmissionId;
+      steerPayload = payload;
+      return pendingSteer.promise;
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
+    await Promise.resolve();
+  });
+  let steerResult!: Promise<boolean>;
+  await act(async () => {
+    steerResult = steer('steer with the kept image', [attachmentItem], () => {
+      admitted += 1;
+    });
+    await Promise.resolve();
+  });
+  await waitUntil(() => admissionId !== undefined);
+
+  await act(async () => {
+    pendingSteer.resolve({ kind: 'started', turnId: 'steer-started-turn' });
+    assert.equal(await steerResult, true);
+    await Promise.resolve();
+  });
+
+  // The attachments travel with the steering Message...
+  assert.deepEqual(steerPayload, { attachmentItems: [attachmentItem] });
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-live-turn-id'),
+    'steer-started-turn',
+  );
+  // ...and binding the started turn IS the admission boundary: the consumer
+  // fires exactly once here, not on the later admission echo.
+  assert.equal(admitted, 1);
+
+  await act(async () => {
+    emit(
+      messageAdmittedEvent(
+        'late-admission-echo',
+        'steer-started-turn',
+        1,
+        admissionId as string,
+      ),
+    );
+    await Promise.resolve();
+  });
+  assert.equal(admitted, 1, 'the admission echo must not consume a second time');
+});
+
 test('retracts a queued Side Conversation message without stopping the active turn', async () => {
   let messageId: string | undefined;
   const retracted: string[] = [];
@@ -3252,7 +3319,7 @@ function QuoteCompanionOwnershipProbe(props: {
   onSend: (send: (text: string) => Promise<boolean>) => void;
   onProjection?: (companion: ReturnType<typeof useQuoteCompanion>) => void;
   onQueue?: (queue: (text: string) => Promise<boolean>) => void;
-  onSteer?: (steer: (text: string) => Promise<boolean>) => void;
+  onSteer?: (steer: SteerFn) => void;
   onStop?: (stop: () => Promise<void>) => void;
   onDeleteQueuedEntry?: (deleteEntry: (entryId: string) => Promise<void>) => void;
   onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
@@ -3370,3 +3437,173 @@ async function awaitCompanion(container: Element, id = 'side-conversation'): Pro
 async function awaitProcessing(container: Element): Promise<void> {
   await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'true');
 }
+
+test('a structured-only send (empty text with a staged quote) reaches the fork admission', async () => {
+  const sendCommands: Array<Parameters<WorkbarServices['sideChat']['send']>[1]> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      listTurns: async () => [settledTurn('done-turn')],
+      branchFromTurn: async () => ({ ok: true as const, session: session('side-conversation') }),
+      send: async (_sessionId, command) => {
+        sendCommands.push(command);
+        return { ok: true as const, turnId: 'quote-only-turn' };
+      },
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'selected excerpt' } }],
+    },
+  );
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+
+  // The Composer enables Send once a quote is staged; an empty draft must ride
+  // the same admission as a text send instead of dying on the `!trimmed` guard.
+  await act(async () => {
+    assert.equal(await rendered.send(''), true);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+  assert.equal(sendCommands.length, 1);
+  assert.equal(sendCommands[0].text, '');
+  assert.deepEqual(
+    sendCommands[0].quotes?.map((quote) => quote.text),
+    ['selected excerpt'],
+  );
+  assert.equal(probe.getAttribute('data-error'), '');
+});
+
+test('a structured-only steer (empty text with a staged quote) rides the steering contract', async () => {
+  const followUpContents: Array<Parameters<WorkbarServices['sideChat']['submitFollowUp']>[4]> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      submitFollowUp: async (_sessionId, placement, _text, _admissionId, content) => {
+        assert.equal(placement, 'current_turn');
+        followUpContents.push(content);
+        return { kind: 'queued' as const };
+      },
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'streaming excerpt' } }],
+    },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  // Streaming steers take the same structured-content contract: the quote alone
+  // is a valid steering Message, and the `!trimmed` guard must not drop it.
+  await act(async () => {
+    assert.equal(await rendered.steer(''), true);
+    await Promise.resolve();
+  });
+  assert.equal(followUpContents.length, 1);
+  assert.deepEqual(
+    followUpContents[0]?.quotes?.map((quote) => quote.text),
+    ['streaming excerpt'],
+  );
+});
+
+test('a steer with staged attachments consumes them only on confirmed admission', async () => {
+  const admissionIds: string[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      submitFollowUp: async (_sessionId, placement, _text, admissionId) => {
+        assert.equal(placement, 'current_turn');
+        const id = admissionId ?? '';
+        admissionIds.push(id);
+        // The reconnect/failure path answers without an admission receipt.
+        return { kind: 'outcome_unknown' as const };
+      },
+    },
+    { pendingQuotes: [] },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  const consumed: string[] = [];
+  await act(async () => {
+    assert.equal(
+      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+        consumed.push('admitted');
+      }),
+      true,
+    );
+    await Promise.resolve();
+  });
+  // The optimistic accept must not retire the attachments: with no admission
+  // receipt the Message may still be admitted or retracted by the Host.
+  assert.deepEqual(consumed, []);
+
+  // The late admission arrives through the fork's event stream; only now does
+  // the confirmed-admission boundary fire.
+  await act(async () => {
+    rendered.emit(messageAdmittedEvent('steer-late-admit', 'steered-turn', 1, admissionIds[0]));
+  });
+  assert.deepEqual(consumed, ['admitted']);
+});
+
+test('an unknown steer outcome that later retracts keeps the staged attachments', async () => {
+  const admissionIds: string[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      submitFollowUp: async (_sessionId, placement, _text, admissionId) => {
+        assert.equal(placement, 'current_turn');
+        const id = admissionId ?? '';
+        admissionIds.push(id);
+        return { kind: 'outcome_unknown' as const };
+      },
+    },
+    { pendingQuotes: [] },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  const consumed: string[] = [];
+  await act(async () => {
+    assert.equal(
+      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+        consumed.push('admitted');
+      }),
+      true,
+    );
+    await Promise.resolve();
+  });
+  assert.deepEqual(consumed, []);
+
+  // A retraction releases the Message without consuming anything staged: the
+  // user keeps the attachments and may retry the steer.
+  await act(async () => {
+    rendered.emit({
+      type: 'message_admission',
+      id: 'steer-late-retract',
+      turnId: 'old-turn',
+      ts: 2,
+      messageId: admissionIds[0],
+      outcome: 'retracted',
+    });
+  });
+  assert.deepEqual(consumed, []);
+});

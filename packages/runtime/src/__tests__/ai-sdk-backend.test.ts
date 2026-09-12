@@ -2274,6 +2274,46 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('a persisted quote-only user event replays its excerpt into the provider prompt (#4804)', async () => {
+    // The headline behaviour of #4804 measured at the production seam: a
+    // stored user event whose text is empty but whose quotes carry the turn
+    // must reach the provider prompt as the excerpt itself, not be skipped
+    // as invisible or summarized as a count.
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+    } as never);
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'and the current ask',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-quote',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: '',
+              quotes: [{ text: 'the deploy failed at step three' }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const historical = prompt[0]?.content as Array<{ type: string; text?: string }>;
+    const joined = JSON.stringify(historical);
+    assert.match(joined, /the deploy failed at step three/, 'the excerpt reaches the prompt');
+    assert.match(joined, /quoted_excerpt/, 'the excerpt renders in its canonical envelope');
+  });
+
   test('current-turn image attachment keeps its Read reference unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
@@ -15251,6 +15291,69 @@ describe('AiSdkBackend steering durability and identity', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
     ]);
+  });
+
+  test('a prior-turn steering event replays its image attachments as image parts', async () => {
+    // The original steered request materialized its images natively through
+    // appendImageParts; a replay that kept only the envelope text would hand
+    // a recovery turn attachment references without the pixels the first
+    // request received. The steering provider identity must survive too.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 8, 9]);
+    const model = textCompletionModel('done');
+    const backend = steeringBackend(model, {
+      supportsVision: true,
+      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
+    });
+    const steeredEvent = runtimeTextEvent({
+      id: 'rt-steer',
+      turnId: 'turn-prev',
+      role: 'user',
+      author: 'user',
+      text: 'steered earlier',
+    });
+    (steeredEvent.content as { steering?: true }).steering = true;
+    (steeredEvent.content as { attachments?: unknown[] }).attachments = [
+      {
+        kind: 'image',
+        name: 'chart.png',
+        mimeType: 'image/png',
+        bytes: 123,
+        ref: {
+          kind: 'session_file',
+          sessionId: 'session-1',
+          relativePath: 'attachments/chart.png',
+        },
+      },
+    ];
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [steeredEvent],
+      }),
+    );
+
+    const prompt = model.doStreamCalls[0]?.prompt ?? [];
+    const steeredReplay = prompt[0];
+    const parts = steeredReplay?.content as Array<{
+      type: string;
+      text?: string;
+      mediaType?: string;
+    }>;
+    assert.ok(
+      parts.find((part) => part.type !== 'text' && part.mediaType === 'image/png'),
+      `expected a native image part on the steering replay, got: ${JSON.stringify(parts)}`,
+    );
+    assert.match(
+      parts[0]?.text ?? '',
+      /steered earlier/,
+      'the envelope text stays the leading part',
+    );
+    assert.ok(
+      steeredReplay?.providerOptions,
+      'the steering provider identity survives the materialization',
+    );
   });
 
   test('persists provider metadata a canonical event can read back', async () => {

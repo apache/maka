@@ -567,23 +567,28 @@ export class AiSdkMessageProjection {
     item: Extract<RuntimeEventModelReplayItem, { kind: 'text' }>,
   ): Promise<ModelMessage> {
     if (item.role === 'user') {
+      // Both ordinary and steered replay materialize image attachments through
+      // the same path the original request used — a steering replay that kept
+      // only the envelope text would hand a recovery turn references without
+      // the native images the first request received.
+      const content = await this.appendImageParts(
+        budget,
+        item.content,
+        item.attachments,
+        item.steering ? `steering:${item.steering.eventId}` : `runtime-event:${item.eventId}`,
+      );
       if (item.steering) {
         // Already envelope-wrapped by the plan; carry the structured identity
         // so injection dedupe recognizes the replayed message.
         return {
           role: 'user',
-          content: item.content,
+          content,
           providerOptions: steeringProviderOptions(item.steering.eventId),
         };
       }
       return {
         role: 'user',
-        content: await this.appendImageParts(
-          budget,
-          item.content,
-          item.attachments,
-          `runtime-event:${item.eventId}`,
-        ),
+        content,
       } as ModelMessage;
     }
     return {

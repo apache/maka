@@ -53,6 +53,7 @@ import type {
 import {
   aggregateMessageContents,
   decodeMessageContent,
+  hasMeaningfulMessageContent,
   isCanonicalAttachmentRef,
   messageContentsEqual,
   type AttachmentRef,
@@ -1613,7 +1614,12 @@ function normalizeRootTurnMessageContent(
     }
     throw new Error(`Invalid ${description}`);
   }
-  if (normalized.text.length === 0 || (normalized.attachments?.length ?? 0) > maxAttachments) {
+  // Quote- or attachment-only input is meaningful (#4804): the text carrier
+  // alone no longer decides durability admission.
+  if (
+    !hasMeaningfulMessageContent(normalized) ||
+    (normalized.attachments?.length ?? 0) > maxAttachments
+  ) {
     throw new Error(`Invalid ${description}`);
   }
   for (const [index, attachment] of (normalized.attachments ?? []).entries()) {
