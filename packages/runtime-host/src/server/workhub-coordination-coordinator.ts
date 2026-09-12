@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -42,6 +42,8 @@ import {
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type {
+  WorkHubTargetSelectionRequest,
+  WorkHubCoordinationCandidatesResult,
   OperationOutcome,
   WorkHubCoordinationActResult,
   WorkHubCoordinationActFromTurnInput,
@@ -55,6 +57,8 @@ import type {
 } from './operation-dispatcher.js';
 import type {
   HostWorkHubRoutingDecisionPreparation,
+  HostWorkHubRoutingPreparation,
+  HostWorkHubTargetSelection,
   RootTurnCoordinator,
 } from './root-turn-coordinator.js';
 import type { HostWorkHubRoutingModel } from './execution-model-authority.js';
@@ -77,6 +81,7 @@ const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
 const COORDINATION_CWD_DIRECTORY = 'workhub-coordination';
 const COORDINATION_TOOL_PROFILE = 'workhub-coordination-v2' as const;
 const COORDINATION_PERMISSION_MODE = 'bypass' as const;
+
 const COORDINATION_COLLABORATION_MODE = 'agent' as const;
 const COORDINATION_ORCHESTRATION_MODE = 'default' as const;
 const COORDINATION_SUMMARY_MESSAGE_KINDS = ['user', 'assistant', 'state'] as const;
@@ -161,6 +166,12 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
 export class HostWorkHubCoordinationCoordinator {
+  // These are unadmitted drafts, not execution state. Loss/expiry asks again;
+  // admitted retries replay their durable routing decision before this cache is read.
+  readonly #targetSelections = new Map<
+    string,
+    { digest: string; request: WorkHubTargetSelectionRequest; expiresAt: number }
+  >();
   readonly handlers: WorkHubCoordinationOperationHandlerMap = {
     'workhub.coordination.resolve': () => this.#resolve(),
     'workhub.coordination.query': () => this.#query(),
@@ -723,17 +734,23 @@ export class HostWorkHubCoordinationCoordinator {
     if (!input.text.trim()) {
       return turnFailure('operation_conflict', 'WorkHub answer text is empty');
     }
+    const execution: {
+      kind: 'workhub_coordination';
+      inputDigest: `sha256:${string}`;
+      routingDecision?: WorkHubRoutingDecision;
+    } = {
+      kind: 'workhub_coordination',
+      inputDigest: digest({
+        text: input.text,
+        ...(input.attachments ? { attachments: input.attachments } : {}),
+        ...(input.selection ? { selection: input.selection } : {}),
+      }),
+    };
     const outcome = await this.#executions.startWorkHubCoordinationMessage(
       {
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         turnId: input.turnId,
-        execution: {
-          kind: 'workhub_coordination',
-          inputDigest: digest({
-            text: input.text,
-            ...(input.attachments ? { attachments: input.attachments } : {}),
-          }),
-        },
+        execution,
         archivedMessage: 'WorkHub Coordination Session is unavailable',
         // Historical v1 summaries still own their Turn identities. Reject a
         // fresh answer that would reuse one, even though new summaries are no longer written.
@@ -749,6 +766,19 @@ export class HostWorkHubCoordinationCoordinator {
               ),
             };
           }
+          if (recorded.length === 0 && input.selection) {
+            const selected = await this.#selectedRoutingDecision(input);
+            if (selected.kind === 'rejected') return selected;
+            if (selected.kind === 'target_selection')
+              return {
+                kind: 'rejected',
+                outcome: {
+                  ...turnFailure('operation_conflict', 'WorkHub target selection required'),
+                  targetSelection: selected.request,
+                },
+              };
+            execution.routingDecision = selected;
+          }
           return recorded.length > 0
             ? { kind: 'rejected', outcome: turnIdentityConflict() }
             : {
@@ -762,12 +792,28 @@ export class HostWorkHubCoordinationCoordinator {
       },
       context,
     );
+    if (!outcome.ok && outcome.targetSelection)
+      return {
+        ok: true,
+        result: { turnId: input.turnId, targetSelection: outcome.targetSelection },
+      };
     return outcome.ok ? { ok: true, result: { turnId: input.turnId } } : outcome;
   }
 
   async prepareRoutingDecision(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<WorkHubRoutingDecision> {
+  ): Promise<HostWorkHubRoutingPreparation> {
+    const contentDigest = digest(input.content);
+    const pending = this.#targetSelections.get(input.turnId);
+    if (
+      input.allowTargetSelection &&
+      pending &&
+      pending.digest === contentDigest &&
+      pending.expiresAt > Date.now()
+    )
+      return { kind: 'target_selection', request: pending.request };
+    let candidates: WorkHubCoordinationCandidatesResult | undefined;
+    let decision: WorkHubRoutingDecision;
     try {
       if (!this.#routingModel) throw new Error('WorkHub routing model is unavailable');
       const page = await this.#stores.readMessagesAfter(WORKHUB_COORDINATION_SESSION_ID, {
@@ -783,7 +829,7 @@ export class HostWorkHubCoordinationCoordinator {
             : [],
         )
         .slice(-8);
-      return await this.#routingModel.decide({
+      decision = await this.#routingModel.decide({
         turnId: input.turnId,
         header: input.header,
         userText: input.content.text,
@@ -791,6 +837,7 @@ export class HostWorkHubCoordinationCoordinator {
         resolveCandidates: async () => {
           const outcome = await this.#candidates();
           if (!outcome.ok) throw new Error(outcome.error.message);
+          candidates = outcome.result;
           const now = Date.now();
           return {
             candidateSetId: outcome.result.candidateSetId,
@@ -820,6 +867,89 @@ export class HostWorkHubCoordinationCoordinator {
       // silently become creation or bind an arbitrary existing Session.
       return { kind: 'routing', disposition: 'clarify' };
     }
+    if (
+      input.allowTargetSelection &&
+      decision.kind === 'routing' &&
+      decision.disposition === 'clarify' &&
+      candidates !== undefined
+    ) {
+      // The production model resolves candidates only for execute/continue.
+      // Intent-only clarification must be admitted so the assistant can ask.
+      return this.#requireTargetSelection(input.turnId, contentDigest, candidates);
+    }
+    return decision;
+  }
+
+  #requireTargetSelection(
+    turnId: string,
+    contentDigest: string,
+    candidates: WorkHubCoordinationCandidatesResult,
+  ): HostWorkHubTargetSelection {
+    for (const [id, entry] of this.#targetSelections)
+      if (entry.expiresAt <= Date.now()) this.#targetSelections.delete(id);
+    if (this.#targetSelections.size >= 64)
+      this.#targetSelections.delete(this.#targetSelections.keys().next().value!);
+    const request = { ...candidates, requestId: randomUUID() };
+    this.#targetSelections.set(turnId, {
+      digest: contentDigest,
+      request,
+      expiresAt: Date.now() + 10 * 60_000,
+    });
+    return { kind: 'target_selection', request };
+  }
+
+  async #selectedRoutingDecision(
+    input: WorkHubCoordinationAnswerInput,
+  ): Promise<
+    | HostWorkHubRoutingPreparation
+    | { kind: 'rejected'; outcome: Extract<OperationOutcome<'turn.start'>, { ok: false }> }
+  > {
+    const reject = (message: string) => ({
+      kind: 'rejected' as const,
+      outcome: turnFailure('operation_conflict', message),
+    });
+    const contentDigest = digest(
+      normalizeMessageContent({
+        text: input.text,
+        ...(input.attachments ? { attachments: input.attachments } : {}),
+      }),
+    );
+    const pending = this.#targetSelections.get(input.turnId);
+    const current = await this.#candidates();
+    if (!current.ok)
+      return { kind: 'rejected', outcome: operationUnavailable(current.error.message) };
+    if (
+      !pending ||
+      pending.expiresAt <= Date.now() ||
+      pending.request.requestId !== input.selection!.requestId
+    ) {
+      return this.#requireTargetSelection(input.turnId, contentDigest, current.result);
+    }
+    if (pending.digest !== contentDigest)
+      return reject('WorkHub selection belongs to a different request');
+    if (input.selection!.kind === 'create_new')
+      return { kind: 'routing', disposition: 'create_new' };
+    const choice = input.selection!;
+    if (choice.kind !== 'existing') return reject('Invalid WorkHub target selection');
+    const selected = pending.request.candidates.find(
+      (candidate) => candidate.candidateRef === choice.candidateRef,
+    );
+    if (!selected) return reject('WorkHub target is not in the offered candidates');
+    // Rebind the same Session to the fresh candidate snapshot. Never substitute
+    // another Session when the selected one was removed, archived, or moved.
+    const candidate = current.result.candidates.find(
+      (item) =>
+        item.sessionId === selected.sessionId &&
+        item.workspace.hostCwd === selected.workspace.hostCwd,
+    );
+    if (!candidate)
+      return this.#requireTargetSelection(input.turnId, contentDigest, current.result);
+    return {
+      kind: 'routing',
+      disposition: 'delegate_existing',
+      candidateSetId: current.result.candidateSetId,
+      candidateRef: candidate.candidateRef,
+    };
   }
 
   /** Reads a historical v1 summary to preserve its durable Turn identity. */
@@ -1022,12 +1152,11 @@ function operationUnavailable(message: string) {
   return { ok: false, error: { code: 'operation_unavailable', message } } as const;
 }
 
-function turnFailure(
-  code: Extract<
+function turnFailure<
+  Code extends Extract<
     OperationOutcome<'workhub.coordination.answer'>,
     { readonly ok: false }
   >['error']['code'],
-  message: string,
-): OperationOutcome<'workhub.coordination.answer'> {
+>(code: Code, message: string): { ok: false; error: { code: Code; message: string } } {
   return { ok: false, error: { code, message } };
 }

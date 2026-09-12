@@ -67,6 +67,9 @@ export interface WorkHubServices {
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
+  listActiveInteractions(sessionId: string): Promise<import('@maka/core/events').ActiveInteractionRequestEvent[]>;
+  subscribeActiveInteractions(handler: (event: { sessionId: string; interactions: import('@maka/core/events').ActiveInteractionRequestEvent[] }) => void): () => void;
+  respondToUserQuestion(sessionId: string, response: import('@maka/core/user-question').UserQuestionResponse): Promise<void>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
   enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;

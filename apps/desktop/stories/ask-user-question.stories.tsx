@@ -19,6 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
+import { expect, userEvent, within, waitFor } from 'storybook/test';
 import { UserQuestionPrompt } from '@maka/ui';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -92,5 +93,27 @@ export const PendingDecisions: Story = {
     request: REQUEST,
     onRespond: () => {},
     onStop: () => {},
+  },
+};
+
+export const KeyboardChoices: Story = {
+  ...PendingDecisions,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The panel takes focus when it mounts, and these shortcuts are handled on
+    // it rather than on the document. A key sent before that focus lands is
+    // delivered to <body> and dropped, which is a slow-runner race rather than
+    // a product one, so wait for the panel to actually hold focus first.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('2');
+    await waitFor(() => expect(canvas.getByRole('radio', { name: '公开测试' })).toBeChecked());
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '上线时间怎么安排？' })).toBeInTheDocument());
+    await userEvent.keyboard('{Escape}');
+    const input = canvas.getByRole('textbox');
+    await userEvent.type(input, '123');
+    expect(input).toHaveValue('123');
+    await waitFor(() => expect(canvas.getByRole('radio', { name: '其他' })).toBeChecked());
   },
 };

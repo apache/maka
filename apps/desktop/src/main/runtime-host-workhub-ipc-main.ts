@@ -56,7 +56,10 @@ export function registerRuntimeHostWorkHubIpc(
   });
   const submit = async (attempt: Attempt): Promise<WorkHubAnswerResult> => {
     const { originHostEpoch: _originHostEpoch, ...input } = attempt;
-    return { kind: 'admitted', ...await client.answerWorkHubCoordination(input) };
+    const result = await client.answerWorkHubCoordination(input);
+    return result.targetSelection
+      ? { kind: 'selection_required', turnId: result.turnId, request: result.targetSelection }
+      : { kind: 'admitted', turnId: result.turnId };
   };
   const reconcile = async (attempt: Attempt): Promise<WorkHubAnswerResult> => {
     try {

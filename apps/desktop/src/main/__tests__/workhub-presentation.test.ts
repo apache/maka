@@ -462,7 +462,7 @@ test('control shows a passive card only after it is painted and preserves manual
   assert.equal(h.main.visible, false, 'control does not reveal a hidden main window');
   assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
   await h.command(view.webContents, 'ready');
-  await h.command(view.webContents, 'show-conversation');
+  await h.command(view.webContents, 'show-conversation', request);
   assert.equal(h.controller.getSnapshot().progressRequest, undefined);
   assert.equal(floating.bounds.width, 520);
   assert.equal(floating.bounds.height, 720);
@@ -911,6 +911,45 @@ test('the progress card stays hidden in a hidden run and inactive everywhere els
     await h.controller.prepareControl('turn');
     await h.command(h.views[0]!.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
     assert.deepEqual(reveals(h.windows[1]!), mode === 'hidden' ? REVEALS.hidden : REVEALS.inactive, mode);
+    h.controller.dispose();
+  }
+});
+
+
+test('revealing an interaction cannot detach a docked WorkHub without a current progress request', async () => {
+  const h = await harness();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 0, width: 1000, height: 800 } });
+  const view = h.views[0]!;
+  for (const request of [undefined, 1, NaN]) {
+    if (request === undefined || Number.isNaN(request)) await assert.rejects(h.command(view.webContents, 'show-conversation', request), /Invalid progress request/);
+    else await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(h.controller.getSnapshot().placement, 'docked');
+    assert.equal(h.controller.getSnapshot().floatingVisible, false);
+  }
+});
+
+
+test('expanding progress before its first paint reveals the conversation without taking focus', async () => {
+  for (const mode of ['active', 'hidden'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.prepareControl('turn-early');
+    const view = h.views[0]!;
+    const floating = h.windows[1]!;
+    floating.isFocused = () => false;
+    const request = h.controller.getSnapshot().progressRequest!;
+    await h.command(view.webContents, 'ready');
+    assert.equal(floating.visible, false);
+    const focusMessages = view.webContents.sent.filter(([channel]) => channel.endsWith('focus-composer')).length;
+    await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(floating.visible, mode !== 'hidden', 'expansion must finish the native reveal without waiting for the unmounted progress card');
+    assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+    assert.equal(floating.focused, 0);
+    assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('focus-composer')).length, focusMessages);
+    assert.equal(view.webContents.backgroundThrottling, true);
+    await h.command(view.webContents, 'hide');
+    await h.command(view.webContents, 'progress-ready', request);
+    await h.command(view.webContents, 'show-conversation', request);
+    assert.equal(floating.visible, false, 'late acknowledgements and stale expansions cannot reopen a dismissed window');
     h.controller.dispose();
   }
 });

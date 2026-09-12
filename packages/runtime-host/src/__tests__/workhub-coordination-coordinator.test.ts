@@ -65,6 +65,180 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('Host WorkHub Coordination coordinator', () => {
+  test('target selection pauses admission, binds the exact selected Session, and refreshes removed targets', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-selection-'));
+    const store = createSessionStore(root);
+    const admission = new SessionAdmissionGate();
+    const decisions: import('@maka/core/workhub-routing').WorkHubRoutingDecision[] = [];
+    let modelCalls = 0;
+    let workhub: ReturnType<typeof coordinator>;
+    const executions: CoordinationExecutions = {
+      isSessionExecutionIdle: () => true,
+      readActiveWorkHubRoutingRequest: async () => undefined,
+      startWorkHubCoordinationMessage: async (request) =>
+        admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
+          const prepared = await request.prepareFreshContent(lease);
+          if (prepared.kind === 'rejected') return prepared.outcome;
+          const decision =
+            request.execution.routingDecision ??
+            (await workhub.prepareRoutingDecision({
+              header: await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID),
+              turnId: request.turnId,
+              content: prepared.content,
+              allowTargetSelection: true,
+            }));
+          if (decision.kind === 'target_selection')
+            return {
+              ok: false,
+              error: { code: 'operation_conflict', message: 'WorkHub target selection required' },
+              targetSelection: decision.request,
+            };
+          decisions.push(decision);
+          return {
+            ok: true,
+            result: {
+              sessionId: request.sessionId,
+              turnId: request.turnId,
+              runId: `run-${request.turnId}`,
+              status: 'running',
+            },
+          };
+        }),
+    };
+    workhub = coordinator(
+      root,
+      store,
+      undefined,
+      undefined,
+      executions,
+      admission,
+      {},
+      {
+        decide: async ({ resolveCandidates, userText }) => {
+          modelCalls++;
+          if (userText !== 'Unclear intent') await resolveCandidates();
+          return { kind: 'routing', disposition: 'clarify' };
+        },
+      },
+    );
+    try {
+      await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT);
+      const target = await store.create({
+        name: 'Payments',
+        cwd: root,
+        llmConnectionSlug: 'test',
+        model: 'test',
+        permissionMode: 'ask',
+      });
+      const input = { turnId: 'selection-turn', text: 'Continue the payment work' };
+      const paused = await workhub.handlers['workhub.coordination.answer'](input, CONTEXT);
+      assert(paused.ok && paused.result.targetSelection);
+      const request = paused.result.targetSelection;
+      assert.equal(decisions.length, 0);
+      assert.equal(request.candidates.length, 1);
+      const selected = request.candidates.find((candidate) => candidate.sessionId === target.id)!;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.answer'](
+            {
+              ...input,
+              text: 'Different request',
+              selection: {
+                requestId: request.requestId,
+                kind: 'existing',
+                candidateRef: selected.candidateRef,
+              },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        false,
+      );
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.answer'](
+            {
+              ...input,
+              selection: { requestId: request.requestId, kind: 'existing', candidateRef: 'forged' },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        false,
+      );
+      const resumed = await workhub.handlers['workhub.coordination.answer'](
+        {
+          ...input,
+          selection: {
+            requestId: request.requestId,
+            kind: 'existing',
+            candidateRef: selected.candidateRef,
+          },
+        },
+        CONTEXT,
+      );
+      assert(resumed.ok && !resumed.result.targetSelection);
+      assert.deepEqual(decisions, [
+        {
+          kind: 'routing',
+          disposition: 'delegate_existing',
+          candidateSetId: request.candidateSetId,
+          candidateRef: selected.candidateRef,
+        },
+      ]);
+      assert.equal(modelCalls, 1);
+      const missing = await workhub.handlers['workhub.coordination.answer'](
+        {
+          ...input,
+          turnId: 'lost-draft',
+          selection: {
+            requestId: 'expired-request',
+            kind: 'existing',
+            candidateRef: selected.candidateRef,
+          },
+        },
+        CONTEXT,
+      );
+      assert(missing.ok && missing.result.targetSelection);
+      assert.equal(decisions.length, 1);
+      await store.remove(target.id);
+      const removed = await workhub.handlers['workhub.coordination.answer'](
+        {
+          ...input,
+          turnId: 'lost-draft',
+          selection: {
+            requestId: missing.result.targetSelection.requestId,
+            kind: 'existing',
+            candidateRef: missing.result.targetSelection.candidates[0]!.candidateRef,
+          },
+        },
+        CONTEXT,
+      );
+      assert(removed.ok && removed.result.targetSelection);
+      assert.equal(removed.result.targetSelection.candidates.length, 0);
+      assert.equal(decisions.length, 1);
+      const created = await workhub.handlers['workhub.coordination.answer'](
+        {
+          ...input,
+          turnId: 'lost-draft',
+          selection: { requestId: removed.result.targetSelection.requestId, kind: 'create_new' },
+        },
+        CONTEXT,
+      );
+      assert(created.ok && !created.result.targetSelection);
+      assert.deepEqual(decisions[1], { kind: 'routing', disposition: 'create_new' });
+      const unclear = await workhub.handlers['workhub.coordination.answer'](
+        { turnId: 'unclear-intent', text: 'Unclear intent' },
+        CONTEXT,
+      );
+      assert(unclear.ok && !unclear.result.targetSelection);
+      assert.equal(decisions.length, 3, 'intent clarification must reach the assistant');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('reads bounded recent history when preparing a routing decision', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-history-'));
     const store = createSessionStore(root);

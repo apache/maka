@@ -2049,10 +2049,11 @@ const makaBridge = {
     },
     async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:answer', scope, {
+      const result = await ipcRenderer.invoke('workhub:answer', scope, {
         ...input,
         ...(input.attachments ? { attachments: hostAttachmentRefs({ scope, sessionId: parseDesktopSessionKey(coordinationSessionId).sessionId }, input.attachments) } : {}),
-      }) as Promise<WorkHubAnswerResult>;
+      }) as WorkHubAnswerResult;
+      return result.kind === 'selection_required' ? { ...result, request: { ...result.request, candidates: result.request.candidates.map((candidate) => ({ ...candidate, sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId) })) } } : result;
     },
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);

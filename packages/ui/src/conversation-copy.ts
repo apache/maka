@@ -222,6 +222,7 @@ export interface ConversationCopy {
     allowSession: string;
   };
   questions: {
+    keyboardHint: string;
     other: string;
     otherDescription: string;
     otherAriaLabel: string;
@@ -539,7 +540,7 @@ const CONVERSATION_COPY = {
       reject: '拒绝',
       allowSession: '本任务允许',
     },
-    questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
+    questions: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 继续说明', other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     forms: { requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
     workspace: {
@@ -697,7 +698,7 @@ const CONVERSATION_COPY = {
       reject: '拒絕',
       allowSession: '本任務允許',
     },
-    questions: { other: '其他', otherDescription: '輸入一個不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
+    questions: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 繼續說明', other: '其他', otherDescription: '輸入一個不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
     forms: { requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
     mentions: { noFiles: '未找到檔案', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…' },
     workspace: {
@@ -881,7 +882,7 @@ const CONVERSATION_COPY = {
       reject: 'Reject',
       allowSession: 'Allow for this task',
     },
-    questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
+    questions: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc explain', other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     forms: { requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
     workspace: {

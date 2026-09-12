@@ -457,7 +457,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         return { main, isMain };
       };
       authorize();
-      if (command === 'show-conversation' && payload !== undefined) {
+      if (command === 'show-conversation') {
         if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
         if (payload !== progressRequest) return;
       }
@@ -535,29 +535,27 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             return;
           }
           case 'show-conversation': {
-            if (payload !== undefined && payload !== progressRequest) return;
+            if (payload !== progressRequest || !floating) return;
             conversationExpanded = true;
             expandOnFocus = true;
-            if (progressRequest !== undefined && floating) {
-              const current = floating.getBounds();
-              const area = screen.getDisplayMatching(current).workArea;
-              const width = Math.min(conversationBounds?.width ?? 520, area.width);
-              const height = Math.min(expandedHeight, area.height);
-              clearProgressRequest();
-              conversationBounds = undefined;
-              floating.setResizable(true);
-              changed();
-              resizeFloating({
-                width, height,
-                x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
-                y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
-              }, true);
-              // A send acknowledgement can arrive after the user has switched
-              // apps. Growing the conversation must not steal focus back.
-              if (floating.isFocused()) focusComposer();
-              return;
-            }
-            detach(true);
+            const current = floating.getBounds();
+            const area = screen.getDisplayMatching(current).workArea;
+            const width = Math.min(conversationBounds?.width ?? 520, area.width);
+            const height = Math.min(expandedHeight, area.height);
+            clearProgressRequest();
+            conversationBounds = undefined;
+            floating.setResizable(true);
+            changed();
+            resizeFloating({
+              width, height,
+              x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
+              y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
+            }, true);
+            // Expansion may beat progress-ready and unmount its paint callback.
+            showWindowInactive(floating, deps.revealMode);
+            // A send acknowledgement can arrive after the user has switched
+            // apps. Growing the conversation must not steal focus back.
+            if (floating.isFocused()) focusComposer();
             return;
           }
           case 'detach': detach(); return;

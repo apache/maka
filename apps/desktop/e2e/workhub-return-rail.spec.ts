@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import type { Page } from '@playwright/test';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
@@ -90,7 +91,12 @@ test('Session keeps a return to WorkHub control when the sidebar is collapsed', 
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
   await workhub.locator(COMPOSER_INPUT).fill('Keep my WorkHub draft');
+  const sessionName = await workhub.locator('.workhub-navigation-label').first().innerText();
   await workhub.locator('.workhub-navigation-item').first().click();
+  await expect(page.locator('.workHubDock')).toBeVisible();
+  const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
+  if (await expand.isVisible()) await expand.click();
+  await page.getByRole('button').filter({ has: page.getByText(sessionName, { exact: true }) }).click();
   await expect(page.locator('.workHubDock')).toBeHidden();
   const collapse = page.getByRole('button', { name: '收起侧边栏', exact: true });
   if (await collapse.isVisible()) await collapse.click();
@@ -118,4 +124,29 @@ test('Session keeps a return to WorkHub control when the sidebar is collapsed', 
   await back.click();
   await expect(page.locator('.workHubDock')).toBeVisible();
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText('Keep my WorkHub draft');
+});
+
+
+test('a pending WorkHub question preserves docked placement, choices and focus across window transitions', async ({ sessionLocalWindow: { page, app } }) => {
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  const hub = await getWorkHubPage(app);
+  await hub.locator(COMPOSER_INPUT).fill(FAKE_ASK_USER_QUESTION_PROMPT);
+  await awaitSendReady(hub);
+  await hub.locator(COMPOSER_INPUT).press('Enter');
+  await expect(hub.getByRole('radio', { name: /公开测试/ })).toBeVisible();
+  await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
+  // Reload rehydrates the pending question through Host interaction queries.
+  await hub.reload();
+  const choice = hub.getByRole('radio', { name: /公开测试/ });
+  await expect(choice).toBeVisible();
+  await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
+  await choice.click();
+  await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });
+  await hub.evaluate(() => window.maka.workHubPresentation.detach());
+  await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');
+  await expect(choice).toBeChecked();
+  await expect.poll(() => hub.locator('.maka-choice-panel').evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
+  await hub.evaluate(() => window.maka.workHubPresentation.dock());
+  await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
+  await expect(choice).toBeChecked();
 });

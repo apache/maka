@@ -6149,7 +6149,7 @@ async function createFailureFixture(options: {
   ): Promise<void>;
   prepareWorkHubRoutingDecision?(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
+  ): Promise<import('../server/root-turn-coordinator.js').HostWorkHubRoutingPreparation>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -7609,3 +7609,171 @@ async function waitForContinuityFrame(
     description,
   );
 }
+
+test('WorkHub target selection crosses root admission without draining the Host', async () => {
+  const { HostWorkHubCoordinationCoordinator } = await import(
+    '../server/workhub-coordination-coordinator.js'
+  );
+  let workhub: InstanceType<typeof HostWorkHubCoordinationCoordinator>;
+  const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+    send: async () => {},
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities: capabilities,
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareWorkHubRoutingDecision: (input) => workhub.prepareRoutingDecision(input),
+  });
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop');
+    await capabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'workhub-tools',
+        offers: [
+          {
+            offerId: 'desktop-workhub',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'Desktop WorkHub',
+            tools: ['control', 'tasks'].map((name) => ({
+              serverId: 'desktop_workhub',
+              name,
+              inputSchema: { type: 'object' },
+            })),
+          },
+        ],
+      },
+      context,
+    );
+    const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    await fixture.stores.sessionStore.createStableSession({
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      requestFingerprint: `sha256:${'a'.repeat(64)}`,
+      input: {
+        cwd: ordinary.cwd,
+        llmConnectionId: ordinary.llmConnectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        role: WORKHUB_COORDINATION_SESSION_ROLE,
+        toolProfile: 'workhub-coordination-v2',
+        permissionMode: 'bypass',
+      },
+    });
+    workhub = new HostWorkHubCoordinationCoordinator({
+      stateRoot: ordinary.cwd!,
+      stores: fixture.stores.sessionStore,
+      admission: fixture.sessionAdmission,
+      continuity: { refreshCanonical: async () => undefined },
+      executions: fixture.coordinator,
+      routingModel: {
+        decide: async ({ resolveCandidates, userText }) => {
+          if (userText !== 'Unclear intent') await resolveCandidates();
+          return { kind: 'routing', disposition: 'clarify' };
+        },
+      },
+      sessionActions: {
+        assign: async () => ({ turnId: 'unused' }),
+        readDelegationRetirement: async () => 'not_retired',
+        retireDelegation: async () => ({ outcome: 'cancelled_pending' }),
+        resumeDelegation: async () => ({ outcome: 'already_running' }),
+      },
+      resolveCreateTarget: async () => ({
+        llmConnectionId: ordinary.llmConnectionId!,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      }),
+      requestDrain: () => {
+        throw new Error('Unexpected coordinator drain');
+      },
+      transitionConfiguration: async () => {
+        throw new Error('Unused');
+      },
+      configureModel: async () => ({
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'Unused' },
+      }),
+    });
+    const input = { turnId: 'target-choice', text: 'Continue the work' };
+    const paused = await workhub.handlers['workhub.coordination.answer'](input, context).catch(
+      (error: unknown) => error,
+    );
+    assert.equal(
+      fixture.drainRequested(),
+      false,
+      'a target choice must not drain the real root authority',
+    );
+    assert(
+      paused && typeof paused === 'object' && 'ok' in paused && paused.ok && 'result' in paused,
+    );
+    const request = (
+      paused as {
+        result: {
+          targetSelection: import('../protocol/workhub-coordination.js').WorkHubTargetSelectionRequest;
+        };
+      }
+    ).result.targetSelection;
+    assert(request);
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        input.turnId,
+      ),
+      undefined,
+    );
+    const invalid = await workhub.handlers['workhub.coordination.answer'](
+      {
+        ...input,
+        selection: { requestId: request.requestId, kind: 'existing', candidateRef: 'forged' },
+      },
+      context,
+    );
+    assert(!invalid.ok && invalid.error.code === 'operation_conflict');
+    assert.equal(fixture.drainRequested(), false);
+    const resumed = await workhub.handlers['workhub.coordination.answer'](
+      {
+        ...input,
+        selection: {
+          requestId: request.requestId,
+          kind: 'existing',
+          candidateRef: request.candidates[0]!.candidateRef,
+        },
+      },
+      context,
+    );
+    assert(resumed.ok && !resumed.result.targetSelection);
+    const admitted = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      WORKHUB_COORDINATION_SESSION_ID,
+      input.turnId,
+    );
+    assert(admitted?.execution.kind === 'workhub_coordination');
+    assert.deepEqual(admitted.execution.routingDecision, {
+      kind: 'routing',
+      disposition: 'delegate_existing',
+      candidateSetId: request.candidateSetId,
+      candidateRef: request.candidates[0]!.candidateRef,
+    });
+    await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+    const unclear = await workhub.handlers['workhub.coordination.answer'](
+      { turnId: 'unclear-intent', text: 'Unclear intent' },
+      context,
+    );
+    assert(
+      unclear.ok && !unclear.result.targetSelection,
+      'intent ambiguity must reach the assistant',
+    );
+    await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await capabilities.close();
+    await fixture.dispose();
+  }
+});

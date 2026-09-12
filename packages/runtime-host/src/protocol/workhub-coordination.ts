@@ -116,14 +116,25 @@ export interface WorkHubCoordinationResolveResult {
   readonly sessionId: string;
 }
 
+export type WorkHubTargetSelection =
+  | { readonly requestId: string; readonly kind: 'existing'; readonly candidateRef: string }
+  | { readonly requestId: string; readonly kind: 'create_new' };
+
+export interface WorkHubTargetSelectionRequest extends WorkHubCoordinationCandidatesResult {
+  readonly requestId: string;
+}
+
 export interface WorkHubCoordinationAnswerInput {
   readonly turnId: string;
   readonly text: string;
   readonly attachments?: AttachmentRef[];
+  readonly selection?: WorkHubTargetSelection;
 }
 
 export interface WorkHubCoordinationTurnResult {
   readonly turnId: string;
+  /** No Turn was admitted: explicit target selection is required first. */
+  readonly targetSelection?: WorkHubTargetSelectionRequest;
 }
 
 export type WorkHubCoordinationCandidateState =
@@ -330,7 +341,7 @@ export function decodeWorkHubCoordinationAnswerInput(
     value,
     'WorkHub Coordination answer input',
     ['turnId', 'text'],
-    ['attachments'],
+    ['attachments', 'selection'],
   );
   return {
     ...(input.attachments !== undefined
@@ -338,6 +349,9 @@ export function decodeWorkHubCoordinationAnswerInput(
           attachments: decodeMessageContent({ text: input.text, attachments: input.attachments })
             .attachments!,
         }
+      : {}),
+    ...(input.selection !== undefined
+      ? { selection: decodeWorkHubTargetSelection(input.selection) }
       : {}),
     turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
     text: requireUtf8String(
@@ -348,10 +362,47 @@ export function decodeWorkHubCoordinationAnswerInput(
   };
 }
 
-export function decodeWorkHubCoordinationTurnResult(value: unknown): WorkHubCoordinationTurnResult {
-  const result = requireExactRecord(value, 'WorkHub Coordination Turn result', ['turnId']);
+function decodeWorkHubTargetSelection(value: unknown): WorkHubTargetSelection {
+  const record = requireRecord(value, 'WorkHub target selection');
+  const input = requireExactRecord(
+    value,
+    'WorkHub target selection',
+    record.kind === 'existing' ? ['requestId', 'kind', 'candidateRef'] : ['requestId', 'kind'],
+  );
+  const requestId = requireEntityId(input.requestId, 'WorkHub target selection request id');
+  if (input.kind === 'create_new') return { requestId, kind: 'create_new' };
+  if (input.kind !== 'existing')
+    throw invalidProtocolFrame('Invalid WorkHub target selection kind');
   return {
-    turnId: requireEntityId(result.turnId, 'WorkHub Coordination Turn id'),
+    requestId,
+    kind: 'existing',
+    candidateRef: requireEntityId(input.candidateRef, 'WorkHub candidate ref'),
+  };
+}
+
+export function decodeWorkHubCoordinationTurnResult(value: unknown): WorkHubCoordinationTurnResult {
+  const result = requireShapedRecord(
+    value,
+    'WorkHub Coordination Turn result',
+    ['turnId'],
+    ['targetSelection'],
+  );
+  const turnId = requireEntityId(result.turnId, 'WorkHub Coordination Turn id');
+  if (result.targetSelection === undefined) return { turnId };
+  const selection = requireExactRecord(result.targetSelection, 'WorkHub target selection request', [
+    'requestId',
+    'candidateSetId',
+    'candidates',
+  ]);
+  return {
+    turnId,
+    targetSelection: {
+      requestId: requireEntityId(selection.requestId, 'WorkHub target selection request id'),
+      ...decodeWorkHubCoordinationCandidatesResult({
+        candidateSetId: selection.candidateSetId,
+        candidates: selection.candidates,
+      }),
+    },
   };
 }
 

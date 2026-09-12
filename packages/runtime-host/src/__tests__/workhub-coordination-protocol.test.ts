@@ -309,3 +309,30 @@ test('action outcomes cannot invent a target Turn or revive removed local dispos
   ])
     assert.throws(() => decodeWorkHubCoordinationActResult(result));
 });
+
+test('WorkHub target selection accepts only the offered opaque identity shape', () => {
+  const input = {
+    turnId: 'turn',
+    text: 'Continue work',
+    selection: { requestId: 'request', kind: 'existing', candidateRef: 'candidate' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationAnswerInput(input), input);
+  assert.deepEqual(
+    decodeWorkHubCoordinationAnswerInput({
+      ...input,
+      selection: { requestId: 'request', kind: 'create_new' },
+    }).selection,
+    { requestId: 'request', kind: 'create_new' },
+  );
+  for (const selection of [
+    { requestId: 'request', kind: 'existing', sessionId: 'forged' },
+    {
+      requestId: 'request',
+      kind: 'existing',
+      candidateRef: 'candidate',
+      text: 'replacement input',
+    },
+    { requestId: 'request', kind: 'create_new', candidateRef: 'candidate' },
+  ])
+    assert.throws(() => decodeWorkHubCoordinationAnswerInput({ ...input, selection }));
+});

@@ -25,6 +25,7 @@ export type WorkHubAnswerInput = OperationInput<'workhub.coordination.answer'> &
 };
 
 export type WorkHubAnswerResult =
+  | { readonly kind: 'selection_required'; readonly turnId: string; readonly request: NonNullable<import('@maka/runtime-host/protocol').WorkHubCoordinationTurnResult['targetSelection']> }
   | { readonly kind: 'admitted'; readonly turnId: string; readonly status?: TurnSnapshot['status'] }
   | { readonly kind: 'unknown'; readonly originHostEpoch: string }
   | { readonly kind: 'not_admitted' };

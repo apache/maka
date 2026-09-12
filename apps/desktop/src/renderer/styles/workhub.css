@@ -92,67 +92,22 @@
   padding: 12px 0;
 }
 
-/* Identity sits next to the prompt; shared chat bubbles remain neutral. */
-.workhub-message-identity {
-  display: flex;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.workhub-result-card {
-  display: grid;
-  gap: 6px;
-  width: min(100%, 34rem);
-  padding: 9px 11px;
-  border: 1px solid color-mix(in oklch, var(--workhub-work-color) 28%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--workhub-work-color) 5%, transparent);
-}
-
-.workhub-result-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--workhub-work-label);
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-result-heading span,
-.workhub-result-card p {
-  margin: 0;
+/* Delegation status shares the prompt's timestamp row. */
+.workhub-delegation-status {
   color: var(--muted-foreground);
-  font-size: var(--font-size-body-xs, 12px);
 }
 
-.workhub-result-card p {
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  white-space: normal;
-}
-
-.workhub-message-identity button {
-  height: auto;
-  min-height: 28px;
-  max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: right;
-  color: var(--workhub-work-label);
-  font-size: var(--font-size-body-sm, 12px);
-}
+.workhub-surface { --workhub-identity-label-tone: 0.42 0.075; }
+.dark .workhub-surface { --workhub-identity-label-tone: 0.8 0.09; }
 
 .workhub-work-identity {
   --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
-  --workhub-work-label: oklch(0.42 0.075 var(--workhub-work-hue));
+  --workhub-work-label: oklch(var(--workhub-identity-label-tone) var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
 }
 
 .dark .workhub-work-identity {
   --workhub-work-color: oklch(0.76 0.105 var(--workhub-work-hue));
-  --workhub-work-label: oklch(0.8 0.09 var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.85 0.15 var(--workhub-work-hue));
 }
 
@@ -299,3 +254,70 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 @media (prefers-reduced-motion: reduce) {
   .workHubLive[data-placement='floating'], .workHubLive[data-placement='floating']::before, body:has(.workHubLive[data-placement='floating'])::after, .workHubLive[data-conversation-expanded] .workHubHistory { transition: none; }
 }
+
+/* Each message carries Work identity on its sender's edge. */
+.workhub-surface .maka-user-message {
+  border-inline-end: 3px solid transparent;
+  padding-inline-end: 12px;
+}
+
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-user-message {
+  border-inline-end-color: var(--maka-turn-accent);
+}
+
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-assistant-answer {
+  border-inline-start: 3px solid var(--maka-turn-accent);
+  padding-inline-start: 12px;
+}
+
+.workhub-turn-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.workhub-turn-label {
+  max-width: 100%;
+  color: var(--workhub-work-label);
+  /* Approved compact identity typography, expressed through the Text role. */
+  --text-supporting-size: 11px;
+  --text-supporting-leading: 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.workhub-navigation-workspace {
+  color: var(--workhub-work-label);
+}
+
+.workhub-surface .maka-user-message :has(> .workhub-turn-heading) {
+  row-gap: 4px;
+}
+
+.maka-assistant-answer .workhub-turn-heading {
+  justify-content: flex-start;
+  margin-bottom: -4px;
+}
+
+.maka-assistant-answer .workhub-turn-label {
+  text-align: left;
+}
+
+.workhub-target-selector { width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6))); margin-inline: auto; }
+.workhub-selection-hint { margin: 4px 0 0; }
+.workhub-target-selector [role="radiogroup"] { max-height: 260px; overflow-y: auto; }
+.workhub-selection-actions { flex-wrap: wrap; }
+.workhub-selection-actions > :last-child { margin-inline-start: auto; }
+
+
+/* A real button makes the narrow identity stripe keyboard accessible. */
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
+.workhub-surface .workhub-message-rail { position: absolute; inset-block: 0; width: 12px; min-width: 0; height: auto; border: 0; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
+.maka-user-message > .workhub-message-rail { inset-inline-end: -3px; }
+.maka-assistant-answer .workhub-message-rail { inset-inline-start: -3px; }
+.workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; border-radius: 3px; }
+.workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
+.workhub-conversation-filter > span { overflow-wrap: anywhere; }

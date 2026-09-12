@@ -215,7 +215,7 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
-test('WorkHub v2 binds control, tasks and attachment reading while legacy WorkHub stays tool-free', () => {
+test('WorkHub v2 binds control, tasks, attachment reading and user questions while legacy WorkHub stays tool-free', () => {
   const control = tool('mcp__desktop_workhub__control');
   const tasks = tool('mcp__desktop_workhub__tasks');
   const clientCapabilities = {
@@ -228,7 +228,7 @@ test('WorkHub v2 binds control, tasks and attachment reading while legacy WorkHu
       clientCapabilities,
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
-    [control.name, tasks.name, 'Read'],
+    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
   );
   assert.deepEqual(
     createFixtureComposer({

@@ -89,6 +89,7 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-target-selector.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/maka-tokens.css
@@ -222,6 +223,7 @@ packages/ui/src/chat-model-switcher.tsx
 packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
+packages/ui/src/choice-panel.tsx
 packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx

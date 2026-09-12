@@ -17,9 +17,8 @@
  * under the License.
  */
 
-export { useWorkHubController } from './controller/use-workhub-controller.js';
 
-export { WorkHubConversation, WorkHubDelegationStatus } from './ui/workhub-conversation.js';
-
-export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
-export { workspaceNameFromCwd } from './model/workspace-name.js';
+/** Display basename for a Host path, independent of the renderer platform. */
+export function workspaceNameFromCwd(cwd: string | undefined): string | undefined {
+  return cwd?.replace(/[/\\]+$/, '').split(/[/\\]/).at(-1) || undefined;
+}
