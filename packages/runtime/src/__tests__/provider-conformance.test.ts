@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
@@ -51,6 +51,175 @@ import {
 after(closeAllJsonServers);
 
 describe('models.dev provider conformance', () => {
+  for (const [providerType, modelId, apiProtocol, usesCapacityDefault] of [
+    ['openai', 'gpt-4.1', 'openai-chat', false],
+    ['openai', 'gpt-5', 'openai-responses', false],
+    ['openai-compatible', 'budget-model', 'openai-chat', false],
+    ['mistral', 'budget-model', 'openai-chat', false],
+    ['google', 'gemini-2.5-flash', undefined, false],
+    ['anthropic', 'budget-model', 'anthropic-messages', true],
+    ['kimi-coding-plan', 'kimi-for-coding', 'anthropic-messages', true],
+    ['kimi-coding-plan', 'k3', 'openai-chat', true],
+  ] as const) {
+    test(`${providerType}/${modelId}: persisted output budget reaches the wire without replacing capacity`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-output-budget-'));
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const bodies: Array<{
+        max_tokens?: number;
+        max_completion_tokens?: number;
+        max_output_tokens?: number;
+        generationConfig?: { maxOutputTokens?: number };
+      }> = [];
+      const server = await startJsonServer(async (request, response) => {
+        bodies.push(JSON.parse(await readBody(request)));
+        // Stop at the HTTP boundary: this test checks requests, not provider generation.
+        respondJson(response, 400, { error: { message: 'Request captured' } });
+      });
+      try {
+        let stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const created = await stores.connectionCatalog.create({
+          expectedCatalogRevision: 0,
+          connection: {
+            slug: 'budget',
+            name: 'Budget',
+            providerType,
+            baseUrl: `${server.url}/v1`,
+            enabled: true,
+            enabledModelIds: [modelId],
+            modelOverrides: { [modelId]: { maxOutputTokens: 8192 } },
+          },
+        });
+        assert.equal(created.kind, 'committed');
+        if (created.kind !== 'committed') throw new Error('Connection was not created');
+        const connectionId = created.snapshot.connections[0]!.connectionId;
+        assert.equal(
+          (
+            await stores.credentialVault.set({
+              locator: { scope: 'connection', connectionId, kind: 'api_key' },
+              expected: null,
+              secret: 'test-key',
+            })
+          ).kind,
+          'committed',
+        );
+        const fetch = await stores.operations.beginModelFetch(connectionId);
+        assert.equal(fetch.kind, 'ready');
+        if (fetch.kind !== 'ready') throw new Error('Discovery was not admitted');
+        assert.equal(
+          (
+            await stores.operations.completeModelFetch(fetch.ticket, {
+              models: [
+                { id: modelId, maxOutputTokens: 16384, ...(apiProtocol ? { apiProtocol } : {}) },
+              ],
+              source: 'fetched',
+              fetchedAt: 1,
+            })
+          ).kind,
+          'committed',
+        );
+        for (const budget of [8192, 32768, undefined]) {
+          const snapshot = await stores.connectionCatalog.getSnapshot();
+          const current = snapshot.connections[0]!;
+          assert.equal(
+            (
+              await stores.connectionCatalog.update({
+                expected: {
+                  connectionId,
+                  revision: current.revision,
+                },
+                changes: {
+                  name: current.name,
+                  baseUrl: current.baseUrl,
+                  enabled: current.enabled,
+                  enabledModelIds: current.enabledModelIds,
+                  modelOverrides: {
+                    [modelId]: budget === undefined ? {} : { maxOutputTokens: budget },
+                  },
+                },
+              })
+            ).kind,
+            'committed',
+          );
+          stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+          const prepared = await stores.operations.resolveExecutionConnection({
+            kind: 'catalog_slug',
+            connectionSlug: 'budget',
+          });
+          assert.equal(prepared.kind, 'ready');
+          if (prepared.kind !== 'ready') throw new Error('Execution was not admitted');
+          assert.equal(
+            prepared.connection.models.find((m) => m.id === modelId)?.maxOutputTokens,
+            16384,
+          );
+          const adapter = new ModelAdapter({
+            connection: {
+              ...prepared.connection,
+              models: [...prepared.connection.models],
+              defaultModel: modelId,
+            },
+            modelId,
+            apiKey: 'test-key',
+            modelFactory: getAIModel,
+            ...(apiProtocol === 'anthropic-messages'
+              ? {
+                  providerOptions: {
+                    anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } },
+                  },
+                }
+              : {}),
+            newId: () => 'budget',
+            now: Date.now,
+          });
+          try {
+            const result = await adapter.startStream({
+              model: adapter.resolveModel(),
+              messages: [{ role: 'user', content: 'Hello' }],
+              tools: {},
+              activeTools: [],
+              onStreamActivity: () => {},
+              abortSignal: new AbortController().signal,
+              repairToolCall: () => null,
+            });
+            for await (const _event of result.events) {
+              /* drain to the HTTP response */
+            }
+            await result.outcome;
+          } finally {
+            adapter.dispose();
+          }
+          const body = bodies.at(-1)!;
+          assert.ok(body, 'the production adapter must make an HTTP request');
+          const sentLimit =
+            body.max_tokens ??
+            body.max_completion_tokens ??
+            body.max_output_tokens ??
+            body.generationConfig?.maxOutputTokens;
+          assert.equal(
+            sentLimit,
+            budget === undefined
+              ? usesCapacityDefault
+                ? 16384
+                : undefined
+              : Math.min(budget, 16384),
+          );
+        }
+        assert.equal(bodies.length, 3);
+      } finally {
+        await owner.close();
+        await rm(root, { recursive: true, force: true });
+        await rm(join(resolveRootControlNamespace(), capability.rootId), {
+          recursive: true,
+          force: true,
+        });
+        await rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), {
+          force: true,
+        });
+      }
+    });
+  }
+
   test('mixed discovery survives persistence and user overrides through both SDK tool loops', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-mixed-routing-'));
     const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
@@ -229,19 +398,30 @@ describe('models.dev provider conformance', () => {
       await discover();
       await send('claude-route');
       await send('new-route');
-      await writeFile(
-        join(root, 'model-facts.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          overrides: { 'commandcode:new-route': { apiProtocol: 'anthropic-messages' } },
-        }),
-      );
+      const overrideProtocol = async (enabled: boolean) => {
+        const current = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+        assert.equal(
+          (
+            await stores.connectionCatalog.update({
+              expected: { connectionId, revision: current.revision },
+              changes: {
+                name: current.name,
+                baseUrl: current.baseUrl,
+                enabled: current.enabled,
+                enabledModelIds: current.enabledModelIds,
+                modelOverrides: enabled
+                  ? { 'new-route': { apiProtocol: 'anthropic-messages' } }
+                  : null,
+              },
+            })
+          ).kind,
+          'committed',
+        );
+      };
+      await overrideProtocol(true);
       await discover();
       await send('new-route');
-      await writeFile(
-        join(root, 'model-facts.json'),
-        JSON.stringify({ schemaVersion: 1, overrides: {} }),
-      );
+      await overrideProtocol(false);
       await send('new-route');
       assert.deepEqual(paths, [
         '/provider/v1/messages:claude-route',

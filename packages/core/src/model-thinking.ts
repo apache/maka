@@ -127,6 +127,7 @@ export interface ModelOverride {
   readonly contextWindow?: number;
   readonly compactionThreshold?: number;
   readonly inputLimit?: number;
+  /** Per-request output budget, including thinking tokens; not model capacity. */
   readonly maxOutputTokens?: number;
   readonly displayName?: string;
   readonly description?: string;
@@ -362,6 +363,7 @@ export function applyModelOverride(
     thinkingLevels: _thinking,
     serviceTier: _tier,
     compactionThreshold: _threshold,
+    maxOutputTokens: _outputBudget,
     vision,
     capabilities,
     ...facts
