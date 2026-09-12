@@ -39,6 +39,35 @@ Protocol `warm-projection-codec-ms` retains production wire decoding but exclude
 - DOM-ready latency includes Playwright polling/IPC. Stream lag starts at renderer subscription delivery and ends at DOM mutation; neither is proof of pixels presented. These are laboratory measurements, not whole-page INP. Long tasks and CPU TaskDuration do not substitute for anchor geometry, energy watts or OS wakeups.
 - Repeated actions use a warm process. First-action samples are labelled separately, not called cold application startup. Storybook reloads for cold-scroll trials, then repeats expansion and closure in the same mounted story. Heap readings include garbage awaiting collection and do not establish a leak by themselves. Idle retains ten approximately one-second CPU/heap samples and the CPU profile; task duration is normalized by the actual CDP timestamp interval. Browser-context traces retain DOM snapshots, and their overhead is included in the laboratory timings. Long-task/LoAF rows labelled case-total include every operation after observer installation in that case. Actual disk-cold startup, RTT injection, physical presentation, wakeups and long-duration leak acceptance remain outside this first harness.
 
+## #5184 production layout measurements
+
+The frontend lane measures the current production layout.
+`geometry-navigation.spec.ts` reloads three renderer documents in one Desktop
++ Host process. It measures renderer mount, older
+history and return to latest separately, including CDP task/layout time and
+long tasks. The long-task observer has a deliberate busy-task control after
+measurement. Mount is a warm-process document reload, not disk-cold startup;
+history uses the existing prompt rail, not wheel-triggered fill/trim.
+
+`node scripts/perf/geometry-ablation.mjs` runs the three fixed-range stories
+(mixed 24 turns, 45 tools, 1200-line code), with three repetitions each.
+Its mount CPU/layout counters are recorded before the
+first upward sweep, so deferred work cannot disappear from the comparison.
+Scroll metrics cover only that cold upward sweep. Older reports included two
+return sweeps and are not equivalent timing workloads. Unasserted per-step
+anchors, LoAF and heap diagnostics are no longer collected by this driver.
+The script emits the shared report format and full per-frame geometry JSON.
+Both probes run sequentially in the existing frontend job and upload through
+its existing artifact step. No additional workflow or production switch exists.
+
+Reports are `frontend-geometry-navigation.{json,md}` and
+`frontend-geometry-ablation.{json,md}`, plus `geometry-ablation.json`.
+Compare production reports from the baseline and candidate commits, including every raw sample;
+three samples do not establish a robust p95. CI success means the scenarios
+and measurements worked, not that a timing budget or product geometry contract
+passed. The separate `--assert-stable` flag remains an explicit geometry
+assertion, not a hidden performance threshold.
+
 ## Validating a new workflow before merge
 
 GitHub cannot dispatch a new workflow absent from the default branch. For this PR only, temporarily add `push: { branches: [<this PR branch>] }` to these workflows, push and inspect both jobs/artifacts. Remove that trigger after verification. Do not merge to obtain a run, add `pull_request_target`, or leave a permanent automatic trigger. Record both the measured SHA and final SHA in the PR when the sole subsequent change removes the validation trigger.

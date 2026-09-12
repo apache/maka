@@ -83,7 +83,9 @@ export function LocalizedChatMessage({
   accessibleLabel: string;
 }) {
   const overrides = useMemo(
-    () => ({ '@astryx.chatMessage.messageFrom': accessibleLabel }),
+    // This is already formatted text, not an ICU template. Quote from the
+    // first syntax character onward; ICU only opens a quote before syntax.
+    () => ({ '@astryx.chatMessage.messageFrom': accessibleLabel.replace(/'/g, "''").replace(/[{}<>].*$/s, "'$&'") }),
     [accessibleLabel],
   );
   return (
@@ -461,6 +463,11 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
+  const answerContext = accessibleActionContext(
+    turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+    turn.startedAt,
+    locale,
+  );
   // A recorded conversational terminal turn owns presentation beyond its
   // timeline: failure/abort state and recovery actions must remain visible even
   // when the provider produced no assistant event. Inferred legacy turns and
@@ -651,7 +658,7 @@ export const TurnView = memo(function TurnView(props: {
         return (
           <Fragment key={assistantKey}>
             <LocalizedChatMessage
-              accessibleLabel={copy.assistantAriaLabel}
+              accessibleLabel={`${copy.assistantAriaLabel} · ${answerContext}`}
               sender="assistant"
               data-turn-status={turn.status}
               className="maka-chat-message maka-assistant-answer"
@@ -764,11 +771,7 @@ export const TurnView = memo(function TurnView(props: {
                     activityLabel={runningToolLabel}
                   />
                 ) : undefined}
-                context={accessibleActionContext(
-                  turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
-                  turn.startedAt,
-                  locale,
-                )}
+                context={answerContext}
                 onAction={
                   props.onFooterAction
                     ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
@@ -1167,7 +1170,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
-      data-maka-transcript-boundary="default"
+      data-maka-transcript-boundary=""
       data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
@@ -1278,7 +1281,7 @@ function ProcessingBlock(props: {
   return (
     <div
       className="maka-processing-sequence"
-      data-maka-transcript-boundary="large"
+      data-maka-transcript-boundary=""
     >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
@@ -1300,7 +1303,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
-      data-maka-transcript-boundary="large"
+      data-maka-transcript-boundary=""
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
