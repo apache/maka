@@ -124,6 +124,7 @@ on:
       - 'packages/storage/src/native-file-lock.ts'
       - 'packages/storage/src/root-authority.ts'
       - 'packages/storage/src/runtime-policy/document-io.ts'
+      - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
       - '.github/workflows/windows-recovery.yml'

@@ -44,6 +44,8 @@ async function mountController(failFirstRead = false) {
   let publish!: (snapshot: WorkHubTranscriptSnapshot) => void;
   let observe!: Parameters<WorkHubServices['observe']>[1];
   let loadLatestCount = 0;
+  const prefetched: Array<'older' | 'newer'> = [];
+  const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
   let admission = deferred<{ turnId: string }>();
   const latestRead = deferred<void>();
   const requests: Array<Parameters<WorkHubServices['answer']>[1]> = [];
@@ -94,7 +96,13 @@ async function mountController(failFirstRead = false) {
       if (failFirstRead && openCount === 1) throw new Error('transient initial read failure');
       publish = handler;
       handler({ messages: [], ready: true, hasOlder: false, hasNewer: false });
-      return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: () => { loadLatestCount += 1; return latestRead.promise; }, close: async () => {} };
+      return {
+        observationChanged: () => {},
+        prefetchHistory: async (edge: 'older' | 'newer') => { prefetched.push(edge); return true; },
+        retain: (window: { firstTurnId: string; lastTurnId: string }) => { retained.push(window); },
+        loadLatest: () => { loadLatestCount += 1; return latestRead.promise; },
+        close: async () => {},
+      };
     },
     retractQueueEntry: async (...input: Parameters<WorkHubServices['retractQueueEntry']>) => { queueMutations.push(['retract', ...input]); },
     promoteQueueEntry: async (...input: Parameters<WorkHubServices['promoteQueueEntry']>) => { queueMutations.push(['promote', ...input]); },
@@ -125,6 +133,7 @@ async function mountController(failFirstRead = false) {
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
     admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; },
     get loadLatestCount() { return loadLatestCount; },
+    prefetched, retained,
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
   };
@@ -518,6 +527,32 @@ test('WorkHub defaults to follow-up and moves each message into its admitted suc
   await act(() => h.publish([{ type: 'user', id: first, turnId: 'successor', text: 'first follow-up', attachments, ts: 2 }]));
   assert.deepEqual(h.controller.transientMessages, []);
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.messageId), [second]);
+  h.latestRead.resolve();
+});
+
+test('a queued follow-up returns the window to the tail so its own retry guard can clear', async () => {
+  const h = await mountController();
+  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  h.setSteerResult('unknown');
+  await act(async () => { assert.equal(await h.controller.send('queued while parked in history', []), false); });
+  const messageId = h.steers[0]![1];
+  assert.equal(h.loadLatestCount, 1, 'an uncertain enqueue still has to reach the tail to be observed');
+  await act(async () => { assert.equal(await h.controller.send('a different follow-up', []), false); });
+  assert.equal(h.steers.length, 1, 'an unobserved attempt refuses the next follow-up');
+  await act(() => h.publish([{ type: 'user', id: messageId, turnId: 'successor', text: 'queued while parked in history', ts: 2 }]));
+  h.setSteerResult('admitted');
+  await act(async () => { assert.equal(await h.controller.send('a different follow-up', []), true); });
+  assert.equal(h.steers.length, 2, 'the observed row releases the guard');
+  h.latestRead.resolve();
+});
+
+test('the transcript band reaches WorkHub’s window', async () => {
+  const h = await mountController();
+  assert.equal(await h.controller.prefetchHistory('older'), true);
+  assert.equal(await h.controller.prefetchHistory('newer'), true);
+  assert.deepEqual(h.prefetched, ['older', 'newer']);
+  h.controller.retainWindow({ firstTurnId: 'turn-b', lastTurnId: 'turn-c' });
+  assert.deepEqual(h.retained, [{ firstTurnId: 'turn-b', lastTurnId: 'turn-c' }]);
   h.latestRead.resolve();
 });
 

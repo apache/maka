@@ -101,10 +101,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 143 as const;
-// 143: OAuth create targets may carry a caller-selected Connection name and
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 144 as const;
+// 144: OAuth create targets may carry a caller-selected Connection name and
 // slug, and slug collisions remain a closed typed error before or after
 // authorization. Older peers reject those strict input and output shapes.
+// 143: Session bundle export and import are Host operations. An epoch-142 Host
+// rejects both as unknown, so a Client that offers them must not pair with one.
 // 142: Invocable Skill queries expose missing and archived Session refusals explicitly.
 // 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
 // 140: Plugin Platform queries expose scoped Command contribution projections.

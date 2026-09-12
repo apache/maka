@@ -36,6 +36,8 @@ import {
   showBrowserMessageBoxWithRuntime,
 } from '../browser-message-box.js';
 
+const ACTIVE_APPEARANCE = { locale: 'en', revealMode: 'active' } as const;
+
 test('falls back natively and never attaches to an inaccessible parent', async () => {
   const options = { message: 'Recover Maka' };
   const nativeResult = { response: 0, checkboxChecked: false };
@@ -65,7 +67,7 @@ test('falls back natively and never attaches to an inaccessible parent', async (
   const failedWindow = fakeBrowserWindow({ loadError: failure });
   let reported: unknown;
   assert.equal(
-    await showBrowserMessageBoxWithRuntime(options, parent, { locale: 'en' }, {
+    await showBrowserMessageBoxWithRuntime(options, parent, ACTIVE_APPEARANCE, {
       ...runtimeBase,
       createWindow: (windowOptions) => {
         assert.equal(windowOptions.parent, parent);
@@ -97,7 +99,7 @@ test('drives the BrowserWindow lifecycle through a safe response URL', async () 
   const presentation = showBrowserMessageBoxWithRuntime(
     { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
     parent,
-    { locale: 'en', dark: true },
+    { ...ACTIVE_APPEARANCE, dark: true },
     {
       shouldUseDarkColors: false,
       createWindow: (options) => {
@@ -143,7 +145,7 @@ test('maps close to cancel and falls back after each BrowserWindow presentation 
   const closeResult = showBrowserMessageBoxWithRuntime(
     { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
     undefined,
-    { locale: 'en' },
+    ACTIVE_APPEARANCE,
     runtimeForWindow(closed),
   );
   closed.window.emit('closed');
@@ -158,7 +160,7 @@ test('maps close to cancel and falls back after each BrowserWindow presentation 
     const result = showBrowserMessageBoxWithRuntime(
       { message: 'Recover Maka' },
       undefined,
-      { locale: 'en' },
+      ACTIVE_APPEARANCE,
       runtimeForWindow(presented, {
         presentationTimeoutMs: scenario === 'timeout' ? 1 : undefined,
         onBrowserError: (error) => errors.push(error),
@@ -175,6 +177,34 @@ test('maps close to cancel and falls back after each BrowserWindow presentation 
     assert.equal(presented.destroyed(), true, scenario);
     assert.equal(isBrowserMessageBoxPresentationActive(), false, scenario);
   }
+});
+
+test('reveals the dialog only as far as the run reveal mode allows', async () => {
+  const active = fakeBrowserWindow();
+  const shownResult = showBrowserMessageBoxWithRuntime(
+    { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
+    undefined,
+    ACTIVE_APPEARANCE,
+    runtimeForWindow(active),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(active.shown(), true);
+  assert.equal(active.focused(), true);
+  active.window.emit('closed');
+  await shownResult;
+
+  const hidden = fakeBrowserWindow();
+  const hiddenResult = await showBrowserMessageBoxWithRuntime(
+    { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
+    undefined,
+    { locale: 'en', revealMode: 'hidden' },
+    runtimeForWindow(hidden),
+  );
+  assert.equal(hidden.shown(), false);
+  assert.equal(hidden.shownInactive(), false);
+  assert.equal(hidden.focused(), false);
+  // Nobody can answer a dialog that was never revealed.
+  assert.deepEqual(hiddenResult, { response: 1, checkboxChecked: false });
 });
 
 test('accepts only an in-range response URL produced by the dialog', () => {
@@ -295,6 +325,7 @@ interface FakeBrowserWindow {
   options?: BrowserWindowConstructorOptions;
   loadedUrl(): string;
   shown(): boolean;
+  shownInactive(): boolean;
   focused(): boolean;
   destroyed(): boolean;
   deniesWindowOpen(): boolean;
@@ -306,6 +337,7 @@ function fakeBrowserWindow(input: {
 } = {}): FakeBrowserWindow {
   let loadedUrl = '';
   let shown = false;
+  let shownInactive = false;
   let focused = false;
   let destroyed = false;
   let deniesWindowOpen = false;
@@ -331,8 +363,15 @@ function fakeBrowserWindow(input: {
       destroyed = true;
     },
     setBounds() {},
+    isVisible: () => shown || shownInactive,
+    isMinimized: () => false,
+    restore() {},
+    maximize() {},
     show: () => {
       shown = true;
+    },
+    showInactive: () => {
+      shownInactive = true;
     },
     focus: () => {
       focused = true;
@@ -343,6 +382,7 @@ function fakeBrowserWindow(input: {
     webContents,
     loadedUrl: () => loadedUrl,
     shown: () => shown,
+    shownInactive: () => shownInactive,
     focused: () => focused,
     destroyed: () => destroyed,
     deniesWindowOpen: () => deniesWindowOpen,

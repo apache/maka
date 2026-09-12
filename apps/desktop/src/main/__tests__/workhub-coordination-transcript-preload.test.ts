@@ -29,8 +29,9 @@ import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
 import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
+import type { WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
-import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { encodeDesktopTranscriptPage, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import type { AttachmentRef } from '@maka/core/events';
 import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
@@ -142,7 +143,7 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
           durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
         };
         for (const batch of encodeDesktopTranscriptSnapshot({
-          ...snapshot, navigationVersion: 0, durable: [{ sequence: 1, message: result }],
+          ...snapshot, durable: [{ sequence: 1, message: result }],
         })) onBatch({ ...batch, deliverySequence: 1 });
         return {
           ...snapshot, readThroughMessageId: result.id,
@@ -160,6 +161,69 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
     id: 'delegation-record', state: 'completed',
     resultPreview: 'The delegated task finished with this exact result.',
   }]);
+});
+
+test('delegation feedback does not advance the target Session read marker', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const result: StoredMessage = {
+    type: 'assistant', id: 'answer', turnId: 'owned-turn', ts: 3,
+    modelId: 'model', text: 'The delegated task finished with this exact result.',
+  };
+  const later: StoredMessage = {
+    type: 'user', id: 'later', turnId: 'next-turn', ts: 4, text: 'A later turn nobody has read.',
+  };
+  const acknowledged: number[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: true, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        // The real open answers over IPC, so its first batches reach a consumer
+        // that is already listening.
+        await Promise.resolve();
+        const snapshot = {
+          sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+          durableThrough: 2, overlay: [], hasOlder: false, hasNewer: false,
+        };
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...snapshot,
+          durable: [{ sequence: 1, message: result }, { sequence: 2, message: later }],
+        })) onBatch({ ...batch, deliverySequence: 1 });
+        return {
+          ...snapshot, readThroughMessageId: later.id,
+          async acknowledgeTail(through: number) { acknowledged.push(through); },
+          loadBefore: async () => undefined, loadAfter: async () => undefined,
+          loadAround: async () => undefined, close: async () => undefined,
+        };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.equal((await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]))[0]?.resultPreview, result.text);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual(acknowledged, [], 'a result projection is not a reader of the target Session');
 });
 
 test('WorkHub proves a long historical Turn tail before caching its final result', async (t) => {
@@ -204,31 +268,38 @@ test('WorkHub proves a long historical Turn tail before caching its final result
       async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
         opens += 1;
         const emit = (
-          navigationVersion: number,
+          navigation: number | undefined,
           durable: Array<{ sequence: number; message: StoredMessage }>,
           hasOlder: boolean,
           hasNewer: boolean,
         ) => {
           for (const batch of encodeDesktopTranscriptSnapshot({
             sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-            durableThrough: 4, overlay: [], hasOlder, hasNewer, navigationVersion, durable,
-          })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+            durableThrough: 4, overlay: [], hasOlder, hasNewer, durable,
+          }, navigation)) onBatch({ ...batch, deliverySequence: ++deliverySequence });
         };
-        emit(0, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
+        emit(undefined, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
         return {
           sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
           durableThrough: 4, hasOlder: true, hasNewer: false, readThroughMessageId: 'tail',
           loadBefore: async () => undefined,
-          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
-            emit(navigation.navigationVersion, [{ sequence: 1, message: intermediate }], false, true);
+          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: number) {
+            emit(navigation, [{ sequence: 1, message: intermediate }], false, true);
           },
-          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: number) {
             loadAfters += 1;
             assert.equal(anchor, 1);
-            emit(navigation.navigationVersion, [
-              { sequence: 2, message: final },
-              { sequence: 3, message: next },
-            ], false, true);
+            // An extension splices onto the window; only a navigation replaces it.
+            for (const batch of encodeDesktopTranscriptPage({
+              sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+              navigation,
+            }, {
+              durableThrough: 4, hasNewer: true,
+              durable: [
+                { sequence: 2, message: final },
+                { sequence: 3, message: next },
+              ],
+            }, { direction: 'newer', anchor })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
           },
           close: async () => undefined,
         };
@@ -309,8 +380,8 @@ test('WorkHub does not infer live running when the Session catalog is unavailabl
   }]))[0]?.state, 'recovering');
 });
 
-// Keep the real preload's navigation defaults and filtering in this consumer
-// regression; the IPC stub models the observer's authoritative reset reply.
+// Keep the real preload in this consumer regression; the IPC stub models the
+// observer's authoritative reset reply to a latest command.
 test('WorkHub tail navigation converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async (t) => {
   const owner = {
     hostId: 'owner-host', targetEpoch: 'owner-epoch', profileId: 'local',
@@ -350,12 +421,12 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;
-        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, navigationVersion: 0, durable: [] })) {
+        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, durable: [] })) {
           deliver(batch);
         }
         return { kind: 'ready', value: { ...snapshot, readThroughMessageId: null } };
       }
-      if (channel === 'sessions:transcript:load-around') {
+      if (channel === 'sessions:transcript:load-latest') {
         const request = args[1] as DesktopTranscriptRangeRequest;
         requests.push(request);
         // Bound a regressed request loop so the test reports its cause.
@@ -363,18 +434,14 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
         await new Promise<void>((resolve) => setImmediate(resolve));
         try {
           for (const batch of encodeDesktopTranscriptSnapshot({
-            ...snapshot, navigationVersion: request.navigationVersion,
+            ...snapshot,
             durable: [{ sequence: 7, message }],
-          })) {
+          }, request.navigation)) {
             deliver(batch);
             if (!batch.ready) {
               partialProjectionCounts.push(projections.length);
-              // A rejected ready/reset must not publish a partial valid snapshot
-              // or clear the load guard, even if a caller bypasses preload filtering.
-              deliverDirect?.({
-                ...batch, navigationVersion: 0, fragments: [], ready: true,
-                deliverySequence: ++deliverySequence,
-              });
+              // A batch from another replica generation must not publish a
+              // partial valid snapshot or clear the load guard.
               deliverDirect?.({
                 ...batch, generation: 'unrelated-generation', reset: false, fragments: [], ready: true,
                 deliverySequence: ++deliverySequence,
@@ -435,8 +502,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
     await responseDelivered;
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(requests.length, 1);
-    assert.equal(requests[0]!.navigationVersion, 1);
-    assert.equal(requests[0]!.intent, 'followTail');
+    assert.equal(requests[0]!.navigation, 1);
     assert.equal(requests[0]!.anchorSequence, null);
     assert.deepEqual(partialProjectionCounts, [1, 1]);
     assert.deepEqual(projections, [[], ['latest-message']]);
@@ -485,18 +551,19 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
             sessionId: 'coordination', generation: cached ? 'cached:epoch-1' : `live-${attempt}`,
             hostEpoch: 'epoch-1', durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
           };
-          const deliver = (navigationVersion = 0) => {
+          const deliver = (navigation?: number) => {
             for (const batch of encodeDesktopTranscriptSnapshot({
-              ...snapshot, navigationVersion,
+              ...snapshot,
               durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
-            })) onBatch({ ...batch, deliverySequence: 1 });
+            }, navigation)) onBatch({ ...batch, deliverySequence: 1 });
           };
           deliver();
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...snapshot, readThroughMessageId: null,
-            loadBefore: unavailable, loadAfter: unavailable,
-            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigationVersion),
+            acknowledgeTail: async () => {},
+            loadBefore: unavailable, loadAfter: unavailable, loadLatest: unavailable,
+            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation),
             close: async () => { closedCount++; },
           };
         },
@@ -521,3 +588,77 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
     }
   });
 }
+
+test('WorkHub fills and trims its transcript window through the reader band', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'coordination' });
+  const identity = { sessionId: 'coordination', generation: 'generation-1', hostEpoch: 'epoch-1' };
+  const row = (sequence: number, turnId: string): { sequence: number; message: StoredMessage } => ({
+    sequence, message: { type: 'user', id: `message-${sequence}`, turnId, ts: sequence, text: `Record ${sequence}` },
+  });
+  let deliverySequence = 0;
+  let newerReads = 0;
+  let olderReads = 0;
+  let snapshots: WorkHubTranscriptSnapshot[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...identity, durableThrough: 4, overlay: [], hasOlder: true, hasNewer: true,
+          durable: [row(2, 'turn-a'), row(3, 'turn-b')],
+        })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+        return {
+          ...identity, durableThrough: 4, hasOlder: true, hasNewer: true, readThroughMessageId: 'message-3',
+          acknowledgeTail: async () => {},
+          loadBefore: async () => { olderReads += 1; },
+          loadAround: async () => {},
+          loadLatest: async () => {},
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: number) {
+            newerReads += 1;
+            assert.equal(anchor, 3);
+            for (const batch of encodeDesktopTranscriptPage(
+              { ...identity, navigation },
+              { durableThrough: 4, hasNewer: false, durable: [row(4, 'turn-c')] },
+              { direction: 'newer', anchor },
+            )) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+          },
+          close: async () => undefined,
+        };
+      },
+    } satisfies Pick<MakaBridge['transcripts'], 'open'>,
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const handle = await services.openTranscript(
+    sessionId,
+    (snapshot) => { snapshots.push(snapshot); },
+    new AbortController().signal,
+    (error) => { throw error; },
+  );
+  const latest = () => snapshots.at(-1)!;
+  try {
+    await waitFor(() => latest()?.ready === true, { timeoutMs: 5_000 });
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-a', 'turn-b']);
+    assert.equal(await handle.prefetchHistory('newer'), true);
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-a', 'turn-b', 'turn-c']);
+    assert.equal(latest().hasNewer, false);
+    assert.equal(await handle.prefetchHistory('newer'), false, 'a window at the tail has no newer edge to read');
+    assert.equal(newerReads, 1);
+    assert.equal(await handle.prefetchHistory('older'), true);
+    assert.equal(await handle.prefetchHistory('older'), false, 'the same window answers an older read the same way');
+    assert.equal(olderReads, 1);
+    snapshots = [];
+    handle.retain({ firstTurnId: 'turn-b', lastTurnId: 'turn-c' });
+    assert.deepEqual(latest().messages.map(({ turnId }) => turnId), ['turn-b', 'turn-c']);
+    assert.equal(latest().hasOlder, true, 'a trimmed edge becomes history again');
+    // A trim moves the window, so the edge it re-opened is worth asking again.
+    assert.equal(await handle.prefetchHistory('older'), true);
+    assert.equal(olderReads, 2);
+  } finally {
+    await handle.close();
+  }
+});

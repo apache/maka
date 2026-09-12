@@ -310,16 +310,6 @@ export function WorkHubRoot() {
         }
       >
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
-        {transcript.hasOlder && (
-          <Button
-            label={t.older}
-            variant="ghost"
-            onClick={() => {
-              const task = controller.loadOlder();
-              if (task) call(task);
-            }}
-          />
-        )}
         <div className="workhub-body">
         <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} onOpenSession={(id) => call(services.presentation.openSession(id))} />
         <div className="workhub-conversation-shell">
@@ -330,6 +320,10 @@ export function WorkHubRoot() {
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
+          hasOlderHistory={transcript.hasOlder}
+          hasNewerHistory={transcript.hasNewer}
+          onPrefetchHistory={controller.prefetchHistory}
+          onRetainWindow={controller.retainWindow}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurn={controller.liveTurn}

@@ -18,23 +18,11 @@
  */
 
 /**
- * The prompt rail observes every mounted Turn in the transcript. What that
- * observer is for is Turn identity and order, and a streaming answer delivers
- * several deltas a second that change neither — so a delta must not tear the
- * observer down and rebuild it over the whole conversation.
- *
- * Two things hold that in series: ChatView hands the rail the previous entry
- * array back when no persisted prompt or answer text moved, and the rail keys
- * the observer's lifetime on the Turn id list rather than on its props. Either
- * one alone keeps the count at 1, which is why this asserts the composed
- * outcome the way the deleted E2E case did rather than probing one of them.
- *
- * A probe, not a story: this counts constructions and reads the init a
- * constructor was handed, and both are only observable from before the rail's
- * own observer exists. Installing `IntersectionObserver` on the global here is
- * what makes the positive control real — a story mounting the rail first can
- * only watch the observer it already has, so the `rootMargin` assertion below
- * would pass against any literal.
+ * The rail's current tick is the reading position the scroll authority
+ * publishes — the newest Turn while pinned to the tail, otherwise the Turn
+ * crossing the top of the scrollport — and nothing else. Mounted through the
+ * real layout, because that is what hands the authority the scroller the
+ * reader scrolls.
  */
 
 import assert from 'node:assert/strict';
@@ -47,14 +35,14 @@ import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
-import { PromptAnchorRail, READING_BAND_TOP_PERCENT } from '../prompt-anchor-rail.js';
+import { PromptAnchorRail } from '../prompt-anchor-rail.js';
+import { TranscriptScrollAuthorityProvider } from '../transcript-scroll-authority.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
   document: globalThis.document,
   Element: globalThis.Element,
   HTMLElement: globalThis.HTMLElement,
-  IntersectionObserver: globalThis.IntersectionObserver,
   MutationObserver: globalThis.MutationObserver,
   Node: globalThis.Node,
   ResizeObserver: globalThis.ResizeObserver,
@@ -79,6 +67,8 @@ afterEach(async () => {
 });
 
 const TURN_COUNT = 6;
+const TURN_HEIGHT = 400;
+const SCROLLPORT_HEIGHT = 600;
 
 const activeSession: SessionSummary = {
   id: 'session-rail',
@@ -97,7 +87,7 @@ const activeSession: SessionSummary = {
   permissionMode: 'ask',
 };
 
-function turnMessages(answerText: (index: number) => string): StoredMessage[] {
+function turnMessages(): StoredMessage[] {
   return Array.from({ length: TURN_COUNT }, (_, index): StoredMessage[] => [
     {
       type: 'user',
@@ -111,56 +101,46 @@ function turnMessages(answerText: (index: number) => string): StoredMessage[] {
       id: `assistant-${index}`,
       turnId: `turn-${index}`,
       ts: index * 2 + 1,
-      text: answerText(index),
+      text: '答案',
       modelId: 'claude-sonnet-4-5',
     },
   ]).flat();
 }
 
-interface ObservedInit {
-  root: unknown;
-  rootMargin?: string;
-  threshold?: number | number[];
+function view(messages: StoredMessage[]): ReactElement {
+  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {} } as never);
+  const layout = createElement(ChatSurfaceLayout, {
+    composer: null,
+    children: chat,
+  });
+  const astryx = createElement(AstryxLocaleProvider, { children: layout });
+  return createElement(LocaleProvider, { locale: 'zh-CN', children: astryx });
 }
 
+/** linkedom lays nothing out, so every box this reads is stated here. */
 function harness() {
   const { document, window } = parseHTML('<main id="mount"></main>');
-  const inits: ObservedInit[] = [];
-  class CountingIntersectionObserver {
-    constructor(_callback: IntersectionObserverCallback, init?: IntersectionObserverInit) {
-      inits.push({
-        root: init?.root,
-        rootMargin: init?.rootMargin,
-        threshold: init?.threshold as number | number[] | undefined,
-      });
-    }
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-    takeRecords(): IntersectionObserverEntry[] {
-      return [];
-    }
-  }
+  const viewport = { scrollTop: 0 };
+  const scrollport = {
+    bottom: SCROLLPORT_HEIGHT, height: SCROLLPORT_HEIGHT, left: 0, right: 800, top: 0,
+    width: 800, x: 0, y: 0, toJSON: () => ({}),
+  } satisfies DOMRect;
+  window.Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+    const turnId = this.getAttribute('data-turn-id');
+    if (turnId === null) return scrollport;
+    const top = Number(turnId.split('-')[1]) * TURN_HEIGHT - viewport.scrollTop;
+    return { ...scrollport, top, bottom: top + TURN_HEIGHT, height: TURN_HEIGHT };
+  };
   class InertResizeObserver {
     observe(): void {}
     unobserve(): void {}
     disconnect(): void {}
   }
-  // linkedom lays nothing out, so every box is zero-sized. The rail reads
-  // geometry only to pick which tick is current; the observer it builds to do
-  // that is what this test is about, and a constructor call does not need a
-  // layout to be counted.
-  const rect = {
-    bottom: 600, height: 600, left: 0, right: 800, top: 0, width: 800, x: 0, y: 0,
-    toJSON: () => ({}),
-  } satisfies DOMRect;
-  window.Element.prototype.getBoundingClientRect = () => rect;
   Object.assign(globalThis, {
-    CSS: { supports: () => false },
+    CSS: { supports: () => false, escape: (value: string) => value },
     document,
     Element: window.Element,
     HTMLElement: window.HTMLElement,
-    IntersectionObserver: CountingIntersectionObserver,
     MutationObserver: window.MutationObserver,
     Node: window.Node,
     ResizeObserver: InertResizeObserver,
@@ -179,66 +159,62 @@ function harness() {
   });
   const mount = document.querySelector<HTMLElement>('#mount');
   assert.ok(mount);
-  return { inits, mount };
+  return {
+    mount,
+    window,
+    viewport,
+    /** Give the mounted scroller the geometry a scrolled transcript has. */
+    scroller(): HTMLElement {
+      const element = document.querySelector<HTMLElement>('[data-chat-scroll-container]');
+      assert.ok(element, 'the layout publishes the scroller the authority attaches to');
+      Object.defineProperties(element, {
+        scrollTop: {
+          get: () => viewport.scrollTop,
+          set: (value: number) => { viewport.scrollTop = value; },
+        },
+        scrollHeight: { get: () => TURN_COUNT * TURN_HEIGHT },
+        clientHeight: { get: () => SCROLLPORT_HEIGHT },
+      });
+      return element;
+    },
+  };
 }
 
-function view(messages: StoredMessage[]): ReactElement {
-  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {} } as never);
-  const layout = createElement(ChatSurfaceLayout, {
-    composer: null,
-    children: chat,
-  });
-  const astryx = createElement(AstryxLocaleProvider, { children: layout });
-  return createElement(LocaleProvider, { locale: 'zh-CN', children: astryx });
+function activeTickTurnId(mount: HTMLElement): string | null {
+  return mount.querySelector('.maka-prompt-rail-tick[data-active="true"]')
+    ?.getAttribute('data-prompt-turn-id') ?? null;
 }
 
-test('streaming deltas do not reconstruct the prompt rail observer', async () => {
-  const { inits, mount } = harness();
-  const root = createRoot(mount);
-  mountedRoot = root;
-
-  await act(() => {
-    root.render(view(turnMessages(() => '答案')));
-  });
-  assert.equal(inits.length, 1, 'the rail observes the transcript once on mount');
-
-  // Ten deltas on the tail answer. Every one of them hands ChatView a fresh
-  // message array and fresh turn records — which is exactly the shape that
-  // used to rebuild the observer over the whole transcript per frame.
-  for (let delta = 1; delta <= 10; delta += 1) {
-    await act(() => {
-      root.render(
-        view(
-          turnMessages((index) =>
-            index === TURN_COUNT - 1 ? `答案${'。'.repeat(delta)}` : '答案',
-          ),
-        ),
-      );
-    });
-  }
-  assert.equal(inits.length, 1, `the observer was rebuilt ${inits.length - 1} times`);
-});
-
-test('the rail observes its reading band, not the whole scrollport', async () => {
-  const { inits, mount } = harness();
-  const root = createRoot(mount);
+test('the current tick follows the reading position the authority publishes', async () => {
+  const probe = harness();
+  const root = createRoot(probe.mount);
   mountedRoot = root;
   await act(() => {
-    root.render(view(turnMessages(() => '答案')));
+    root.render(view(turnMessages()));
   });
+  const scroller = probe.scroller();
 
-  const init = inits[0];
-  assert.ok(init);
-  // The band is the top slice of the scrollport, so the bottom inset is its
-  // complement. Both spellings come from one constant; a rail that observed
-  // the whole scrollport would call every Turn on screen "being read".
-  assert.equal(init.rootMargin, `0px 0px -${100 - READING_BAND_TOP_PERCENT}% 0px`);
-  assert.ok(READING_BAND_TOP_PERCENT > 0 && READING_BAND_TOP_PERCENT < 100);
-  // Zero alone reports a boundary touch as an intersection; the second,
-  // positive threshold is what distinguishes real overlap from that.
-  assert.deepEqual(init.threshold, [0, 0.000_001]);
+  // Pinned to the tail, the reader is on the newest Turn.
+  probe.viewport.scrollTop = TURN_COUNT * TURN_HEIGHT - SCROLLPORT_HEIGHT;
+  assert.equal(activeTickTurnId(probe.mount), 'turn-5');
+
+  // The reader takes the transcript to the third Turn's box. A wheel first:
+  // a scroll the reader did not cause leaves the pin, and the newest Turn, alone.
+  await act(() => {
+    const wheel = new probe.window.Event('wheel', { bubbles: true });
+    Object.defineProperty(wheel, 'deltaY', { value: -120 });
+    scroller.dispatchEvent(wheel);
+    probe.viewport.scrollTop = TURN_HEIGHT * 2 + 100;
+    scroller.dispatchEvent(new probe.window.Event('scroll'));
+  });
+  assert.equal(activeTickTurnId(probe.mount), 'turn-2');
+
+  await act(() => {
+    probe.viewport.scrollTop = TURN_HEIGHT * 4;
+    scroller.dispatchEvent(new probe.window.Event('scroll'));
+  });
+  assert.equal(activeTickTurnId(probe.mount), 'turn-4');
 });
-
 
 test('portals unloaded landmarks into the layout host and keeps them actionable', async () => {
   const { mount } = harness();
@@ -252,7 +228,13 @@ test('portals unloaded landmarks into the layout host and keeps them actionable'
     ],
     scrollRef: { current: null },
   });
-  await act(() => root.render(createElement(LocaleProvider, { locale: 'en', children: rail })));
+  // The rail reads its tick from the scroll authority, so the host-less render
+  // still needs one — otherwise this would assert the absence of a rail that
+  // threw rather than one that found no host.
+  await act(() => root.render(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(TranscriptScrollAuthorityProvider, { children: rail }),
+  })));
   assert.equal(mount.querySelector('.maka-prompt-rail'), null, 'no inline rail before a host exists');
   await act(() => root.render(createElement(LocaleProvider, {
     locale: 'en', children: createElement(ChatSurfaceLayout, { composer: null, children: rail }),

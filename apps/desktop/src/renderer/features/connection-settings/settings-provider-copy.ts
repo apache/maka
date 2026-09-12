@@ -136,6 +136,7 @@ const zhCopy = {
     addModelContextWindow: '上下文窗口',
     addModelContextWindowHelp: '服务商模型页给出的最大 token 数。缺少它 Maka 只能按 32k 处理，长对话会被提前截断。',
     addModelContextWindowRequired: '请填写上下文窗口。',
+    contextWindowInputInvalid: '请输入正整数 token 数或 K/M 缩写，例如 128000、128K、1.5M。',
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '此操作不可撤销。',
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
@@ -317,6 +318,7 @@ const zhTwCopy = {
     addModelContextWindow: '上下文視窗',
     addModelContextWindowHelp: '服務商模型頁給出的最大 token 數。缺少它 Maka 只能按 32k 處理，長對話會被提前截斷。',
     addModelContextWindowRequired: '請填寫上下文視窗。',
+    contextWindowInputInvalid: '請輸入正整數 token 數或 K/M 縮寫，例如 128000、128K、1.5M。',
     credentials: '連線', dangerZone: '刪除連線', deleteRowHelp: '此操作不可撤銷。',
     credentialsHelp: '金鑰只儲存在本機。',
     credentialsHelpAccount: '登入權杖只儲存在本機。',
@@ -499,6 +501,7 @@ const enCopy: ProviderSettingsCopy = {
     addModelContextWindowHelp:
       "The maximum token count from the provider's model page. Without it Maka can only assume 32k, and long conversations get truncated early.",
     addModelContextWindowRequired: 'Enter a context window.',
+    contextWindowInputInvalid: 'Enter a positive whole token count or K/M value, such as 128000, 128K, or 1.5M.',
     credentials: 'Connection', dangerZone: 'Delete connection', deleteRowHelp: 'This cannot be undone.',
     credentialsHelp: 'The key stays on this machine.',
     credentialsHelpAccount: 'The sign-in token stays on this machine.',

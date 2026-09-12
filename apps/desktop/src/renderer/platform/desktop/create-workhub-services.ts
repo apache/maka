@@ -50,7 +50,7 @@ async function readDelegatedTurnResult(
     bridge.transcripts.open(
       sessionId,
       (batch) => {
-        if (signal.aborted || !store.accepts(batch)) return;
+        if (signal.aborted) return;
         store.accept(batch);
       },
       (cancel) => {
@@ -246,12 +246,15 @@ export function createDesktopWorkHubServices(
     },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
+      // Every window change commits through the store, a trim included, so
+      // this is the whole of what the surface hears.
+      const unsubscribe = store.subscribe(() => handler(store.snapshot()));
       const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>
         bridge.transcripts.open(
           sessionId,
           (batch) => {
-            if (signal.aborted || !store.accepts(batch)) return;
-            if (store.accept(batch) || batch.ready) handler(store.snapshot());
+            if (signal.aborted) return;
+            store.accept(batch);
           },
           (cancel) => {
             if (signal.aborted) cancel();
@@ -260,14 +263,27 @@ export function createDesktopWorkHubServices(
         ),
         { onError },
       );
-      const cancel = () => { void controller.close(); };
+      const cancel = () => { unsubscribe(); void controller.close(); };
       cancellation.addEventListener('abort', cancel, { once: true });
       if (cancellation.aborted) cancel();
       return {
         observationChanged: controller.observationChanged,
-        loadOlder: () => controller.loadBefore(),
+        prefetchHistory: (edge) =>
+          edge === 'older' ? controller.loadBefore() : controller.loadAfter(),
+        retain: ({ firstTurnId, lastTurnId }) => {
+          // A Turn the band named but the window no longer holds yields null,
+          // which leaves that side of the window unbounded rather than empty.
+          controller.store.retain(
+            controller.store.sequenceForTurn(firstTurnId, 'first'),
+            controller.store.sequenceForTurn(lastTurnId, 'last'),
+          );
+        },
         loadLatest: () => controller.loadLatest(),
-        close: () => { cancellation.removeEventListener('abort', cancel); return controller.close(); },
+        close: () => {
+          cancellation.removeEventListener('abort', cancel);
+          unsubscribe();
+          return controller.close();
+        },
       };
     },
   };
