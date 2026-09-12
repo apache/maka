@@ -27,6 +27,11 @@ import type {
   ClientCapabilityServiceOffer,
 } from '../protocol/index.js';
 
+export interface ClientCapabilityRegistrationOptions {
+  readonly sessionId?: string;
+  readonly timeoutMs?: number;
+}
+
 /** A Client-owned open-world capability provider registered on one Host connection. */
 export interface ClientCapabilityProvider {
   offers(): readonly ClientCapabilityOffer[];

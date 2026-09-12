@@ -25,6 +25,8 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
+import { AcpToolEventMapper } from './tool-event-mapper.js';
 
 type StreamKind = 'text' | 'thinking';
 
@@ -38,17 +40,21 @@ export class AcpSessionEventMapper {
   readonly #sessionId: string;
   readonly #notify: (notification: SessionNotification) => Promise<void>;
   readonly #streams = new Map<string, string>();
+  readonly #tools: AcpToolEventMapper;
   #tail: Promise<unknown> = Promise.resolve();
-  #failure: RequestError | undefined;
+  #failure: unknown;
+  #failed = false;
 
   constructor(options: AcpSessionEventMapperOptions) {
     this.#sessionId = options.sessionId;
     this.#notify = options.notify;
+    this.#tools = new AcpToolEventMapper((update) =>
+      this.#notify({ sessionId: this.#sessionId, update }),
+    );
   }
 
   accept(event: SessionEvent): Promise<void> {
     return this.#enqueue(async () => {
-      if (this.#failure) throw this.#failure;
       switch (event.type) {
         case 'text_delta':
           await this.#acceptText(
@@ -70,6 +76,13 @@ export class AcpSessionEventMapper {
         case 'thinking_complete':
           await this.#acceptText('thinking', event.messageId, event.text);
           break;
+        case 'tool_start':
+        case 'tool_output_delta':
+        case 'tool_progress':
+        case 'tool_result_preview':
+        case 'tool_result':
+          await this.#tools.accept(event);
+          break;
         default:
           break;
       }
@@ -77,19 +90,45 @@ export class AcpSessionEventMapper {
   }
 
   replaceTranscript(turnId: string, messages: readonly StoredMessage[]): Promise<void> {
+    return this.acceptTranscriptMessages(turnId, messages);
+  }
+
+  /** Apply a bounded authoritative batch; absence from one batch never removes a tool. */
+  acceptTranscriptMessages(turnId: string, messages: readonly StoredMessage[]): Promise<void> {
     return this.#enqueue(async () => {
-      if (this.#failure) throw this.#failure;
       for (const message of messages) {
-        if (message.turnId !== turnId || message.type !== 'assistant') continue;
-        await this.#acceptText('thinking', message.id, message.thinking?.text ?? '');
-        await this.#acceptText('text', message.id, message.text);
+        if (message.turnId !== turnId) continue;
+        if (message.type === 'assistant') {
+          await this.#acceptText('thinking', message.id, message.thinking?.text ?? '');
+          await this.#acceptText('text', message.id, message.text);
+        } else await this.#tools.acceptMessage(message);
       }
     });
   }
 
+  finishTools(
+    turnId: string,
+    terminalStatus: 'completed' | 'failed' | 'cancelled' = 'completed',
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.finishTools(turnId, terminalStatus));
+  }
+
+  pendingInteraction(pending: InteractionPendingSnapshot): Promise<void> {
+    return this.#enqueue(() => this.#tools.pendingInteraction(pending));
+  }
+
+  resolvedInteraction(
+    resolved: InteractionSnapshot,
+    pending: InteractionPendingSnapshot,
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.resolvedInteraction(resolved, pending));
+  }
+
   /** Waits until every notification already accepted by this mapper has settled. */
   flush(): Promise<void> {
-    return this.#tail.then(() => undefined);
+    return this.#tail.then(() => {
+      if (this.#failed) throw this.#failure;
+    });
   }
 
   async #acceptText(kind: StreamKind, hostMessageId: string, nextText: string): Promise<void> {
@@ -115,7 +154,16 @@ export class AcpSessionEventMapper {
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#tail.then(operation, operation);
+    const result = this.#tail.then(async () => {
+      if (this.#failed) throw this.#failure;
+      try {
+        return await operation();
+      } catch (error) {
+        this.#failure = error;
+        this.#failed = true;
+        throw error;
+      }
+    });
     this.#tail = result.then(
       () => undefined,
       () => undefined,

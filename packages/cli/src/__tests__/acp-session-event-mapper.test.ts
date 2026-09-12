@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { InteractionPendingSnapshot } from '@maka/runtime-host/protocol';
 import { AcpSessionEventMapper } from '../acp/session-event-mapper.js';
 
 describe('ACP Session event mapper', () => {
@@ -167,7 +168,384 @@ describe('ACP Session event mapper', () => {
     assert.equal(flushed, true);
     await accepting;
   });
+
+  test('replaces cumulative tool content, deduplicates output sequences and preserves stream/redaction', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(toolOutput('tool', 2, 'second', 'stderr', true));
+    await mapper.accept(toolOutput('tool', 1, 'first'));
+    await mapper.accept(toolOutput('tool', 2, 'second', 'stderr', true));
+    await mapper.accept(
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool',
+        toolName: 'Bash',
+        args: undefined,
+        argsPreview: { command: 'pwd' },
+        activityKind: 'command',
+      }),
+    );
+    const calls = notifications.filter(({ update }) => update.sessionUpdate === 'tool_call');
+    assert.equal(calls.length, 1);
+    assert.equal(notifications.length, 3);
+    const update = toolUpdate(notifications.at(-1)!);
+    assert.equal(update.kind, 'execute');
+    assert.equal('rawInput' in update, false);
+    assert.match(toolText(notifications.at(-1)!), /Input preview \(not full input\)/);
+    assert.ok(
+      toolText(notifications.at(-1)!).indexOf('first') <
+        toolText(notifications.at(-1)!).indexOf('second'),
+    );
+    assert.match(toolText(notifications.at(-1)!), /\[stderr\] \[redacted\] second/);
+  });
+
+  test('an omitted result preserves live content until authoritative transcript replacement', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(toolOutput('tool', 1, 'transient output'));
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        contentOmitted: true,
+        isError: false,
+        durationMs: 42,
+        content: { kind: 'text', text: '' },
+      }),
+    );
+    const omitted = toolUpdate(notifications.at(-1)!);
+    assert.equal(omitted.status, 'completed');
+    assert.equal('content' in omitted, false);
+    assert.equal('rawOutput' in omitted, false);
+    await mapper.acceptTranscriptMessages('turn-1', [
+      {
+        type: 'tool_result',
+        id: 'result',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'tool',
+        isError: false,
+        durationMs: 42,
+        content: { kind: 'text', text: 'authoritative result' },
+      },
+    ]);
+    assert.equal(toolText(notifications.at(-1)!), 'authoritative result');
+    assert.deepEqual(toolUpdate(notifications.at(-1)!).rawOutput, {
+      kind: 'text',
+      text: 'authoritative result',
+    });
+    const count = notifications.length;
+    await mapper.accept(toolOutput('tool', 3, 'late output'));
+    await mapper.accept(
+      event({
+        type: 'tool_result_preview',
+        toolUseId: 'tool',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          childSessionId: 'child',
+          agentName: 'Worker',
+          turnId: 'child-turn',
+          status: 'running',
+          permissionMode: 'ask',
+        },
+      }),
+    );
+    await mapper.finishTools('turn-1');
+    assert.equal(notifications.length, count);
+  });
+
+  test('result before start creates one terminal card and late start only fills identity', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: true,
+        content: { kind: 'text', text: 'failed' },
+        durationMs: 13,
+      }),
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool',
+        toolName: 'Read',
+        args: { path: '/workspace/readme' },
+        activityKind: 'read',
+      }),
+    );
+    assert.equal(
+      notifications.filter(({ update }) => update.sessionUpdate === 'tool_call').length,
+      1,
+    );
+    const update = toolUpdate(notifications.at(-1)!);
+    assert.equal(update.title, 'Read');
+    assert.equal(update.status, 'failed');
+    assert.equal('content' in update, false);
+    assert.equal((update._meta?.maka as { durationMs: number } | undefined)?.durationMs, 13);
+  });
+
+  test('progress and preview replace a snapshot containing earlier output without ending a tool', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(toolOutput('tool', 1, 'working'));
+    await mapper.accept(event({ type: 'tool_progress', toolUseId: 'tool', chunk: 'steps:1/3' }));
+    await mapper.accept(
+      event({
+        type: 'tool_result_preview',
+        toolUseId: 'tool',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          childSessionId: 'child',
+          agentName: 'Worker',
+          turnId: 'child-turn',
+          status: 'running',
+          permissionMode: 'ask',
+        },
+      }),
+    );
+    assert.match(toolText(notifications.at(-1)!), /working/);
+    assert.match(toolText(notifications.at(-1)!), /Progress: steps:1\/3/);
+    assert.match(toolText(notifications.at(-1)!), /Preview:.*Worker/);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'in_progress');
+    await mapper.finishTools('turn-1', 'failed');
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'failed');
+    assert.match(toolText(notifications.at(-1)!), /without a result/);
+  });
+
+  test('does not label projected stored inputs as complete raw input', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    for (const toolName of ['WriteStdin', 'todo_write']) {
+      await mapper.acceptTranscriptMessages('turn-1', [
+        {
+          type: 'tool_call',
+          id: toolName,
+          turnId: 'turn-1',
+          ts: 1,
+          toolName,
+          args: { inputPreview: { text: 'safe', bytes: 4, truncated: false } },
+        },
+      ]);
+      assert.equal('rawInput' in toolUpdate(notifications.at(-1)!), false);
+    }
+  });
+
+  test('bounds live output, terminal content and raw output, including multibyte truncation', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    await mapper.accept(toolOutput('tool', 1, '😀'.repeat(40_000)));
+    assert.match(toolText(notifications.at(-1)!), /truncated/);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        content: { kind: 'text', text: '😀'.repeat(40_000) },
+      }),
+    );
+    const update = toolUpdate(notifications.at(-1)!);
+    assert.ok(toolText(notifications.at(-1)!).length <= 64 * 1024);
+    assert.equal('rawOutput' in update, false);
+    assert.match(toolText(notifications.at(-1)!), /Result truncated/);
+    assert.equal(
+      Buffer.from(toolText(notifications.at(-1)!)).toString('utf8'),
+      toolText(notifications.at(-1)!),
+    );
+  });
+
+  test('enforces the aggregate live-tool budget with a sticky projection failure', async () => {
+    const mapper = eventMapper([]);
+    for (let i = 0; i < 16; i += 1)
+      await mapper.accept(toolOutput(`tool-${i}`, 1, 'x'.repeat(64 * 1024)));
+    await assert.rejects(mapper.accept(toolOutput('tool-17', 1, 'x')), {
+      data: { source: 'adapter', code: 'tool_presentation_capacity' },
+    });
+    await assert.rejects(mapper.flush(), {
+      data: { source: 'adapter', code: 'tool_presentation_capacity' },
+    });
+  });
+
+  test('requires the authoritative result promised by an omitted terminal event', async () => {
+    const mapper = eventMapper([]);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        contentOmitted: true,
+        content: { kind: 'text', text: '' },
+      }),
+    );
+    await assert.rejects(mapper.finishTools('turn-1'), {
+      data: { source: 'adapter', code: 'tool_result_missing' },
+    });
+  });
+
+  test('a completed turn also rejects a started tool whose result event was entirely missing', async () => {
+    const mapper = eventMapper([]);
+    await mapper.accept(
+      event({ type: 'tool_start', toolUseId: 'tool', toolName: 'Read', args: undefined }),
+    );
+    await assert.rejects(mapper.finishTools('turn-1', 'completed'), {
+      data: { source: 'adapter', code: 'tool_result_missing' },
+    });
+  });
+
+  test('notification failure remains visible through flush and suppresses later delivery', async () => {
+    let notifications = 0;
+    const failure = new Error('transport failed');
+    const mapper = new AcpSessionEventMapper({
+      sessionId: 'session-1',
+      notify: async () => {
+        notifications += 1;
+        throw failure;
+      },
+    });
+    await assert.rejects(
+      mapper.accept(toolOutput('tool', 1, 'first')),
+      (error) => error === failure,
+    );
+    await assert.rejects(mapper.flush(), (error) => error === failure);
+    await assert.rejects(
+      mapper.accept(toolOutput('tool', 2, 'second')),
+      (error) => error === failure,
+    );
+    assert.equal(notifications, 1);
+  });
+
+  test('keeps only bounded terminal identities and rejects the next distinct tool', async () => {
+    const mapper = new AcpSessionEventMapper({ sessionId: 'session-1', notify: async () => {} });
+    for (let index = 0; index < 4096; index += 1) {
+      await mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: `tool-${index}`,
+          isError: false,
+          content: { kind: 'text', text: 'done' },
+        }),
+      );
+    }
+    await assert.rejects(
+      mapper.accept(
+        event({
+          type: 'tool_result',
+          toolUseId: 'overflow',
+          isError: false,
+          content: { kind: 'text', text: 'done' },
+        }),
+      ),
+      { data: { source: 'adapter', code: 'tool_presentation_capacity' } },
+    );
+  });
+
+  test('repeated authoritative results and stale omitted events do not repeat terminal content', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    const result = event({
+      type: 'tool_result',
+      toolUseId: 'tool',
+      isError: false,
+      content: { kind: 'text', text: 'done' },
+    });
+    await mapper.accept(result);
+    await mapper.accept(result);
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: false,
+        contentOmitted: true,
+        content: { kind: 'text', text: '' },
+      }),
+    );
+    assert.equal(notifications.length, 1);
+  });
+
+  test('interaction updates preserve Host closure reasons without reopening terminal tools', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    const pending: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'interaction',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: { kind: 'question', toolUseId: 'tool', questions: [] },
+    };
+    await mapper.pendingInteraction(pending);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'pending');
+    await mapper.resolvedInteraction(
+      {
+        ...pending,
+        revision: 2,
+        status: 'closed',
+        outcome: { kind: 'closure', reason: 'provider_disconnected', committedAt: 2 },
+      },
+      pending,
+    );
+    assert.equal(
+      (
+        toolUpdate(notifications.at(-1)!)._meta?.maka as
+          | { interaction: { reason: string } }
+          | undefined
+      )?.interaction.reason,
+      'provider_disconnected',
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: true,
+        content: { kind: 'text', text: 'closed' },
+      }),
+    );
+    const count = notifications.length;
+    await mapper.pendingInteraction(pending);
+    assert.equal(notifications.length, count);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'failed');
+  });
 });
+
+function toolOutput(
+  toolUseId: string,
+  seq: number,
+  chunk: string,
+  stream: 'stdout' | 'stderr' = 'stdout',
+  redacted = false,
+): SessionEvent {
+  return event({
+    type: 'tool_output_delta',
+    sessionId: 'session-1',
+    toolUseId,
+    toolCallId: toolUseId,
+    seq,
+    chunk,
+    stream,
+    redacted,
+    createdAt: 1,
+  });
+}
+
+function toolUpdate(notification: SessionNotification) {
+  const update = notification.update;
+  assert.ok(update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update');
+  return update;
+}
+
+function toolText(notification: SessionNotification): string {
+  return (toolUpdate(notification).content ?? [])
+    .map((entry) =>
+      entry.type === 'content' && entry.content.type === 'text' ? entry.content.text : '',
+    )
+    .join('\n');
+}
 
 function eventMapper(notifications: SessionNotification[]): AcpSessionEventMapper {
   return new AcpSessionEventMapper({

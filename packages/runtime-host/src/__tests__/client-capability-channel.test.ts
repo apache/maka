@@ -22,6 +22,76 @@ import { test } from 'node:test';
 import { ClientCapabilityChannel } from '../client/client-capability-channel.js';
 import type { ClientCapabilityProvider } from '../client/client-capability.js';
 
+test('Session registrations mutate independently and reject reverse calls for another Session', async () => {
+  const replacements = new Map<string, string>();
+  const removals: string[] = [];
+  const written: unknown[] = [];
+  let providerCalls = 0;
+  let finishFirst!: () => void;
+  const firstPending = new Promise<void>((resolve) => {
+    finishFirst = resolve;
+  });
+  const provider: ClientCapabilityProvider = {
+    offers: () => [
+      {
+        offerId: 'fixture',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'none',
+        admission: 'mcp',
+        label: 'Fixture',
+        tools: [{ serverId: 'fixture', name: 'echo', inputSchema: { type: 'object' } }],
+      },
+    ],
+    call: async () => {
+      providerCalls += 1;
+      return { content: [] };
+    },
+  };
+  const channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      written.push(frame);
+    },
+    replace: async (input) => {
+      replacements.set(input.sessionId!, input.registrationId);
+      if (input.sessionId === 'a') await firstPending;
+      return { registrationId: input.registrationId, revision: 1 };
+    },
+    unregister: async (input) => {
+      removals.push(input.registrationId);
+      return { registrationId: input.registrationId, revision: 2 };
+    },
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+  const first = channel.replace(provider, 1_000, 'a');
+  await assert.rejects(() => channel.replace(provider, 1_000, 'a'), /mutation is already pending/);
+  await channel.replace(provider, 1_000, 'b');
+  await channel.unregister(1_000, 'b');
+  assert.deepEqual(removals, [replacements.get('b')]);
+  finishFirst();
+  await first;
+  channel.accept({
+    kind: 'client.capability.call',
+    invocationId: 'wrong-target',
+    registrationId: replacements.get('a')!,
+    offerId: 'fixture',
+    serverId: 'fixture',
+    toolName: 'echo',
+    arguments: {},
+    sessionId: 'b',
+    turnId: 'turn',
+    toolCallId: 'tool',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(providerCalls, 0);
+  assert.equal((written[0] as { kind?: string }).kind, 'client.capability.rejected');
+  await channel.unregister(1_000, 'a');
+  assert.deepEqual(removals, [replacements.get('b'), replacements.get('a')]);
+  channel.close(new Error('closed'));
+});
+
 test('Client Capability channel closes a provider after its final registration is released', async () => {
   let closeCalls = 0;
   const replacements: string[] = [];

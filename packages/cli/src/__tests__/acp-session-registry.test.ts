@@ -36,6 +36,7 @@ import {
   RuntimeHostRequestInterruptedError,
   RuntimeHostSubscriptionError,
   type RuntimeHostSessionSubscription,
+  type DecodedSessionTranscriptPage,
 } from '@maka/runtime-host/client';
 import {
   SESSION_CATALOG_CWD_MAX_BYTES,
@@ -43,6 +44,8 @@ import {
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
+  type SessionTranscriptPage,
+  type SessionTranscriptPageInput,
 } from '@maka/runtime-host/protocol';
 import { AcpSessionRegistry, type AcpSessionRegistryConnection } from '../acp/session-registry.js';
 
@@ -450,6 +453,168 @@ describe('ACP Session registry', () => {
     await registry.dispose();
     assert.equal(subscription.closeCalls, 1);
   });
+
+  for (const scenario of [
+    'complete',
+    'notification-failure',
+    'cancel',
+    'host-failure',
+    'host-abort',
+  ] as const) {
+    test(`tool reconciliation through the real Session channel handles ${scenario}`, async () => {
+      const sessionId = `session-tool-${scenario}`;
+      const turn = runningTurn(sessionId, 'turn-tool');
+      const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+      const pageGate = deferred<void>();
+      const deliveryGate = deferred<void>();
+      subscription.transcriptPageGate = pageGate.promise;
+      let subscriptionOpens = 0;
+      let stopped = 0;
+      let terminalDeliveryStarted = false;
+      let settled = false;
+      const completesNormally = scenario === 'complete' || scenario === 'notification-failure';
+      const notifications: SessionNotification[] = [];
+      const registry = new AcpSessionRegistry({
+        connect: async () =>
+          fakeConnection({
+            request: async (operation) => {
+              if (operation === 'session.create') return catalogSession(sessionId);
+              if (operation === 'turn.start') {
+                subscription.setRoot(turn);
+                subscription.appendToolResult(turn.turnId, turn.runId, 'tool');
+                subscription.publishTranscript([
+                  {
+                    type: 'tool_result',
+                    id: 'stored-result',
+                    turnId: turn.turnId,
+                    ts: 2,
+                    toolUseId: 'tool',
+                    isError: false,
+                    content: { kind: 'text', text: 'authoritative result' },
+                  },
+                  ...(!completesNormally
+                    ? []
+                    : [
+                        {
+                          type: 'turn_state' as const,
+                          id: 'stored-terminal',
+                          turnId: turn.turnId,
+                          ts: 3,
+                          status: 'completed' as const,
+                        },
+                      ]),
+                ]);
+                if (completesNormally) subscription.setRoot(completedTurn(sessionId, turn.turnId));
+                return {
+                  kind: 'started',
+                  turn,
+                  skillInvocation: { loaded: [], failed: [], receipts: [] },
+                };
+              }
+              if (operation === 'turn.stop') {
+                stopped += 1;
+                subscription.setRoot({
+                  ...turn,
+                  status: 'cancelled',
+                  terminalEventId: 'cancelled',
+                  abortSource: 'user',
+                });
+                return {};
+              }
+              throw new Error(`Unexpected operation ${operation}`);
+            },
+            openSessionSubscriptionOnce: async () => {
+              subscriptionOpens += 1;
+              return subscription;
+            },
+            openSessionSubscription: async () => {
+              throw new Error('Reconciliation must not open another subscription');
+            },
+          }),
+        newSessionId: () => sessionId,
+        newTurnId: () => turn.turnId,
+      });
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const prompt = registry.prompt(
+        { sessionId, prompt: [{ type: 'text', text: 'use the tool' }] },
+        {
+          signal: new AbortController().signal,
+          notify: async (notification) => {
+            if (
+              (notification.update.sessionUpdate === 'tool_call' ||
+                notification.update.sessionUpdate === 'tool_call_update') &&
+              notification.update.rawOutput !== undefined
+            ) {
+              terminalDeliveryStarted = true;
+              if (scenario === 'notification-failure')
+                throw new Error('terminal notification rejected');
+              await deliveryGate.promise;
+            }
+            notifications.push(notification);
+          },
+        },
+      );
+      void prompt.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await waitFor(() => subscription.transcriptPageReads > 0);
+      assert.equal(settled, false);
+      if (scenario === 'cancel') {
+        await registry.cancel({ sessionId });
+        assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+        assert.equal(stopped, 1);
+        pageGate.resolve();
+        deliveryGate.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(terminalDeliveryStarted, false);
+      } else if (scenario === 'host-failure' || scenario === 'host-abort') {
+        subscription.setRoot(
+          scenario === 'host-failure'
+            ? {
+                ...turn,
+                status: 'failed',
+                terminalEventId: 'failed',
+                failureClass: 'provider_failure',
+              }
+            : {
+                ...turn,
+                status: 'cancelled',
+                terminalEventId: 'aborted',
+                abortSource: 'host',
+              },
+        );
+        assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+        assert.equal(stopped, 0);
+        pageGate.resolve();
+        deliveryGate.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(terminalDeliveryStarted, false);
+      } else {
+        pageGate.resolve();
+        await waitFor(() => terminalDeliveryStarted);
+        if (scenario === 'complete') {
+          assert.equal(settled, false);
+          deliveryGate.resolve();
+          assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+          assert.ok(
+            notifications.some(
+              ({ update }) =>
+                (update.sessionUpdate === 'tool_call_update' ||
+                  update.sessionUpdate === 'tool_call') &&
+                update.rawOutput !== undefined,
+            ),
+          );
+        } else await assert.rejects(prompt);
+      }
+      assert.equal(subscriptionOpens, 1);
+      await registry.dispose();
+    });
+  }
 
   test('latches cancellation while the real Session subscription is opening', async () => {
     const sessionId = 'session-cancel-before-attach';
@@ -2277,6 +2442,10 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   #failure: Error | undefined;
   closeCalls = 0;
   nextCalls = 0;
+  transcriptPageReads = 0;
+  transcriptPageGate?: Promise<void>;
+  #liveTranscript: StoredMessage[] = [];
+  readonly #decodedPages = new WeakMap<SessionTranscriptPage, readonly StoredMessage[]>();
 
   constructor(
     public snapshot: SessionContinuitySnapshot,
@@ -2347,6 +2516,37 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     });
   }
 
+  appendToolResult(turnId: string, runId: string, toolUseId: string): void {
+    this.push({
+      kind: 'subscription.session_event',
+      hostEpoch: this.hostEpoch,
+      subscriptionId: this.subscriptionId,
+      sequence: ++this.#sequence,
+      sessionId: this.snapshot.session.sessionId,
+      runId,
+      event: {
+        type: 'tool_result',
+        id: `tool-result-${toolUseId}`,
+        turnId,
+        ts: 2,
+        toolUseId,
+        status: 'completed',
+      },
+    });
+  }
+
+  publishTranscript(messages: StoredMessage[]): void {
+    this.#liveTranscript = messages;
+    this.push({
+      kind: 'subscription.transcript_advanced',
+      hostEpoch: this.hostEpoch,
+      subscriptionId: this.subscriptionId,
+      sequence: ++this.#sequence,
+      sessionId: this.snapshot.session.sessionId,
+      throughSequence: messages.length * 8 + 7,
+    });
+  }
+
   project(overrides: Partial<SessionContinuitySnapshot>): void {
     this.snapshot = {
       ...this.snapshot,
@@ -2375,12 +2575,38 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return [];
   }
 
-  async decodeTranscriptPage(): Promise<never> {
-    throw new Error('Fake subscription does not expose transcript pages');
+  async decodeTranscriptPage<T>(
+    page: SessionTranscriptPage,
+    decodeMessage: (value: unknown) => T,
+  ): Promise<DecodedSessionTranscriptPage<T>> {
+    return {
+      messages: (this.#decodedPages.get(page) ?? []).map((message, index) => ({
+        identity: index * 8,
+        message: decodeMessage(message),
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
 
-  async loadTranscriptPage(): Promise<never> {
-    throw new Error('Fake subscription does not expose transcript pages');
+  async loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
+  ): Promise<SessionTranscriptPage> {
+    this.transcriptPageReads += 1;
+    await this.transcriptPageGate;
+    const page: SessionTranscriptPage = {
+      kind: 'page',
+      sessionId: this.snapshot.session.sessionId,
+      source: input.source,
+      direction: input.direction,
+      throughSequence: input.throughSequence,
+      rawBytes: 0,
+      fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor: null,
+    };
+    this.#decodedPages.set(page, this.#liveTranscript);
+    return page;
   }
 
   async close(): Promise<void> {
