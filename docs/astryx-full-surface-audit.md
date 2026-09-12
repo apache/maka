@@ -39,7 +39,9 @@ Scope: every product surface under `apps/desktop/src/renderer/**` and `packages/
 
 This pass **read and analyzed** settings pages/modules, shell/chat/workbar/panels, module hubs, packages/ui compositions, and product CSS — not only inventory scripts.
 
-## Verdict
+> **Historical audit record.** The 183-file totals, status table, fix list, and backlog below belong to the named branch and date. They are not current coverage or an open-work queue. On 2026-09-05, `npm run astryx:surface-inventory` verified the generated [file-level inventory](./astryx-surface-file-inventory.md) at 249 files, 0 blockers, 0 reimplementations, 1 polish item, and 248 aligned files. The remaining polish row is `packages/ui/src/composer-message-queue.tsx`.
+
+## Verdict at the audited commit
 
 | Layer | State |
 |-------|--------|
@@ -90,10 +92,10 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 4. **Tool / agent / web-search preview cards** — product transcript content chrome, not generic controls.
 5. **DeepResearchProgressPanel** — product progress composition; kit-ify is a dedicated design task.
 6. **Quote chip / turn footer CSS** — still product-geometry overrides on Astryx controls; shrink chrome gradually.
-7. **Logo 44 / swatch 34 / session-context 40** — decorative or band heights, not control rhythm 28/32/36.
+7. **Logo 44 / swatch 34 / session-context 40** — this pass treated them as decorative or band heights. The follow-up review recorded them as the four concrete inventory polish rows and normalized them to 36/36/32; they are not a current exception.
 8. **ChatReasoning / markdown density contracts** — documented product overrides.
 
-## Remaining backlog (priority)
+## Remaining backlog at the audited commit (historical)
 
 ### P1 — visual system
 
@@ -113,9 +115,9 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 
 - shrink `.maka-quote-chip-remove` / `.maka-turn-footer-action` / lineage badge overrides.
 - retire dead tool-terminal CSS if unused.
-- inventory polish false-positives for logo/swatch heights.
+- ~~inventory polish false-positives for logo/swatch heights.~~ Resolved by the follow-up review as real polish rows and normalized to the shared rhythm.
 
-## Method
+## Original method
 
 1. Regenerated path inventory (183 files).
 2. Pattern scan: raw controls, role=button, hand empties, role=alert.
