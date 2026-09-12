@@ -190,7 +190,7 @@ export function useChatScroll(input: {
           // Chaining pages needs a re-check here, because the render that the
           // landed rows caused ran while this direction still counted as in
           // flight. A prefetch that issued no read has nothing to chain from.
-          (issued) => { inFlight[direction] = false; if (issued) check(); },
+          (issued) => { inFlight[direction] = false; if (issued && !authority.isInputActive()) check(); },
           () => { inFlight[direction] = false; },
         );
     };
@@ -201,6 +201,9 @@ export function useChatScroll(input: {
       const below = root.scrollHeight - root.clientHeight - root.scrollTop;
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
+      // Source pages may have arrived without entering the DOM yet. Its old
+      // IDs cannot trim that source; settled rechecks after publication.
+      if (authority.isInputActive()) return;
       if (above <= screen * 6 && below <= screen * 6) return;
       const rect = root.getBoundingClientRect();
       const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];
@@ -226,7 +229,12 @@ export function useChatScroll(input: {
     bandCheck.current = check;
     // Both phases matter: a gesture at an edge moves nothing and so reports
     // only `input`, and that is exactly where the next page is wanted.
-    const stopWatchingReader = authority.subscribeToReaderScroll(() => check());
+    const stopWatchingReader = authority.subscribeToReaderScroll((phase, direction) => {
+      check();
+      // An existing fill also satisfies this request. Preserve the gesture
+      // while giving the authority the intent that pixels alone cannot tell.
+      return phase === 'input' && direction === 'up' && canLoad('up');
+    });
     // A resize redefines the band itself — the screen it counts in is the
     // root's own height — while the reader and the messages stand still. The
     // authority publishes only when its snapshot changes, so a resize that

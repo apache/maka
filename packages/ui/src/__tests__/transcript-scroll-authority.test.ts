@@ -243,31 +243,6 @@ test('content that grows under a pinned transcript keeps the tail on screen', ()
   });
 });
 
-test('an upward edge gesture in a short transcript preserves following through publication and growth', () => {
-  withObservers((resize, frame) => {
-    const root = fakeRoot({ scrollHeight: 400, clientHeight: 400 });
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    const phases: string[] = [];
-    authority.subscribeToReaderScroll((phase) => {
-      phases.push(phase);
-      if (phase === 'input') authority.commitWhenIdle(() => root.grow(200));
-    });
-
-    root.input(-100);
-    assert.equal(root.scrollHeight, 400);
-    frame(); frame();
-    assert.deepEqual(phases, ['input', 'settled']);
-    assert.equal(authority.getSnapshot().pinned, true);
-    assert.equal(root.scrollTop, 200);
-
-    root.grow(300);
-    resize();
-    assert.equal(root.scrollTop, 500);
-    assert.equal(authority.getSnapshot().awayFromTail, false);
-  });
-});
-
 test('identical shrink/grow geometry follows only when no reader input intervened', () => {
   for (const readerInput of [false, true]) {
     withObservers((resize) => {

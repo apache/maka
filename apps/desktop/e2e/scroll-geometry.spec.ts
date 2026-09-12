@@ -168,6 +168,12 @@ test('native thumb keeps its geometry and releases history without moving the re
           const held = state.frames.find((frame: any) => frame.held);
           const released = state.frames.filter((frame: any) => !frame.held && frame.anchorTop !== undefined);
           return released.length > 2 && released.some((frame: any) => frame.range !== held.range);
+        }).catch(async (error) => {
+          await test.info().attach('scroll-geometry-frames', {
+            body: JSON.stringify(await page.evaluate(() => (window as any).__windowGeometry)),
+            contentType: 'application/json',
+          });
+          throw error;
         });
         await page.evaluate(() => new Promise<void>((resolve) =>
           requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -178,6 +184,10 @@ test('native thumb keeps its geometry and releases history without moving the re
           return state;
         });
         const held = result.frames.filter((f: any) => f.held);
+        await test.info().attach('scroll-geometry-frames', {
+          body: JSON.stringify(result),
+          contentType: 'application/json',
+        });
         const heightDrift =
           Math.max(...held.map((f: any) => f.h)) - Math.min(...held.map((f: any) => f.h));
         const ranges = new Set(held.map((f: any) => f.range));

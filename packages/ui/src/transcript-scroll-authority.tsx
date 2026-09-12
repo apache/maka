@@ -61,6 +61,8 @@ export interface TranscriptScrollSnapshot {
 }
 
 export interface TranscriptScrollAuthority {
+  /** Whether native input still holds the published geometry. */
+  isInputActive(): boolean;
   /** Publish the newest resident range after the current input operation ends. */
   commitWhenIdle(commit: () => void): void;
   /** Take the scroller. Returns the detach for the effect that called it. */
@@ -77,8 +79,10 @@ export interface TranscriptScrollAuthority {
    * the resulting reading position; settled rechecks the final edge after a
    * gesture. No phase is emitted for layout alone;
    * consumers do not interpret raw wheel or scroll events themselves.
+   * Returning true from input accepts history-reading intent, even at an
+   * unmoving edge. The window owner knows whether adjacent history exists.
    */
-  subscribeToReaderScroll(listener: (phase: 'input' | 'scroll' | 'settled') => void): () => void;
+  subscribeToReaderScroll(listener: (phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down') => boolean | void): () => void;
   /**
    * The reading position, measured now and published like any other move. For
    * a caller that has just moved the viewport or the content itself and cannot
@@ -115,11 +119,12 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let touchHeld = false;
   const commitRange = (commit: () => void): void => {
     const target = root;
-    if (!target || pinned) { commit(); return; }
+    if (!target) { commit(); return; }
+    if (pinned) { flushSync(commit); writeToTail(); return; }
     const top = target.getBoundingClientRect().top;
     const anchor = [...target.querySelectorAll<HTMLElement>('[data-turn-id]')]
       .find((turn) => turn.getBoundingClientRect().bottom > top);
-    if (!anchor) { commit(); return; }
+    if (!anchor) { flushSync(commit); return; }
     const before = anchor.getBoundingClientRect().top;
     // A gap notice is a poor native anchor: it survives a range replacement
     // while the paragraph beneath it moves. Restore a content Turn once, with
@@ -142,7 +147,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
   const listeners = new Set<() => void>();
-  const readerListeners = new Set<(phase: 'input' | 'scroll' | 'settled') => void>();
+  const readerListeners = new Set<(phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down') => boolean | void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
   const readTurn = (): string | undefined => {
@@ -168,14 +173,21 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     awayFromTail = false;
     publish();
   };
-  const reportReader = (phase: 'input' | 'scroll' | 'settled'): void => {
-    for (const listener of [...readerListeners]) listener(phase);
+  const reportReader = (phase: 'input' | 'scroll' | 'settled', direction?: 'up' | 'down'): boolean => {
+    let readingHistory = false;
+    for (const listener of [...readerListeners]) {
+      if (listener(phase, direction) === true) readingHistory = true;
+    }
+    return readingHistory;
   };
 
   return {
+    isInputActive: () => gesture !== undefined || pointer !== undefined || touchHeld,
     commitWhenIdle(commit) {
       pendingCommit = commit;
-      flushCommit();
+      // Callers include React effects. Leave that lifecycle, then admit and
+      // commit synchronously so React cannot carry an idle update into input.
+      queueMicrotask(flushCommit);
     },
     attach(next) {
       root = next;
@@ -190,13 +202,16 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (remaining <= 0) {
           // An edge gesture can ask for an adjacent history page even though
           // it produces no scroll (and therefore no scrollend).
-          reportReader('input');
+          if (reportReader('input', direction)) {
+            pinned = false;
+            publish();
+          }
           onScrollEnd();
           return;
         }
         pinned = false;
         publish();
-        reportReader('input');
+        reportReader('input', direction);
       };
       const onWheel = (event: WheelEvent): void => {
         if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
@@ -368,7 +383,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pointer = undefined;
       touchHeld = false;
       pinned = true;
-      flushCommit();
+      queueMicrotask(flushCommit);
       writeToTail();
       publish();
     },
@@ -377,7 +392,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pinned = false;
       // Commands can originate in a React effect. Publish before their next
       // positioning frame, outside React's lifecycle, if a range is pending.
-      if (pendingCommit) requestAnimationFrame(flushCommit);
+      if (pendingCommit) queueMicrotask(flushCommit);
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },

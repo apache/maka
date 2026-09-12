@@ -543,6 +543,38 @@ describe('composer first-send cleanup', () => {
     }
   });
 
+  it('refresh waits for durable messages without bypassing range publication', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    let directPublications = 0;
+    let durable = false;
+    const durableAnswer = { id: 'answer' };
+    let publishedAnswer = { id: 'answer' };
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      waitForDurableMessage: async () => { durable = true; return true; },
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [durableAnswer] }),
+        hasDurableMessage: () => durable,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const dependencies = {
+      ...deps,
+      transcriptRangeRef: { current: controller },
+      isMessagePublished: (message: unknown) => message === publishedAnswer,
+      setMessages: () => { directPublications++; },
+    };
+    const actions = createAppShellChatActions(dependencies);
+    const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+    assert.equal(durable, false);
+    ready.resolve();
+    assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
+    assert.equal(directPublications, 0, 'only the range subscription may publish source changes');
+    publishedAnswer = durableAnswer;
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
+  });
+
   for (const initialized of [false, true]) {
   it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
     const submissions: string[] = [];
@@ -577,7 +609,6 @@ describe('composer first-send cleanup', () => {
           cancel: () => {},
           followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
         }),
-        setMessages: () => { assert.fail('the previous range must not replace selected messages'); },
       }).send('hello');
       assert.equal(result, true);
       assert.deepEqual(submissions, ['selected-session']);

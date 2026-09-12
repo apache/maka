@@ -329,7 +329,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3648
+        "nonTriviaTokens": 3646
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -729,8 +729,6 @@
           "window.maka.settings.subscribeClientChanged": 1
         },
         "environmentCapabilities": {
-          "document.querySelector": 1,
-          "requestAnimationFrame": 1,
           "window.clearTimeout": 1,
           "window.requestAnimationFrame": 4,
           "window.setTimeout": 1
@@ -865,7 +863,7 @@
           "react": 1
         },
         "importSpecifiers": 104,
-        "nonTriviaTokens": 13531
+        "nonTriviaTokens": 13468
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
