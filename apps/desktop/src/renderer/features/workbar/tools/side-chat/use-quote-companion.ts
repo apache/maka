@@ -450,13 +450,30 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     });
   }, []);
 
-  const recordOwnedTurn = useCallback((turnId: string) => {
+  // Bind presentation to canonical ownership before the caller reconciles and
+  // publishes the pending Map. Recovery can bind a whole batch in one update.
+  const bindPendingMessageTurn = useCallback((messageId: string, turnId: string, startsTurn = false) => {
+    const message = pendingUserMessagesRef.current.get(messageId);
+    if (!message) return;
+    const movedToSuccessor = message.pendingSteering
+      && message.hostTurnId !== undefined && message.hostTurnId !== turnId;
+    pendingUserMessagesRef.current.set(messageId, {
+      ...message,
+      hostTurnId: turnId,
+      ...((startsTurn || movedToSuccessor || message.transientPlacement === 'next_turn') && {
+        transientPlacement: 'current_turn', pendingSteering: false,
+      }),
+    });
+  }, []);
+
+  const recordOwnedTurn = useCallback((turnId: string, messageId?: string, startsTurn = false) => {
+    if (messageId) bindPendingMessageTurn(messageId, turnId, startsTurn);
     hasContentRef.current = true;
     setHasContent(true);
     ownTurnIdsRef.current.add(turnId);
     setOwnTurnTick((tick) => tick + 1);
     reconcilePendingUserMessages();
-  }, [reconcilePendingUserMessages]);
+  }, [bindPendingMessageTurn, reconcilePendingUserMessages]);
 
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
@@ -554,7 +571,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (stopRequestRef.current && stopRequestRef.current.promise === admission.stopPromise) {
         stopRequestRef.current.turnId = turnId;
       }
-      recordOwnedTurn(turnId);
+      recordOwnedTurn(turnId, admission.messageId);
       admission.consumeOnAdmission?.();
       setError(null);
       setLiveTurns((previous) => reconcileLiveTurnBuffer(
@@ -648,6 +665,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           cancelled.add(resolution.messageId);
           if (pending?.messageId === resolution.messageId) releaseAdmission(pending);
         } else if (resolution.state === 'owned') {
+          bindPendingMessageTurn(resolution.messageId, resolution.turnId);
           if (pending?.messageId === resolution.messageId) {
             bindAdmittedTurn(forkId, resolution.turnId);
           }
@@ -687,17 +705,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
-  }, [bindAdmittedTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
+  }, [bindAdmittedTurn, bindPendingMessageTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
 
   const reconcileStartedFollowUpTurn = useCallback(async (
     forkId: string,
     turnId: string,
+    messageId: string,
   ): Promise<boolean> => {
     // A receipt proves ownership, not current execution. Register it before the
     // read so concurrent content events can be retained, then recover this Turn
     // even if it completed outside the current transcript window. Only Host
     // execution snapshots decide whether it is still running.
-    recordOwnedTurn(turnId);
+    recordOwnedTurn(turnId, messageId, true);
     const { messages } = await sideChat.readSettledMessages(forkId, {
       requiredTurnId: turnId,
     }).catch(() => ({ messages: [] as StoredMessage[] }));
@@ -772,7 +791,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             admission.events.push(event);
             resolveAdmission(forkId, admission, admission.messageId);
           } else {
-            recordOwnedTurn(event.turnId);
+            recordOwnedTurn(event.turnId, event.messageId);
           }
           return;
         }
@@ -1380,13 +1399,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       if (outcome.kind === 'started') {
         if (placement === 'current_turn') {
+          recordOwnedTurn(outcome.turnId, admissionId, true);
           bindAdmittedTurn(id, outcome.turnId);
         } else {
           // The active Turn can settle between the local streaming check and
           // Host admission. In that race a nominal next-turn follow-up starts
           // immediately. Reconcile first because a reconnect can replay this
           // receipt after the Host-named Turn has already settled.
-          if (!(await reconcileStartedFollowUpTurn(id, outcome.turnId))) {
+          if (!(await reconcileStartedFollowUpTurn(id, outcome.turnId, admissionId))) {
             return false;
           }
         }
@@ -1421,6 +1441,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     addPendingUserMessage,
     bindAdmittedTurn,
     reconcileStartedFollowUpTurn,
+    recordOwnedTurn,
     dropOptimisticUserMessage,
     mountedRef,
     releaseAdmission,

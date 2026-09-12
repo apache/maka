@@ -53,22 +53,6 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
-test('the composer usage action opens Task trace in the right workbar', async ({
-  accessibilityNarrativeWindow: page,
-}) => {
-  const action = page.getByRole('button', { name: '打开用量追踪' });
-  await expect(action).toBeVisible();
-
-  await action.click();
-
-  const rightPanel = page.locator(
-    '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
-  );
-  await expect(
-    rightPanel.locator('[data-maka-contract="session-inspector"]'),
-  ).toBeVisible();
-});
-
 test('right workbar visibility belongs to each Session and survives reload', async ({
   window: page,
 }) => {
@@ -79,8 +63,10 @@ test('right workbar visibility belongs to each Session and survives reload', asy
     .getByRole('list', { name: '打开工具' })
     .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '追踪', exact: true }).click();
+  await page.getByRole('button', { name: '打开用量追踪' }).click();
+  await expect(page.locator(
+    '.maka-session-workbar-panel[data-overlay][data-placement="right"] [data-maka-contract="session-inspector"]',
+  )).toBeVisible();
   await expect(panel).toBeVisible();
   await first.sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   const second = await createSession(page, 'second workbar owner');

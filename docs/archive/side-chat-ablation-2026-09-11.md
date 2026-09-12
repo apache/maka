@@ -102,4 +102,79 @@ npm run prototype:side-chat-ablation -- --interactive
 - 逐项核对 PR #4901 的 3 条讨论评论、18 次 review 提交和 6 个行内线程。6 个线程均已关闭，其中正常 handoff 的 P1 已由 reviewer 撤回；迟到回执、终态/多后继恢复、pending 真正退休、64-ID 分批、等待 Host 准入均有实现和回归覆盖。review 正文提出的窗口外回复恢复也已按主线新接口重新验证。
 - 仍不声称完成真实 Desktop 的 Enter / Shift+Enter、多条追问、编辑/重排/撤回及断连重连手工验收；独立人工批准也尚未获得。线程关闭不等同于界面验收或批准合并。
 
+## 9 月 12 日最新主线与真实 Desktop 验收
+
+本节更新前一节的验证状态，前述实验数字仍对应各自的历史快照。最终合入主线
+`83aa12a29c57e82bfe807e0913a35a90881cf6d0`，保留主线的
+`SessionExecutionProjection`、`activeHostTurn` 和共享 `LiveTurnBuffer`。
+迟到 admission 只证明归属，不能覆盖 Host 的当前执行快照；没有增加执行调度器或新协议。
+
+### 实际发现与修复
+
+- 回执丢失后，取消证明需要释放对应 admission；已持久化或 owned 的消息也需要释放 admission 槽位。
+  否则消息恢复了，Composer 仍不能正常继续发送。新增 cancelled / owned 两条回归。
+- 最新主线的普通后继用户消息不再依赖 `steeringEventId`。Projector 现在从普通 durable user
+  恢复归属；Desktop observer 在队列条目消失时查询现有 Host `queryMessageExecutions`，
+  区分消费、取消和未决，并在后继内容事件前发布归属。队列消失本身不再被当作撤回。
+  这次真实验收发现的缺陷独立于 reviewer 在旧提交上已经撤回的正常 handoff P1。
+- 断连期间 B/C 均完成后，重连虽恢复回复，旧队列仍可能显示 B。终态 seed 现在也发布权威空队列，
+  并先恢复 admission / queue，再发布终态内容；普通用户消息、空队列及事件顺序均有回归。
+- Electron 主窗口的捕获阶段 drop 防护会吞掉 Composer 内部拖放。队列使用专用 MIME 和目标标记，
+  主窗口允许该目标上的队列拖放；验收使用真实 Playwright `dragTo`。
+- 截图发现初始问题落到回复后方。Admission、started 和 ownership recovery 现在将临时问题绑定到
+  Host Turn；立即启动的 next-turn 追问，以及跨到后继 Turn 的 steering，会从待发送显示归位。
+  ChatView 按消息实际归属的 Turn 放置问题，完成、断连或后继开始不再把问题挪到回复之后。
+  真实 hook → ChatView 回归先复现失败，再验证发送回执 / admission 先后、历史读失败、终态、
+  后继切换，以及 raced steering 的 admission / ownership recovery 两条路径。
+
+### 所有 reviewer 评论核对
+
+再次读取 PR #4901：3 条讨论评论、18 次 review 提交、6 个行内线程；6 个线程均已 resolved。
+以下同时核对线程内容与 review 正文，未将 resolved 状态当作实现正确性的证据。
+
+| 意见 | 本轮核验 |
+| --- | --- |
+| 迟到 started(B) 不能重新激活已经完成的 B，包括 B 在窗口外或读取失败 | 执行状态只来自 Host projection；定向恢复与保留终态回归通过 |
+| 正常 queued handoff P1 | 保留 reviewer 的历史撤回结论；最新主线实际 handoff 缺陷按上节单独修复并验收 |
+| 终态 successor 重连 admission，以及 A→B→C 中间 B 归属恢复 | 终态 seed + 未决 ID 的 owned / cancelled / pending 查询；两条已完成回复均恢复 |
+| Durable twin 必须真正退出 pending Map，unknown ownership 仍可见 | 复用 `reconcileTransientMessages`，仅传入侧聊实际可显示的 own-Turn durable 消息 |
+| 执行查询遵守每批 64 个 ID，Desktop 输入上限 4096 | 现有 IPC 边界分批；65 个混合结果、重复/非法 ID、4097 个 ID 回归通过 |
+| Follow-up 必须等待 Host admission | 两种 placement 均传 `{ waitForHostAdmission: true }`；服务适配测试覆盖 |
+| 仅在 review 正文提出的窗口外已完成 B 回复恢复 | 现有 Turn index 的 `firstSequence` + transcript range 分页定向读取；缺少位置/终态不算完成 |
+| 共享 transient 生命周期，保留侧聊自己的 fork/quote/可见历史边界 | 共用 projection / reconciliation 实现，旧文件已迁移并删除；未引入第二套 Host 执行权威 |
+| 实际 Desktop Enter / Shift+Enter、多条追问、编辑/重排/撤回、断连重连 | 新增一个真实 Electron 窗口验收，以下场景全部通过 |
+
+### 验收与验证结果
+
+`apps/desktop/e2e/side-chat-followups.spec.ts` 在隔离用户目录中运行实际 Electron main/preload、
+Host 和 renderer，使用确定性 fake model：长回复中 Enter 排入三条消息，编辑、原生拖动重排、
+撤回、Shift+Enter、提升队列条目；随后完成两条普通后继。最后关闭真实 Desktop transport，
+保留运行中的 Host，让外部 Host client 在观察间隙完成两条后继，再恢复观察，断言两条回复可见、
+队列为空且无 Stop。它保护主窗口 drop 监听器与 main/preload 重连线路；状态组合仍在低层回归中。
+E2E 总预算随最新 main 从 34 增为 35，只新增一个窗口测试，没有增加重试或延长时限。
+
+- 最新 Desktop 全量 **2565/2565**、共享 UI **426/426** 通过；其中侧聊 hook **63/63**。
+- Projector / observer **75/75** 通过；全仓 build / typecheck、lint / format、Desktop / UI knip、
+  103 项架构 fixture、相对最新 main 的架构检查及 E2E budget 检查通过。
+- 最终真实 Electron 验收 **1/1** 通过（约 11 秒），四张截图已查看；有序问题、普通后继回复、
+  重连后两条回复与空队列均符合预期。这是自动化应用验收，不代表独立人工批准。
+- 本地证据位于 `apps/desktop/e2e/test-results/side-chat-followups-Side-C-aa834-Host-handoffs-and-reconnect/`：
+  `trace.zip`、`side-chat-steering.png`、`side-chat-queue.png`、`side-chat-settled.png`、
+  `side-chat-reconnected.png`。复现命令（先在根目录构建）：
+  `cd apps/desktop && npx playwright test --config e2e/playwright.config.ts side-chat-followups.spec.ts`。
+
+Host 全量仍有一项基线测试竞态，不能称为全仓测试全绿：1924 项中 1911 通过、1 失败、12 跳过。
+`production Host publishes and retires an implementation child patch` 的 fake provider 在约 0.1 秒内
+用完 5 次 PTY Read，抛出 `PTY child did not publish its input response` 并断开 HTTP；
+PTY 随后约 0.5 秒正常输出 `READY` 和 `CHILD_PTY_OK:ping`，但模型重试仍读到原工具结果，最终触发
+5 秒 terminal deadline。独立进程复现相同现象；加载追踪所涉及的 **693 个 tracked 源文件**
+逐字节与上述 main 相同，另外两个为构建生成的 model metadata / pricing 文件；没有加载本 PR
+修改的 projector。首次默认并发全量还出现过 Bash sandbox 测试超时，该项单独运行通过。
+本轮未修改无关 Host 夹具、放宽时限或用重试掩盖失败；详细本地日志为
+`/tmp/maka-pr-4901-host-tests-bounded.log`、`/tmp/maka-pr-4901-host-pty-probe.log` 和
+`/tmp/maka-pr-4901-host-base-comparison.json`。
+
+规范审查未发现硬性违反；需求审查及实际验收中发现的上述问题均已修复并覆盖回归。
+GitHub 的独立人工 approval 仍待取得，最终合并由人工决定。
+
 Generated-by: Codex

@@ -23,6 +23,8 @@ import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ChatSurfaceLayout, ChatView, LocaleProvider } from '@maka/ui';
 import type { SessionEvent } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { PermissionMode } from '@maka/core/permission';
@@ -123,6 +125,7 @@ async function renderProbe(
     modelChoices?: readonly ChatModelChoice[];
     ready?: (container: Element) => boolean;
     onSend?: (send: (text: string) => Promise<boolean>) => void;
+    onProjection?: (companion: ReturnType<typeof useQuoteCompanion>) => void;
     onQueue?: (queue: (text: string) => Promise<boolean>) => void;
     onSteer?: (steer: (text: string) => Promise<boolean>) => void;
     onStop?: (stop: () => Promise<void>) => void;
@@ -150,6 +153,7 @@ async function renderProbe(
   const children = options.ownership
     ? createElement(QuoteCompanionOwnershipProbe, {
         onSend: options.onSend ?? (() => undefined),
+        onProjection: options.onProjection,
         onQueue: options.onQueue,
         onSteer: options.onSteer,
         onStop: options.onStop,
@@ -192,6 +196,7 @@ async function renderOwnershipProbe(
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
+  let projection!: ReturnType<typeof useQuoteCompanion>;
   let queue!: (text: string) => Promise<boolean>;
   let steer!: (text: string) => Promise<boolean>;
   let stop!: () => Promise<void>;
@@ -220,6 +225,7 @@ async function renderOwnershipProbe(
     {
       ownership: true,
       onSend: (value) => (send = value),
+      onProjection: (value) => (projection = value),
       onQueue: (value) => (queue = value),
       onSteer: (value) => (steer = value),
       onStop: (value) => (stop = value),
@@ -236,6 +242,22 @@ async function renderOwnershipProbe(
     stop: () => stop(),
     deleteQueuedEntry: (entryId: string) => deleteQueuedEntry(entryId),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
+    transcript() {
+      return parseHTML(`<html><body>${renderToStaticMarkup(
+        createElement(LocaleProvider, { locale: 'en', children: createElement(ChatSurfaceLayout, {
+          composer: null,
+          children: createElement(ChatView, {
+            activeSession: projection.companionSession,
+            messages: projection.messages,
+            transientMessages: projection.transientMessages,
+            liveTurns: projection.liveTurns,
+            activeTurn: projection.activeTurn,
+            onNew: () => undefined,
+            scrollBehavior: 'auto',
+          }),
+        }) }),
+      )}</body></html>`).document;
+    },
     hostTurn(turnId: string | null, status: 'running' | 'completed' = 'running', available = true) {
       assert.ok(executionHandler);
       executionHandler({ type: 'host_execution', available,
@@ -443,6 +465,58 @@ test('a first send shows the question bubble immediately but arms Stop only once
   });
   await waitUntil(() => probe.getAttribute('data-streaming') === 'false');
 });
+
+for (const proof of ['send reply', 'admission event'] as const) {
+  test(`keeps the initial Side Chat prompt before its reply when transcript reads fail (${proof})`, async () => {
+    const receipt = deferred<{ ok: true; turnId: string }>();
+    let messageId: string | undefined;
+    const h = await renderOwnershipProbe({
+      send: async (_sessionId, command) => {
+        messageId = command.turnId;
+        return receipt.promise;
+      },
+      readSettledMessages: async () => { throw new Error('transcript temporarily unavailable'); },
+    });
+    let sent!: Promise<boolean>;
+    await act(async () => {
+      sent = h.send('initial question');
+      await Promise.resolve();
+    });
+    await waitUntil(() => messageId !== undefined);
+    await act(async () => {
+      h.hostTurn('first-turn');
+      if (proof === 'admission event') {
+        h.emit(messageAdmittedEvent('admitted', 'first-turn', 1, messageId!));
+      } else {
+        receipt.resolve({ ok: true, turnId: 'first-turn' });
+        assert.equal(await sent, true);
+      }
+      h.emit({ type: 'text_complete', id: 'answer-event', messageId: 'answer',
+        turnId: 'first-turn', ts: 2, text: 'answer to initial question' });
+    });
+    const assertPromptBeforeReply = () => {
+      const transcript = h.transcript();
+      const turn = transcript.querySelector('[data-transcript-turn-id="first-turn"]');
+      assert.ok(turn);
+      assert.ok(turn.querySelector('.maka-user-message')?.textContent.startsWith('initial question'));
+      const text = transcript.body.textContent;
+      assert.ok(text.includes('answer to initial question'));
+      assert.ok(text.indexOf('initial question') < text.indexOf('answer to initial question'));
+      assert.equal(transcript.querySelectorAll('.maka-user-message').length, 1);
+    };
+    assertPromptBeforeReply();
+    await act(async () => { h.hostTurn('first-turn', 'completed'); });
+    assertPromptBeforeReply();
+    await act(async () => { h.hostTurn('successor-turn'); });
+    assertPromptBeforeReply();
+    if (proof === 'admission event') {
+      await act(async () => {
+        receipt.resolve({ ok: true, turnId: 'first-turn' });
+        assert.equal(await sent, true);
+      });
+    }
+  });
+}
 
 test('a failed first send retires the optimistic bubble without ever arming Stop', async () => {
   // The fork never materializes: `branchFromTurn` throws. The optimistic bubble
@@ -1999,51 +2073,117 @@ test('queues multiple Side Conversation follow-ups while the active turn keeps s
   assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
 });
 
-test('adopts a queued Side Conversation follow-up that starts after the active turn settles', async () => {
-  let followUpMessageId: string | undefined;
-  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
-  const { container, emit, send, queue, hostTurn } = await renderOwnershipProbe({
-    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
-    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
-      assert.equal(placement, 'next_turn');
-      followUpMessageId = messageId;
-      return pendingFollowUp.promise;
-    },
-    readSettledMessages: async () => ({ messages: [], settled: true }),
-  });
+for (const proof of ['started receipt', 'admission event'] as const) {
+  test(`adopts a queued Side Conversation follow-up that starts after the active turn settles (${proof})`, async () => {
+    let followUpMessageId: string | undefined;
+    const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+    const { container, emit, send, queue, hostTurn, transcript } = await renderOwnershipProbe({
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+        assert.equal(placement, 'next_turn');
+        followUpMessageId = messageId;
+        return pendingFollowUp.promise;
+      },
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
 
-  await act(async () => {
-    assert.equal(await send('initial prompt'), true);
-    hostTurn('old-turn');
-    await Promise.resolve();
-  });
-  let followUpResult!: Promise<boolean>;
-  await act(async () => {
-    followUpResult = queue('start after settlement');
-    await Promise.resolve();
-  });
-  await waitUntil(() => followUpMessageId !== undefined);
-  await act(async () => {
-    hostTurn('old-turn', 'completed');
-    emit(completeEvent('old-complete', 'old-turn', 1));
-    hostTurn('new-turn');
-    pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
-    assert.equal(await followUpResult, true);
-    await Promise.resolve();
-  });
+    await act(async () => {
+      assert.equal(await send('initial prompt'), true);
+      hostTurn('old-turn');
+      await Promise.resolve();
+    });
+    let followUpResult!: Promise<boolean>;
+    await act(async () => {
+      followUpResult = queue('start after settlement');
+      await Promise.resolve();
+    });
+    await waitUntil(() => followUpMessageId !== undefined);
+    await act(async () => {
+      hostTurn('old-turn', 'completed');
+      emit(completeEvent('old-complete', 'old-turn', 1));
+      hostTurn('new-turn');
+      if (proof === 'started receipt') {
+        pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
+        assert.equal(await followUpResult, true);
+      } else {
+        emit(messageAdmittedEvent('follow-up-admitted', 'new-turn', 2, followUpMessageId!));
+      }
+      await Promise.resolve();
+    });
 
-  assert.equal(container.firstElementChild?.getAttribute('data-active-turn'), 'new-turn');
-  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
-  assert.equal(
-    container.firstElementChild?.getAttribute('data-transient-texts'),
-    'initial prompt|start after settlement',
-  );
-  await act(async () => {
-    emit(textDeltaEvent('new-turn-text', 'new-turn', 2, 'new answer', 'new-assistant'));
-    await Promise.resolve();
+    assert.equal(container.firstElementChild?.getAttribute('data-active-turn'), 'new-turn');
+    assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+    assert.equal(
+      container.firstElementChild?.getAttribute('data-transient-texts'),
+      'initial prompt|start after settlement',
+    );
+    await act(async () => {
+      emit(textDeltaEvent('new-turn-text', 'new-turn', 2, 'new answer', 'new-assistant'));
+      await Promise.resolve();
+    });
+    assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
+    assert.match(
+      transcript().querySelector('[data-transcript-turn-id="new-turn"] .maka-user-message')?.textContent ?? '',
+      /start after settlement/,
+    );
+    if (proof === 'admission event') {
+      await act(async () => {
+        pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
+        assert.equal(await followUpResult, true);
+      });
+    }
   });
-  assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
-});
+}
+
+for (const proof of ['admission event', 'ownership recovery'] as const) {
+  test(`places a raced steer before its successor reply after a lost receipt (${proof})`, async () => {
+    let messageId: string | undefined;
+    let markSeeded: (() => void) | undefined;
+    let recoverOwnership = false;
+    const h = await renderOwnershipProbe({
+      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+        markSeeded = onSeeded;
+        onSeeded?.();
+        return () => undefined;
+      },
+      send: async () => ({ ok: true as const, turnId: 'turn-a' }),
+      submitFollowUp: async (_sessionId, placement, _text, id) => {
+        assert.equal(placement, 'current_turn');
+        messageId = id;
+        return { kind: 'outcome_unknown' as const };
+      },
+      readSettledMessages: async () => { throw new Error('transcript temporarily unavailable'); },
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((id) => recoverOwnership && id === messageId
+          ? { messageId: id, state: 'owned' as const, turnId: 'turn-b', runId: 'run-b' }
+          : { messageId: id, state: 'pending' as const }),
+      }),
+    });
+    await act(async () => {
+      assert.equal(await h.send('initial prompt'), true);
+      h.hostTurn('turn-a');
+    });
+    await act(async () => { assert.equal(await h.steer('raced successor prompt'), true); });
+    await act(async () => {
+      h.hostTurn('turn-b');
+      if (proof === 'admission event') {
+        h.emit(messageAdmittedEvent('admitted-b', 'turn-b', 2, messageId!));
+      } else {
+        recoverOwnership = true;
+        markSeeded?.();
+      }
+      h.emit({ type: 'text_complete', id: 'answer-event', messageId: 'answer-b',
+        turnId: 'turn-b', ts: 3, text: 'reply to raced successor' });
+    });
+    await waitUntil(() => h.container.firstElementChild?.getAttribute('data-processing') === 'false');
+    const turn = h.transcript().querySelector('[data-transcript-turn-id="turn-b"]');
+    assert.ok(turn);
+    assert.match(turn.querySelector('.maka-user-message')?.textContent ?? '', /raced successor prompt/);
+    assert.ok(turn.textContent.includes('reply to raced successor'));
+    assert.ok(turn.textContent.indexOf('raced successor prompt') < turn.textContent.indexOf('reply to raced successor'));
+    assert.equal(h.container.firstElementChild?.getAttribute('data-active-turn'), 'turn-b');
+  });
+}
 
 test('reconciles a queued Side Conversation follow-up that settles before its started receipt', async () => {
   let followUpMessageId: string | undefined;
@@ -3110,6 +3250,7 @@ function QuoteCompanionProbe(props: {
 
 function QuoteCompanionOwnershipProbe(props: {
   onSend: (send: (text: string) => Promise<boolean>) => void;
+  onProjection?: (companion: ReturnType<typeof useQuoteCompanion>) => void;
   onQueue?: (queue: (text: string) => Promise<boolean>) => void;
   onSteer?: (steer: (text: string) => Promise<boolean>) => void;
   onStop?: (stop: () => Promise<void>) => void;
@@ -3133,6 +3274,7 @@ function QuoteCompanionOwnershipProbe(props: {
     onContextCompactionError: props.onContextCompactionError,
   });
   props.onSend(companion.send);
+  props.onProjection?.(companion);
   props.onQueue?.(companion.queue);
   props.onSteer?.(companion.steer);
   props.onStop?.(companion.stop);

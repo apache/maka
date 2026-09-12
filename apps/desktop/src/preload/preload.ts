@@ -3913,14 +3913,14 @@ const makaBridge = {
 // E2E-only async controls. Real users never get these: the preload mirrors the
 // main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
 // not enough without the throwaway profile dir. An armed latch holds the next
-// bridge call or an explicitly gated renderer boundary until the test releases
+// bridge call until the test releases
 // it, while a settled-call waiter exposes a deterministic completion boundary
 // for work whose visible result may intentionally keep the same DOM identity.
 // The wrappers must be installed BEFORE
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
-  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'sessions.observe' | 'settings.chunk';
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'sessions.observe';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   let nextSessionObservationError: Error | undefined;
@@ -4008,9 +4008,6 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       });
       gates.set(key, { promise, oneShot: options?.oneShot === true });
       releases.set(key, { resolve, reject });
-    },
-    wait(key: 'settings.chunk') {
-      return waitForLatch(key);
     },
     waitForInvocableSkillsCall(sessionId: string) {
       return new Promise<void>((resolve) => {

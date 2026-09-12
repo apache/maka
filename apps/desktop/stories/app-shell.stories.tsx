@@ -35,6 +35,7 @@ import {
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
   WorkbarTitlebarActions,
@@ -942,22 +943,111 @@ export const SafeResumeAfterRestart: Story = {
 // Real path: a long session with 120 turns — past the transcript virtualizer's
 // window, so it must stay correct and quiet where a handful of seeded turns
 // would never trip the virtualization path.
+const manyTurnMessages = Array.from({ length: 120 }, (_, index) => {
+  const turnId = `turn-m-${index}`;
+  const minutesAgo = (120 - index) * 3;
+  return [
+    user(`msg-m-u-${index}`, turnId, minutesAgo, `第 ${index + 1} 轮：这个模块的边界条件该怎么覆盖？`),
+    assistant(`msg-m-a-${index}`, turnId, minutesAgo - 1, `第 ${index + 1} 轮回答：先列输入域，再对空、超长、并发三类分别加断言。`),
+  ];
+}).flat();
+
 export const ManyTurns: Story = {
   render: () => (
     <ComposedShell
       session={{ lastMessageAt: NOW - 60_000 }}
       chat={{
-        messages: Array.from({ length: 120 }, (_, index) => {
-          const turnId = `turn-m-${index}`;
-          const minutesAgo = (120 - index) * 3;
-          return [
-            user(`msg-m-u-${index}`, turnId, minutesAgo, `第 ${index + 1} 轮：这个模块的边界条件该怎么覆盖？`),
-            assistant(`msg-m-a-${index}`, turnId, minutesAgo - 1, `第 ${index + 1} 轮回答：先列输入域，再对空、超长、并发三类分别加断言。`),
-          ];
-        }).flat(),
+        messages: manyTurnMessages,
       }}
     />
   ),
+};
+
+// The same transcript and fixture CSS, with enough resident Turns for native
+// render skipping but no need to mount the 120-Turn catalog demonstration.
+export const TranscriptRenderCost: Story = {
+  render: () => <ComposedShell frameHeight={700} chat={{ messages: manyTurnMessages.slice(-64) }} />,
+  play: async ({ canvasElement }) => {
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!scroller) throw new Error('Transcript scrollport is missing');
+    const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await frame();
+    await frame();
+    let transitions = 0;
+    let animations = 0;
+    const skipped = new Set<Element>();
+    const turns = [...canvasElement.querySelectorAll<HTMLElement>('.maka-transcript-turn')];
+    expect(turns.length).toBeGreaterThan(0);
+    for (const pseudo of [null, '::before', '::after']) {
+      const style = getComputedStyle(turns[0], pseudo);
+      expect(style.transitionProperty).toBe('none');
+      expect(style.animationName).toBe('none');
+    }
+    const visibility = (event: Event) => {
+      if (event.target !== event.currentTarget) return;
+      const turn = event.currentTarget as Element;
+      if ((event as Event & { skipped: boolean }).skipped) skipped.add(turn);
+      else skipped.delete(turn);
+    };
+    for (const turn of turns) turn.addEventListener('contentvisibilityautostatechange', visibility);
+    const transition = () => { transitions += 1; };
+    const animation = () => { animations += 1; };
+    canvasElement.addEventListener('transitionrun', transition, true);
+    canvasElement.addEventListener('animationstart', animation, true);
+    try {
+      // No Host paging or wheel routing is under test: move the real Chromium
+      // scrollport to exercise the fixture CSS and browser render skipping.
+      // Two distant positions expose and skip resident Turns. Forty incremental
+      // paints added cost under CI contention without testing another contract.
+      for (const direction of [-1, 1]) {
+        scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 120, bubbles: true }));
+        scroller.scrollTop = direction < 0 ? 0 : scroller.scrollHeight;
+        await frame();
+        await frame();
+      }
+      await waitFor(() => expect(skipped.size).toBeGreaterThan(0));
+      expect(transitions).toBe(0);
+      expect(animations).toBe(0);
+      expect(canvasElement.getAnimations({ subtree: true })
+        .filter((animation) => animation.playState !== 'finished')).toHaveLength(0);
+    } finally {
+      for (const turn of turns) turn.removeEventListener('contentvisibilityautostatechange', visibility);
+      canvasElement.removeEventListener('transitionrun', transition, true);
+      canvasElement.removeEventListener('animationstart', animation, true);
+    }
+  },
+};
+
+const pendingSettingsChunk = new Promise<never>(() => {});
+function PendingSettingsChunk(): never { throw pendingSettingsChunk; }
+function SettingsLoadingScene() {
+  const [open, setOpen] = useState(true);
+  return open ? (
+    <SettingsOverlay onClose={() => setOpen(false)}><PendingSettingsChunk /></SettingsOverlay>
+  ) : null;
+}
+
+// Real path: AppShellOverlays owns dismissal while its Settings chunk suspends.
+export const SettingsLoadingEscape: Story = {
+  render: () => <SettingsLoadingScene />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('status', { name: '正在加载设置' });
+    for (const modifier of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Escape', [modifier]: true, bubbles: true, cancelable: true,
+      });
+      expect(window.dispatchEvent(event)).toBe(true);
+      expect(canvas.getByRole('status', { name: '正在加载设置' })).toBeVisible();
+    }
+    expect(window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    }))).toBe(false);
+    await waitFor(() => expect(canvas.queryByRole('status', { name: '正在加载设置' })).not.toBeInTheDocument());
+    expect(window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    }))).toBe(true);
+  },
 };
 
 // Real path: enough task history to overflow the sidebar. The rail owns the

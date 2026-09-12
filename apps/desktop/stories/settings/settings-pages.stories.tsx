@@ -1848,6 +1848,7 @@ function renderedLinkColors(renderedLink: HTMLElement) {
 }
 
 type SettingsStoryProps = {
+  reopenable?: boolean;
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
@@ -1895,6 +1896,7 @@ function SettingsStory(props: SettingsStoryProps) {
 }
 
 function SettingsStoryFrame(props: SettingsStoryProps) {
+  const [open, setOpen] = useState(true);
   const archivedTasks = useArchivedTasksStoryBridge(props.archivedTaskSessions ?? []);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
@@ -1918,6 +1920,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
 
   return (
     <>
+      {props.reopenable && <button onClick={() => setOpen(!open)}>{open ? 'Close settings' : 'Reopen settings'}</button>}
       {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
           which needs a bounded ancestor to hand its content pane a scroll
           box. Under Storybook's fullscreen body a percentage height resolves
@@ -1936,7 +1939,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
           <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
             <SessionBundleServicesProvider services={sessionBundleServices}>
-            <SettingsSurface
+            {open && <SettingsSurface
               onClose={noop}
               themePref={themePref}
               onThemeChange={setThemePref}
@@ -1957,7 +1960,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
               onRemoteHostAdded={noop}
               onSelectedRuntimeHostProfileIdChange={noop}
               snapshotCache={snapshotCache}
-            />
+            />}
             </SessionBundleServicesProvider>
           </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
@@ -2210,6 +2213,50 @@ export const GeneralCachedRevalidation: Story = {
     await expect(mixedBoundary).not.toHaveAttribute('inert');
     await canvas.findByText('正在加载设置');
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// Real path: unmount and reopen Settings with its renderer-owned snapshot cache.
+// Observe every DOM commit, not just the final ready screen after refresh.
+export const GeneralReopenKeepsReadyControls: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return <SettingsStory section="general" reopenable />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+      expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
+    });
+    await userEvent.click(canvas.getByRole('button', { name: 'Close settings' }));
+    expect(canvas.queryByRole('textbox', { name: '助手语气偏好' })).not.toBeInTheDocument();
+    let missingControls = false;
+    let loadingAlert = false;
+    const inspect = () => {
+      const surface = canvasElement.querySelector('.settingsSurface');
+      const main = surface?.querySelector('main, [role="main"]');
+      if (!surface || !main) return;
+      missingControls ||= main.querySelector('textarea') === null ||
+        within(main as HTMLElement).queryByRole('button', { name: '默认模型' }) === null;
+      loadingAlert ||= [...surface.querySelectorAll('[role="alert"]')]
+        .some((alert) => alert.textContent?.includes('正在加载设置'));
+    };
+    const observer = new MutationObserver(inspect);
+    observer.observe(canvasElement, { childList: true, subtree: true, characterData: true });
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: 'Reopen settings' }));
+      await waitFor(() => {
+        expect(canvas.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+        expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
+      });
+      inspect();
+      expect(missingControls).toBe(false);
+      expect(loadingAlert).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
   },
 };
 // A Runtime Host can be replaced without changing its renderer-facing

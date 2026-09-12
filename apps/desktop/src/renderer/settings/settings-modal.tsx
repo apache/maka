@@ -28,9 +28,6 @@ import { SettingsSurface } from './settings-surface';
 import type { ArchivedTasksBridge } from './tasks-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 
-export { SETTINGS_NAV } from './settings-nav';
-export type { SettingsNavGroup } from './settings-nav';
-
 export default function SettingsModal(props: {
   onClose(): void;
   themePref: ThemePreference;
