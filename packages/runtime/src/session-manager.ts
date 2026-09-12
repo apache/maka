@@ -1785,6 +1785,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Fences a Session and every subagent Session under it for one operation.
+   *
+   * Preparing a bundle reads a Session's whole subtree, and a child holds the
+   * result of a tool call its parent made -- so a Turn starting anywhere in
+   * that tree while the read is in progress produces a bundle describing two
+   * moments. Refuses outright if any of them is already running.
+   */
+  async runSessionSubtreeQuiescentMutation<T>(
+    sessionId: string,
+    operation: (fencedSessionIds: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    const descendants = await this.listLinkedDescendantSessionIds(sessionId);
+    const fenced = [sessionId, ...descendants];
+    return this.runSessionQuiescentMutation(fenced, async () => {
+      // Discovered again, now that the fence is held. The first walk happened
+      // before it, so a child created in that gap is in the subtree and NOT in
+      // what was fenced -- the operation would read it without it being held
+      // still. Refusing is the only honest answer: fencing it now would be
+      // fencing a set this call never admitted.
+      const current = await this.listLinkedDescendantSessionIds(sessionId);
+      if (current.length !== descendants.length || current.some((id) => !fenced.includes(id))) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Session lineage changed while the subtree was being fenced',
+        );
+      }
+      return operation(fenced);
+    });
+  }
+
   private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {
     const sessions = await this.deps.store.list();
     const childrenByParent = new Map<string, string[]>();

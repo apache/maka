@@ -2725,6 +2725,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/session-bundle/index.js": 1,
           "../locales/external-session-import-copy.js": 1,
           "../locales/shell-copy.js": 1,
           "./runtime-host-settings-target.js": 1,
@@ -3668,6 +3669,7 @@
           "../../shared/settings-ownership.js": 1,
           "../browser-storage": 1,
           "../features/connection-settings": 1,
+          "../features/session-bundle": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "./about-settings-page": 1,

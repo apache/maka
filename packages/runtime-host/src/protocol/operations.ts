@@ -59,6 +59,7 @@ import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
 import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
 import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
+import { SESSION_BUNDLE_OPERATION_SPECS } from './session-bundle.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
@@ -215,6 +216,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
+  SESSION_BUNDLE_OPERATION_SPECS,
   SESSION_RETIREMENT_OPERATION_SPECS,
   ARTIFACT_OPERATION_SPECS,
   SKILL_CATALOG_OPERATION_SPECS,

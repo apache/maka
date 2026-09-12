@@ -27,10 +27,11 @@ import { build } from 'esbuild';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { createMainWindowController } from '../main-window.js';
 import type { createWorkHubPresentation } from '../workhub-presentation.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
-async function harness(animate = false, displayFrequency = 60) {
+async function harness(animate = false, displayFrequency = 60, revealMode: WindowRevealMode = 'active') {
   let enabled = true;
   let mainRequests = 0;
   let mainAvailable = true;
@@ -105,8 +106,10 @@ async function harness(animate = false, displayFrequency = 60) {
     setBounds(bounds: typeof this.bounds) { this.bounds = bounds; this.emit('resize'); }
     setVisibleOnAllWorkspaces() {}
     setMaximizable() {}
-    show() { this.visible = true; this.emit('show'); }
-    showInactive() { this.visible = true; }
+    shown = 0;
+    shownInactive = 0;
+    show() { this.shown++; this.visible = true; this.emit('show'); }
+    showInactive() { this.shownInactive++; this.visible = true; }
     hide() { this.visible = false; }
     resizable = true;
     setResizable(value: boolean) { this.resizable = value; }
@@ -147,6 +150,7 @@ async function harness(animate = false, displayFrequency = 60) {
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
     isEnabled: () => enabled,
+    revealMode,
     ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; mainAvailable = true; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
@@ -878,4 +882,35 @@ test('late progress measurements and send acknowledgements cannot revive a dismi
   assert.equal(h.windows[1]!.bounds.height, 180, 'reduced motion applies the final layout immediately');
   assert.equal(h.controller.getSnapshot().progressRequest, second);
   h.controller.dispose();
+});
+
+const REVEALS = {
+  hidden: { shown: 0, shownInactive: 0, focused: 0 },
+  inactive: { shown: 0, shownInactive: 1, focused: 0 },
+  active: { shown: 1, shownInactive: 0, focused: 1 },
+} as const;
+const reveals = (win: { shown: number; shownInactive: number; focused: number }) =>
+  ({ shown: win.shown, shownInactive: win.shownInactive, focused: win.focused });
+
+test('summoning and docking honor the run reveal mode', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.show();
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS.hidden, `a cold summon reveals nothing in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'ready');
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS[mode], `detach in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'dock');
+    assert.deepEqual(reveals(h.main), REVEALS[mode], `dock in ${mode}`);
+    h.controller.dispose();
+  }
+});
+
+test('the progress card stays hidden in a hidden run and inactive everywhere else', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.prepareControl('turn');
+    await h.command(h.views[0]!.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
+    assert.deepEqual(reveals(h.windows[1]!), mode === 'hidden' ? REVEALS.hidden : REVEALS.inactive, mode);
+    h.controller.dispose();
+  }
 });

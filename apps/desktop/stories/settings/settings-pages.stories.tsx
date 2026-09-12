@@ -69,6 +69,10 @@ import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
+import {
+  SessionBundleServicesProvider,
+  type SessionBundleServices,
+} from '../../src/renderer/features/session-bundle';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
@@ -119,6 +123,13 @@ type Story = StoryObj<typeof meta>;
 
 const NOW = Date.now();
 const noop = () => undefined;
+
+// Both halves open a native file dialog, which a story has none of. Cancelled is
+// the outcome that leaves the page exactly as it was.
+const sessionBundleServices: SessionBundleServices = {
+  exportBundle: async () => ({ ok: false, reason: 'canceled' }),
+  importBundle: async () => ({ ok: false, reason: 'canceled' }),
+};
 
 function makeConnection(input: {
   slug: string;
@@ -1408,6 +1419,26 @@ function archivedTask(
   };
 }
 
+function exportableTask(
+  id: string,
+  name: string,
+  overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+  return { ...archivedTask(id, name, 1, overrides), isArchived: false };
+}
+
+function storySubagentRuntime(agentName: string): SessionSummary['subagentRuntime'] {
+  return {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: agentName.toLowerCase(),
+    agentName,
+    profile: agentName.toLowerCase(),
+    toolNames: ['Read'],
+    categoryPolicy: { read: 'allow' },
+  } as SessionSummary['subagentRuntime'];
+}
+
 function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
   return {
     subagentParent: {
@@ -1418,6 +1449,28 @@ function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
     },
   };
 }
+
+// Live tasks, for the export half. Archived ones are left out of that list on
+// purpose -- a bundle is for carrying work somewhere, not for reviving it -- so
+// the export story needs its own fixture rather than the archived one.
+const exportTaskSessions: SessionSummary[] = [
+  exportableTask('task-compaction', 'Refactor the compaction module'),
+  exportableTask('task-calls', 'Find the call sites', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  // A subagent spawns its own, which is why the parent row counts the subtree
+  // rather than its children.
+  exportableTask('task-usage', 'Scan the usage tables', {
+    ...storyLinkedTo('task-calls'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  exportableTask('task-checkpoint', 'Check the checkpoint read path', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('general-purpose'),
+  }),
+  exportableTask('task-hello', 'Say hello'),
+];
 
 const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
@@ -1889,6 +1942,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
           <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
+            <SessionBundleServicesProvider services={sessionBundleServices}>
             <SettingsSurface
               onClose={noop}
               themePref={themePref}
@@ -1911,6 +1965,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
               onSelectedRuntimeHostProfileIdChange={noop}
               snapshotCache={snapshotCache}
             />
+            </SessionBundleServicesProvider>
           </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
       </div>
@@ -3257,6 +3312,25 @@ export const ImportTasks: Story = {
 // over a source that can hold a thousand sessions, so the term is the only way
 // to reach one by name. Typing here proves the box reaches the query rather
 // than filtering the page already on screen.
+/**
+ * Real path: 设置 → 导入/导出任务 → 导出任务.
+ *
+ * A bundle can be rooted at any node, so every row exports; the nesting says
+ * which subtree a row would carry, and the count on a parent is the whole
+ * subtree rather than its children.
+ */
+export const ImportTasksExport: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory section="import-tasks" archivedTaskSessions={exportTaskSessions} />
+  ),
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await body.findByRole('radio', { name: '导出任务' }));
+    await body.findByText('Refactor the compaction module');
+  },
+};
+
 export const ImportTasksSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,
