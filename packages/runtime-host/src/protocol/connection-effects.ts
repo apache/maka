@@ -467,7 +467,7 @@ export function decodeConnectionModelFetchResult(value: unknown): ConnectionMode
       modelCount: boundedInteger(
         committed.modelCount,
         'model count',
-        1,
+        0,
         CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
       ),
       source: modelDiscoverySource(committed.source),

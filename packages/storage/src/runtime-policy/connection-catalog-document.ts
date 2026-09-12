@@ -447,13 +447,15 @@ export class ConnectionCatalogDocumentOwner {
     rawResult: ConnectionModelDiscoveryResult,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
-    if (result.models.length === 0) {
-      throw codecError('invalid_connection_input', 'Model discovery result must not be empty');
-    }
     const index = findConnectionIndex(current, expected);
     const previous = current.connections[index];
     if (!previous || previous.revision !== expected.revision) {
       throw codecError('invalid_document', 'Coordinator admitted a stale model discovery result');
+    }
+    // Copilot's account inventory can be authoritative even when empty; every
+    // other provider still needs a non-empty discovery result to commit.
+    if (result.models.length === 0 && previous.providerType !== 'github-copilot') {
+      throw codecError('invalid_connection_input', 'Model discovery result must not be empty');
     }
     const currentDefaultTarget =
       current.defaultTarget?.connectionId === previous.connectionId

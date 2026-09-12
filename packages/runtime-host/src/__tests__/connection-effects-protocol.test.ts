@@ -203,6 +203,11 @@ describe('Runtime Host connection effects protocol', () => {
     };
     const committed = response('connection.models.fetch', committedResult);
     assert.deepEqual(decodeHostFrame(committed), committed);
+    const emptyCommitted = response('connection.models.fetch', {
+      ...committedResult,
+      modelCount: 0,
+    });
+    assert.deepEqual(decodeHostFrame(emptyCommitted), emptyCommitted);
 
     for (const result of [
       { kind: 'failed', errorClass: 'timeout' },
