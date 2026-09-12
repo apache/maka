@@ -176,9 +176,16 @@ async function testConnectionStrict(
     return { ok: false, errorMessage: 'No model to test' };
   }
   if (connection.providerType === 'opencode-free' && !model?.trim()) {
+    const brokenModelIds = new Set(defaults.brokenModelIds ?? []);
     const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
+      ...new Set([
+        ...connectionEnabledModelIds(connection).filter((id) => !brokenModelIds.has(id)),
+        ...providerFallbackModelIds(defaults),
+      ]),
     ];
+    if (candidates.length === 0) {
+      return { ok: false, errorMessage: 'No model to test' };
+    }
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
