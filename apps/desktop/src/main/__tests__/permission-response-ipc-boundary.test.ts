@@ -246,6 +246,12 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: '' },
       { type: 'send', text: 'x'.repeat(128_001) },
       { type: 'send', text: 'ok', retainedAttachments: [{ name: 'broken' }] },
+      // Junk attachment items must not satisfy the empty-body check
+      // (#4815 review reachability ③).
+      { type: 'send', text: '', attachmentItems: [null] },
+      { type: 'send', text: '', attachmentItems: [{}] },
+      { type: 'send', text: '', attachmentItems: [{ approvalId: 7 }] },
+      { type: 'send', text: 'hello', attachmentItems: 'notes.txt' },
       { type: 'send', text: 'hello', turnId: 1 },
       { type: 'send', text: 'hello', skillIds: ['/bad'] },
       { type: 'send', text: 'hello', turnOrchestration: { mode: 'swarm', source: 'prompt' } },

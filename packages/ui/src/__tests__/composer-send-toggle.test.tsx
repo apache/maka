@@ -64,7 +64,11 @@ test('a running composer keeps Send alone — no mode switch in the send slot', 
   assert.doesNotMatch(markup, /SegmentedControl/);
 });
 
-test('an opt-in attachment-only draft enables Send without text (#4815 review)', () => {
+// Pins the #5003 opt-in contract, not a #4815 regression: base already passed
+// this exact assertion (reviewed at the #4815 head). What #4815 adds on top —
+// staged quotes counting as sendable content without the flag — is covered by
+// the staged-quote cases in this file.
+test('an opted-in host renders Send (not Stop) for an attachment-only draft (#5003)', () => {
   const attachments = [{ displayName: 'kept.png', kind: 'image' as const, size: 12 }];
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">

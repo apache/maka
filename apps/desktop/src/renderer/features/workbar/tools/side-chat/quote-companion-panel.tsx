@@ -347,6 +347,18 @@ export function QuoteCompanionPanel(props: {
                   streaming: companion.streaming,
                   compact: companion.compact,
                   steer: async (text) => {
+                  // Same staged-attachment validation as `send`: an unusable
+                  // attachment rejects here with the localized toast instead
+                  // of dying later on the steer path.
+                  try {
+                    preflightAttachmentItems(pendingAttachments);
+                  } catch (error) {
+                    toast.error(
+                      copy.errors.sendRejected,
+                      localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
+                    );
+                    return false;
+                  }
                   // Submitted attachments retire on the confirmed-admission
                   // boundary, not on the hook's optimistic return: an unknown
                   // outcome keeps them staged for retry (#4804).

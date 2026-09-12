@@ -219,8 +219,12 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   // normalized before the empty-body rejection so a retained-attachment-only
   // edit is not refused (#4804).
   const retainedAttachments = normalizeOptionalRetainedAttachments(value.retainedAttachments);
-  const hasAttachmentItems =
-    Array.isArray(value.attachmentItems) && value.attachmentItems.length > 0;
+  // attachmentItems get the same per-item normalization as the other
+  // structured carriers: a junk entry (`[null]`, `[{}]`) used to satisfy the
+  // empty-body check while nothing ingestible would arrive downstream
+  // (#4815 review, reachability ③).
+  const attachmentItems = normalizeOptionalAttachmentItems(value.attachmentItems);
+  const hasAttachmentItems = (attachmentItems.attachmentItems?.length ?? 0) > 0;
   if (
     !text.trim() &&
     skillIds.length === 0 &&
@@ -237,7 +241,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     text,
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
-    ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
+    ...attachmentItems,
     ...retainedAttachments,
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
@@ -272,6 +276,31 @@ function normalizeOptionalRetainedAttachments(
   return input.length > 0
     ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
     : {};
+}
+
+// The wire shape is a `ComposerIngestInput`: an approval-backed descriptor
+// (`approvalId` + `name`, optional `mimeType`) or a live `file` carrier. A
+// bare `{}` or `null` entry used to satisfy the empty-body check while
+// carrying nothing ingestible (#4815 review).
+function isComposerIngestItem(item: unknown): boolean {
+  if (typeof item !== 'object' || item === null) return false;
+  const candidate = item as Record<string, unknown>;
+  if ('approvalId' in candidate) {
+    return typeof candidate.approvalId === 'string' && typeof candidate.name === 'string';
+  }
+  return 'file' in candidate;
+}
+
+function normalizeOptionalAttachmentItems(input: unknown): { attachmentItems?: unknown[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isComposerIngestItem)
+  ) {
+    throw new Error('Invalid attachment items');
+  }
+  return input.length > 0 ? { attachmentItems: input } : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(

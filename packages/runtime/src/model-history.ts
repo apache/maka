@@ -205,7 +205,10 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
         total += quote.text.length + (quote.label?.length ?? 0);
       }
       for (const attachment of content.attachments ?? []) {
-        total += attachment.name.length + attachment.mimeType.length;
+        // Weight the block the projection actually emits, not the display
+        // fields: name+mimeType is ~25 chars while the formatted attachment
+        // block with its Read guidance runs to hundreds (#4815 review).
+        total += formatAttachmentRefs([attachment]).length;
       }
     }
   } else if (content?.kind === 'function_call')
