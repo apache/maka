@@ -24,7 +24,7 @@ import { afterEach, test } from 'node:test';
 import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { TurnView } from '../chat-turn.js';
+import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
 
@@ -108,6 +108,15 @@ const RUNNING_TOOL: TurnTimelineItem = {
   kind: 'tools',
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
+
+test('message accessibility labels preserve literal ICU syntax', async () => {
+  const { container, root } = domRoot();
+  const label = "Maka's response · <redacted> {value} <tag>it's literal</tag>";
+  await act(() => {
+    root.render(<LocaleProvider locale="en"><LocalizedChatMessage sender="assistant" accessibleLabel={label}>{null}</LocalizedChatMessage></LocaleProvider>);
+  });
+  assert.equal(container.querySelector('article')?.getAttribute('aria-label'), label);
+});
 
 test('renders an aborted turn outcome as an inline system status notice', async () => {
   const { container, root } = domRoot();
