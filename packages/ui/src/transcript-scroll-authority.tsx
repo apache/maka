@@ -118,6 +118,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const idleListeners = new Set<() => void>();
   let pointer: number | undefined;
   let touchHeld = false;
+  const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
   const commitRange = (commit: () => void): void => {
     const target = root;
     if (!target) { commit(); return; }
@@ -140,7 +141,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     }
   };
   const notifyIdle = (): void => {
-    if (gesture || pointer !== undefined || touchHeld) return;
+    if (isInputActive()) return;
     for (const listener of [...idleListeners]) listener();
   };
   let readingTurnId: string | undefined;
@@ -181,9 +182,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   };
 
   return {
-    isInputActive: () => gesture !== undefined || pointer !== undefined || touchHeld,
+    isInputActive,
     commitIfIdle(commit) {
-      if (gesture || pointer !== undefined || touchHeld) return false;
+      if (isInputActive()) return false;
       commitRange(commit);
       return true;
     },
@@ -271,7 +272,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         if (event.touches.length > 0) return;
         touchHeld = false;
         onScrollEnd();
-        notifyIdle();
       };
       const onScroll = (): void => {
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
@@ -300,6 +300,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         publish();
       };
       const onScrollEnd = (): void => {
+        // An explicit navigation may already have retired the gesture while
+        // a pointer or touch was held. Release still has to wake publication.
+        notifyIdle();
         const ended = gesture;
         if (!ended) return;
         const top = ended.top;

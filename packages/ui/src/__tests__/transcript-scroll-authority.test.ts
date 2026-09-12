@@ -348,6 +348,27 @@ test('scrollbar defaults can land after pointerup, while an unmoved click retire
   });
 });
 
+test('navigation during a held scrollbar still publishes on release or cancellation', async () => {
+  for (const event of ['pointerup', 'pointercancel']) {
+    const state = withObservers(() => {
+      const root = fakeRoot();
+      const authority = createTranscriptScrollAuthority();
+      authority.attach(root as unknown as HTMLElement);
+      const publication = createTranscriptViewportNavigation();
+      publication.attachCommitScheduler('session', authority);
+      const commits: number[] = [];
+      root.grabScrollbar();
+      publication.commitRange('session', () => commits.push(1));
+      authority.releasePin();
+      return { root, commits };
+    });
+    await Promise.resolve();
+    assert.deepEqual(state.commits, [], 'navigation must preserve the physical hold');
+    withObservers(() => state.root.ownerDocument.dispatchEvent(new Event(event)));
+    assert.deepEqual(state.commits, [1], 'release wakes the pending publication without another update');
+  }
+});
+
 test('explicit navigation cancels input provenance before positioning its target', () => {
   withObservers(() => {
     const root = fakeRoot();
