@@ -1791,7 +1791,7 @@ test('consumes a steered attachment when the started turn binds the admission', 
   let admitted = 0;
   let steerPayload: { attachmentItems?: readonly WorkbarIngestInput[] } | undefined;
   const attachmentItem: WorkbarIngestInput = { approvalId: 'approval-1', name: 'kept.png' };
-  const { container, emit, send, steer } = await renderOwnershipProbe({
+  const { container, emit, send, steer, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     steer: async (_sessionId, _text, requestedAdmissionId, payload) => {
       admissionId = requestedAdmissionId;
@@ -1802,6 +1802,7 @@ test('consumes a steered attachment when the started turn binds the admission', 
 
   await act(async () => {
     assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
     await Promise.resolve();
   });
   let steerResult!: Promise<boolean>;
@@ -2293,6 +2294,7 @@ test('a structured-only steer (empty text with a staged quote) rides the steerin
 
   await act(async () => {
     assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
     await Promise.resolve();
   });
   await waitUntil(
@@ -2329,6 +2331,7 @@ test('a steer with staged attachments consumes them only on confirmed admission'
 
   await act(async () => {
     assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
     await Promise.resolve();
   });
   await waitUntil(
@@ -2373,6 +2376,7 @@ test('an unknown steer outcome that later retracts keeps the staged attachments'
 
   await act(async () => {
     assert.equal(await rendered.send('initial prompt'), true);
+    rendered.hostTurn('old-turn');
     await Promise.resolve();
   });
   await waitUntil(
