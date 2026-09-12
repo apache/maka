@@ -286,6 +286,11 @@ export type DesktopSessionStopResult =
   | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
 
+/** Cancellation proof aggregated across every Runtime Host query batch. */
+export interface DesktopMessageCancellationQueryResult {
+  readonly cancelledMessageIds: readonly string[];
+}
+
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
   copyId: string;
@@ -1169,7 +1174,7 @@ export interface MakaBridge {
     queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],
-    ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult>;
+    ): Promise<DesktopMessageCancellationQueryResult>;
     queryMessageExecutions(
       sessionId: string,
       messageIds: readonly string[],

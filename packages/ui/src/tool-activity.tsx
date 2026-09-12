@@ -357,7 +357,7 @@ export function ToolTrow({
           key={segment.key}
           className="maka-tool-activity-card"
           data-activity-observed={activityObserved}
-          data-maka-transcript-boundary="large"
+          data-maka-transcript-boundary=""
           calls={segment.calls}
         />
       ) : (
@@ -439,7 +439,7 @@ function LinkedAgentList(props: {
   const activityCopy = getToolActivityCopy(props.locale);
   const copy = activityCopy.agent;
   return (
-    <List density="compact" data-maka-transcript-boundary="large">
+    <List density="compact" data-maka-transcript-boundary="">
       {props.rows.map((row) => {
         const childSessionId = row.childSessionId;
         const open = childSessionId && props.onOpenLinkedSession

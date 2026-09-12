@@ -19,7 +19,7 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { WorkbarServices } from '../../features/workbar';
-import { readSettledMessagesFrom } from '../../session-message-settlement.js';
+import { readSettledMessagesFrom } from './session-message-settlement.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
@@ -47,6 +47,32 @@ export function createDesktopWorkbarServices(
   bridge: DesktopWorkbarBridge = window.maka,
   dependencies: DesktopWorkbarServiceDependencies = DEFAULT_DEPENDENCIES,
 ): WorkbarServices {
+  const submitSideChatFollowUp: WorkbarServices['sideChat']['submitFollowUp'] = async (
+    sessionId,
+    placement,
+    text,
+    admissionId,
+  ) => {
+    const result = await bridge.sessions.submitMessage(
+      sessionId,
+      placement,
+      {
+        messageId: admissionId,
+        text,
+      },
+      { waitForHostAdmission: true },
+    );
+    if (!result.ok) {
+      if (result.reason === 'outcome_unknown') {
+        return { kind: 'outcome_unknown' };
+      }
+      throw new Error('Runtime Host refused the follow-up Message');
+    }
+    return result.disposition === 'turn_started' && result.turnId
+      ? { kind: 'started', turnId: result.turnId }
+      : { kind: 'queued' };
+  };
+
   return {
     review: {
       read: (input) => bridge.gitReview.read(input),
@@ -94,7 +120,7 @@ export function createDesktopWorkbarServices(
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
       readSettledMessages: (sessionId, options) =>
-        dependencies.readSettledMessages(bridge.transcripts, sessionId, options),
+        dependencies.readSettledMessages(bridge, sessionId, options),
       branchFromTurn: (sessionId, input) =>
         bridge.sessions.branchFromTurn(sessionId, input),
       cleanupSessionCopy: (sessionId) =>
@@ -114,27 +140,17 @@ export function createDesktopWorkbarServices(
         );
         return result?.kind === 'retracted' ? result : undefined;
       },
-      // Steering is a Message placed at the current Turn's boundary, so it
-      // rides the one admission channel. Runtime Host names the outcome; this
-      // adapter only renames it for the Side Conversation port.
-      steer: async (sessionId, text, admissionId) => {
-        const messageId = admissionId ?? crypto.randomUUID();
-        const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
-          messageId,
-          text,
-        });
-        if (!result.ok) {
-          if (result.reason === 'outcome_unknown') {
-            return { kind: 'outcome_unknown', messageId };
-          }
-          // No Turn opened and nothing was queued; the caller surfaces it as a
-          // failed send rather than waiting for an admission that never lands.
-          throw new Error('Runtime Host refused the steering Message');
-        }
-        return result.disposition === 'turn_started' && result.turnId
-          ? { kind: 'started', turnId: result.turnId }
-          : { kind: 'queued', messageId };
-      },
+      submitFollowUp: submitSideChatFollowUp,
+      queryMessageExecutions: (sessionId, messageIds) =>
+        bridge.sessions.queryMessageExecutions(sessionId, messageIds),
+      retractQueueEntry: (sessionId, entryId) =>
+        bridge.sessions.retractQueueEntry(sessionId, entryId),
+      promoteQueueEntry: (sessionId, entryId) =>
+        bridge.sessions.promoteQueueEntry(sessionId, entryId),
+      updateQueueEntry: (sessionId, entryId, expectedQueueRevision, text) =>
+        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
+      reorderQueueEntries: (sessionId, entryIds) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds),
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),
       regenerateTurn: (sessionId, input) =>

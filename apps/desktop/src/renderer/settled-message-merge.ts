@@ -25,7 +25,24 @@ export function mergeSettledMessages(
 ): StoredMessage[] {
   const incomingById = new Map(incoming.map((message) => [message.id, message]));
   const knownIds = new Set(current.map((message) => message.id));
-  return current
-    .map((message) => incomingById.get(message.id) ?? message)
-    .concat(incoming.filter((message) => !knownIds.has(message.id)));
+  const next = current.map((message) => incomingById.get(message.id) ?? message);
+  let anchor: number | undefined;
+  let pending: StoredMessage[] = [];
+  for (const message of incoming) {
+    const currentIndex = next.findIndex((candidate) => candidate.id === message.id);
+    if (currentIndex >= 0) {
+      if (pending.length > 0) {
+        next.splice(currentIndex, 0, ...pending);
+        pending = [];
+      }
+      anchor = next.findIndex((candidate) => candidate.id === message.id) + 1;
+      continue;
+    }
+    if (knownIds.has(message.id)) continue;
+    pending.push(message);
+  }
+  if (pending.length > 0) {
+    next.splice(anchor ?? next.length, 0, ...pending);
+  }
+  return next;
 }

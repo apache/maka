@@ -53,6 +53,10 @@
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"
     },
+    "side-chat-followups.spec.ts": {
+      "tests": 1,
+      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
+    },
     "skill-draft-lifecycle.spec.ts": {
       "tests": 2,
       "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"
@@ -67,7 +71,11 @@
     },
     "transcript-scroll-cost.spec.ts": {
       "tests": 1,
-      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Chromium containment and fixture motion run in the TranscriptRenderCost story."
+      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
+    },
+    "scroll-geometry.spec.ts": {
+      "tests": 1,
+      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
     },
     "workhub-layout.spec.ts": {
       "tests": 2,

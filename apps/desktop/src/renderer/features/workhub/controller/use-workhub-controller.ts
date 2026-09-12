@@ -63,7 +63,10 @@ export function useWorkHubController() {
   );
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
+  // Reconciliation reads the published view, never a source page held by input.
   const transcriptRef = useRef(emptyTranscript);
+  // Renderer completion is a one-shot signal; publication may arrive later.
+  const settledBeforePublication = useRef(new Set<string>());
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
   const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
@@ -240,6 +243,7 @@ export function useWorkHubController() {
   useEffect(() => {
     setChoices([]);
     transcriptRef.current = emptyTranscript;
+    settledBeforePublication.current.clear();
     setTranscript(emptyTranscript);
     setReadError(undefined);
     const attempt = pendingSend.current;
@@ -328,9 +332,6 @@ export function useWorkHubController() {
     );
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
-      transcriptRef.current = snapshot;
-      setTranscript(snapshot);
-      if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
       const attempt = pendingSend.current;
       if (attempt?.sessionId === sessionId) {
         const messages = snapshot.messages.filter((message) => message.turnId === attempt.input.turnId);
@@ -340,13 +341,23 @@ export function useWorkHubController() {
       const queued = pendingQueued.current;
       if (queued?.sessionId === sessionId && snapshot.messages.some((message) =>
         message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
-      setTransientMessages((previous) => previous.filter((pending) =>
-        !snapshot.messages.some((message) => message.type === 'user' &&
-          (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
-      ));
-      setLiveTurns((previous) =>
-        previous ? reconcileLiveTurnBuffer(previous, [...snapshot.messages]) : previous,
-      );
+      viewportNavigation.commitRange(sessionId, () => {
+        if (disposed) return;
+        transcriptRef.current = snapshot;
+        setTranscript(snapshot);
+        if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
+        setTransientMessages((previous) => previous.filter((pending) =>
+          !snapshot.messages.some((message) => message.type === 'user' &&
+            (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
+        ));
+        const settled = snapshot.messages.filter((message) =>
+          message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
+        setLiveTurns((previous) => {
+          let next = previous;
+          for (const message of settled) if (next) next = settleLiveTurnBufferStep(next, message.id);
+          return next ? reconcileLiveTurnBuffer(next, snapshot.messages) : next;
+        });
+      });
     }, transcriptAbort.signal, readFailed);
     void opening
       .then((opened) => {
@@ -555,7 +566,11 @@ export function useWorkHubController() {
     loadLatest: () => range.current?.loadLatest(),
     report,
     streamingSettled(messageId?: string) {
-      if (!messageId || !transcriptRef.current.messages.some((message) => message.id === messageId && message.type === 'assistant')) return;
+      if (!messageId || currentSessionId.current !== sessionId) return;
+      if (!transcriptRef.current.messages.some((message) => message.id === messageId && message.type === 'assistant')) {
+        settledBeforePublication.current.add(messageId);
+        return;
+      }
       setLiveTurns((previous) => {
         const next = previous ? settleLiveTurnBufferStep(previous, messageId) : undefined;
         return next ? reconcileLiveTurnBuffer(next, transcriptRef.current.messages) : next;

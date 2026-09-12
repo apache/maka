@@ -17,10 +17,44 @@
  * under the License.
  */
 
-/** Explicit viewport commands are consumed once, never replayed on mount or growth. */
+/** Bridge the active surface's scroll authority to conversation commands and publication.
+ * Publication outlives a viewport: only the source owner can invalidate its data. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
+  let viewport: { sessionId: string; commitIfIdle: (commit: () => void) => boolean } | undefined;
+  let pending: { sessionId: string; commit: () => void } | undefined;
+  const drain = (): void => {
+    const update = pending;
+    if (!update) return;
+    const commit = () => {
+      pending = undefined;
+      update.commit();
+    };
+    if (viewport?.sessionId === update.sessionId) viewport.commitIfIdle(commit);
+    else commit();
+  };
   return {
+    attachCommitScheduler(sessionId: string, authority: {
+      commitIfIdle(commit: () => void): boolean;
+      subscribeToIdle(listener: () => void): () => void;
+    }): () => void {
+      const attached = { sessionId, commitIfIdle: authority.commitIfIdle };
+      viewport = attached;
+      const unsubscribe = authority.subscribeToIdle(drain);
+      queueMicrotask(drain);
+      return () => {
+        unsubscribe();
+        if (viewport !== attached) return;
+        viewport = undefined;
+        // React cleanup may be running. Publish after it, without depending
+        // on a future source emission or a replacement viewport mounting.
+        queueMicrotask(drain);
+      };
+    },
+    commitRange(sessionId: string, commit: () => void): void {
+      pending = { sessionId, commit };
+      queueMicrotask(drain);
+    },
     followLatest(sessionId: string): void {
       for (const listener of [...listeners]) listener(sessionId);
     },

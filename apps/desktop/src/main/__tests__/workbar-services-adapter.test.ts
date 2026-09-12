@@ -79,6 +79,30 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('waits for Host admission before accepting a Side Conversation follow-up', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.submitMessage')?.args,
+      [
+        'fork',
+        'next_turn',
+        { messageId: 'message-next', text: 'later' },
+        { waitForHostAdmission: true },
+      ],
+    );
+  });
+
   it('preserves the Side Conversation Stop identity kind', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -95,6 +119,30 @@ describe('createDesktopWorkbarServices', () => {
         ['fork', { source: 'stop_button', expectedTurnId: 'turn-1' }],
       ],
     );
+  });
+
+  it('reports Side Conversation readiness again after an observation reseed', () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+    let readyCount = 0;
+
+    services.sideChat.subscribeEvents('fork', () => undefined, () => {
+      readyCount += 1;
+    })();
+
+    const subscribe = calls.find((call) => call.name === 'sessions.subscribeEvents');
+    assert.ok(subscribe);
+    const observationSeed = subscribe.args[2] as
+      | ((phase: 'pending' | 'ready') => void)
+      | undefined;
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+
+    assert.equal(readyCount, 2);
   });
 
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
@@ -151,6 +199,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.listTurns('s');
     await services.sideChat.readSettledMessages('s', {
       requiredAssistantMessageId: 'message',
+      requiredTurnId: 'turn',
     });
     await services.sideChat.branchFromTurn('s', {
       sourceTurnId: 'turn',
@@ -166,7 +215,23 @@ describe('createDesktopWorkbarServices', () => {
       text: 'hello',
     });
     await services.sideChat.stop('fork');
-    await services.sideChat.steer('fork', 'more');
+    const nextFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+    const currentFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'current_turn',
+      'more',
+      'message-current',
+    );
+    await services.sideChat.queryMessageExecutions('fork', ['message-next']);
+    await services.sideChat.retractQueueEntry('fork', 'entry-1');
+    await services.sideChat.promoteQueueEntry('fork', 'entry-2');
+    await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
+    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
     await services.sideChat.setPermissionMode('fork', 'ask');
     await services.sideChat.regenerateTurn('fork', {
       sourceTurnId: 'turn-2',
@@ -223,6 +288,12 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
+        'sessions.submitMessage',
+        'sessions.queryMessageExecutions',
+        'sessions.retractQueueEntry',
+        'sessions.promoteQueueEntry',
+        'sessions.updateQueueEntry',
+        'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
@@ -244,10 +315,29 @@ describe('createDesktopWorkbarServices', () => {
       's',
       'cursor-1',
     ]);
-    assert.equal(settledReads[0]?.[0], bridge.transcripts);
+    assert.equal(settledReads[0]?.[0], bridge);
     assert.deepEqual(settledReads[0]?.slice(1), [
       's',
-      { requiredAssistantMessageId: 'message' },
+      { requiredAssistantMessageId: 'message', requiredTurnId: 'turn' },
     ]);
+    const followUpCalls = calls.filter((call) => call.name === 'sessions.submitMessage');
+    assert.deepEqual(followUpCalls[0]?.args, [
+      'fork',
+      'next_turn',
+      { messageId: 'message-next', text: 'later' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(followUpCalls[1]?.args, [
+      'fork',
+      'current_turn',
+      { messageId: 'message-current', text: 'more' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(nextFollowUp, { kind: 'queued' });
+    assert.deepEqual(currentFollowUp, { kind: 'queued' });
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.queryMessageExecutions')?.args,
+      ['fork', ['message-next']],
+    );
   });
 });

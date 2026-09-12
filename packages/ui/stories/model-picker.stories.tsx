@@ -19,7 +19,7 @@
 
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SessionSummary } from '@maka/core/session';
@@ -234,6 +234,10 @@ export const ExistingConversation: Story = {
     await expect(announcement).toBeEmptyDOMElement();
     await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
 
+    // Closing replaces the wheel with a new trigger and restores focus next frame.
+    await waitFor(() => expect(within(canvasElement).getByRole('button', {
+      name: /切换当前任务模型|Switch model for this task/,
+    })).toHaveFocus());
     await userEvent.keyboard('{ArrowDown}');
     await expect(announcement).toHaveTextContent(warning);
   },

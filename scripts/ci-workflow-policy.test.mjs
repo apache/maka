@@ -232,7 +232,7 @@ test('shared comparison drives every diff gate on refreshed merges, pushes and d
           'npm',
           'run',
           'check:renderer-architecture',
-          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+          ...(expectedBase ? ['--', '--base', expectedBase, '--strict-base'] : []),
         ],
       ],
     ];

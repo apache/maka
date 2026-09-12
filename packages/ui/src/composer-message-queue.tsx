@@ -166,6 +166,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
           return (
             <div
               key={entry.entryId}
+              data-maka-queue-drop-target={reorderable ? 'true' : undefined}
               onDragOver={(event) => {
                 if (reorderable && dragEntryId.current) event.preventDefault();
               }}
@@ -212,6 +213,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     dragEntryId.current = entry.entryId;
                     event.dataTransfer.effectAllowed = 'move';
                     event.dataTransfer.setData('text/plain', entry.entryId);
+                    event.dataTransfer.setData('application/x-maka-queue-entry', entry.entryId);
                   }}
                   onDragEnd={() => {
                     dragEntryId.current = null;
