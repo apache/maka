@@ -22,6 +22,7 @@ import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import type { ConnectionEffectFetch } from '../connection-effect-fetch.js';
 import { matchesBypassList } from './bypass-matcher.js';
 import { buildProxyDispatcher } from './proxy-dispatcher.js';
+import { buildAbortableConnector } from './abortable-connector.js';
 
 export const FETCH_PROXY_SNAPSHOT = Symbol.for('maka.fetch.proxy-snapshot');
 
@@ -69,7 +70,10 @@ export function createProxiedFetchTransport(
   const proxySnapshot: ProxySettings | null = proxy?.enabled
     ? { ...proxy, bypassList: [...proxy.bypassList] }
     : null;
-  const directDispatcher = new Agent();
+  // Dispatchers do not own sockets until their connectors call back. Abort
+  // direct and proxy connection establishment too, including TLS handshakes.
+  const connections = new AbortController();
+  const directDispatcher = new Agent({ connect: buildAbortableConnector(connections.signal) });
   let proxyDispatcher: Dispatcher | undefined;
   let closePromise: Promise<void> | undefined;
   let closed = false;
@@ -81,7 +85,8 @@ export function createProxiedFetchTransport(
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const useProxy =
       proxySnapshot !== null && !matchesBypassList(new URL(url).hostname, proxySnapshot.bypassList);
-    if (useProxy) proxyDispatcher ??= buildProxyDispatcher(proxySnapshot) as Dispatcher;
+    if (useProxy)
+      proxyDispatcher ??= buildProxyDispatcher(proxySnapshot, connections.signal) as Dispatcher;
 
     return (await undiciFetch(
       input as Parameters<typeof undiciFetch>[0],
@@ -99,6 +104,7 @@ export function createProxiedFetchTransport(
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     closed = true;
+    connections.abort(new Error('Connection effect fetch transport closed'));
     closePromise = Promise.all([
       directDispatcher
         .destroy(new Error('Connection effect fetch transport closed'))
