@@ -207,5 +207,6 @@ function goalRecord(
     },
     controlLease: { goalId: 'goal_1', generation: 0 },
     currentExecution,
+    pendingContinuation: null,
   };
 }

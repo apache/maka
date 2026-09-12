@@ -39,6 +39,7 @@ import {
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import type { GoalPendingContinuation } from '@maka/core/goal';
 
 const SESSION = 'sess-1';
 function controlledCall<T>() {
@@ -124,6 +125,7 @@ function setup(opts?: {
   tokenCount?: number;
   onChange?: GoalManagerDeps['onChange'];
   taskGate?: GoalContinuationDeps['taskGate'];
+  durability?: GoalContinuationDeps['durability'];
 }) {
   let id = 0;
   const manager = new GoalManager({
@@ -161,7 +163,7 @@ function setup(opts?: {
       close: async () => {},
     },
     getRecentContext: async () => 'recent context',
-    durability: volatileGoalDurability,
+    durability: opts?.durability ?? volatileGoalDurability,
     getTokenCount: opts?.tokenCount !== undefined ? () => opts.tokenCount! : undefined,
     admitTurn: (sessionId, prompt) => {
       attemptedPrompts.push(prompt);
@@ -297,6 +299,83 @@ function goalToolsFor(manager: GoalManager, coordinator: GoalContinuationCoordin
 }
 
 describe('GoalContinuationCoordinator settlement', () => {
+  test('recovery admits the durable pending continuation without regenerating its prompt', async () => {
+    const { manager, coordinator, admitted } = setup();
+    const created = manager.create(SESSION, 'ship');
+    assert.equal(created.kind, 'created');
+    const controlLease = manager.getControlLease(SESSION);
+    assert.ok(controlLease);
+
+    coordinator.recoverPendingContinuation({
+      checkpoint: { goalId: created.goal.id, revision: created.goal.revision },
+      controlLease,
+      prompt: 'Resume the durable Goal successor.',
+      triggeringTurnId: 'turn-1',
+    });
+
+    await waitFor(() => admitted.length === 1, 'recovered continuation was not admitted');
+
+    assert.equal(admitted[0]!.prompt, 'Resume the durable Goal successor.');
+    assert.equal(admitted.length, 1);
+  });
+
+  test('recovery inserts the task reminder before the frozen evaluation and Goal context', async () => {
+    const { manager, coordinator, admitted } = setup({
+      taskGate: {
+        listActionableTaskKeys: async () => ['T1'],
+      },
+    });
+    const created = manager.create(SESSION, 'ship');
+    assert.equal(created.kind, 'created');
+    const controlLease = manager.getControlLease(SESSION);
+    assert.ok(controlLease);
+    const pendingPrompt =
+      '[Goal continuation] The goal is not yet met. Keep working toward it. ' +
+      'Do not redefine success around a smaller task; match your verification to the full requirement.' +
+      '\n\nEvaluation: preserved durable context\nGoal: "ship" (turn 1/8)';
+
+    coordinator.recoverPendingContinuation({
+      checkpoint: { goalId: created.goal.id, revision: created.goal.revision },
+      controlLease,
+      prompt: pendingPrompt,
+      triggeringTurnId: 'turn-1',
+    });
+
+    await waitFor(() => admitted.length === 1, 'recovered continuation was not admitted');
+
+    const prompt = admitted[0]!.prompt;
+    assert.ok(prompt.indexOf('[Task reminder]') < prompt.indexOf('Evaluation:'));
+    assert.ok(prompt.indexOf('Evaluation:') < prompt.indexOf('Goal:'));
+    assert.equal(
+      prompt,
+      pendingPrompt.replace(
+        '\n\nEvaluation:',
+        '\n\n[Task reminder] Actionable session tasks remain. Reconcile them before stopping: finish them with real evidence, or update their status truthfully. A task is advisory and never overrides files, tests, artifacts, or verifier evidence.\nActionable task keys: T1\n\nEvaluation:',
+      ),
+    );
+  });
+
+  test('settlement records a durable continuation outbox entry before admission', async () => {
+    const pending: GoalPendingContinuation[] = [];
+    const { manager, coordinator, admitted } = setup({
+      durability: {
+        ...volatileGoalDurability,
+        recordPendingContinuation: async (entry) => {
+          pending.push(entry);
+        },
+      },
+    });
+    manager.create(SESSION, 'ship');
+
+    await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
+    await waitFor(() => admitted.length === 1, 'continuation was not admitted');
+
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]!.checkpoint.goalId, manager.get(SESSION)!.id);
+    assert.equal(pending[0]!.checkpoint.revision, 1);
+    assert.equal(pending[0]!.triggeringTurnId, 'turn-1');
+    assert.match(pending[0]!.prompt, /Goal: "ship"/);
+  });
   test('binds a Goal created by the same external turn before it settles', async () => {
     const { manager, coordinator } = setup({
       evaluations: [{ met: true, reason: 'same-turn Goal verified' }],
@@ -1152,8 +1231,15 @@ describe('GoalContinuationCoordinator admission and completion', () => {
   });
 
   test('new completion evidence outranks an intent waiting on busy', async () => {
+    const cleared: string[] = [];
     const { manager, coordinator, admitted, setAdmission } = setup({
       evaluations: [{ reason: 'old intent' }, { reason: 'new intent' }],
+      durability: {
+        ...volatileGoalDurability,
+        clearPendingContinuation: async (sessionId) => {
+          cleared.push(sessionId);
+        },
+      },
     });
     const idle = deferred<void>();
     let attempts = 0;
@@ -1167,6 +1253,7 @@ describe('GoalContinuationCoordinator admission and completion', () => {
     await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
     await waitFor(() => attempts === 1, 'first admission was not attempted');
     await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-2' });
+    assert.deepEqual(cleared, [SESSION]);
     idle.resolve();
     await waitFor(() => admitted.length === 1, 'new evidence was not admitted after idle');
 
@@ -1174,6 +1261,51 @@ describe('GoalContinuationCoordinator admission and completion', () => {
     assert.equal(admitted.length, 1);
     assert.match(admitted[0]!.prompt, /new intent/);
     assert.doesNotMatch(admitted[0]!.prompt, /old intent/);
+  });
+
+  test('durable intent supersession preserves concurrent evidence order', async () => {
+    const supersessionStarted = deferred<void>();
+    const releaseSupersession = deferred<void>();
+    let blockSupersession = false;
+    const { manager, coordinator, setAdmission } = setup({
+      evaluations: [
+        { reason: 'old intent' },
+        { reason: 'first new evidence' },
+        { reason: 'second new evidence' },
+      ],
+      durability: {
+        ...volatileGoalDurability,
+        clearPendingContinuation: async () => {
+          if (!blockSupersession) return;
+          blockSupersession = false;
+          supersessionStarted.resolve();
+          await releaseSupersession.promise;
+        },
+      },
+    });
+    setAdmission(() => ({ kind: 'busy', whenIdle: new Promise<void>(() => {}) }));
+    manager.create(SESSION, 'ship');
+
+    await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
+    blockSupersession = true;
+    const settlementOrder: string[] = [];
+    const first = settleExternal(coordinator, SESSION, {
+      kind: 'completed',
+      turnId: 'turn-2',
+    }).then(() => settlementOrder.push('turn-2'));
+    await supersessionStarted.promise;
+    const second = settleExternal(coordinator, SESSION, {
+      kind: 'completed',
+      turnId: 'turn-3',
+    }).then(() => settlementOrder.push('turn-3'));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(settlementOrder, []);
+    releaseSupersession.resolve();
+    await Promise.all([first, second]);
+    assert.deepEqual(settlementOrder, ['turn-2', 'turn-3']);
+
+    coordinator.dispose();
   });
 
   test('a stale owned-turn failure cannot erase a newer intent waiting on busy', async () => {
@@ -1202,6 +1334,44 @@ describe('GoalContinuationCoordinator admission and completion', () => {
     await waitFor(() => attempts === 3, 'stale failure erased the newer busy intent');
     assert.equal(admitted.length, 2);
     assert.match(admitted[1]!.prompt, /new external evidence/);
+  });
+
+  test('a stale queued Goal-owned completion cannot erase a newer intent', async () => {
+    const evaluation = controlledCall<string>();
+    const { manager, coordinator, deps, admitted } = setup({
+      evaluations: [{ reason: 'first continuation' }],
+    });
+    manager.create(SESSION, 'ship');
+    await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'turn-1' });
+    await waitFor(() => admitted.length === 1, 'Goal-owned turn was not admitted');
+
+    deps.evaluator.evaluate = () => evaluation.invoke();
+    const external = settleExternal(coordinator, SESSION, {
+      kind: 'completed',
+      turnId: 'turn-2',
+    });
+    await evaluation.started;
+    admitted[0]!.completion.resolve({
+      kind: 'completed',
+      turnId: admitted[0]!.turnId,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    evaluation.resolve(
+      JSON.stringify({
+        met: false,
+        impossible: false,
+        progress: true,
+        waiting: false,
+        reason: 'new external evidence',
+      }),
+    );
+
+    await external;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(admitted.length, 2);
+    assert.match(admitted[1]!.prompt, /new external evidence/);
+
+    coordinator.dispose();
   });
 
   test('unavailable admission pauses instead of leaving a false active Goal', async () => {
@@ -1389,6 +1559,65 @@ describe('GoalContinuationCoordinator waiting and task gate', () => {
     assert.equal(manager.get(SESSION)?.consecutiveNoProgress, 0);
   });
 
+  test('waiting recovery preserves its frozen prompt across wake, busy admission, and re-recovery', async () => {
+    const pending: GoalPendingContinuation[] = [];
+    const idle = deferred<void>();
+    const { manager, coordinator, scheduler, deps, attemptedPrompts, setAdmission } = setup({
+      durability: {
+        ...volatileGoalDurability,
+        recordPendingContinuation: async (entry) => {
+          pending.push(entry);
+        },
+      },
+    });
+    const created = manager.create(SESSION, 'wait for build');
+    assert.equal(created.kind, 'created');
+    const waiting = manager.settleTurn(SESSION, {
+      checkpoint: { goalId: created.goal.id, revision: created.goal.revision },
+      verdict: 'continue',
+      waiting: true,
+      reason: 'Waiting for build 123.',
+    });
+    assert.equal(waiting?.status, 'waiting');
+    const controlLease = manager.getControlLease(SESSION);
+    assert.ok(controlLease);
+    const frozenPrompt = 'Wait for build 123 to complete before continuing.';
+
+    setAdmission(() => ({ kind: 'busy', whenIdle: idle.promise }));
+    coordinator.recoverPendingContinuation({
+      checkpoint: { goalId: waiting!.id, revision: waiting!.revision },
+      controlLease,
+      prompt: frozenPrompt,
+      triggeringTurnId: 'turn-1',
+    });
+    await waitFor(
+      () => scheduler.pendingDelays().length === 1,
+      'waiting recovery was not scheduled',
+    );
+
+    scheduler.fireNext();
+    await waitFor(
+      () => attemptedPrompts.length === 1,
+      'woken continuation did not reach busy admission',
+    );
+    await waitFor(() => pending.length === 1, 'woken continuation was not persisted');
+    assert.equal(pending[0]!.prompt, frozenPrompt);
+
+    coordinator.dispose();
+    const recoveryScheduler = new ManualScheduler();
+    const recoveredCoordinator = new GoalContinuationCoordinator({
+      ...deps,
+      scheduler: recoveryScheduler,
+    });
+    recoveredCoordinator.recoverPendingContinuation(pending[0]!);
+    await waitFor(
+      () => attemptedPrompts.length === 2,
+      'recovered busy continuation did not reuse the persisted prompt',
+    );
+    assert.equal(attemptedPrompts[1], frozenPrompt);
+    recoveredCoordinator.dispose();
+  });
+
   test('a real user turn preempts waiting and cancels its retry', async () => {
     const { manager, coordinator, scheduler, admitted, queueEvaluations } = setup({
       evaluations: [{ waiting: true, progress: false, reason: 'CI running' }],
@@ -1434,7 +1663,10 @@ describe('GoalContinuationCoordinator waiting and task gate', () => {
     idle.resolve();
     await waitFor(() => decisions.length === 1, 'started admission was not traced');
     assert.deepEqual(decisions, ['reminder_injected']);
-    assert.match(admitted[0]!.prompt, /Actionable task keys: T1/);
+    const prompt = admitted[0]!.prompt;
+    assert.match(prompt, /Actionable task keys: T1/);
+    assert.ok(prompt.indexOf('[Task reminder]') < prompt.indexOf('Evaluation:'));
+    assert.ok(prompt.indexOf('Evaluation:') < prompt.indexOf('Goal:'));
   });
 
   test('task reminder is injected once per Goal across chained turns', async () => {

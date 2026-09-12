@@ -506,6 +506,12 @@ test('a durable-state decoder selects the released forward roll', () => {
   assert.equal(plan.stateRootCompat, true);
 });
 
+test('a core durable-state decoder selects the released forward roll', () => {
+  const plan = planTests(['packages/core/src/goal.ts'], { graph });
+
+  assert.equal(plan.stateRootCompat, true);
+});
+
 test('ordinary changes do not pay for the released forward roll', () => {
   const plan = planTests(['apps/desktop/src/renderer/features/workbar/ports.ts'], { graph });
 

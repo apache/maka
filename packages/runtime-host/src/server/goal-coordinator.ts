@@ -23,6 +23,7 @@ import {
   type GoalAuthorityRecord,
   type GoalControlLease as DurableGoalControlLease,
   type GoalCurrentExecution,
+  type GoalPendingContinuation,
   type GoalState as DurableGoalState,
 } from '@maka/core/goal';
 import { userFacingText, type StoredMessage } from '@maka/core/session';
@@ -130,6 +131,15 @@ export class HostGoalCoordinator {
   readonly #tokenCache = new Map<string, number>();
   readonly #recoveryWaits = new Set<Promise<void>>();
   readonly #recoveryAbort = new AbortController();
+  readonly #queuedAuthorityCommits = new Map<
+    string,
+    {
+      readonly expectedAuthorityRevision: number | null;
+      readonly nextAuthorityRevision: number;
+      record: GoalAuthorityRecord | null;
+      started: boolean;
+    }
+  >();
   #persistenceLane: Promise<void> = Promise.resolve();
   #persistenceFailure: unknown;
   #prepared = false;
@@ -171,6 +181,9 @@ export class HostGoalCoordinator {
       admitTurn: options.admitTurn,
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
+        recordPendingContinuation: (pending) => this.#recordPendingContinuation(pending),
+        clearPendingContinuation: (sessionId, controlLease) =>
+          this.#clearPendingContinuation(sessionId, controlLease),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
         settleCurrentExecution: (sessionId, turnId) =>
           this.#settleCurrentExecution(sessionId, turnId),
@@ -231,6 +244,8 @@ export class HostGoalCoordinator {
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
+      } else if (snapshot.record.pendingContinuation) {
+        this.continuation.recoverPendingContinuation(snapshot.record.pendingContinuation);
       } else {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
@@ -501,7 +516,49 @@ export class HostGoalCoordinator {
         current?.record.goal.id === goal.id && goal.revision >= current.record.goal.revision
           ? current.record.currentExecution
           : null,
+      pendingContinuation:
+        current?.record.goal.id === goal.id && goal.revision === current.record.goal.revision
+          ? current.record.pendingContinuation
+          : null,
     });
+  }
+
+  async #recordPendingContinuation(pending: GoalPendingContinuation): Promise<void> {
+    const sessionId = this.manager.getSessionIdByGoalId(pending.checkpoint.goalId);
+    const authority = sessionId ? this.#authorityBySession.get(sessionId) : undefined;
+    if (
+      !authority ||
+      authority.record.goal.id !== pending.checkpoint.goalId ||
+      !sameGoalControlLease(authority.record.controlLease, pending.controlLease) ||
+      authority.record.goal.revision !== pending.checkpoint.revision
+    ) {
+      throw new Error('Goal pending continuation no longer matches its durable authority');
+    }
+    this.#enqueueAuthorityCommit(sessionId!, {
+      ...authority.record,
+      currentExecution: null,
+      pendingContinuation: pending,
+    });
+    await this.#flushGoalState(sessionId!);
+  }
+
+  async #clearPendingContinuation(
+    sessionId: string,
+    controlLease: GoalControlLease,
+  ): Promise<void> {
+    const authority = this.#authorityBySession.get(sessionId);
+    if (
+      !authority ||
+      !sameGoalControlLease(authority.record.controlLease, controlLease) ||
+      !authority.record.pendingContinuation
+    ) {
+      return;
+    }
+    this.#enqueueAuthorityCommit(sessionId, {
+      ...authority.record,
+      pendingContinuation: null,
+    });
+    await this.#flushGoalState(sessionId);
   }
 
   async #recordCurrentExecution(current: GoalCurrentExecution): Promise<void> {
@@ -516,6 +573,7 @@ export class HostGoalCoordinator {
     this.#enqueueAuthorityCommit(current.execution.sessionId, {
       ...authority.record,
       currentExecution: current,
+      pendingContinuation: null,
     });
     await this.#flushGoalState(current.execution.sessionId);
   }
@@ -576,6 +634,28 @@ export class HostGoalCoordinator {
 
   #enqueueAuthorityCommit(sessionId: string, record: GoalAuthorityRecord | null): void {
     const current = this.#authorityBySession.get(sessionId);
+    const queued = this.#queuedAuthorityCommits.get(sessionId);
+    if (
+      queued &&
+      !queued.started &&
+      queued.record !== null &&
+      record !== null &&
+      queued.record.goal.id === record.goal.id &&
+      queued.record.goal.revision === record.goal.revision &&
+      queued.record.pendingContinuation === null &&
+      record.pendingContinuation !== null
+    ) {
+      // GoalManager emits its state transition synchronously. A continuation
+      // is recorded immediately afterwards, so coalesce both records before
+      // the persistence lane starts. The authority writer then commits the
+      // revised Goal and its frozen continuation in one transaction.
+      queued.record = record;
+      this.#authorityBySession.set(sessionId, {
+        authorityRevision: queued.nextAuthorityRevision,
+        record,
+      });
+      return;
+    }
     const expectedAuthorityRevision = current?.authorityRevision ?? null;
     const nextAuthorityRevision = (expectedAuthorityRevision ?? -1) + 1;
     if (record === null) {
@@ -587,34 +667,49 @@ export class HostGoalCoordinator {
       });
     }
     const residency = this.#acquireResidency();
-    const commit = this.#persistenceLane.then(async () => {
-      let result;
-      try {
-        result = await this.#store.commit({
-          sessionId,
-          expectedAuthorityRevision,
-          record,
-        });
-      } catch (error) {
-        const currentExecution = record?.currentExecution;
-        throw new Error(
-          `Unable to persist Goal authority for Session ${sessionId}, Goal revision ${String(record?.goal.revision)}, execution checkpoint ${String(currentExecution?.checkpoint.revision)}, control generations ${String(currentExecution?.controlLease.generation)}/${String(record?.controlLease.generation)}`,
-          { cause: error },
-        );
-      }
-      if (result.kind === 'revision_conflict') {
-        throw new Error(
-          `Goal authority revision conflict for Session ${sessionId}: expected ${String(expectedAuthorityRevision)}, actual ${String(result.actualAuthorityRevision)}`,
-        );
-      }
-      if (record === null) {
-        if (result.snapshot !== null) {
-          throw new Error(`Goal authority deletion retained Session ${sessionId}`);
+    const pending = {
+      expectedAuthorityRevision,
+      nextAuthorityRevision,
+      record,
+      started: false,
+    };
+    this.#queuedAuthorityCommits.set(sessionId, pending);
+    const commit = this.#persistenceLane
+      .then(async () => {
+        pending.started = true;
+        const committedRecord = pending.record;
+        let result;
+        try {
+          result = await this.#store.commit({
+            sessionId,
+            expectedAuthorityRevision: pending.expectedAuthorityRevision,
+            record: committedRecord,
+          });
+        } catch (error) {
+          const currentExecution = committedRecord?.currentExecution;
+          throw new Error(
+            `Unable to persist Goal authority for Session ${sessionId}, Goal revision ${String(committedRecord?.goal.revision)}, execution checkpoint ${String(currentExecution?.checkpoint.revision)}, control generations ${String(currentExecution?.controlLease.generation)}/${String(committedRecord?.controlLease.generation)}`,
+            { cause: error },
+          );
         }
-      } else if (result.snapshot?.authorityRevision !== nextAuthorityRevision) {
-        throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
-      }
-    });
+        if (result.kind === 'revision_conflict') {
+          throw new Error(
+            `Goal authority revision conflict for Session ${sessionId}: expected ${String(expectedAuthorityRevision)}, actual ${String(result.actualAuthorityRevision)}`,
+          );
+        }
+        if (committedRecord === null) {
+          if (result.snapshot !== null) {
+            throw new Error(`Goal authority deletion retained Session ${sessionId}`);
+          }
+        } else if (result.snapshot?.authorityRevision !== pending.nextAuthorityRevision) {
+          throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
+        }
+      })
+      .finally(() => {
+        if (this.#queuedAuthorityCommits.get(sessionId) === pending) {
+          this.#queuedAuthorityCommits.delete(sessionId);
+        }
+      });
     this.#persistenceLane = commit
       .catch((error) => {
         this.#persistenceFailure ??= error;
