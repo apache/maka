@@ -18,11 +18,48 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+export const BROKEN_GIT_SHAPES = [
+  'head-directory',
+  'head-garbage',
+  'head-symref-no-refs-prefix',
+  'gitfile-garbage-head',
+  'missing-objects-and-refs',
+] as const;
+
+export type BrokenGitShape = (typeof BROKEN_GIT_SHAPES)[number];
+
+/** Writes structurally broken Git metadata (a `.git` entry or its target) into root. */
+export async function createBrokenGitMetadata(root: string, shape: BrokenGitShape): Promise<void> {
+  await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+  switch (shape) {
+    case 'head-directory':
+      await rm(join(root, '.git', 'HEAD'));
+      await mkdir(join(root, '.git', 'HEAD'));
+      return;
+    case 'head-garbage':
+      await writeFile(join(root, '.git', 'HEAD'), 'gk\n', 'utf8');
+      return;
+    case 'gitfile-garbage-head':
+      await rm(join(root, '.git'), { recursive: true });
+      await writeFile(join(root, '.git'), 'gitdir: stub\n', 'utf8');
+      await mkdir(join(root, 'stub'));
+      await execFileAsync('git', ['init', '--bare', '--quiet', join(root, 'stub')]);
+      await writeFile(join(root, 'stub', 'HEAD'), 'gk\n', 'utf8');
+      return;
+    case 'head-symref-no-refs-prefix':
+      await writeFile(join(root, '.git', 'HEAD'), 'ref: gk\n', 'utf8');
+      return;
+    case 'missing-objects-and-refs':
+      await rm(join(root, '.git', 'objects'), { recursive: true });
+      await rm(join(root, '.git', 'refs'), { recursive: true });
+  }
+}
 
 export async function createGitRepositoryWithWorktree(
   repository: string,

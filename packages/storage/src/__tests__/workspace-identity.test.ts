@@ -19,7 +19,17 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -31,6 +41,7 @@ import {
   WORKSPACE_MARKER_FILE,
   WorkspaceIdentityError,
 } from '../workspace-identity.js';
+import { BROKEN_GIT_SHAPES, createBrokenGitMetadata } from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -200,10 +211,137 @@ test('a full Git exclude does not grow when resolving workspace identity', async
   }
 });
 
+test('a malformed ancestor .git directory does not block a workspace marker', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-workspace-git-malformed-ancestor-'));
+  try {
+    const workspace = join(base, 'workspace');
+    await mkdir(join(base, '.git', 'gk'), { recursive: true });
+    await mkdir(workspace);
+
+    await resolveWorkspaceIdentity({ path: workspace });
+
+    await access(join(workspace, WORKSPACE_MARKER_FILE));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('broken ancestor Git metadata does not block a workspace marker', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-workspace-invalid-ancestor-'));
+  try {
+    for (const shape of BROKEN_GIT_SHAPES) {
+      const root = join(base, shape);
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await createBrokenGitMetadata(root, shape);
+
+      await resolveWorkspaceIdentity({ path: workspace });
+      await access(join(workspace, WORKSPACE_MARKER_FILE));
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a valid outer repository owns exclusion for a workspace below broken ancestor metadata', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-workspace-git-outer-'));
+  try {
+    const repository = join(base, 'repository');
+    const broken = join(repository, 'broken');
+    const workspace = join(broken, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    await createBrokenGitMetadata(broken, 'head-garbage');
+
+    await resolveWorkspaceIdentity({ path: workspace });
+    await access(join(workspace, WORKSPACE_MARKER_FILE));
+
+    // Git itself still selects the outer repository from the nested workspace;
+    // the marker must be ignored through that repository's local exclude.
+    const repoRoot = await realpath(repository);
+    const { stdout: toplevel } = await execFileAsync(
+      'git',
+      ['-C', workspace, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(toplevel.trim(), repoRoot);
+    const { stdout: exclude } = await execFileAsync(
+      'git',
+      ['-C', workspace, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(exclude.trim(), join(repoRoot, '.git', 'info', 'exclude'));
+    const { stdout } = await execFileAsync(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      { cwd: repository, encoding: 'utf8' },
+    );
+    assert.equal(stdout, '');
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable ancestor Git repository fails closed until permissions return', {
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX permissions are required for an unreadable HEAD fixture'
+      : false,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-workspace-git-unreadable-ancestor-'));
+  try {
+    const repository = join(base, 'repository');
+    const workspace = join(repository, 'nested', 'workspace');
+    await mkdir(workspace, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    await chmod(join(repository, '.git', 'HEAD'), 0o000);
+
+    await assert.rejects(
+      () => resolveWorkspaceIdentity({ path: workspace }),
+      (error: unknown) =>
+        error instanceof WorkspaceIdentityError && error.code === 'workspace_io_failed',
+    );
+    await assert.rejects(access(join(workspace, WORKSPACE_MARKER_FILE)), { code: 'ENOENT' });
+
+    await chmod(join(repository, '.git', 'HEAD'), 0o644);
+    await resolveWorkspaceIdentity({ path: workspace });
+    await access(join(workspace, WORKSPACE_MARKER_FILE));
+    const { stdout } = await execFileAsync(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      { cwd: repository, encoding: 'utf8' },
+    );
+    assert.equal(stdout, '');
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('a malformed enclosing Git repository prevents publishing a new marker', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-git-malformed-'));
   try {
     await writeFile(join(workspace, '.git'), 'gitdir: /missing/maka-git-dir\n', 'utf8');
+
+    await assert.rejects(
+      () => resolveWorkspaceIdentity({ path: workspace }),
+      (error: unknown) =>
+        error instanceof WorkspaceIdentityError && error.code === 'workspace_io_failed',
+    );
+    await assert.rejects(access(join(workspace, WORKSPACE_MARKER_FILE)), { code: 'ENOENT' });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('a dangling .git symlink in the workspace itself blocks marker publication', {
+  skip:
+    process.platform === 'win32'
+      ? 'Windows symlink creation requires elevated privileges or Developer Mode'
+      : false,
+}, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-git-dangling-'));
+  try {
+    await symlink(join(workspace, 'missing-target'), join(workspace, '.git'));
 
     await assert.rejects(
       () => resolveWorkspaceIdentity({ path: workspace }),
