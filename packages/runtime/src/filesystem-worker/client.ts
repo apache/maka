@@ -376,6 +376,13 @@ export class FilesystemWorkerClient {
     const launch = await this.input.getLaunchSpec();
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
+    const windowsNonFollowingReadRoot =
+      platform === 'win32' &&
+      operation.kind === 'glob' &&
+      target.scope === 'subtree' &&
+      target.targetType === 'directory'
+        ? target.enforcementPath
+        : undefined;
     const pinnedTarget =
       platform === 'linux' && !entryMode && target.targetType !== 'missing'
         ? (() => {
@@ -453,6 +460,7 @@ export class FilesystemWorkerClient {
             ...pathContext,
             runtimeReadableRoots: launch.spec.runtimeReadableRoots,
             executableRoots: launch.spec.executableRoots,
+            ...(windowsNonFollowingReadRoot ? { windowsNonFollowingReadRoot } : {}),
             ...(pinnedTarget
               ? {
                   pinnedProfilePaths: [

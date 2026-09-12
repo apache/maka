@@ -130,6 +130,56 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
   assert.equal(result.exec.sandboxType, 'windows');
 });
 
+test('binds a non-following read root into the broker manifest digest', () => {
+  let written: WindowsBrokerManifest | undefined;
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    nonce: () => 'c'.repeat(32),
+    requestId: () => 'glob-request',
+    writeManifest: (manifest) => {
+      written = manifest;
+      return String.raw`C:\Users\user\AppData\Local\Temp\glob-request.json`;
+    },
+  });
+  const profile = createWorkspaceWritePermissionProfile();
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: {
+        ...profile,
+        fileSystem: {
+          kind: 'restricted',
+          entries: [
+            {
+              kind: 'path',
+              access: 'read',
+              path: String.raw`C:\work\repo`,
+              match: 'subtree',
+            },
+          ],
+        },
+      },
+      pathContext: {
+        workspaceRoots: [String.raw`C:\work\repo`],
+        windowsNonFollowingReadRoot: String.raw`C:\work\repo`,
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  const launch = written?.launch;
+  assert.equal(launch?.nonFollowingReadRoot, String.raw`C:\work\repo`);
+  if (!written || !launch) return;
+  assert.equal(
+    written.profileDigest,
+    createHash('sha256').update(JSON.stringify(launch)).digest('hex'),
+  );
+});
+
 test('rejects a request id with characters that are unsafe in a manifest filename', () => {
   // NTFS interprets ':' in a filename as an alternate-data-stream separator,
   // and the request id is embedded in the temporary manifest filename.

@@ -36,11 +36,11 @@ import {
  * implementation (lstat of every ancestor up to the volume root) and the
  * native one (GetFinalPathNameByHandle) are denied by the LowBox token. The
  * Windows variant therefore resolves lexically and REJECTS reparse points
- * outright instead of following them. That is sound because request paths are
- * canonicalised by the client before launch, the broker refuses to grant any
- * tree containing a reparse point, and the ACL grants themselves are the
- * kernel-side enforcement: a link created after grant time points at an
- * ungranted target the worker cannot touch anyway.
+ * instead of following them. The broker rejects them for ordinary recursive
+ * roots. A read-only W1 Glob may opt into a partitioned root: directories on a
+ * reparse branch receive exact grants, clean siblings retain recursive grants,
+ * and the reparse entry and target receive no grant. The worker independently
+ * prunes those entries before Glob traversal; ACLs remain the kernel boundary.
  */
 export interface SandboxPathApi {
   realpath(path: string): Promise<string>;
