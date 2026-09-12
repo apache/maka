@@ -3,11 +3,11 @@
   "sourceUrl": "https://models.dev/api.json",
   "origin": {
     "kind": "models-dev-response",
-    "retrievedAt": "2026-09-01T10:29:38.000Z",
-    "etag": "W/\"7559b5b3701539769901f1e20e89315d\"",
-    "responseSha256": "7559b5b3701539769901f1e20e89315d94975a7b289646590d6f854a21e12f17"
+    "retrievedAt": "2026-09-12T13:37:26.000Z",
+    "etag": "W/\"07617fe08e8038b5fa2d5018dfe896a7\"",
+    "responseSha256": "07617fe08e8038b5fa2d5018dfe896a7478d6f48f2e78af2bc308d32914c5560"
   },
-  "projectionSha256": "85b25f334b65929079ea6dab9b0a2a66f433e3d66710fcd1aadff5f611b37345",
+  "projectionSha256": "68eb80acc19856d1eaa5c760f6ff3919e48c803ef85cee77e1ae92c563fca9e5",
   "projection": {
     "metadata": {
       "anthropic": {
@@ -19,6 +19,28 @@
           "maxOutputTokens": 128000,
           "structuredOutput": true,
           "lastUpdated": "2026-06-09",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "claude-fable-5-1": {
+          "displayName": "Claude Fable 5.1",
+          "description": "Claude model for demanding reasoning and long-horizon agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-06",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-01",
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -4010,7 +4032,7 @@
         "qwen3.8-max-preview": {
           "displayName": "Qwen3.8 Max Preview",
           "description": "Preview Qwen flagship for million-token multimodal reasoning and long-horizon agentic workflows",
-          "lifecycle": "beta",
+          "lifecycle": "deprecated",
           "contextWindow": 1000000,
           "maxOutputTokens": 131072,
           "structuredOutput": true,
@@ -4568,7 +4590,7 @@
         "qwen3.8-max-preview": {
           "displayName": "Qwen3.8 Max Preview",
           "description": "Preview Qwen flagship for million-token multimodal reasoning and long-horizon agentic workflows",
-          "lifecycle": "beta",
+          "lifecycle": "deprecated",
           "contextWindow": 1000000,
           "maxOutputTokens": 131072,
           "structuredOutput": true,
@@ -4625,27 +4647,6 @@
         }
       },
       "cerebras": {
-        "gemma-4-31b": {
-          "displayName": "Gemma 4 31B IT",
-          "description": "Largest Gemma 4 instruction model for open, self-hosted chat and reasoning",
-          "lifecycle": "beta",
-          "contextWindow": 131072,
-          "maxOutputTokens": 40960,
-          "structuredOutput": true,
-          "lastUpdated": "2026-07-01",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high"]
-          },
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
         "gpt-oss-120b": {
           "displayName": "GPT OSS 120B",
           "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
@@ -4664,6 +4665,27 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "qwen-3.8-27b": {
+          "displayName": "Qwen3.8 27B",
+          "description": "Dense 27B vision-language model for coding, agent tasks, and image and video understanding",
+          "lifecycle": "active",
+          "contextWindow": 65536,
+          "maxOutputTokens": 32768,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-03",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         }
@@ -5447,8 +5469,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"],
-            "toggle": true
+            "efforts": ["low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -5675,6 +5696,27 @@
             "output": ["text"]
           }
         },
+        "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp": {
+          "displayName": "DeepSeek V4 Flash Vision Exp",
+          "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-21",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "deepseek-ai/DeepSeek-V4-Pro": {
           "displayName": "DeepSeek V4 Pro",
           "description": "Open MoE flagship with million-token context for coding and long agent runs",
@@ -5717,6 +5759,85 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "deepseek-ai/DeepSeek-V4.1-Flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-12b-it": {
+          "displayName": "Gemma 3 12B IT",
+          "description": "Open multimodal Gemma instruction model for multilingual text generation and image understanding",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-27b-it": {
+          "displayName": "Gemma 3 27B IT",
+          "description": "Largest open Gemma 3 instruction model for multilingual text generation and visual understanding",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-4b-it": {
+          "displayName": "Gemma 3 4B IT",
+          "description": "Open multimodal Gemma instruction model for efficient text generation and image understanding",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -5858,7 +5979,7 @@
         "MiniMaxAI/MiniMax-M2.7": {
           "displayName": "MiniMax-M2.7",
           "description": "Open MiniMax flagship for coding agents, office automation, and complex environments",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 196608,
           "maxOutputTokens": 131072,
           "lastUpdated": "2026-03-18",
@@ -5893,7 +6014,7 @@
         "moonshotai/Kimi-K2.5": {
           "displayName": "Kimi K2.5",
           "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
           "knowledgeCutoff": "2025-01",
@@ -6436,7 +6557,8 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 64000,
+          "inputLimit": 192000,
+          "maxOutputTokens": 128000,
           "structuredOutput": true,
           "lastUpdated": "2026-07-06",
           "capabilities": {
@@ -6575,7 +6697,7 @@
         "zai-org/GLM-4.7-Flash": {
           "displayName": "GLM-4.7-Flash",
           "description": "Efficient GLM model for fast reasoning, coding, and agent workflows",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 202752,
           "maxOutputTokens": 16384,
           "knowledgeCutoff": "2025-04",
@@ -6594,7 +6716,7 @@
         "zai-org/GLM-5": {
           "displayName": "GLM-5",
           "description": "Flagship GLM model for hybrid reasoning, coding, and agentic engineering",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 202752,
           "maxOutputTokens": 16384,
           "knowledgeCutoff": "2025-12",
@@ -6701,17 +6823,17 @@
         }
       },
       "deepseek": {
-        "deepseek-v4-flash": {
-          "displayName": "DeepSeek V4 Flash",
-          "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
+        "deepseek-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
           "lifecycle": "active",
           "contextWindow": 1000000,
           "maxOutputTokens": 384000,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
-          "lastUpdated": "2026-07-31",
+          "lastUpdated": "2026-09-10",
           "capabilities": {
-            "vision": false,
+            "vision": true,
             "reasoning": true,
             "functionCalling": true
           },
@@ -6720,18 +6842,42 @@
             "toggle": true
           },
           "modalities": {
-            "input": ["text"],
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "deepseek-v4-flash": {
+          "displayName": "DeepSeek V4 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
         "deepseek-v4-flash-vision-exp": {
           "displayName": "DeepSeek V4 Flash Vision Exp",
-          "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
-          "lifecycle": "beta",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
           "contextWindow": 1000000,
           "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
-          "lastUpdated": "2026-08-21",
+          "lastUpdated": "2026-09-10",
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -6793,6 +6939,28 @@
             "output": ["text"]
           }
         },
+        "accounts/fireworks/models/deepseek-v4-flash-vision-exp": {
+          "displayName": "DeepSeek V4 Flash Vision Exp",
+          "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 384000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-21",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "accounts/fireworks/models/deepseek-v4-pro-0813": {
           "displayName": "DeepSeek V4 Pro 0813",
           "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
@@ -6812,6 +6980,29 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "accounts/fireworks/models/deepseek-v4p1-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -6840,17 +7031,17 @@
           "displayName": "GLM 5.3",
           "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
           "lifecycle": "active",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 131072,
+          "contextWindow": 1048573,
+          "maxOutputTokens": 262144,
           "structuredOutput": true,
-          "lastUpdated": "2026-08-28",
+          "lastUpdated": "2026-09-07",
           "capabilities": {
             "vision": false,
             "reasoning": true,
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "max"]
+            "efforts": ["low", "high", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -6861,17 +7052,17 @@
           "displayName": "GLM 5.3 Flash",
           "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
           "lifecycle": "active",
-          "contextWindow": 1000000,
+          "contextWindow": 1048573,
           "maxOutputTokens": 131072,
           "structuredOutput": true,
-          "lastUpdated": "2026-08-26",
+          "lastUpdated": "2026-09-07",
           "capabilities": {
             "vision": true,
             "reasoning": true,
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "max"]
+            "efforts": ["low", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "video", "pdf"],
@@ -6997,6 +7188,24 @@
             "output": ["text"]
           }
         },
+        "accounts/fireworks/models/mistral-large-3-fp8": {
+          "displayName": "Mistral Large 3 675B Instruct 2512",
+          "description": "Mistral's largest general model for enterprise agents, coding, and multilingual reasoning",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 262144,
+          "knowledgeCutoff": "2024-11",
+          "lastUpdated": "2025-12-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "accounts/fireworks/models/muse-glimmer-30b": {
           "displayName": "Muse Glimmer 30B",
           "description": "Muse Glimmer is a 30-billion-parameter open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark for always-on local agents, tool use, coding, and image understanding.",
@@ -7081,6 +7290,27 @@
             "output": ["text"]
           }
         },
+        "accounts/fireworks/models/qwen3p8-2p4t-a95b": {
+          "displayName": "Qwen3.8 2.4T A95B",
+          "description": "Open-weight sparse MoE (2.4T total, 95B active), the open-weight twin of Qwen3.8 Max for coding, research, complex reasoning, and agentic workflows",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-12",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
         "accounts/fireworks/models/qwen3p8-max": {
           "displayName": "Qwen3.8 Max",
           "description": "2.4-trillion-parameter MoE flagship for coding, professional work, multimodal understanding, and long-horizon agentic workflows",
@@ -7116,6 +7346,27 @@
           "thinkingOptions": {
             "efforts": ["high", "max"],
             "toggle": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "accounts/fireworks/routers/glm-5p3-fast": {
+          "displayName": "GLM 5.3 Fast",
+          "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+          "lifecycle": "active",
+          "contextWindow": 1048572,
+          "maxOutputTokens": 262144,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-07",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -7167,6 +7418,27 @@
             "output": ["text"]
           }
         },
+        "claude-fable-5.1": {
+          "displayName": "Claude Fable 5.1",
+          "description": "Claude model for demanding reasoning and long-horizon agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-06",
+          "lastUpdated": "2026-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "claude-haiku-4.5": {
           "displayName": "Claude Haiku 4.5 (latest)",
           "description": "Fast Claude lane for lightweight agents, office tasks, and responsive chat",
@@ -7180,47 +7452,6 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "claude-opus-4.5": {
-          "displayName": "Claude Opus 4.5 (latest)",
-          "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
-          "lifecycle": "active",
-          "contextWindow": 200000,
-          "inputLimit": 168000,
-          "maxOutputTokens": 32000,
-          "knowledgeCutoff": "2025-05",
-          "lastUpdated": "2025-11-24",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "claude-opus-4.6": {
-          "displayName": "Claude Opus 4.6",
-          "description": "High-end Claude for difficult coding, planning, and slower expert reasoning",
-          "lifecycle": "active",
-          "contextWindow": 200000,
-          "inputLimit": 168000,
-          "maxOutputTokens": 32000,
-          "knowledgeCutoff": "2025-05-31",
-          "lastUpdated": "2026-03-13",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -7294,44 +7525,6 @@
             "output": ["text"]
           }
         },
-        "claude-sonnet-4": {
-          "displayName": "Claude Sonnet 4 (latest)",
-          "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
-          "lifecycle": "active",
-          "contextWindow": 216000,
-          "inputLimit": 128000,
-          "maxOutputTokens": 16000,
-          "knowledgeCutoff": "2025-03-31",
-          "lastUpdated": "2025-05-22",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "claude-sonnet-4.5": {
-          "displayName": "Claude Sonnet 4.5 (latest)",
-          "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
-          "lifecycle": "active",
-          "contextWindow": 200000,
-          "inputLimit": 168000,
-          "maxOutputTokens": 32000,
-          "knowledgeCutoff": "2025-07-31",
-          "lastUpdated": "2025-09-29",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
         "claude-sonnet-4.6": {
           "displayName": "Claude Sonnet 4.6",
           "description": "Claude workhorse for coding agents, careful analysis, and production cost control",
@@ -7372,29 +7565,6 @@
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "gemini-3.1-pro-preview": {
-          "displayName": "Gemini 3.1 Pro Preview",
-          "description": "Reasoning-first Gemini preview for agentic coding and complex problem solving",
-          "lifecycle": "active",
-          "contextWindow": 1000000,
-          "inputLimit": 936000,
-          "maxOutputTokens": 64000,
-          "knowledgeCutoff": "2025-01",
-          "structuredOutput": true,
-          "lastUpdated": "2026-02-19",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
-          },
-          "modalities": {
-            "input": ["text", "image", "video", "audio", "pdf"],
             "output": ["text"]
           }
         },
@@ -7467,23 +7637,25 @@
             "output": ["text"]
           }
         },
-        "gpt-4.1": {
-          "displayName": "GPT-4.1",
-          "description": "Long-lived GPT workhorse for coding, instruction following, and production apps",
+        "gemini-3.8-flash": {
+          "displayName": "Gemini 3.8 Flash",
+          "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
           "lifecycle": "active",
-          "contextWindow": 128000,
-          "inputLimit": 128000,
-          "maxOutputTokens": 16384,
-          "knowledgeCutoff": "2024-04",
+          "contextWindow": 1000000,
+          "inputLimit": 936000,
+          "maxOutputTokens": 64000,
           "structuredOutput": true,
-          "lastUpdated": "2025-04-14",
+          "lastUpdated": "2026-09-02",
           "capabilities": {
             "vision": true,
-            "reasoning": false,
+            "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
           "modalities": {
-            "input": ["text", "image", "pdf"],
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -7507,46 +7679,6 @@
           },
           "modalities": {
             "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
-        "gpt-5.2": {
-          "displayName": "GPT-5.2",
-          "description": "Reliable GPT generation for broad coding, writing, and tool-assisted product work",
-          "lifecycle": "active",
-          "contextWindow": 400000,
-          "inputLimit": 272000,
-          "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2025-08-31",
-          "structuredOutput": true,
-          "lastUpdated": "2025-12-11",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
-        "gpt-5.2-codex": {
-          "displayName": "GPT-5.2 Codex",
-          "description": "Code-specialist GPT for repository edits, reviews, and long-running software agents",
-          "lifecycle": "active",
-          "contextWindow": 400000,
-          "inputLimit": 272000,
-          "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2025-08-31",
-          "structuredOutput": true,
-          "lastUpdated": "2025-12-11",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
             "output": ["text"]
           }
         },
@@ -7725,6 +7857,29 @@
           },
           "thinkingOptions": {
             "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gpt-6-astra": {
+          "displayName": "GPT-6 Astra",
+          "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-04-30",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -8381,6 +8536,27 @@
           "knowledgeCutoff": "2026-03",
           "structuredOutput": true,
           "lastUpdated": "2026-08-13",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gemini-3.8-flash": {
+          "displayName": "Gemini 3.8 Flash",
+          "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -9071,6 +9247,27 @@
             "output": ["text"]
           }
         },
+        "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp": {
+          "displayName": "DeepSeek V4 Flash Vision Exp",
+          "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-21",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "deepseek-ai/DeepSeek-V4-Pro": {
           "displayName": "DeepSeek V4 Pro",
           "description": "Open MoE flagship with million-token context for coding and long agent runs",
@@ -9111,6 +9308,85 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "deepseek-ai/DeepSeek-V4.1-Flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-12b-it": {
+          "displayName": "Gemma 3 12B IT",
+          "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-27b-it": {
+          "displayName": "Gemma 3 27B IT",
+          "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "google/gemma-3-4b-it": {
+          "displayName": "Gemma 3 4B IT",
+          "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 131072,
+          "knowledgeCutoff": "2024-08",
+          "structuredOutput": true,
+          "lastUpdated": "2025-03-12",
+          "capabilities": {
+            "vision": true,
+            "reasoning": false,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -9941,7 +10217,8 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 64000,
+          "inputLimit": 192000,
+          "maxOutputTokens": 128000,
           "structuredOutput": true,
           "lastUpdated": "2026-07-06",
           "capabilities": {
@@ -11376,118 +11653,6 @@
         }
       },
       "moonshot": {
-        "kimi-k2-0711-preview": {
-          "displayName": "Kimi K2 0711",
-          "description": "Kimi model for long-context chat, coding, and agentic reasoning",
-          "lifecycle": "active",
-          "contextWindow": 131072,
-          "maxOutputTokens": 16384,
-          "knowledgeCutoff": "2024-10",
-          "lastUpdated": "2025-07-14",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "kimi-k2-0905-preview": {
-          "displayName": "Kimi K2 0905",
-          "description": "Kimi model for long-context chat, coding, and agentic reasoning",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 262144,
-          "knowledgeCutoff": "2024-10",
-          "lastUpdated": "2025-09-05",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "kimi-k2-thinking": {
-          "displayName": "Kimi K2 Thinking",
-          "description": "Thinking Kimi model for slower research passes, planning, and hard technical questions",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 262144,
-          "knowledgeCutoff": "2024-08",
-          "lastUpdated": "2025-11-06",
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "kimi-k2-thinking-turbo": {
-          "displayName": "Kimi K2 Thinking Turbo",
-          "description": "Kimi reasoning model for long-horizon research, planning, and tool use",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 262144,
-          "knowledgeCutoff": "2024-08",
-          "lastUpdated": "2025-11-06",
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "kimi-k2-turbo-preview": {
-          "displayName": "Kimi K2 Turbo",
-          "description": "Fast Kimi model for responsive chat, coding help, and agent loops",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 262144,
-          "knowledgeCutoff": "2024-10",
-          "lastUpdated": "2025-09-05",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "kimi-k2.5": {
-          "displayName": "Kimi K2.5",
-          "description": "Earlier Kimi frontier model for long-context agents, coding, and multimodal work",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 262144,
-          "knowledgeCutoff": "2025-01",
-          "structuredOutput": true,
-          "lastUpdated": "2026-01",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "video"],
-            "output": ["text"]
-          }
-        },
         "kimi-k2.6": {
           "displayName": "Kimi K2.6",
           "description": "Multimodal Kimi workhorse for agent loops, coding tasks, and visual context",
@@ -13642,6 +13807,29 @@
             "output": ["text"]
           }
         },
+        "deepseek-v4.1-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "gemma4:31b": {
           "displayName": "gemma4:31b",
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -14397,7 +14585,7 @@
         "gpt-5.2-chat-latest": {
           "displayName": "GPT-5.2 Chat",
           "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 128000,
           "maxOutputTokens": 16384,
           "knowledgeCutoff": "2025-08-31",
@@ -14442,7 +14630,7 @@
         "gpt-5.3-chat-latest": {
           "displayName": "GPT-5.3 Chat (latest)",
           "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 128000,
           "maxOutputTokens": 16384,
           "knowledgeCutoff": "2025-08-31",
@@ -14728,6 +14916,29 @@
           },
           "thinkingOptions": {
             "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "gpt-6-astra": {
+          "displayName": "GPT-6 Astra",
+          "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-04-30",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -15077,6 +15288,27 @@
             "output": ["text"]
           }
         },
+        "claude-fable-5-1": {
+          "displayName": "Claude Fable 5.1",
+          "description": "Claude model for demanding reasoning and long-horizon agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-06",
+          "lastUpdated": "2026-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "claude-haiku-4-5": {
           "displayName": "Claude Haiku 4.5",
           "description": "Fast Claude model for responsive assistance, classification, and lightweight agents",
@@ -15342,6 +15574,28 @@
             "output": ["text"]
           }
         },
+        "deepseek-v4-flash-vision-exp": {
+          "displayName": "DeepSeek V4 Flash Vision Exp",
+          "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 384000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-21",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "deepseek-v4-pro": {
           "displayName": "DeepSeek V4 Pro",
           "description": "Open MoE flagship with million-token context for coding and long agent runs",
@@ -15519,6 +15773,27 @@
             "output": ["text"]
           }
         },
+        "gemini-3.8-flash": {
+          "displayName": "Gemini 3.8 Flash",
+          "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
         "glm-4.6": {
           "displayName": "GLM-4.6",
           "description": "Legacy model retained for compatibility with older integrations",
@@ -15665,6 +15940,48 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "glm-5.3": {
+          "displayName": "GLM-5.3",
+          "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-14",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "glm-5.3-flash": {
+          "displayName": "GLM-5.3-Flash",
+          "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-26",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf"],
             "output": ["text"]
           }
         },
@@ -16128,6 +16445,29 @@
             "output": ["text"]
           }
         },
+        "gpt-6-astra": {
+          "displayName": "GPT-6 Astra",
+          "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-04-30",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "grok-4.5": {
           "displayName": "Grok 4.5",
           "description": "xAI's Grok model for chat, coding, agentic tools, and lower hallucination risk",
@@ -16212,6 +16552,7 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "deprecated",
           "contextWindow": 190000,
+          "inputLimit": 192000,
           "maxOutputTokens": 64000,
           "structuredOutput": true,
           "lastUpdated": "2026-07-06",
@@ -16764,6 +17105,49 @@
             "output": ["text"]
           }
         },
+        "muse-spark-1.3": {
+          "displayName": "Muse Spark 1.3",
+          "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows. It improves long-horizon agent collaboration, instruction following, and coding efficiency relative to Muse Spark 1.2.",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
+        "muse-spark-1.3-contributor-free": {
+          "displayName": "Muse Spark 1.3 Free",
+          "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for coding and agentic workflows.",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "isFree": true,
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
         "nemotron-3-super-free": {
           "displayName": "Nemotron 3 Super Free",
           "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workloads",
@@ -17054,6 +17438,28 @@
             "output": ["text"]
           }
         },
+        "deepseek-v4.1-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "glm-5": {
           "displayName": "GLM-5",
           "description": "Legacy model retained for compatibility with older integrations",
@@ -17133,7 +17539,7 @@
           }
         },
         "glm-5.3-flash": {
-          "displayName": "GLM-5.3-Flash (2x usage)",
+          "displayName": "GLM-5.3-Flash",
           "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
           "lifecycle": "active",
           "contextWindow": 1000000,
@@ -17224,7 +17630,8 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 256000,
-          "maxOutputTokens": 64000,
+          "inputLimit": 192000,
+          "maxOutputTokens": 128000,
           "lastUpdated": "2026-07-06",
           "capabilities": {
             "vision": false,
@@ -17505,6 +17912,48 @@
             "output": ["text"]
           }
         },
+        "muse-spark-1.3-contributor": {
+          "displayName": "Muse Spark 1.3 Contributor",
+          "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for coding and agentic workflows.",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
+        "omen-alpha": {
+          "displayName": "Omen Alpha",
+          "description": "oH man anothEr aLPha ModEl",
+          "lifecycle": "deprecated",
+          "contextWindow": 500000,
+          "maxOutputTokens": 128000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "ox-alpha-free": {
           "displayName": "Ox Alpha Free (Unlimited)",
           "description": "Stealth reasoning model for coding, agentic tasks, and tool use",
@@ -17677,7 +18126,7 @@
           }
         },
         "~anthropic/claude-haiku-latest": {
-          "displayName": "Anthropic Claude Haiku Latest",
+          "displayName": "Claude Haiku Latest",
           "description": "Fast Claude model for responsive assistance, classification, and lightweight agents",
           "lifecycle": "active",
           "contextWindow": 200000,
@@ -17720,7 +18169,7 @@
           }
         },
         "~anthropic/claude-sonnet-latest": {
-          "displayName": "Anthropic Claude Sonnet Latest",
+          "displayName": "Claude Sonnet Latest",
           "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
           "lifecycle": "active",
           "contextWindow": 1000000,
@@ -17765,7 +18214,7 @@
           }
         },
         "~google/gemini-flash-latest": {
-          "displayName": "Google Gemini Flash Latest",
+          "displayName": "Gemini Flash Latest",
           "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
           "lifecycle": "active",
           "contextWindow": 1048576,
@@ -17787,7 +18236,7 @@
           }
         },
         "~google/gemini-pro-latest": {
-          "displayName": "Google Gemini Pro Latest",
+          "displayName": "Gemini Pro Latest",
           "description": "Advanced Gemini model for complex reasoning, coding, and multimodal analysis",
           "lifecycle": "active",
           "contextWindow": 1048576,
@@ -17809,7 +18258,7 @@
           }
         },
         "~moonshotai/kimi-latest": {
-          "displayName": "MoonshotAI Kimi Latest",
+          "displayName": "Kimi Latest",
           "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
           "lifecycle": "active",
           "contextWindow": 1048576,
@@ -17830,15 +18279,36 @@
             "output": ["text"]
           }
         },
-        "~openai/gpt-latest": {
-          "displayName": "OpenAI GPT Latest",
+        "~openai/gpt-astra-latest": {
+          "displayName": "GPT Astra Latest",
+          "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-11",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["pdf", "image", "text"],
+            "output": ["text"]
+          }
+        },
+        "~openai/gpt-luna-latest": {
+          "displayName": "GPT Luna Latest",
           "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
           "lifecycle": "active",
           "contextWindow": 1050000,
           "maxOutputTokens": 128000,
           "knowledgeCutoff": "2026-02-16",
           "structuredOutput": true,
-          "lastUpdated": "2026-04-27",
+          "lastUpdated": "2026-09-11",
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -17853,7 +18323,7 @@
           }
         },
         "~openai/gpt-mini-latest": {
-          "displayName": "OpenAI GPT Mini Latest",
+          "displayName": "GPT Mini Latest",
           "description": "Compact GPT model for low-latency assistance and high-volume workloads",
           "lifecycle": "active",
           "contextWindow": 400000,
@@ -17868,6 +18338,50 @@
           },
           "thinkingOptions": {
             "efforts": ["none", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["pdf", "image", "text"],
+            "output": ["text"]
+          }
+        },
+        "~openai/gpt-sol-latest": {
+          "displayName": "GPT Sol Latest",
+          "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-02-16",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-11",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["pdf", "image", "text"],
+            "output": ["text"]
+          }
+        },
+        "~openai/gpt-terra-latest": {
+          "displayName": "GPT Terra Latest",
+          "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-02-16",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-11",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["pdf", "image", "text"],
@@ -17892,6 +18406,27 @@
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "~z-ai/glm-flash-latest": {
+          "displayName": "GLM Flash Latest",
+          "description": "GLM vision model for visual reasoning, documents, and multimodal agents",
+          "lifecycle": "active",
+          "contextWindow": 1310720,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-27",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
             "output": ["text"]
           }
         },
@@ -18145,6 +18680,28 @@
             "output": ["text"]
           }
         },
+        "anthropic/claude-fable-5.1": {
+          "displayName": "Claude Fable 5.1",
+          "description": "Claude model for creative writing, analysis, and controlled agent workflows",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-06",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "anthropic/claude-haiku-4.5": {
           "displayName": "Claude Haiku 4.5 (latest)",
           "description": "Fast Claude lane for lightweight agents, office tasks, and responsive chat",
@@ -18279,29 +18836,6 @@
             "output": ["text"]
           }
         },
-        "anthropic/claude-opus-4.7-fast": {
-          "displayName": "Claude Opus 4.7 (Fast)",
-          "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
-          "lifecycle": "active",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2026-01-31",
-          "structuredOutput": true,
-          "lastUpdated": "2026-04-16",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"],
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
         "anthropic/claude-opus-4.8": {
           "displayName": "Claude Opus 4.8",
           "description": "Top Claude Opus tier for the hardest reasoning, coding, and long-horizon agents",
@@ -18325,54 +18859,8 @@
             "output": ["text"]
           }
         },
-        "anthropic/claude-opus-4.8-fast": {
-          "displayName": "Claude Opus 4.8 (Fast)",
-          "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
-          "lifecycle": "active",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2026-01",
-          "structuredOutput": true,
-          "lastUpdated": "2026-05-28",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"],
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
         "anthropic/claude-opus-5": {
           "displayName": "Claude Opus 5",
-          "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
-          "lifecycle": "active",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2026-05",
-          "structuredOutput": true,
-          "lastUpdated": "2026-07-24",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"],
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "anthropic/claude-opus-5-fast": {
-          "displayName": "Claude Opus 5 (Fast)",
           "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
           "lifecycle": "active",
           "contextWindow": 1000000,
@@ -18832,7 +19320,7 @@
           "description": "DeepSeek chat model for instruction following, coding, and analysis",
           "lifecycle": "active",
           "contextWindow": 163840,
-          "maxOutputTokens": 144900,
+          "maxOutputTokens": 32768,
           "knowledgeCutoff": "2025-03-31",
           "structuredOutput": true,
           "lastUpdated": "2025-08-21",
@@ -19026,8 +19514,8 @@
           "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 384000,
-          "structuredOutput": false,
+          "maxOutputTokens": 943718,
+          "structuredOutput": true,
           "lastUpdated": "2026-08-21",
           "capabilities": {
             "vision": true,
@@ -19048,7 +19536,7 @@
           "description": "Open MoE flagship with million-token context for coding and long agent runs",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 393216,
+          "maxOutputTokens": 384000,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
           "lastUpdated": "2026-04-24",
@@ -19071,7 +19559,7 @@
           "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 384000,
+          "maxOutputTokens": 393216,
           "structuredOutput": true,
           "lastUpdated": "2026-08-22",
           "capabilities": {
@@ -19085,6 +19573,29 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "deepseek/deepseek-v4.1-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 384000,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -19273,7 +19784,7 @@
           }
         },
         "google/gemini-3-pro-image-preview": {
-          "displayName": "Nano Banana Pro",
+          "displayName": "Nano Banana Pro Preview",
           "description": "Nano Banana Pro for higher-fidelity image generation and design-heavy edits",
           "lifecycle": "active",
           "contextWindow": 65536,
@@ -19315,7 +19826,7 @@
           }
         },
         "google/gemini-3.1-flash-image-preview": {
-          "displayName": "Nano Banana 2",
+          "displayName": "Nano Banana 2 Preview",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 65536,
@@ -19538,6 +20049,27 @@
             "output": ["text"]
           }
         },
+        "google/gemini-3.8-flash": {
+          "displayName": "Gemini 3.8 Flash",
+          "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "audio", "pdf"],
+            "output": ["text"]
+          }
+        },
         "google/gemma-2-27b-it": {
           "displayName": "Gemma 2 27B",
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -19558,14 +20090,14 @@
           }
         },
         "google/gemma-3-12b-it": {
-          "displayName": "Gemma 3 12B",
+          "displayName": "Gemma 3 12B IT",
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
           "lifecycle": "active",
           "contextWindow": 131072,
           "maxOutputTokens": 16384,
-          "knowledgeCutoff": "2024-08-31",
+          "knowledgeCutoff": "2024-08",
           "structuredOutput": true,
-          "lastUpdated": "2025-03-13",
+          "lastUpdated": "2025-03-12",
           "capabilities": {
             "vision": true,
             "reasoning": false,
@@ -19577,12 +20109,12 @@
           }
         },
         "google/gemma-3-27b-it": {
-          "displayName": "Gemma 3 27B",
+          "displayName": "Gemma 3 27B IT",
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
           "lifecycle": "active",
           "contextWindow": 131072,
           "maxOutputTokens": 117964,
-          "knowledgeCutoff": "2024-08-31",
+          "knowledgeCutoff": "2024-08",
           "structuredOutput": true,
           "lastUpdated": "2025-03-12",
           "capabilities": {
@@ -19596,14 +20128,14 @@
           }
         },
         "google/gemma-3-4b-it": {
-          "displayName": "Gemma 3 4B",
+          "displayName": "Gemma 3 4B IT",
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
           "lifecycle": "active",
           "contextWindow": 131072,
           "maxOutputTokens": 16384,
-          "knowledgeCutoff": "2024-08-31",
+          "knowledgeCutoff": "2024-08",
           "structuredOutput": true,
-          "lastUpdated": "2025-03-13",
+          "lastUpdated": "2025-03-12",
           "capabilities": {
             "vision": true,
             "reasoning": false,
@@ -19619,7 +20151,7 @@
           "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 16384,
+          "maxOutputTokens": 32768,
           "structuredOutput": true,
           "lastUpdated": "2026-04-02",
           "capabilities": {
@@ -19775,24 +20307,6 @@
             "output": ["text"]
           }
         },
-        "ibm-granite/granite-4.1-8b": {
-          "displayName": "Granite 4.1 8B",
-          "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
-          "lifecycle": "active",
-          "contextWindow": 131072,
-          "maxOutputTokens": 117964,
-          "structuredOutput": true,
-          "lastUpdated": "2026-04-30",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
         "ibm-granite/granite-4.2-8b": {
           "displayName": "Granite 4.2 8B",
           "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
@@ -19835,14 +20349,56 @@
             "output": ["text"]
           }
         },
+        "inception/mercury-2.5": {
+          "displayName": "Mercury 2.5",
+          "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+          "lifecycle": "active",
+          "contextWindow": 260000,
+          "maxOutputTokens": 65536,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-08",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
         "inclusionai/ling-3.0-flash": {
-          "displayName": "Ling-3.0-flash",
+          "displayName": "Ling 3.0 Flash",
           "description": "Efficient model for low-latency assistance, extraction, and routine automation",
           "lifecycle": "active",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
           "structuredOutput": false,
           "lastUpdated": "2026-07-23",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-fin": {
+          "displayName": "Ling 3.0 Flash Fin",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 235929,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-27",
           "capabilities": {
             "vision": false,
             "reasoning": true,
@@ -19872,6 +20428,107 @@
           },
           "thinkingOptions": {
             "toggle": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-sante:free": {
+          "displayName": "Ling 3.0 Flash Sante (free)",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "structuredOutput": false,
+          "lastUpdated": "2026-09-04",
+          "isFree": true,
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-vl": {
+          "displayName": "Ling 3.0 Flash VL",
+          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 32768,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-vl:free": {
+          "displayName": "Ling 3.0 Flash VL (free)",
+          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+          "lifecycle": "active",
+          "contextWindow": 262144,
+          "maxOutputTokens": 32768,
+          "structuredOutput": false,
+          "lastUpdated": "2026-09-10",
+          "isFree": true,
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
+        "inference-net/schematron-v2-small": {
+          "displayName": "Schematron V2 Small",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-12",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inference-net/schematron-v2-turbo": {
+          "displayName": "Schematron V2 Turbo",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 128000,
+          "maxOutputTokens": 8192,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-12",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
           },
           "modalities": {
             "input": ["text"],
@@ -19974,12 +20631,12 @@
           }
         },
         "meta-llama/llama-3.1-70b-instruct": {
-          "displayName": "Llama 3.1 70B Instruct",
+          "displayName": "Llama-3.1-70B-Instruct",
           "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
           "lifecycle": "active",
           "contextWindow": 131072,
-          "maxOutputTokens": 16384,
-          "knowledgeCutoff": "2023-12-31",
+          "maxOutputTokens": 8192,
+          "knowledgeCutoff": "2023-12",
           "structuredOutput": true,
           "lastUpdated": "2024-07-23",
           "capabilities": {
@@ -20054,7 +20711,7 @@
           "description": "Popular open Llama workhorse for multilingual chat, coding, and self-hosting",
           "lifecycle": "active",
           "contextWindow": 131072,
-          "maxOutputTokens": 115200,
+          "maxOutputTokens": 16384,
           "knowledgeCutoff": "2023-12",
           "structuredOutput": true,
           "lastUpdated": "2024-12-06",
@@ -20130,7 +20787,7 @@
           "description": "Muse Glimmer is a 30-billion-parameter open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark for always-on local agents, tool use, coding, and image understanding.",
           "lifecycle": "active",
           "contextWindow": 131072,
-          "maxOutputTokens": 16384,
+          "maxOutputTokens": 117964,
           "knowledgeCutoff": "2026-01-04",
           "structuredOutput": true,
           "lastUpdated": "2026-08-10",
@@ -20204,6 +20861,48 @@
           },
           "thinkingOptions": {
             "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
+        "meta/muse-spark-1.3": {
+          "displayName": "Muse Spark 1.3",
+          "description": "Open Llama multimodal model for image understanding and text reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 943718,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video", "pdf", "audio"],
+            "output": ["text"]
+          }
+        },
+        "meta/muse-spark-1.3-contributor": {
+          "displayName": "Muse Spark 1.3 Contributor",
+          "description": "Open Llama multimodal model for image understanding and text reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 943718,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "video", "pdf", "audio"],
@@ -20379,25 +21078,6 @@
             "output": ["text"]
           }
         },
-        "minimax/minimax-m2.7:free": {
-          "displayName": "MiniMax M2.7 (free)",
-          "description": "MiniMax model for chat, coding, office work, and agentic tasks",
-          "lifecycle": "active",
-          "contextWindow": 196608,
-          "maxOutputTokens": 176947,
-          "structuredOutput": false,
-          "lastUpdated": "2026-03-18",
-          "isFree": true,
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
         "minimax/minimax-m3": {
           "displayName": "MiniMax-M3",
           "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
@@ -20406,28 +21086,6 @@
           "maxOutputTokens": 512000,
           "structuredOutput": true,
           "lastUpdated": "2026-06-01",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "video"],
-            "output": ["text"]
-          }
-        },
-        "minimax/minimax-m3:free": {
-          "displayName": "MiniMax M3 (free)",
-          "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
-          "lifecycle": "active",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 943718,
-          "structuredOutput": false,
-          "lastUpdated": "2026-06-01",
-          "isFree": true,
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -20751,7 +21409,7 @@
           "displayName": "Mistral Small 3.2 24B",
           "description": "Efficient Mistral model for fast chat, extraction, and production assistants",
           "lifecycle": "active",
-          "contextWindow": 131072,
+          "contextWindow": 256000,
           "maxOutputTokens": 16384,
           "knowledgeCutoff": "2023-10-31",
           "structuredOutput": true,
@@ -20792,7 +21450,7 @@
           "contextWindow": 32768,
           "maxOutputTokens": 26214,
           "structuredOutput": true,
-          "lastUpdated": "2025-10-30",
+          "lastUpdated": "2025-07-15",
           "capabilities": {
             "vision": false,
             "reasoning": false,
@@ -20846,7 +21504,7 @@
           "description": "Thinking Kimi model for slower research passes, planning, and hard technical questions",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 100352,
+          "maxOutputTokens": 235929,
           "knowledgeCutoff": "2024-08",
           "structuredOutput": true,
           "lastUpdated": "2025-11-06",
@@ -20981,42 +21639,44 @@
             "output": ["text"]
           }
         },
-        "nex-agi/nex-n2-mini": {
-          "displayName": "Nex-N2-Mini",
-          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+        "nex-agi/nex-n2.5-mini:free": {
+          "displayName": "Nex-N2.5-Mini (free)",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
           "lifecycle": "active",
           "contextWindow": 262144,
           "maxOutputTokens": 235929,
           "structuredOutput": true,
-          "lastUpdated": "2026-06-24",
+          "lastUpdated": "2026-09-08",
+          "isFree": true,
           "capabilities": {
             "vision": true,
             "reasoning": true,
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
             "output": ["text"]
           }
         },
-        "nex-agi/nex-n2-pro": {
-          "displayName": "Nex-N2-Pro",
+        "nex-agi/nex-n2.5-pro:free": {
+          "displayName": "Nex-N2.5-Pro (free)",
           "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
           "lifecycle": "active",
           "contextWindow": 262144,
           "maxOutputTokens": 235929,
-          "structuredOutput": false,
-          "lastUpdated": "2026-06-08",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-08",
+          "isFree": true,
           "capabilities": {
             "vision": true,
             "reasoning": true,
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -21083,34 +21743,12 @@
             "output": ["text"]
           }
         },
-        "nousresearch/hermes-4-70b": {
-          "displayName": "Hermes 4 70B",
-          "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-          "lifecycle": "active",
-          "contextWindow": 131072,
-          "maxOutputTokens": 117964,
-          "knowledgeCutoff": "2024-08-31",
-          "structuredOutput": false,
-          "lastUpdated": "2025-08-26",
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": false
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
         "nvidia/nemotron-3-nano-30b-a3b": {
           "displayName": "Nemotron 3 Nano 30B A3B",
           "description": "Small Nemotron 3 MoE for efficient coding, math, and long-context agents",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 228000,
+          "maxOutputTokens": 235929,
           "structuredOutput": true,
           "lastUpdated": "2025-12-15",
           "capabilities": {
@@ -21152,7 +21790,7 @@
           "displayName": "Nemotron 3 Super 120B A12B",
           "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workloads",
           "lifecycle": "active",
-          "contextWindow": 1000000,
+          "contextWindow": 262144,
           "maxOutputTokens": 16384,
           "structuredOutput": true,
           "lastUpdated": "2026-03-11",
@@ -21198,7 +21836,7 @@
           "description": "Largest Nemotron 3 model for maximum open-weight reasoning and agent accuracy",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 16384,
+          "maxOutputTokens": 32768,
           "structuredOutput": true,
           "lastUpdated": "2026-06-04",
           "capabilities": {
@@ -21235,6 +21873,27 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "nvidia/nemotron-3.5-content-safety": {
+          "displayName": "Nemotron 3.5 Content Safety",
+          "description": "Safety model for policy screening, moderation, and risk-aware routing workflows",
+          "lifecycle": "active",
+          "contextWindow": 131072,
+          "maxOutputTokens": 117964,
+          "structuredOutput": false,
+          "lastUpdated": "2026-06-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": false
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -22237,6 +22896,50 @@
             "output": ["text"]
           }
         },
+        "openai/gpt-6-astra": {
+          "displayName": "GPT-6 Astra",
+          "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-04-30",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-6-astra-pro": {
+          "displayName": "GPT-6 Astra Pro",
+          "description": "Frontier GPT model for professional reasoning, coding, and multimodal work",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["pdf", "image", "text"],
+            "output": ["text"]
+          }
+        },
         "openai/gpt-audio": {
           "displayName": "GPT Audio",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
@@ -22334,7 +23037,7 @@
           }
         },
         "openai/gpt-oss-safeguard-20b": {
-          "displayName": "gpt-oss-safeguard-20b",
+          "displayName": "GPT OSS Safeguard 20B",
           "description": "Safety model for policy screening, moderation, and risk-aware routing workflows",
           "lifecycle": "active",
           "contextWindow": 131072,
@@ -22925,7 +23628,7 @@
           "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 128000,
-          "maxOutputTokens": 28800,
+          "maxOutputTokens": 115200,
           "knowledgeCutoff": "2024-06-30",
           "structuredOutput": true,
           "lastUpdated": "2025-02-01",
@@ -22944,7 +23647,7 @@
           "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
           "lifecycle": "active",
           "contextWindow": 131072,
-          "maxOutputTokens": 16384,
+          "maxOutputTokens": 8192,
           "knowledgeCutoff": "2025-03-31",
           "structuredOutput": true,
           "lastUpdated": "2025-04-28",
@@ -23027,7 +23730,7 @@
           "lifecycle": "active",
           "contextWindow": 131072,
           "maxOutputTokens": 16384,
-          "structuredOutput": false,
+          "structuredOutput": true,
           "lastUpdated": "2025-04-28",
           "capabilities": {
             "vision": false,
@@ -23047,7 +23750,7 @@
           "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 32000,
+          "maxOutputTokens": 235929,
           "knowledgeCutoff": "2025-06-30",
           "structuredOutput": true,
           "lastUpdated": "2025-07-29",
@@ -23264,7 +23967,7 @@
           "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 235929,
+          "maxOutputTokens": 16384,
           "knowledgeCutoff": "2025-04",
           "structuredOutput": true,
           "lastUpdated": "2025-09",
@@ -23283,7 +23986,7 @@
           "description": "Efficient Qwen thinking model for local reasoning, math, and coding agents",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 32768,
+          "maxOutputTokens": 235929,
           "knowledgeCutoff": "2025-04",
           "structuredOutput": true,
           "lastUpdated": "2025-09",
@@ -23432,7 +24135,7 @@
           "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 81920,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-02-23",
           "capabilities": {
@@ -23474,7 +24177,7 @@
           "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 235929,
+          "maxOutputTokens": 16384,
           "structuredOutput": true,
           "lastUpdated": "2026-02-23",
           "capabilities": {
@@ -23495,7 +24198,7 @@
           "description": "Large open Qwen multimodal MoE for visual agents and long technical tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 65536,
+          "maxOutputTokens": 235929,
           "structuredOutput": true,
           "lastUpdated": "2026-02-15",
           "capabilities": {
@@ -23601,7 +24304,7 @@
           "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 235929,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-04-22",
           "capabilities": {
@@ -23773,7 +24476,7 @@
           "description": "Open-weight sparse MoE (2.4T total, 95B active), the open-weight twin of Qwen3.8 Max for coding, research, complex reasoning, and agentic workflows",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 262144,
+          "maxOutputTokens": 131072,
           "structuredOutput": true,
           "lastUpdated": "2026-08-12",
           "capabilities": {
@@ -23832,14 +24535,14 @@
             "output": ["text"]
           }
         },
-        "qwen/qwen3.8-max": {
-          "displayName": "Qwen3.8 Max",
+        "qwen/qwen3.8-max-0902": {
+          "displayName": "Qwen3.8 Max 0902",
           "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 1000000,
           "maxOutputTokens": 131072,
           "structuredOutput": true,
-          "lastUpdated": "2026-08-03",
+          "lastUpdated": "2026-09-02",
           "capabilities": {
             "vision": true,
             "reasoning": true,
@@ -23926,6 +24629,27 @@
             "output": ["text"]
           }
         },
+        "sakana/fugu-max": {
+          "displayName": "Fugu Max",
+          "description": "Multi-agent model for routing expert agents across complex analytical tasks",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-11",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "sakana/fugu-ultra": {
           "displayName": "Fugu Ultra",
           "description": "Quality-first multi-agent model for hard research, analysis, and competitions",
@@ -23944,6 +24668,28 @@
           },
           "modalities": {
             "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "sakana/fugu-ultra-v2": {
+          "displayName": "Fugu Ultra v2",
+          "description": "Quality-first multi-agent model for hard research, analysis, and competitions",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-08-28",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-11",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
             "output": ["text"]
           }
         },
@@ -24148,6 +24894,7 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 262144,
+          "inputLimit": 192000,
           "maxOutputTokens": 128000,
           "structuredOutput": true,
           "lastUpdated": "2026-07-06",
@@ -24249,7 +24996,7 @@
           "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
           "lifecycle": "active",
           "contextWindow": 1024000,
-          "maxOutputTokens": 26214,
+          "maxOutputTokens": 819200,
           "knowledgeCutoff": "2024-04-30",
           "structuredOutput": true,
           "lastUpdated": "2024-11-08",
@@ -24354,7 +25101,7 @@
           "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
           "lifecycle": "active",
           "contextWindow": 6144,
-          "maxOutputTokens": 4096,
+          "maxOutputTokens": 5529,
           "knowledgeCutoff": "2023-06-30",
           "structuredOutput": true,
           "lastUpdated": "2023-07-22",
@@ -24734,8 +25481,8 @@
           "displayName": "GLM-4.7-Flash",
           "description": "Budget GLM lane for fast coding help, routing, and everyday automation",
           "lifecycle": "active",
-          "contextWindow": 202752,
-          "maxOutputTokens": 16384,
+          "contextWindow": 200000,
+          "maxOutputTokens": 117964,
           "knowledgeCutoff": "2025-04",
           "structuredOutput": true,
           "lastUpdated": "2026-01-19",
@@ -24820,32 +25567,9 @@
           "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 262144,
+          "maxOutputTokens": 182476,
           "structuredOutput": true,
           "lastUpdated": "2026-06-13",
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "z-ai/glm-5.2:free": {
-          "displayName": "GLM 5.2 (free)",
-          "description": "Flagship GLM model for hybrid reasoning, coding, and agentic engineering",
-          "lifecycle": "active",
-          "contextWindow": 256000,
-          "maxOutputTokens": 230400,
-          "structuredOutput": true,
-          "lastUpdated": "2026-06-13",
-          "isFree": true,
           "capabilities": {
             "vision": false,
             "reasoning": true,
@@ -24865,7 +25589,7 @@
           "description": "Flagship GLM model for hybrid reasoning, coding, and agentic engineering",
           "lifecycle": "active",
           "contextWindow": 1310720,
-          "maxOutputTokens": 131072,
+          "maxOutputTokens": 943718,
           "structuredOutput": true,
           "lastUpdated": "2026-08-14",
           "capabilities": {
@@ -27212,7 +27936,8 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 256000,
-          "maxOutputTokens": 64000,
+          "inputLimit": 192000,
+          "maxOutputTokens": 128000,
           "lastUpdated": "2026-07-06",
           "isFree": true,
           "capabilities": {
@@ -27257,7 +27982,8 @@
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
           "contextWindow": 256000,
-          "maxOutputTokens": 64000,
+          "inputLimit": 192000,
+          "maxOutputTokens": 128000,
           "lastUpdated": "2026-07-06",
           "isFree": true,
           "capabilities": {
@@ -27954,6 +28680,27 @@
             "output": ["text"]
           }
         },
+        "alibaba/qwen3.8-max-0902": {
+          "displayName": "Qwen3.8 Max 0902",
+          "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+          "lifecycle": "active",
+          "contextWindow": 991000,
+          "maxOutputTokens": 128000,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "xhigh"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "alibaba/wan-v2.5-t2v-preview": {
           "displayName": "Wan v2.5 Text-to-Video Preview",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
@@ -28151,7 +28898,7 @@
           "description": "Efficient model for low-latency assistance, extraction, and routine automation",
           "lifecycle": "active",
           "contextWindow": 300000,
-          "maxOutputTokens": 8192,
+          "maxOutputTokens": 10000,
           "knowledgeCutoff": "2024-10",
           "lastUpdated": "2024-12-03",
           "capabilities": {
@@ -28160,7 +28907,7 @@
             "functionCalling": true
           },
           "modalities": {
-            "input": ["text", "image", "video"],
+            "input": ["text", "image", "video", "pdf"],
             "output": ["text"]
           }
         },
@@ -28169,7 +28916,7 @@
           "description": "Efficient model for low-latency assistance, extraction, and routine automation",
           "lifecycle": "active",
           "contextWindow": 128000,
-          "maxOutputTokens": 8192,
+          "maxOutputTokens": 10000,
           "knowledgeCutoff": "2024-10",
           "lastUpdated": "2024-12-03",
           "capabilities": {
@@ -28187,7 +28934,7 @@
           "description": "Flagship model for demanding analysis, coding, and production agent workflows",
           "lifecycle": "active",
           "contextWindow": 300000,
-          "maxOutputTokens": 8192,
+          "maxOutputTokens": 10000,
           "knowledgeCutoff": "2024-10",
           "lastUpdated": "2024-12-03",
           "capabilities": {
@@ -28196,7 +28943,7 @@
             "functionCalling": true
           },
           "modalities": {
-            "input": ["text", "image", "video"],
+            "input": ["text", "image", "video", "pdf"],
             "output": ["text"]
           }
         },
@@ -28251,6 +28998,27 @@
           "thinkingOptions": {
             "efforts": ["low", "medium", "high", "xhigh"],
             "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "anthropic/claude-fable-5.1": {
+          "displayName": "Claude Fable 5.1",
+          "description": "Claude model for creative writing, analysis, and controlled agent workflows",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-06",
+          "lastUpdated": "2026-09-01",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -29050,7 +29818,7 @@
         },
         "deepseek/deepseek-r1": {
           "displayName": "DeepSeek-R1",
-          "description": "DeepSeek reasoning model for multi-step analysis, math, coding, and tools",
+          "description": "Classic open reasoning model for transparent math, coding, and deliberate problem solving",
           "lifecycle": "active",
           "contextWindow": 128000,
           "maxOutputTokens": 32768,
@@ -29059,24 +29827,7 @@
           "capabilities": {
             "vision": false,
             "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
-        "deepseek/deepseek-v3": {
-          "displayName": "DeepSeek V3 0324",
-          "description": "DeepSeek chat model for instruction following, coding, and analysis",
-          "lifecycle": "active",
-          "contextWindow": 163840,
-          "maxOutputTokens": 163840,
-          "lastUpdated": "2024-12-26",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
+            "functionCalling": false
           },
           "modalities": {
             "input": ["text"],
@@ -29207,8 +29958,8 @@
           "displayName": "DeepSeek V4 Flash Vision Exp",
           "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
           "lifecycle": "active",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 384000,
+          "contextWindow": 1048576,
+          "maxOutputTokens": 1048576,
           "structuredOutput": true,
           "lastUpdated": "2026-08-21",
           "capabilities": {
@@ -29267,6 +30018,29 @@
           },
           "modalities": {
             "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "deepseek/deepseek-v4.1-flash": {
+          "displayName": "DeepSeek V4.1 Flash",
+          "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 393216,
+          "knowledgeCutoff": "2025-05",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-10",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["high", "xhigh"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -29753,6 +30527,24 @@
             "output": ["text"]
           }
         },
+        "google/gemini-3.8-flash": {
+          "displayName": "Gemini 3.8 Flash",
+          "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 65536,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "google/gemini-embedding-001": {
           "displayName": "Gemini Embedding 001",
           "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
@@ -29981,6 +30773,26 @@
             "output": ["text"]
           }
         },
+        "inception/mercury-2.5": {
+          "displayName": "Mercury 2.5",
+          "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+          "lifecycle": "active",
+          "contextWindow": 260000,
+          "maxOutputTokens": 65536,
+          "lastUpdated": "2026-09-08",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
         "inception/mercury-coder-small": {
           "displayName": "Mercury Coder Small Beta",
           "description": "Coding model for repository understanding, refactors, and agentic engineering tasks",
@@ -30051,6 +30863,42 @@
           },
           "thinkingOptions": {
             "toggle": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-sante": {
+          "displayName": "Ling 3.0 Flash Sante",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 256000,
+          "maxOutputTokens": 32000,
+          "lastUpdated": "2026-09-04",
+          "isFree": true,
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
+        "inclusionai/ling-3.0-flash-sante-free": {
+          "displayName": "Ling 3.0 Flash Sante (Free)",
+          "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+          "lifecycle": "active",
+          "contextWindow": 256000,
+          "maxOutputTokens": 32000,
+          "lastUpdated": "2026-09-04",
+          "isFree": true,
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
           },
           "modalities": {
             "input": ["text"],
@@ -30470,6 +31318,44 @@
             "output": ["text"]
           }
         },
+        "meta/muse-spark-1.3": {
+          "displayName": "Muse Spark 1.3",
+          "description": "Open Llama multimodal model for image understanding and text reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 1048576,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "meta/muse-spark-1.3-contributor": {
+          "displayName": "Muse Spark 1.3 Contributor",
+          "description": "Open Llama multimodal model for image understanding and text reasoning",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 1048576,
+          "lastUpdated": "2026-09-02",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "minimax/minimax-h3": {
           "displayName": "MiniMax H3",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
@@ -30608,24 +31494,6 @@
             "output": ["text"]
           }
         },
-        "minimax/minimax-m2.7-free": {
-          "displayName": "Minimax M2.7 (Free)",
-          "description": "Open MiniMax flagship for coding agents, office automation, and complex environments",
-          "lifecycle": "active",
-          "contextWindow": 196608,
-          "maxOutputTokens": 196608,
-          "lastUpdated": "2026-03-18",
-          "isFree": true,
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
         "minimax/minimax-m2.7-highspeed": {
           "displayName": "MiniMax M2.7 High Speed",
           "description": "Low-latency M2.7 variant for interactive coding plans and agent loops",
@@ -30660,27 +31528,6 @@
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "minimax/minimax-m3-free": {
-          "displayName": "MiniMax M3 (Free)",
-          "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
-          "lifecycle": "active",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 1048576,
-          "lastUpdated": "2026-06-01",
-          "isFree": true,
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image"],
             "output": ["text"]
           }
         },
@@ -32268,6 +33115,51 @@
             "output": ["text"]
           }
         },
+        "openai/gpt-6-astra": {
+          "displayName": "GPT-6 Astra",
+          "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-04-30",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
+        "openai/gpt-6-astra-fast": {
+          "displayName": "GPT-6 Astra (Fast)",
+          "description": "Fast variant of GPT-6 Astra for low-latency assistance and high-volume workloads.",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-04",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "openai/gpt-image-1": {
           "displayName": "GPT Image 1",
           "description": "OpenAI image model for production generation, edits, and brand-safe visual workflows",
@@ -32326,6 +33218,40 @@
           "contextWindow": 0,
           "maxOutputTokens": 0,
           "lastUpdated": "2026-04-21",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["image"]
+          }
+        },
+        "openai/gpt-image-2.5-flare": {
+          "displayName": "GPT Image 2.5 Flare",
+          "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+          "lifecycle": "active",
+          "contextWindow": 0,
+          "maxOutputTokens": 0,
+          "lastUpdated": "2026-09-08",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["image"]
+          }
+        },
+        "openai/gpt-image-2.5-sunburst": {
+          "displayName": "GPT Image 2.5 Sunburst",
+          "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+          "lifecycle": "active",
+          "contextWindow": 0,
+          "maxOutputTokens": 0,
+          "lastUpdated": "2026-09-08",
           "capabilities": {
             "vision": false,
             "reasoning": false,
@@ -33403,23 +34329,6 @@
             "output": ["video"]
           }
         },
-        "spacexai/grok-imagine-video-1.5-preview": {
-          "displayName": "Grok Imagine Video 1.5 Preview",
-          "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-          "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
-          "lastUpdated": "2026-05-30",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": false
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["video"]
-          }
-        },
         "spacexai/grok-stt": {
           "displayName": "Grok STT",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
@@ -33908,27 +34817,6 @@
             "output": ["text"]
           }
         },
-        "xiaomi/mimo-v2.5-pro-ultraspeed": {
-          "displayName": "MiMo V2.5 Pro UltraSpeed",
-          "description": "MiMo pro model for strong multimodal reasoning and agent execution",
-          "lifecycle": "active",
-          "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
-          "knowledgeCutoff": "2024-12",
-          "lastUpdated": "2026-06-09",
-          "capabilities": {
-            "vision": false,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text"],
-            "output": ["text"]
-          }
-        },
         "zai/glm-4.5": {
           "displayName": "GLM 4.5",
           "description": "Hybrid-reasoning GLM release that made the 4.5 line broadly useful",
@@ -34203,6 +35091,27 @@
             "output": ["text"]
           }
         },
+        "zai/glm-5.3-fast": {
+          "displayName": "GLM 5.3 Fast",
+          "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 262144,
+          "structuredOutput": true,
+          "lastUpdated": "2026-08-14",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        },
         "zai/glm-5.3-flash": {
           "displayName": "GLM 5.3 Flash",
           "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
@@ -34389,7 +35298,7 @@
           "displayName": "Grok Imagine Image",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 8000,
+          "contextWindow": 16000,
           "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
@@ -34406,7 +35315,7 @@
           "displayName": "Grok Imagine Image 2.0",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 8000,
+          "contextWindow": 64000,
           "maxOutputTokens": 0,
           "lastUpdated": "2026-08-07",
           "capabilities": {
@@ -34423,7 +35332,7 @@
           "displayName": "Grok Imagine Image Quality",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 8000,
+          "contextWindow": 16000,
           "maxOutputTokens": 0,
           "lastUpdated": "2026-04-03",
           "capabilities": {
@@ -36556,7 +37465,7 @@
         "openai/gpt-5.1-chat": {
           "displayName": "GPT-5.1 Chat",
           "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-          "lifecycle": "active",
+          "lifecycle": "deprecated",
           "contextWindow": 128000,
           "maxOutputTokens": 64000,
           "knowledgeCutoff": "2025-01-01",
@@ -37920,6 +38829,13 @@
         "cacheWriteUsdPer1M": 12.5
       },
       {
+        "modelKey": "anthropic:claude-fable-5-1",
+        "inputUsdPer1M": 10,
+        "outputUsdPer1M": 50,
+        "cacheReadUsdPer1M": 0.25,
+        "cacheWriteUsdPer1M": 12.5
+      },
+      {
         "modelKey": "anthropic:claude-haiku-4-5",
         "inputUsdPer1M": 1,
         "outputUsdPer1M": 5,
@@ -38683,14 +39599,14 @@
         "outputUsdPer1M": 0.144
       },
       {
-        "modelKey": "cerebras:gemma-4-31b",
-        "inputUsdPer1M": 0.99,
-        "outputUsdPer1M": 1.49
-      },
-      {
         "modelKey": "cerebras:gpt-oss-120b",
         "inputUsdPer1M": 0.35,
         "outputUsdPer1M": 0.75
+      },
+      {
+        "modelKey": "cerebras:qwen-3.8-27b",
+        "inputUsdPer1M": 0.99,
+        "outputUsdPer1M": 1.49
       },
       {
         "modelKey": "cohere:command-a-03-2025",
@@ -38922,9 +39838,15 @@
       },
       {
         "modelKey": "deepinfra:deepseek-ai/DeepSeek-V4-Flash-0731",
-        "inputUsdPer1M": 0.08,
+        "inputUsdPer1M": 0.06,
         "outputUsdPer1M": 0.18,
-        "cacheReadUsdPer1M": 0.016
+        "cacheReadUsdPer1M": 0.015
+      },
+      {
+        "modelKey": "deepinfra:deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "inputUsdPer1M": 0.44,
+        "outputUsdPer1M": 1.32,
+        "cacheReadUsdPer1M": 0.014
       },
       {
         "modelKey": "deepinfra:deepseek-ai/DeepSeek-V4-Pro",
@@ -38937,6 +39859,27 @@
         "inputUsdPer1M": 1.3,
         "outputUsdPer1M": 2.6,
         "cacheReadUsdPer1M": 0.1
+      },
+      {
+        "modelKey": "deepinfra:deepseek-ai/DeepSeek-V4.1-Flash",
+        "inputUsdPer1M": 0.2,
+        "outputUsdPer1M": 0.6,
+        "cacheReadUsdPer1M": 0.006
+      },
+      {
+        "modelKey": "deepinfra:google/gemma-3-12b-it",
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "deepinfra:google/gemma-3-27b-it",
+        "inputUsdPer1M": 0.08,
+        "outputUsdPer1M": 0.16
+      },
+      {
+        "modelKey": "deepinfra:google/gemma-3-4b-it",
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.1
       },
       {
         "modelKey": "deepinfra:google/gemma-4-26B-A4B-it",
@@ -39149,9 +40092,9 @@
       },
       {
         "modelKey": "deepinfra:XiaomiMiMo/MiMo-V2.5",
-        "inputUsdPer1M": 0.4,
-        "outputUsdPer1M": 2,
-        "cacheReadUsdPer1M": 0.08
+        "inputUsdPer1M": 0.14,
+        "outputUsdPer1M": 0.28,
+        "cacheReadUsdPer1M": 0.0028
       },
       {
         "modelKey": "deepinfra:XiaomiMiMo/MiMo-V2.5-Pro",
@@ -39208,16 +40151,22 @@
         "cacheReadUsdPer1M": 0.03
       },
       {
+        "modelKey": "deepseek:deepseek-flash",
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.6,
+        "cacheReadUsdPer1M": 0.003
+      },
+      {
         "modelKey": "deepseek:deepseek-v4-flash",
-        "inputUsdPer1M": 0.14,
-        "outputUsdPer1M": 0.28,
-        "cacheReadUsdPer1M": 0.0028
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.6,
+        "cacheReadUsdPer1M": 0.003
       },
       {
         "modelKey": "deepseek:deepseek-v4-flash-vision-exp",
-        "inputUsdPer1M": 0.14,
-        "outputUsdPer1M": 0.28,
-        "cacheReadUsdPer1M": 0.0028
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.6,
+        "cacheReadUsdPer1M": 0.003
       },
       {
         "modelKey": "deepseek:deepseek-v4-pro",
@@ -39227,15 +40176,27 @@
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/models/deepseek-v4-flash-0731",
-        "inputUsdPer1M": 0.14,
-        "outputUsdPer1M": 0.28,
-        "cacheReadUsdPer1M": 0.028
+        "inputUsdPer1M": 0.22,
+        "outputUsdPer1M": 0.66,
+        "cacheReadUsdPer1M": 0.007
+      },
+      {
+        "modelKey": "fireworks-ai:accounts/fireworks/models/deepseek-v4-flash-vision-exp",
+        "inputUsdPer1M": 0.22,
+        "outputUsdPer1M": 0.66,
+        "cacheReadUsdPer1M": 0.007
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/models/deepseek-v4-pro-0813",
         "inputUsdPer1M": 1.32,
         "outputUsdPer1M": 3.96,
         "cacheReadUsdPer1M": 0.044
+      },
+      {
+        "modelKey": "fireworks-ai:accounts/fireworks/models/deepseek-v4p1-flash",
+        "inputUsdPer1M": 0.22,
+        "outputUsdPer1M": 0.66,
+        "cacheReadUsdPer1M": 0.007
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/models/glm-5p2",
@@ -39253,7 +40214,7 @@
         "modelKey": "fireworks-ai:accounts/fireworks/models/glm-5p3-flash",
         "inputUsdPer1M": 0.15,
         "outputUsdPer1M": 0.5,
-        "cacheReadUsdPer1M": 0.029
+        "cacheReadUsdPer1M": 0.03
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/models/gpt-oss-120b",
@@ -39316,6 +40277,12 @@
         "cacheReadUsdPer1M": 0.08
       },
       {
+        "modelKey": "fireworks-ai:accounts/fireworks/models/qwen3p8-2p4t-a95b",
+        "inputUsdPer1M": 2,
+        "outputUsdPer1M": 6,
+        "cacheReadUsdPer1M": 0.25
+      },
+      {
         "modelKey": "fireworks-ai:accounts/fireworks/models/qwen3p8-max",
         "inputUsdPer1M": 2,
         "outputUsdPer1M": 6,
@@ -39326,6 +40293,12 @@
         "inputUsdPer1M": 2.1,
         "outputUsdPer1M": 6.6,
         "cacheReadUsdPer1M": 0.21
+      },
+      {
+        "modelKey": "fireworks-ai:accounts/fireworks/routers/glm-5p3-fast",
+        "inputUsdPer1M": 2.1,
+        "outputUsdPer1M": 6.6,
+        "cacheReadUsdPer1M": 0.39
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/routers/kimi-k3-fast",
@@ -39439,6 +40412,12 @@
       },
       {
         "modelKey": "google:gemini-3.7-flash",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 3.75,
+        "cacheReadUsdPer1M": 0.075
+      },
+      {
+        "modelKey": "google:gemini-3.8-flash",
         "inputUsdPer1M": 0.75,
         "outputUsdPer1M": 3.75,
         "cacheReadUsdPer1M": 0.075
@@ -39574,6 +40553,11 @@
         "outputUsdPer1M": 0.28
       },
       {
+        "modelKey": "huggingface:deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "inputUsdPer1M": 0.44,
+        "outputUsdPer1M": 1.32
+      },
+      {
         "modelKey": "huggingface:deepseek-ai/DeepSeek-V4-Pro",
         "inputUsdPer1M": 0.435,
         "outputUsdPer1M": 0.87,
@@ -39583,6 +40567,26 @@
         "modelKey": "huggingface:deepseek-ai/DeepSeek-V4-Pro-0813",
         "inputUsdPer1M": 1.32,
         "outputUsdPer1M": 3.96
+      },
+      {
+        "modelKey": "huggingface:deepseek-ai/DeepSeek-V4.1-Flash",
+        "inputUsdPer1M": 0.3,
+        "outputUsdPer1M": 1.2
+      },
+      {
+        "modelKey": "huggingface:google/gemma-3-12b-it",
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "huggingface:google/gemma-3-27b-it",
+        "inputUsdPer1M": 0.08,
+        "outputUsdPer1M": 0.16
+      },
+      {
+        "modelKey": "huggingface:google/gemma-3-4b-it",
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.1
       },
       {
         "modelKey": "huggingface:google/gemma-4-26B-A4B-it",
@@ -40102,42 +41106,6 @@
         "inputUsdPer1M": 1.4,
         "outputUsdPer1M": 4.4,
         "cacheReadUsdPer1M": 0.14
-      },
-      {
-        "modelKey": "moonshot:kimi-k2-0711-preview",
-        "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 2.5,
-        "cacheReadUsdPer1M": 0.15
-      },
-      {
-        "modelKey": "moonshot:kimi-k2-0905-preview",
-        "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 2.5,
-        "cacheReadUsdPer1M": 0.15
-      },
-      {
-        "modelKey": "moonshot:kimi-k2-thinking",
-        "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 2.5,
-        "cacheReadUsdPer1M": 0.15
-      },
-      {
-        "modelKey": "moonshot:kimi-k2-thinking-turbo",
-        "inputUsdPer1M": 1.15,
-        "outputUsdPer1M": 8,
-        "cacheReadUsdPer1M": 0.15
-      },
-      {
-        "modelKey": "moonshot:kimi-k2-turbo-preview",
-        "inputUsdPer1M": 2.4,
-        "outputUsdPer1M": 10,
-        "cacheReadUsdPer1M": 0.6
-      },
-      {
-        "modelKey": "moonshot:kimi-k2.5",
-        "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 3,
-        "cacheReadUsdPer1M": 0.1
       },
       {
         "modelKey": "moonshot:kimi-k2.6",
@@ -40903,6 +41871,13 @@
         "cacheWriteUsdPer1M": 12.5
       },
       {
+        "modelKey": "opencode:claude-fable-5-1",
+        "inputUsdPer1M": 10,
+        "outputUsdPer1M": 50,
+        "cacheReadUsdPer1M": 0.25,
+        "cacheWriteUsdPer1M": 12.5
+      },
+      {
         "modelKey": "opencode:claude-haiku-4-5",
         "inputUsdPer1M": 1,
         "outputUsdPer1M": 5,
@@ -40978,6 +41953,12 @@
         "cacheReadUsdPer1M": 0
       },
       {
+        "modelKey": "opencode:deepseek-v4-flash-vision-exp",
+        "inputUsdPer1M": 0.14,
+        "outputUsdPer1M": 0.28,
+        "cacheReadUsdPer1M": 0.028
+      },
+      {
         "modelKey": "opencode:deepseek-v4-pro",
         "inputUsdPer1M": 1.74,
         "outputUsdPer1M": 3.84,
@@ -41009,6 +41990,12 @@
       },
       {
         "modelKey": "opencode:gemini-3.7-flash",
+        "inputUsdPer1M": 1.5,
+        "outputUsdPer1M": 7.5,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "opencode:gemini-3.8-flash",
         "inputUsdPer1M": 1.5,
         "outputUsdPer1M": 7.5,
         "cacheReadUsdPer1M": 0.15
@@ -41054,6 +42041,18 @@
         "inputUsdPer1M": 1.4,
         "outputUsdPer1M": 4.4,
         "cacheReadUsdPer1M": 0.26
+      },
+      {
+        "modelKey": "opencode:glm-5.3",
+        "inputUsdPer1M": 1.4,
+        "outputUsdPer1M": 4.4,
+        "cacheReadUsdPer1M": 0.26
+      },
+      {
+        "modelKey": "opencode:glm-5.3-flash",
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.5,
+        "cacheReadUsdPer1M": 0.03
       },
       {
         "modelKey": "opencode:gpt-5",
@@ -41325,6 +42324,18 @@
         "cacheReadUsdPer1M": 0
       },
       {
+        "modelKey": "opencode:muse-spark-1.3",
+        "inputUsdPer1M": 1.25,
+        "outputUsdPer1M": 4.25,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "opencode:muse-spark-1.3-contributor-free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0,
+        "cacheReadUsdPer1M": 0
+      },
+      {
         "modelKey": "opencode:nemotron-3-super-free",
         "inputUsdPer1M": 0,
         "outputUsdPer1M": 0,
@@ -41392,7 +42403,7 @@
         "modelKey": "openrouter:~anthropic/claude-fable-latest",
         "inputUsdPer1M": 10,
         "outputUsdPer1M": 50,
-        "cacheReadUsdPer1M": 1,
+        "cacheReadUsdPer1M": 0.25,
         "cacheWriteUsdPer1M": 12.5
       },
       {
@@ -41418,9 +42429,9 @@
       },
       {
         "modelKey": "openrouter:~deepseek/deepseek-v4-flash-latest",
-        "inputUsdPer1M": 0.05,
-        "outputUsdPer1M": 0.16,
-        "cacheReadUsdPer1M": 0.013
+        "inputUsdPer1M": 0.03,
+        "outputUsdPer1M": 0.07,
+        "cacheReadUsdPer1M": 0.003
       },
       {
         "modelKey": "openrouter:~google/gemini-flash-latest",
@@ -41431,9 +42442,9 @@
       },
       {
         "modelKey": "openrouter:~moonshotai/kimi-latest",
-        "inputUsdPer1M": 2.55,
-        "outputUsdPer1M": 12.75,
-        "cacheReadUsdPer1M": 0.256
+        "inputUsdPer1M": 2.125,
+        "outputUsdPer1M": 11.9,
+        "cacheReadUsdPer1M": 0.2465
       },
       {
         "modelKey": "openrouter:~openai/gpt-mini-latest",
@@ -41442,10 +42453,16 @@
         "cacheReadUsdPer1M": 0.075
       },
       {
+        "modelKey": "openrouter:~z-ai/glm-flash-latest",
+        "inputUsdPer1M": 0.075,
+        "outputUsdPer1M": 0.25,
+        "cacheReadUsdPer1M": 0.015
+      },
+      {
         "modelKey": "openrouter:~z-ai/glm-latest",
-        "inputUsdPer1M": 1.17,
-        "outputUsdPer1M": 3.96,
-        "cacheReadUsdPer1M": 0.234
+        "inputUsdPer1M": 0.8727,
+        "outputUsdPer1M": 3.36,
+        "cacheReadUsdPer1M": 0.1639
       },
       {
         "modelKey": "openrouter:aion-labs/aion-2.0",
@@ -41516,6 +42533,13 @@
         "cacheWriteUsdPer1M": 12.5
       },
       {
+        "modelKey": "openrouter:anthropic/claude-fable-5.1",
+        "inputUsdPer1M": 10,
+        "outputUsdPer1M": 50,
+        "cacheReadUsdPer1M": 0.25,
+        "cacheWriteUsdPer1M": 12.5
+      },
+      {
         "modelKey": "openrouter:anthropic/claude-haiku-4.5",
         "inputUsdPer1M": 1,
         "outputUsdPer1M": 5,
@@ -41544,13 +42568,6 @@
         "cacheWriteUsdPer1M": 6.25
       },
       {
-        "modelKey": "openrouter:anthropic/claude-opus-4.7-fast",
-        "inputUsdPer1M": 30,
-        "outputUsdPer1M": 150,
-        "cacheReadUsdPer1M": 3,
-        "cacheWriteUsdPer1M": 37.5
-      },
-      {
         "modelKey": "openrouter:anthropic/claude-opus-4.8",
         "inputUsdPer1M": 5,
         "outputUsdPer1M": 25,
@@ -41558,25 +42575,11 @@
         "cacheWriteUsdPer1M": 6.25
       },
       {
-        "modelKey": "openrouter:anthropic/claude-opus-4.8-fast",
-        "inputUsdPer1M": 10,
-        "outputUsdPer1M": 50,
-        "cacheReadUsdPer1M": 1,
-        "cacheWriteUsdPer1M": 12.5
-      },
-      {
         "modelKey": "openrouter:anthropic/claude-opus-5",
         "inputUsdPer1M": 5,
         "outputUsdPer1M": 25,
         "cacheReadUsdPer1M": 0.5,
         "cacheWriteUsdPer1M": 6.25
-      },
-      {
-        "modelKey": "openrouter:anthropic/claude-opus-5-fast",
-        "inputUsdPer1M": 10,
-        "outputUsdPer1M": 50,
-        "cacheReadUsdPer1M": 1,
-        "cacheWriteUsdPer1M": 12.5
       },
       {
         "modelKey": "openrouter:anthropic/claude-sonnet-5",
@@ -41649,9 +42652,9 @@
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-chat-v3.1",
-        "inputUsdPer1M": 0.55,
-        "outputUsdPer1M": 1.65,
-        "cacheReadUsdPer1M": 0.55
+        "inputUsdPer1M": 0.25,
+        "outputUsdPer1M": 0.95,
+        "cacheReadUsdPer1M": 0.13
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-r1",
@@ -41688,33 +42691,39 @@
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-flash",
-        "inputUsdPer1M": 0.08092,
-        "outputUsdPer1M": 0.16184,
-        "cacheReadUsdPer1M": 0.016184
+        "inputUsdPer1M": 0.0665,
+        "outputUsdPer1M": 0.133,
+        "cacheReadUsdPer1M": 0.0133
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-flash-0731",
-        "inputUsdPer1M": 0.065,
-        "outputUsdPer1M": 0.18,
-        "cacheReadUsdPer1M": 0.016
+        "inputUsdPer1M": 0.04,
+        "outputUsdPer1M": 0.08,
+        "cacheReadUsdPer1M": 0.008
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-flash-vision-exp",
-        "inputUsdPer1M": 0.44,
-        "outputUsdPer1M": 1.32,
-        "cacheReadUsdPer1M": 0.014
+        "inputUsdPer1M": 0.22,
+        "outputUsdPer1M": 0.66,
+        "cacheReadUsdPer1M": 0.007
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-pro",
-        "inputUsdPer1M": 1.6,
-        "outputUsdPer1M": 3.2,
-        "cacheReadUsdPer1M": 0.135
+        "inputUsdPer1M": 0.768732,
+        "outputUsdPer1M": 1.537464,
+        "cacheReadUsdPer1M": 0.064061
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-pro-0813",
-        "inputUsdPer1M": 1.1154,
-        "outputUsdPer1M": 3.3462,
-        "cacheReadUsdPer1M": 0.03718
+        "inputUsdPer1M": 0.57816,
+        "outputUsdPer1M": 1.73448,
+        "cacheReadUsdPer1M": 0.018396
+      },
+      {
+        "modelKey": "openrouter:deepseek/deepseek-v4.1-flash",
+        "inputUsdPer1M": 0.15,
+        "outputUsdPer1M": 0.6,
+        "cacheReadUsdPer1M": 0.003
       },
       {
         "modelKey": "openrouter:dots-studio/dots-3-note-preview:free",
@@ -41821,6 +42830,13 @@
         "cacheWriteUsdPer1M": 0.041667
       },
       {
+        "modelKey": "openrouter:google/gemini-3.8-flash",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 3.75,
+        "cacheReadUsdPer1M": 0.075,
+        "cacheWriteUsdPer1M": 0.041667
+      },
+      {
         "modelKey": "openrouter:google/gemma-2-27b-it",
         "inputUsdPer1M": 0.65,
         "outputUsdPer1M": 0.65
@@ -41843,8 +42859,8 @@
       },
       {
         "modelKey": "openrouter:google/gemma-4-26b-a4b-it",
-        "inputUsdPer1M": 0.07,
-        "outputUsdPer1M": 0.34
+        "inputUsdPer1M": 0.042,
+        "outputUsdPer1M": 0.22
       },
       {
         "modelKey": "openrouter:google/gemma-4-26b-a4b-it:free",
@@ -41883,16 +42899,10 @@
         "outputUsdPer1M": 0.112
       },
       {
-        "modelKey": "openrouter:ibm-granite/granite-4.1-8b",
-        "inputUsdPer1M": 0.05,
-        "outputUsdPer1M": 0.1,
-        "cacheReadUsdPer1M": 0.05
-      },
-      {
         "modelKey": "openrouter:ibm-granite/granite-4.2-8b",
-        "inputUsdPer1M": 0.1,
-        "outputUsdPer1M": 0.15,
-        "cacheReadUsdPer1M": 0.05
+        "inputUsdPer1M": 0.06,
+        "outputUsdPer1M": 0.25,
+        "cacheReadUsdPer1M": 0.015
       },
       {
         "modelKey": "openrouter:inception/mercury-2",
@@ -41901,15 +42911,53 @@
         "cacheReadUsdPer1M": 0.025
       },
       {
+        "modelKey": "openrouter:inception/mercury-2.5",
+        "inputUsdPer1M": 0.04,
+        "outputUsdPer1M": 0.15,
+        "cacheReadUsdPer1M": 0.004
+      },
+      {
         "modelKey": "openrouter:inclusionai/ling-3.0-flash",
         "inputUsdPer1M": 0.021,
         "outputUsdPer1M": 0.063,
         "cacheReadUsdPer1M": 0.0042
       },
       {
+        "modelKey": "openrouter:inclusionai/ling-3.0-flash-fin",
+        "inputUsdPer1M": 0.06,
+        "outputUsdPer1M": 0.18,
+        "cacheReadUsdPer1M": 0.012
+      },
+      {
         "modelKey": "openrouter:inclusionai/ling-3.0-flash-fin:free",
         "inputUsdPer1M": 0,
         "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "openrouter:inclusionai/ling-3.0-flash-sante:free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "openrouter:inclusionai/ling-3.0-flash-vl",
+        "inputUsdPer1M": 0.06,
+        "outputUsdPer1M": 0.18,
+        "cacheReadUsdPer1M": 0.012
+      },
+      {
+        "modelKey": "openrouter:inclusionai/ling-3.0-flash-vl:free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "openrouter:inference-net/schematron-v2-small",
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.23
+      },
+      {
+        "modelKey": "openrouter:inference-net/schematron-v2-turbo",
+        "inputUsdPer1M": 0.03,
+        "outputUsdPer1M": 0.15
       },
       {
         "modelKey": "openrouter:kwaipilot/kat-coder-pro-v2",
@@ -41941,8 +42989,8 @@
       },
       {
         "modelKey": "openrouter:meta-llama/llama-3.1-70b-instruct",
-        "inputUsdPer1M": 0.4,
-        "outputUsdPer1M": 0.4
+        "inputUsdPer1M": 0.72,
+        "outputUsdPer1M": 0.72
       },
       {
         "modelKey": "openrouter:meta-llama/llama-3.1-8b-instruct",
@@ -41962,9 +43010,8 @@
       },
       {
         "modelKey": "openrouter:meta-llama/llama-3.3-70b-instruct",
-        "inputUsdPer1M": 0.71,
-        "outputUsdPer1M": 0.71,
-        "cacheReadUsdPer1M": 0.71
+        "inputUsdPer1M": 0.1,
+        "outputUsdPer1M": 0.32
       },
       {
         "modelKey": "openrouter:meta-llama/llama-4-maverick",
@@ -41984,7 +43031,7 @@
       {
         "modelKey": "openrouter:meta/muse-glimmer-30b",
         "inputUsdPer1M": 0.3,
-        "outputUsdPer1M": 1.2,
+        "outputUsdPer1M": 1.1,
         "cacheReadUsdPer1M": 0.04
       },
       {
@@ -42001,6 +43048,18 @@
       },
       {
         "modelKey": "openrouter:meta/muse-spark-1.2-contributor",
+        "inputUsdPer1M": 0.1,
+        "outputUsdPer1M": 0.2,
+        "cacheReadUsdPer1M": 0.002
+      },
+      {
+        "modelKey": "openrouter:meta/muse-spark-1.3",
+        "inputUsdPer1M": 1.25,
+        "outputUsdPer1M": 4.25,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "openrouter:meta/muse-spark-1.3-contributor",
         "inputUsdPer1M": 0.1,
         "outputUsdPer1M": 0.2,
         "cacheReadUsdPer1M": 0.002
@@ -42055,20 +43114,10 @@
         "cacheReadUsdPer1M": 0.06
       },
       {
-        "modelKey": "openrouter:minimax/minimax-m2.7:free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
-      },
-      {
         "modelKey": "openrouter:minimax/minimax-m3",
         "inputUsdPer1M": 0.3,
         "outputUsdPer1M": 1.2,
         "cacheReadUsdPer1M": 0.06
-      },
-      {
-        "modelKey": "openrouter:minimax/minimax-m3:free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
       },
       {
         "modelKey": "openrouter:mistralai/codestral-2508",
@@ -42192,8 +43241,7 @@
       {
         "modelKey": "openrouter:moonshotai/kimi-k2-thinking",
         "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 2.5,
-        "cacheReadUsdPer1M": 0.15
+        "outputUsdPer1M": 2.5
       },
       {
         "modelKey": "openrouter:moonshotai/kimi-k2.5",
@@ -42209,15 +43257,15 @@
       },
       {
         "modelKey": "openrouter:moonshotai/kimi-k2.7-code",
-        "inputUsdPer1M": 0.66,
-        "outputUsdPer1M": 3.4,
-        "cacheReadUsdPer1M": 0.18
+        "inputUsdPer1M": 0.71,
+        "outputUsdPer1M": 3.5,
+        "cacheReadUsdPer1M": 0.15
       },
       {
         "modelKey": "openrouter:moonshotai/kimi-k3",
-        "inputUsdPer1M": 3,
-        "outputUsdPer1M": 15,
-        "cacheReadUsdPer1M": 0.3
+        "inputUsdPer1M": 2.302729,
+        "outputUsdPer1M": 11.550195,
+        "cacheReadUsdPer1M": 0.263169
       },
       {
         "modelKey": "openrouter:morph/morph-v3-fast",
@@ -42230,16 +43278,14 @@
         "outputUsdPer1M": 1.9
       },
       {
-        "modelKey": "openrouter:nex-agi/nex-n2-mini",
-        "inputUsdPer1M": 0.025,
-        "outputUsdPer1M": 0.1,
-        "cacheReadUsdPer1M": 0.0025
+        "modelKey": "openrouter:nex-agi/nex-n2.5-mini:free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
       },
       {
-        "modelKey": "openrouter:nex-agi/nex-n2-pro",
-        "inputUsdPer1M": 0.25,
-        "outputUsdPer1M": 1,
-        "cacheReadUsdPer1M": 0.025
+        "modelKey": "openrouter:nex-agi/nex-n2.5-pro:free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
       },
       {
         "modelKey": "openrouter:nousresearch/hermes-3-llama-3.1-405b",
@@ -42257,15 +43303,10 @@
         "outputUsdPer1M": 3
       },
       {
-        "modelKey": "openrouter:nousresearch/hermes-4-70b",
-        "inputUsdPer1M": 0.13,
-        "outputUsdPer1M": 0.4
-      },
-      {
         "modelKey": "openrouter:nvidia/nemotron-3-nano-30b-a3b",
         "inputUsdPer1M": 0.05,
         "outputUsdPer1M": 0.2,
-        "cacheReadUsdPer1M": 0.025
+        "cacheReadUsdPer1M": 0.03
       },
       {
         "modelKey": "openrouter:nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -42284,14 +43325,19 @@
       },
       {
         "modelKey": "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
-        "inputUsdPer1M": 0.5,
-        "outputUsdPer1M": 2.2,
-        "cacheReadUsdPer1M": 0.1
+        "inputUsdPer1M": 0.625,
+        "outputUsdPer1M": 3.125,
+        "cacheReadUsdPer1M": 0.1875
       },
       {
         "modelKey": "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
         "inputUsdPer1M": 0,
         "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "openrouter:nvidia/nemotron-3.5-content-safety",
+        "inputUsdPer1M": 0.2,
+        "outputUsdPer1M": 0.2
       },
       {
         "modelKey": "openrouter:nvidia/nemotron-3.5-content-safety:free",
@@ -42656,13 +43702,14 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen2.5-vl-72b-instruct",
-        "inputUsdPer1M": 0.25,
-        "outputUsdPer1M": 0.75
+        "inputUsdPer1M": 0.8,
+        "outputUsdPer1M": 1,
+        "cacheReadUsdPer1M": 0.4
       },
       {
         "modelKey": "openrouter:qwen/qwen3-14b",
-        "inputUsdPer1M": 0.12,
-        "outputUsdPer1M": 0.24
+        "inputUsdPer1M": 0.2275,
+        "outputUsdPer1M": 0.91
       },
       {
         "modelKey": "openrouter:qwen/qwen3-235b-a22b",
@@ -42687,8 +43734,8 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3-30b-a3b-instruct-2507",
-        "inputUsdPer1M": 0.04815,
-        "outputUsdPer1M": 0.19305
+        "inputUsdPer1M": 0.09,
+        "outputUsdPer1M": 0.3
       },
       {
         "modelKey": "openrouter:qwen/qwen3-30b-a3b-thinking-2507",
@@ -42724,9 +43771,8 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3-next-80b-a3b-instruct",
-        "inputUsdPer1M": 0.1,
-        "outputUsdPer1M": 1.1,
-        "cacheReadUsdPer1M": 0.07
+        "inputUsdPer1M": 0.09,
+        "outputUsdPer1M": 1.1
       },
       {
         "modelKey": "openrouter:qwen/qwen3-next-80b-a3b-thinking",
@@ -42771,8 +43817,8 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3.5-122b-a10b",
-        "inputUsdPer1M": 0.29,
-        "outputUsdPer1M": 2.4
+        "inputUsdPer1M": 0.26,
+        "outputUsdPer1M": 2.08
       },
       {
         "modelKey": "openrouter:qwen/qwen3.5-27b",
@@ -42781,14 +43827,15 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3.5-35b-a3b",
-        "inputUsdPer1M": 0.25,
+        "inputUsdPer1M": 0.3125,
         "outputUsdPer1M": 1.25,
-        "cacheReadUsdPer1M": 0.25
+        "cacheReadUsdPer1M": 0.15625
       },
       {
         "modelKey": "openrouter:qwen/qwen3.5-397b-a17b",
-        "inputUsdPer1M": 0.39,
-        "outputUsdPer1M": 2.34
+        "inputUsdPer1M": 0.55,
+        "outputUsdPer1M": 3.5,
+        "cacheReadUsdPer1M": 0.225
       },
       {
         "modelKey": "openrouter:qwen/qwen3.5-9b",
@@ -42802,9 +43849,9 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3.6-27b",
-        "inputUsdPer1M": 0.6,
-        "outputUsdPer1M": 3.6,
-        "cacheReadUsdPer1M": 0.12
+        "inputUsdPer1M": 0.3,
+        "outputUsdPer1M": 2,
+        "cacheReadUsdPer1M": 0.03
       },
       {
         "modelKey": "openrouter:qwen/qwen3.6-35b-a3b",
@@ -42827,10 +43874,9 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3.8-27b",
-        "inputUsdPer1M": 0.425,
+        "inputUsdPer1M": 0.214,
         "outputUsdPer1M": 2.55,
-        "cacheReadUsdPer1M": 0.085,
-        "cacheWriteUsdPer1M": 0.53125
+        "cacheReadUsdPer1M": 0.15
       },
       {
         "modelKey": "openrouter:qwen/qwen3.8-flash",
@@ -42840,7 +43886,7 @@
         "cacheWriteUsdPer1M": 0.2
       },
       {
-        "modelKey": "openrouter:qwen/qwen3.8-max",
+        "modelKey": "openrouter:qwen/qwen3.8-max-0902",
         "inputUsdPer1M": 2,
         "outputUsdPer1M": 6,
         "cacheReadUsdPer1M": 0.25,
@@ -42865,6 +43911,12 @@
         "modelKey": "openrouter:relace/relace-search",
         "inputUsdPer1M": 1,
         "outputUsdPer1M": 3
+      },
+      {
+        "modelKey": "openrouter:sakana/fugu-max",
+        "inputUsdPer1M": 2,
+        "outputUsdPer1M": 6,
+        "cacheReadUsdPer1M": 0.25
       },
       {
         "modelKey": "openrouter:sakana/sakana-namazu",
@@ -42977,7 +44029,7 @@
       },
       {
         "modelKey": "openrouter:undi95/remm-slerp-l2-13b",
-        "inputUsdPer1M": 0.45,
+        "inputUsdPer1M": 0.35,
         "outputUsdPer1M": 0.65
       },
       {
@@ -42988,9 +44040,9 @@
       },
       {
         "modelKey": "openrouter:upstage/solar-pro4",
-        "inputUsdPer1M": 0.03,
-        "outputUsdPer1M": 0.12,
-        "cacheReadUsdPer1M": 0.006
+        "inputUsdPer1M": 0.09,
+        "outputUsdPer1M": 0.36,
+        "cacheReadUsdPer1M": 0.018
       },
       {
         "modelKey": "openrouter:writer/palmyra-x5",
@@ -43047,9 +44099,8 @@
       },
       {
         "modelKey": "openrouter:z-ai/glm-4.7-flash",
-        "inputUsdPer1M": 0.06,
-        "outputUsdPer1M": 0.4,
-        "cacheReadUsdPer1M": 0.01
+        "inputUsdPer1M": 0.0605,
+        "outputUsdPer1M": 0.4
       },
       {
         "modelKey": "openrouter:z-ai/glm-5",
@@ -43071,14 +44122,9 @@
       },
       {
         "modelKey": "openrouter:z-ai/glm-5.2",
-        "inputUsdPer1M": 1.19,
-        "outputUsdPer1M": 3.74,
-        "cacheReadUsdPer1M": 0.221
-      },
-      {
-        "modelKey": "openrouter:z-ai/glm-5.2:free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
+        "inputUsdPer1M": 0.6,
+        "outputUsdPer1M": 2,
+        "cacheReadUsdPer1M": 0.15
       },
       {
         "modelKey": "openrouter:z-ai/glm-5.3",
@@ -43821,6 +44867,13 @@
         "cacheWriteUsdPer1M": 2.5
       },
       {
+        "modelKey": "vercel:alibaba/qwen3.8-max-0902",
+        "inputUsdPer1M": 2,
+        "outputUsdPer1M": 6,
+        "cacheReadUsdPer1M": 0.25,
+        "cacheWriteUsdPer1M": 2.5
+      },
+      {
         "modelKey": "vercel:amazon/nova-2-lite",
         "inputUsdPer1M": 0.3,
         "outputUsdPer1M": 2.5,
@@ -43830,19 +44883,22 @@
         "modelKey": "vercel:amazon/nova-lite",
         "inputUsdPer1M": 0.06,
         "outputUsdPer1M": 0.24,
-        "cacheReadUsdPer1M": 0.015
+        "cacheReadUsdPer1M": 0.015,
+        "cacheWriteUsdPer1M": 0.06
       },
       {
         "modelKey": "vercel:amazon/nova-micro",
         "inputUsdPer1M": 0.035,
         "outputUsdPer1M": 0.14,
-        "cacheReadUsdPer1M": 0.00875
+        "cacheReadUsdPer1M": 0.00875,
+        "cacheWriteUsdPer1M": 0.035
       },
       {
         "modelKey": "vercel:amazon/nova-pro",
         "inputUsdPer1M": 0.8,
         "outputUsdPer1M": 3.2,
-        "cacheReadUsdPer1M": 0.2
+        "cacheReadUsdPer1M": 0.2,
+        "cacheWriteUsdPer1M": 0.8
       },
       {
         "modelKey": "vercel:anthropic/claude-3-haiku",
@@ -43856,6 +44912,13 @@
         "inputUsdPer1M": 10,
         "outputUsdPer1M": 50,
         "cacheReadUsdPer1M": 1,
+        "cacheWriteUsdPer1M": 12.5
+      },
+      {
+        "modelKey": "vercel:anthropic/claude-fable-5.1",
+        "inputUsdPer1M": 10,
+        "outputUsdPer1M": 50,
+        "cacheReadUsdPer1M": 0.25,
         "cacheWriteUsdPer1M": 12.5
       },
       {
@@ -43970,12 +45033,6 @@
         "outputUsdPer1M": 5.4
       },
       {
-        "modelKey": "vercel:deepseek/deepseek-v3",
-        "inputUsdPer1M": 0.27,
-        "outputUsdPer1M": 1.12,
-        "cacheReadUsdPer1M": 0.135
-      },
-      {
         "modelKey": "vercel:deepseek/deepseek-v3.1",
         "inputUsdPer1M": 0.25,
         "outputUsdPer1M": 0.95,
@@ -43989,9 +45046,8 @@
       },
       {
         "modelKey": "vercel:deepseek/deepseek-v3.2",
-        "inputUsdPer1M": 0.28,
-        "outputUsdPer1M": 0.42,
-        "cacheReadUsdPer1M": 0.028
+        "inputUsdPer1M": 0.62,
+        "outputUsdPer1M": 1.85
       },
       {
         "modelKey": "vercel:deepseek/deepseek-v3.2-thinking",
@@ -44027,6 +45083,12 @@
         "inputUsdPer1M": 0.66,
         "outputUsdPer1M": 1.98,
         "cacheReadUsdPer1M": 0.066
+      },
+      {
+        "modelKey": "vercel:deepseek/deepseek-v4.1-flash",
+        "inputUsdPer1M": 0.3,
+        "outputUsdPer1M": 1.2,
+        "cacheReadUsdPer1M": 0.006
       },
       {
         "modelKey": "vercel:google/gemini-2.5-flash",
@@ -44118,6 +45180,12 @@
         "cacheReadUsdPer1M": 0.075
       },
       {
+        "modelKey": "vercel:google/gemini-3.8-flash",
+        "inputUsdPer1M": 0.75,
+        "outputUsdPer1M": 3.75,
+        "cacheReadUsdPer1M": 0.075
+      },
+      {
         "modelKey": "vercel:google/gemini-omni-flash-preview",
         "inputUsdPer1M": 1.5,
         "outputUsdPer1M": 9
@@ -44140,6 +45208,12 @@
         "cacheReadUsdPer1M": 0.024999999999999998
       },
       {
+        "modelKey": "vercel:inception/mercury-2.5",
+        "inputUsdPer1M": 0.04,
+        "outputUsdPer1M": 0.15,
+        "cacheReadUsdPer1M": 0.004
+      },
+      {
         "modelKey": "vercel:inception/mercury-coder-small",
         "inputUsdPer1M": 0.25,
         "outputUsdPer1M": 1
@@ -44157,6 +45231,16 @@
       },
       {
         "modelKey": "vercel:inclusionai/ling-3.0-flash-fin-free",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "vercel:inclusionai/ling-3.0-flash-sante",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
+      },
+      {
+        "modelKey": "vercel:inclusionai/ling-3.0-flash-sante-free",
         "inputUsdPer1M": 0,
         "outputUsdPer1M": 0
       },
@@ -44239,6 +45323,18 @@
         "cacheReadUsdPer1M": 0.002
       },
       {
+        "modelKey": "vercel:meta/muse-spark-1.3",
+        "inputUsdPer1M": 1.25,
+        "outputUsdPer1M": 4.25,
+        "cacheReadUsdPer1M": 0.15
+      },
+      {
+        "modelKey": "vercel:meta/muse-spark-1.3-contributor",
+        "inputUsdPer1M": 0.1,
+        "outputUsdPer1M": 0.2,
+        "cacheReadUsdPer1M": 0.002
+      },
+      {
         "modelKey": "vercel:minimax/minimax-m2",
         "inputUsdPer1M": 0.3,
         "outputUsdPer1M": 1.2,
@@ -44281,11 +45377,6 @@
         "cacheWriteUsdPer1M": 0.375
       },
       {
-        "modelKey": "vercel:minimax/minimax-m2.7-free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
-      },
-      {
         "modelKey": "vercel:minimax/minimax-m2.7-highspeed",
         "inputUsdPer1M": 0.6,
         "outputUsdPer1M": 2.4,
@@ -44297,12 +45388,6 @@
         "inputUsdPer1M": 0.3,
         "outputUsdPer1M": 1.2,
         "cacheReadUsdPer1M": 0.06
-      },
-      {
-        "modelKey": "vercel:minimax/minimax-m3-free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0,
-        "cacheReadUsdPer1M": 0
       },
       {
         "modelKey": "vercel:mistral/codestral",
@@ -44703,7 +45788,7 @@
         "inputUsdPer1M": 0.4,
         "outputUsdPer1M": 2.4,
         "cacheReadUsdPer1M": 0.04,
-        "cacheWriteUsdPer1M": 0.25
+        "cacheWriteUsdPer1M": 0.5
       },
       {
         "modelKey": "vercel:openai/gpt-5.6-sol",
@@ -44717,7 +45802,7 @@
         "inputUsdPer1M": 4,
         "outputUsdPer1M": 20,
         "cacheReadUsdPer1M": 0.4,
-        "cacheWriteUsdPer1M": 2.5
+        "cacheWriteUsdPer1M": 5
       },
       {
         "modelKey": "vercel:openai/gpt-5.6-terra",
@@ -44731,7 +45816,7 @@
         "inputUsdPer1M": 4,
         "outputUsdPer1M": 24,
         "cacheReadUsdPer1M": 0.4,
-        "cacheWriteUsdPer1M": 2.5
+        "cacheWriteUsdPer1M": 5
       },
       {
         "modelKey": "vercel:openai/gpt-image-1",
@@ -44753,6 +45838,18 @@
       },
       {
         "modelKey": "vercel:openai/gpt-image-2",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 30,
+        "cacheReadUsdPer1M": 1.25
+      },
+      {
+        "modelKey": "vercel:openai/gpt-image-2.5-flare",
+        "inputUsdPer1M": 5,
+        "outputUsdPer1M": 30,
+        "cacheReadUsdPer1M": 1.25
+      },
+      {
+        "modelKey": "vercel:openai/gpt-image-2.5-sunburst",
         "inputUsdPer1M": 5,
         "outputUsdPer1M": 30,
         "cacheReadUsdPer1M": 1.25
@@ -45001,12 +46098,6 @@
         "cacheReadUsdPer1M": 0.0036
       },
       {
-        "modelKey": "vercel:xiaomi/mimo-v2.5-pro-ultraspeed",
-        "inputUsdPer1M": 1.305,
-        "outputUsdPer1M": 2.61,
-        "cacheReadUsdPer1M": 0.0108
-      },
-      {
         "modelKey": "vercel:zai/glm-4.5",
         "inputUsdPer1M": 0.6,
         "outputUsdPer1M": 2.2,
@@ -45081,6 +46172,12 @@
         "inputUsdPer1M": 1.4,
         "outputUsdPer1M": 4.4,
         "cacheReadUsdPer1M": 0.14
+      },
+      {
+        "modelKey": "vercel:zai/glm-5.3-fast",
+        "inputUsdPer1M": 2.1,
+        "outputUsdPer1M": 6.6,
+        "cacheReadUsdPer1M": 0.21
       },
       {
         "modelKey": "vercel:zai/glm-5.3-flash",
@@ -45990,7 +47087,7 @@
         "id": "kimi-for-coding",
         "name": "Kimi For Coding",
         "api": "https://api.kimi.com/coding/v1",
-        "doc": "https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html"
+        "doc": "https://www.kimi.com/code/docs/en/kimi-code/models.html"
       },
       "MiniMax": {
         "id": "minimax",
@@ -46201,6 +47298,9 @@
         "claude-fable-5": {
           "npm": "@ai-sdk/anthropic"
         },
+        "claude-fable-5-1": {
+          "npm": "@ai-sdk/anthropic"
+        },
         "claude-haiku-4-5": {
           "npm": "@ai-sdk/anthropic"
         },
@@ -46253,6 +47353,9 @@
           "npm": "@ai-sdk/google"
         },
         "gemini-3.7-flash": {
+          "npm": "@ai-sdk/google"
+        },
+        "gemini-3.8-flash": {
           "npm": "@ai-sdk/google"
         },
         "gpt-5": {
@@ -46315,6 +47418,9 @@
         "gpt-5.6-terra": {
           "npm": "@ai-sdk/openai"
         },
+        "gpt-6-astra": {
+          "npm": "@ai-sdk/openai"
+        },
         "grok-4.5": {
           "npm": "@ai-sdk/openai"
         },
@@ -46337,6 +47443,12 @@
           "npm": "@ai-sdk/openai"
         },
         "muse-spark-1.2-contributor-free": {
+          "npm": "@ai-sdk/openai"
+        },
+        "muse-spark-1.3": {
+          "npm": "@ai-sdk/openai"
+        },
+        "muse-spark-1.3-contributor-free": {
           "npm": "@ai-sdk/openai"
         },
         "qwen3.5-plus": {
@@ -46369,6 +47481,9 @@
           "npm": "@ai-sdk/anthropic"
         },
         "muse-spark-1.2-contributor": {
+          "npm": "@ai-sdk/openai"
+        },
+        "muse-spark-1.3-contributor": {
           "npm": "@ai-sdk/openai"
         },
         "qwen3.8-flash": {
