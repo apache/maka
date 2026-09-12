@@ -53,6 +53,17 @@ const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
 /** Guards the value interpolated into no SQL, but read back out of one. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
+/** Single authority for which read-back ids are usable, shared with the
+ *  foreign-session store so it never re-derives a second, wider gate. */
+export function isUsableOpencodeSessionId(id: string): boolean {
+  return SESSION_ID_PATTERN.test(id);
+}
+
+/** The one OpenCode database file, named by the adapter alone. */
+export function opencodeDatabasePath(opencodeHome: string): string {
+  return join(opencodeHome, 'opencode.db');
+}
+
 export interface OpenCodeSessionAdapterOptions {
   /** Overrides `~/.local/share/opencode`. */
   opencodeHome?: string;
@@ -89,6 +100,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
 
   async detect(): Promise<boolean> {
     return existsSync(this.#databasePath());
+  }
+
+  databasePath(): string {
+    return this.#databasePath();
   }
 
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {

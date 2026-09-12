@@ -81,7 +81,11 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
-import { OpenCodeSessionAdapter } from './opencode-session-adapter.js';
+import {
+  isUsableOpencodeSessionId,
+  OpenCodeSessionAdapter,
+  opencodeDatabasePath,
+} from './opencode-session-adapter.js';
 
 export interface ForeignSessionScanOptions {
   /** Only sessions whose recorded cwd equals this path (after realpath-free
@@ -154,7 +158,10 @@ class FileForeignSessionStore implements ForeignSessionStore {
     if (isCodexImportEnabled(this.env) && (await isDirectory(this.codexRoot))) {
       sources.push('codex');
     }
-    if (isOpencodeImportEnabled(this.env) && existsSync(join(this.opencodeHome, 'opencode.db'))) {
+    if (
+      isOpencodeImportEnabled(this.env) &&
+      (await new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome }).detect())
+    ) {
       sources.push('opencode');
     }
     return sources;
@@ -270,7 +277,7 @@ class FileForeignSessionStore implements ForeignSessionStore {
     };
   }
 
-  /* ------------------------------ Codex ------------------------------- */
+  /* ----------------------------- OpenCode ----------------------------- */
 
   private async listOpencodeSessions(
     options: ForeignSessionScanOptions,
@@ -291,12 +298,15 @@ class FileForeignSessionStore implements ForeignSessionStore {
     } catch {
       return [];
     }
-    const dbPath = join(this.opencodeHome, 'opencode.db');
+    const dbPath = adapter.databasePath();
     const results: ForeignSessionSummary[] = [];
     for (const session of externals) {
       if (results.length >= FOREIGN_SESSION_SCAN_MAX_SESSIONS) break;
       if (session.archived === true) continue;
-      if (!isSafeForeignId(session.id)) continue;
+      // The adapter's own id pattern is the authority; this store-level gate
+      // only mirrors it so a dirty catalog row is skipped before it becomes
+      // an unreadable summary (#5125 review).
+      if (!isUsableOpencodeSessionId(session.id)) continue;
       const updatedAtMs = session.updatedAt ?? 0;
       if (now - updatedAtMs > FOREIGN_SESSION_SCAN_MAX_AGE_MS) continue;
       results.push({
@@ -305,6 +315,9 @@ class FileForeignSessionStore implements ForeignSessionStore {
         title: sanitizeForeignTitle(session.name) || session.id,
         cwd: session.cwd ?? '',
         updatedAtMs,
+        // OpenCode keeps transcripts inside its shared database rather than
+        // per-session files; the digest reads through the adapter (#5125
+        // review).
         transcriptPath: dbPath,
       });
     }
@@ -312,7 +325,7 @@ class FileForeignSessionStore implements ForeignSessionStore {
   }
 
   private async readOpencodeDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
-    if (!isSafeForeignId(summary.id)) {
+    if (!isUsableOpencodeSessionId(summary.id)) {
       throw new Error('opencode session id is not usable');
     }
     const adapter = new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome });
@@ -357,6 +370,8 @@ class FileForeignSessionStore implements ForeignSessionStore {
       updatedAtMs: summary.updatedAtMs,
     });
   }
+
+  /* ------------------------------- Codex ------------------------------ */
 
   private async listCodexSessions(
     options: ForeignSessionScanOptions,
