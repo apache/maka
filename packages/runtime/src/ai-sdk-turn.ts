@@ -613,10 +613,6 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
   }
 }
 
-function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined): boolean {
-  return reason === undefined || reason === 'other' || reason === 'unknown';
-}
-
 /**
  * The mutable state of ONE `send()`.
  *
@@ -961,15 +957,28 @@ export class AiSdkTurn {
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
-    // Per-send sum of every COMPLETED step's usage, merged at each finish-step
-    // boundary. When the send aborts (mid-turn exhaust, user stop, stream
-    // error) the SDK's cumulative `usage` promise may not resolve, but this sum is
-    // real provider-reported evidence for the steps that did finish — IF every
-    // completed step produced a usable sample. One unusable sample makes the
-    // sum a partial cost, and LlmCallRecord has no partial marker, so the flag
-    // fails the whole fallback closed (#972: incomplete usage is no usage).
+    // Per-send sum of every completed step's usage plus any explicitly
+    // accounted failed request whose usage is still authoritative. When the
+    // send aborts (mid-turn exhaust, user stop, stream error), the SDK's cumulative `usage`
+    // promise may not resolve, but this sum remains real provider-reported
+    // evidence. One unusable sample makes the sum a partial cost, and
+    // LlmCallRecord has no partial marker, so the flag fails the whole fallback
+    // closed (#972: incomplete usage is no usage).
     let completedStepUsage: NormalizedAiSdkUsage | undefined;
     let sawUnusableStepUsage = false;
+    const recordAccountedStepUsage = async (stepUsage: NormalizedAiSdkUsage): Promise<void> => {
+      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+      this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+        this.deps.session.cumulativeUsageCheckpoint,
+        stepUsage,
+      );
+      await this.deps.backend.recordUsageCheckpoint?.({
+        ...this.deps.session.cumulativeUsageCheckpoint,
+        costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
+          this.deps.session.cumulativeUsageCheckpoint,
+        ),
+      });
+    };
     // Input tokens from the last completed step — the actual prompt token count
     // of the final API request. Used to compute contextRemaining for the TUI
     // statusline ctx segment (#1067): contextRemaining = contextWindow - this.
@@ -1564,7 +1573,8 @@ export class AiSdkTurn {
             let attemptSawToolActivity = false;
             let attemptSawContinuationMetadata = false;
             let attemptReachedStepBoundary = false;
-            const attemptHasNoObservableOutput = () =>
+            let attemptRecordedSettledUsage = false;
+            const attemptStreamHasNoObservableOutput = () =>
               !attemptSawText &&
               !attemptSawThinking &&
               !attemptSawToolActivity &&
@@ -1641,10 +1651,12 @@ export class AiSdkTurn {
                 // trailer and consume the one authoritative outcome below.
                 break;
               }
-              const incompleteFinish =
-                (event.kind === 'finish' || event.kind === 'step-finish') &&
-                isIncompleteProviderFinishReason(event.finishReason);
-              if ((event.kind === 'finish' || event.kind === 'step-finish') && !incompleteFinish) {
+              const finishDisposition =
+                event.kind === 'finish' || event.kind === 'step-finish'
+                  ? event.disposition
+                  : undefined;
+              const authoritativeFinish = finishDisposition === 'authoritative';
+              if (authoritativeFinish) {
                 attemptReachedStepBoundary = true;
               }
               if (event.kind === 'step-finish') {
@@ -1652,7 +1664,7 @@ export class AiSdkTurn {
                 // stream reaches EOF without a terminal frame. That is not a
                 // completed model step and must not consume the step budget or
                 // checkpoint imaginary usage before the safe retry below.
-                if (!incompleteFinish) {
+                if (authoritativeFinish) {
                   // Step boundary: AI SDK 7 delimits steps with `finish-step`
                   // (and `step-finish` for legacy replay fixtures); the adapter
                   // reduces both to this event. A duplicate boundary is harmless:
@@ -1809,18 +1821,20 @@ export class AiSdkTurn {
                   // drive an action; the cut reply is visible to the user
                   // either way (#4559).
                   if (stepUsage) {
-                    completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                    this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                      this.deps.session.cumulativeUsageCheckpoint,
-                      stepUsage,
-                    );
-                    await this.deps.backend.recordUsageCheckpoint?.({
-                      ...this.deps.session.cumulativeUsageCheckpoint,
-                      costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
-                        this.deps.session.cumulativeUsageCheckpoint,
-                      ),
-                    });
+                    await recordAccountedStepUsage(stepUsage);
+                    attemptRecordedSettledUsage = true;
                   }
+                } else if (
+                  finishDisposition === 'retryable-network-failure' &&
+                  event.usage &&
+                  !attemptRecordedSettledUsage
+                ) {
+                  // A provider may report exact usage while declaring the
+                  // request failed. Preserve that billed request without
+                  // promoting it to a logical step or flushing an Assistant
+                  // message; the retry owns the eventual step completion.
+                  await recordAccountedStepUsage(event.usage);
+                  attemptRecordedSettledUsage = true;
                 }
               }
               if (event.kind === 'text-start') {
@@ -2002,7 +2016,7 @@ export class AiSdkTurn {
                   ),
                 } satisfies ToolResultEvent);
                 providerToolInputs.delete(event.toolCallId);
-              } else if (event.kind === 'step-finish' && !incompleteFinish) {
+              } else if (event.kind === 'step-finish' && authoritativeFinish) {
                 // The step's text/thinking deltas are all in (the stream is
                 // drained in order), so flush this step's AssistantMessage and
                 // rotate to a fresh id for the next step. Tool settlement
@@ -2026,13 +2040,33 @@ export class AiSdkTurn {
             // must not be reported as the already-handled watchdog timeout.
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
+            const settleFailureUsageBeforePolicy =
+              providerOutcome.kind === 'truncated' ||
+              (providerOutcome.kind === 'failed' &&
+                providerOutcome.failure.kind === 'network' &&
+                providerOutcome.failure.code === 'network_error');
+            if (settleFailureUsageBeforePolicy) {
+              // These provider terminal frames are billable even though they
+              // cannot complete a logical model step. The stream normally
+              // exposes their exact usage at `step-finish`; retain the outcome
+              // fallback for providers that settle it only through the SDK's
+              // terminal promise. If neither seam has usable usage, fail the
+              // send-level aggregate closed before stop, exhaustion, or retry
+              // policy can bypass the retry branch below. Context-overflow
+              // recovery intentionally keeps its established completed-step
+              // diagnostic semantics: the rejected request has no finish
+              // frame and is not one of these terminal-frame classifications.
+              if (!attemptRecordedSettledUsage && providerOutcome.usage) {
+                await recordAccountedStepUsage(providerOutcome.usage);
+                attemptRecordedSettledUsage = true;
+              }
+              if (!attemptRecordedSettledUsage) sawUnusableStepUsage = true;
+            }
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
             const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal &&
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata;
+              incompleteStreamTerminal && !providerOutcome.hasResponseEvidence;
+            const attemptOutcomeHasNoObservableOutput =
+              !providerOutcome.hasResponseEvidence && !attemptReachedStepBoundary;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
@@ -2055,7 +2089,7 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
-                stepBudgetRemains && attemptHasNoObservableOutput()
+                stepBudgetRemains && attemptOutcomeHasNoObservableOutput
                   ? await this.deps.compaction.recoverFromOverflowError({
                       error: attemptFailure,
                       retryAlreadyUsed:
@@ -2149,20 +2183,20 @@ export class AiSdkTurn {
               // the failure arrives as a retryable provider/network error
               // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
               // every watchdog-shaped outcome on its existing path, and
-              // `!attemptHasNoObservableOutput()` keeps no-output retries on
+              // `!attemptStreamHasNoObservableOutput()` keeps no-output retries on
               // the plain budget so this one is spent only on sealed fragments.
               const sealedThinkingRecovery =
                 !idleWatchdogRecovery &&
                 failure.retryable &&
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
-                !attemptHasNoObservableOutput();
+                !attemptStreamHasNoObservableOutput();
               // The stopping gate also supplies the durable reason. An absent
               // decision means this attempt is allowed to retry.
               let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
               if (
                 !(
-                  attemptHasNoObservableOutput() ||
+                  attemptOutcomeHasNoObservableOutput ||
                   idleWatchdogRecovery ||
                   incompleteStreamRecovery ||
                   sealedThinkingRecovery
@@ -2196,9 +2230,10 @@ export class AiSdkTurn {
                   await flushStep();
                   currentStepMessageId = this.deps.newId();
                 }
-                // The failed request did not return authoritative usage. Keep
-                // effectiveness recoverable, but fail final metering closed.
-                sawUnusableStepUsage = true;
+                // Keep effectiveness recoverable, but fail final metering
+                // closed when the failed request returned no authoritative
+                // usage. Exact usage already settled above remains billable.
+                if (!attemptRecordedSettledUsage) sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
