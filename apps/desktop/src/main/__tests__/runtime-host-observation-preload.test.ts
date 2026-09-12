@@ -52,7 +52,7 @@ test('observation readiness includes its active seed even when the invoke reply 
   events.emit('sessions:event:session-1', {}, owner, {
     type: 'host_observation_seed',
     observerIds: [observerId],
-    execution: { type: 'host_execution', available: true, rootTurn: { turnId: 'turn-1' } },
+    execution: { type: 'host_execution', pendingInteractionKinds: [], available: true, rootTurn: { turnId: 'turn-1' } },
     events: [{
       type: 'text_delta', id: 'seed-1', turnId: 'turn-1', messageId: 'message-1',
       ts: 1, startOffset: 0, text: 'All output accumulated while away',
@@ -77,7 +77,7 @@ test('execution and observation failures stay separate from Runtime events', asy
   await invoked.promise;
   try {
     events.emit('sessions:event:session-1', {}, owner, {
-      type: 'host_execution', available: true,
+      type: 'host_execution', pendingInteractionKinds: [], available: true,
       rootTurn: { sessionId: 'session-1', turnId: 'new-turn', runId: 'run-1', status: 'running' },
     });
     assert.equal(projections.at(-1)?.rootTurn?.sessionId, sessionId);
@@ -87,7 +87,7 @@ test('execution and observation failures stay separate from Runtime events', asy
     events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_error', message: 'connection lost' });
     assert.equal(failures.length, 1);
     events.emit('sessions:event:session-1', {}, owner, {
-      type: 'host_execution', available: true, rootTurn: null,
+      type: 'host_execution', pendingInteractionKinds: [], available: true, rootTurn: null,
     });
     assert.equal(projections.at(-1)?.rootTurn, null);
     assert.equal(projections.at(-1)?.available, true);
@@ -107,7 +107,7 @@ test('one ordered stream handles no-content roots, late acknowledgements, new su
   const sessionId = JSON.stringify([owner.hostId, 'session-1']);
   const emit = (message: unknown) => events.emit('sessions:event:session-1', {}, owner, message);
   const execution = (turnId: string) => ({
-    type: 'host_execution', available: true, rootTurn: { sessionId: 'session-1', turnId, status: 'running' },
+    type: 'host_execution', pendingInteractionKinds: [], available: true, rootTurn: { sessionId: 'session-1', turnId, status: 'running' },
   });
   const subscribe = (order: string[]) => bridge.sessions.subscribeEvents(
     sessionId, () => assert.fail('No Runtime events are needed for a running root'),
@@ -169,7 +169,7 @@ test('cancelled Session observation removes preload listeners without publishing
       ts: 1, startOffset: 0, text: 'Late output',
     });
     events.emit('sessions:event:session-1', {}, owner, {
-      type: 'host_observation_seed', execution: { type: 'host_execution', available: true, rootTurn: null }, events: [],
+      type: 'host_observation_seed', execution: { type: 'host_execution', pendingInteractionKinds: [], available: true, rootTurn: null }, events: [],
     });
     assert.deepEqual(callbacks, []);
   } finally {
@@ -193,7 +193,7 @@ test('unsubscribing while consuming a seed prevents remaining content and readin
   const observerId = await invoked.promise;
   events.emit('sessions:event:session-1', {}, owner, {
     type: 'host_observation_seed', observerIds: [observerId],
-    execution: { type: 'host_execution', available: true, rootTurn: null },
+    execution: { type: 'host_execution', pendingInteractionKinds: [], available: true, rootTurn: null },
     events: ['first', 'second'].map((value, index) => ({
       type: 'text_delta', id: `seed-${index}`, turnId: 'turn-1', messageId: `message-${index}`,
       ts: 1, startOffset: 0, text: value,

@@ -86,8 +86,76 @@ test('projects root lifecycle without fabricating content events', async (t) => 
     assert.equal(started.rootTurn?.turnId, 'turn-1');
     assert.equal(started.rootTurn?.status, 'running');
     assert.equal(started.available, true);
+    assert.deepEqual(started.pendingInteractionKinds, []);
   }
   await observer.close();
+});
+
+test("projects pending Interaction kinds without request bodies", async () => {
+  const events = new AsyncFrameQueue();
+  const pending = [
+    pendingKind("permission"),
+    pendingKind("question"),
+    pendingKind("form"),
+    pendingKind("sandbox_boundary"),
+    pendingKind("client_capability"),
+  ] as SessionContinuitySnapshot["interactions"]["pending"];
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot({
+        rootTurn: {
+          sessionId: "session-1",
+          turnId: "turn-1",
+          runId: "run-1",
+          status: "waiting_for_user",
+        },
+        interactions: { pending },
+      }),
+      activeAssistantStreams: [],
+      transcript: Promise.resolve([]),
+      events,
+      async close() { events.end(); },
+    }) },
+    emitSessionsChanged() {},
+  });
+  const messages: Parameters<RuntimeHostSessionObserverTarget['send']>[1][] = [];
+  try {
+    await observer.observe('session-1', 'parent-status', {
+      id: 101, send(_channel, message) { messages.push(message); }, once() {}, off() {},
+    });
+    const seed = messages[0];
+    assert.equal(seed?.type, 'host_observation_seed');
+    if (seed?.type === 'host_observation_seed') {
+      assert.deepEqual(seed.execution.pendingInteractionKinds, [
+        'permission', 'question', 'form', 'sandbox_boundary', 'client_capability',
+      ]);
+      assert.equal('prompt' in (pending[0]?.request ?? {}), true);
+    }
+    const seededCount = messages.length;
+    events.push({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1', subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: {
+          sessionId: "session-1",
+          turnId: "turn-1",
+          runId: "run-1",
+          status: "waiting_for_user",
+        },
+        interactions: { pending: [pendingKind("form")] as SessionContinuitySnapshot["interactions"]["pending"] },
+      }),
+    });
+    await waitFor(() => messages.length > seededCount);
+    const live = messages.at(-1);
+    assert.equal(live?.type, 'host_execution');
+    if (live?.type === 'host_execution') {
+      assert.deepEqual(live.pendingInteractionKinds, ['form']);
+      assert.equal(JSON.stringify(live).includes('"prompt"'), false);
+      assert.equal(JSON.stringify(live).includes('Proceed?'), false);
+    }
+  } finally {
+    await observer.close();
+  }
 });
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
@@ -3189,6 +3257,69 @@ function deltaFrame(
       messageId: "message-1",
       startOffset,
       text,
+    },
+  };
+}
+
+function pendingKind(kind: 'permission' | 'question' | 'form' | 'sandbox_boundary' | 'client_capability') {
+  const base = {
+    schemaVersion: 1 as const,
+    interactionId: `interaction-${kind}`,
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+  };
+  if (kind === 'permission') {
+    return {
+      ...base,
+      request: {
+        kind,
+        toolUseId: `tool-${kind}`,
+        prompt: {
+          kind: 'tool',
+          toolName: 'secret-tool',
+          category: 'write',
+          reason: 'needs approval',
+          rememberForTurnAllowed: false,
+          review: { summary: 'do not leak', risk: 'high' as const },
+        },
+      },
+    };
+  }
+  if (kind === 'question') {
+    return pendingQuestion(base.interactionId, base.turnId, base.runId);
+  }
+  if (kind === 'form') {
+    return {
+      ...base,
+      request: {
+        kind,
+        toolUseId: `tool-${kind}`,
+        message: 'secret form',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean' as const, name: 'ok', label: 'OK', required: true }],
+      },
+    };
+  }
+  if (kind === 'sandbox_boundary') {
+    return {
+      ...base,
+      request: {
+        kind,
+        expansion: { paths: ['/secret'] },
+        justification: 'secret reason',
+      },
+    };
+  }
+  return {
+    ...base,
+    request: {
+      kind,
+      toolUseId: `tool-${kind}`,
+      target: { kind: 'browser' as const },
     },
   };
 }

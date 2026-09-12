@@ -18,7 +18,10 @@
  */
 
 import type { SessionExecutionProjection } from '../../../shared/session-execution-projection.js';
-export type { SessionExecutionProjection } from '../../../shared/session-execution-projection.js';
+export type {
+  HostPendingInteractionKind,
+  SessionExecutionProjection,
+} from '../../../shared/session-execution-projection.js';
 
 /** Retain the last nonterminal identity for Stop and conservative controls even when observation is unavailable. */
 export function activeHostTurn(projection: SessionExecutionProjection | undefined) {
