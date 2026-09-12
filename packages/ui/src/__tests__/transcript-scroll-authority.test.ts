@@ -47,6 +47,7 @@ interface FakeRoot {
   removeEventListener(type: string, listener: (event: unknown) => void): void;
   input(deltaY: number, modifiers?: { ctrlKey?: boolean; metaKey?: boolean }): void;
   grabScrollbar(): void;
+  touch(type: 'touchstart' | 'touchend' | 'touchcancel', count: number): void;
   end(): void;
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
@@ -91,6 +92,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
       emit('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, target: proxy });
     },
     end() { emit('scrollend'); },
+    touch(type, count) { emit(type, { touches: Array.from({ length: count }, () => ({ clientY: 100 })) }); },
     grow(by) {
       root.scrollHeight += by;
     },
@@ -179,6 +181,28 @@ test('Ctrl and Meta wheel zoom preserve following without requesting history', (
       assert.equal(authority.getSnapshot().pinned, true);
       assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight);
       assert.equal(readerReports, 0);
+      detach();
+    }
+  });
+});
+
+test('touch publication waits for the last contact to end or cancel', () => {
+  withObservers(() => {
+    for (const end of ['touchend', 'touchcancel'] as const) {
+      const root = fakeRoot();
+      const authority = createTranscriptScrollAuthority();
+      const detach = authority.attach(root as unknown as HTMLElement);
+      const publication = createTranscriptViewportNavigation();
+      publication.attachCommitScheduler('session', authority);
+      let commits = 0;
+      root.touch('touchstart', 1);
+      root.touch('touchstart', 2);
+      publication.commitRange('session', () => commits++);
+      assert.equal(commits, 0);
+      root.touch(end, 1);
+      assert.equal(commits, 0, 'remaining contact still holds publication');
+      root.touch(end, 0);
+      assert.equal(commits, 1, 'last contact releases publication');
       detach();
     }
   });

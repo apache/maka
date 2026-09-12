@@ -266,7 +266,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         }
         touchY = nextY;
       };
-      const onTouchEnd = (): void => { touchY = undefined; touchHeld = false; onScrollEnd(); notifyIdle(); };
+      const onTouchEnd = (event: TouchEvent): void => {
+        touchY = undefined;
+        if (event.touches.length > 0) return;
+        touchHeld = false;
+        onScrollEnd();
+        notifyIdle();
+      };
       const onScroll = (): void => {
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         readingTurnId = readTurn();
