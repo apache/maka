@@ -185,12 +185,29 @@ export function registerRuntimeHostAttachmentPreviewIpc(
   );
 }
 
-async function materializeArtifact(
+/**
+ * Streams the artifact to a staging file beside the destination, then
+ * replaces the destination in one atomic step. Exported for the
+ * fault-injection test of #4832: `replaceDestination` lets a test fail the
+ * final replacement to prove the previous destination survives; production
+ * always uses `rename`, which replaces an existing destination atomically on
+ * every platform (no unlink first — that would lose the destination if the
+ * rename failed). Both production call sites pass nothing, so the default
+ * is `rename`; the injected failure does not cover the default path itself,
+ * and making a real `rename` fail portably without flakiness is hard, so
+ * the default path is only asserted on success (the save-dialog happy-path
+ * test goes through it).
+ */
+export async function materializeArtifact(
   client: DesktopRuntimeHostClient,
   sessionId: string,
   artifactId: string,
   targetPath: string,
   expectedBytes: number,
+  replaceDestination: (stagingPath: string, targetPath: string) => Promise<void> =
+    async (stagingPath, targetPath) => {
+      await rename(stagingPath, targetPath);
+    },
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   const stagingPath = join(
@@ -228,11 +245,19 @@ async function materializeArtifact(
     }
     await handle.sync();
     await handle.close();
+    // rename(2) replaces an existing destination in one atomic step on every
+    // platform; unlinking the destination first would turn any rename
+    // failure into a lost destination (#4832).
     try {
-      await rename(stagingPath, targetPath);
+      await replaceDestination(stagingPath, targetPath);
     } catch (error) {
       throw new ArtifactMaterializationError("replace_failed", error);
     }
+    // The staging file's content is synced, but the rename's directory
+    // entry is not: after a crash some filesystems can show the old
+    // destination content plus a leftover staging file. Best-effort, since
+    // the user's file is already saved once the rename landed.
+    await syncDirectory(dirname(targetPath)).catch(() => undefined);
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
@@ -253,6 +278,20 @@ class ArtifactMaterializationError extends Error {
   ) {
     super(`Artifact materialization failed: ${reason}`, { cause });
     this.name = "ArtifactMaterializationError";
+  }
+}
+
+// Same durability tier as the other desktop write paths: a directory
+// fsync after a rename so the new directory entry survives a crash.
+// Windows cannot open a directory handle this way, and its rename
+// already persists the entry, so it is skipped there.
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(path, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
