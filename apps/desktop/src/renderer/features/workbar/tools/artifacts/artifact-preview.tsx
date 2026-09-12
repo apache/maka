@@ -341,8 +341,8 @@ function TextFailureCard(props: { record: ArtifactDescriptor; reason: TextFailur
     <div className="maka-artifact-preview-failure">
       <Banner status={status} role="status" title={title} description={description} />
       {props.onShowInFolder ? (
-        <Button variant="secondary" size="sm" onClick={props.onShowInFolder}>
-          在 Finder 中打开
+        <Button variant="secondary" size="sm" label={props.copy.pane.openInFinder} onClick={props.onShowInFolder}>
+          {props.copy.pane.openInFinder}
         </Button>
       ) : null}
     </div>
