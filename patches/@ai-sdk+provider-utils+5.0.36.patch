@@ -1,8 +1,8 @@
 diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
-index dfba4b2..55ed538 100644
+index b8b8594..9bfd32f 100644
 --- a/node_modules/@ai-sdk/provider-utils/dist/index.js
 +++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
-@@ -3932,11 +3932,12 @@
+@@ -4204,11 +4204,12 @@ function resolveSync(value) {
  import {
    InvalidResponseDataError
  } from "@ai-sdk/provider";
@@ -18,7 +18,7 @@ index dfba4b2..55ed538 100644
      var _a3, _b3;
      this.controller = controller;
      this._generateId = (_a3 = options.generateId) != null ? _a3 : generateId;
-@@ -3950,31 +3951,90 @@
+@@ -4222,31 +4223,90 @@ var StreamingToolCallTracker = class {
     * events as appropriate.
     */
    processDelta(toolCallDelta) {
@@ -120,7 +120,7 @@ index dfba4b2..55ed538 100644
      if (this.typeValidation === "required") {
        if (toolCallDelta.type !== "function") {
          throw new InvalidResponseDataError({
-@@ -3990,38 +4050,32 @@
+@@ -4262,38 +4322,32 @@ var StreamingToolCallTracker = class {
          });
        }
      }

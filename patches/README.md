@@ -52,7 +52,7 @@ the queue at the native exit fence. See #2978.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.34`
+## `@ai-sdk/provider-utils@5.0.36`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
@@ -60,7 +60,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.5.2`
+## `@astryxdesign/core@0.5.4`
 
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft
@@ -93,7 +93,9 @@ replaying it. The default remains progressive for a genuinely new stream, and
 rewritten or later text still reveals and fades from a parsed-visible boundary.
 Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
-streaming cursor without adding another parser or scheduler.
+streaming cursor without adding another parser or scheduler. The incremental
+parser preserves the first mutable slice verbatim so a verified prefix ending
+in whitespace is not shortened before rendering.
 
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is
