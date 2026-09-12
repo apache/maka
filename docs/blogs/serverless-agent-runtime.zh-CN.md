@@ -21,19 +21,19 @@
 
 # 从无状态函数到 Agent Runtime：Serverless 的调度单位正在变大
 
-Serverless 常被简化成一句话：运行一段短暂的无状态函数。
+Serverless 常被简化定义为：运行一段短暂的无状态函数。
 
-这个描述抓住了最常见的产品形态，却没有抓住它真正的系统内核。Serverless 首先是一种**资源运行契约**：需求到来时，平台为程序找到并物化一份满足要求的计算环境；需求结束后，调用方不再拥有那台机器。至于环境最终被销毁、冻结还是放回池中，是平台的实现选择，而不是业务程序的承诺。
+这种描述抓住了最普及的产品形态，但尚未触及更底层的系统内核。Serverless 首先是一种**资源运行契约**：需求到达时，平台按需物化满足规格的计算环境；需求结束后，调用方释放对物理节点的占用。至于环境最终被销毁、冻结还是归还缓冲池，属于平台的实现策略，而非业务程序的契约承诺。
 
-Agent 让这个问题重新变得重要。一个 Agent 往往会连续调用工具、修改文件、启动解释器和浏览器、等待外部事件，然后从原来的现场继续工作。如果每次调用都重新创建一个无状态函数，恢复环境的成本可能比真正执行任务还高。
+Agent 的兴起使这一架构分歧重新凸显。一个自治 Agent 往往需要连续调用工具、修改文件系统、操作解释器与浏览器进程、挂起等待外部事件，并在后续重新唤醒时无缝恢复上下文现场。若每次交互均由全新的无状态函数承载，冷启动与环境水合的开销将迅速超过任务本身的计算耗时。
 
-于是，一个新的问题出现了：**Serverless 的调度单位是否必须是一段无状态函数？**
+由此引出一个核心架构命题：**Serverless 的调度单位是否必须局限于无状态函数？**
 
-OpenSandbox、CubeSandbox 和 Agent Substrate 给出了三种不同答案。它们分别把调度单位扩大为完整 Sandbox、可恢复的 microVM，以及可在 Worker 之间重新激活的 Actor。本文不打算给三个项目打分，而是借它们理解 Agent Runtime 正在怎样改写 Serverless。
+OpenSandbox、CubeSandbox 与 Agent Substrate 从不同维度给出了工程实践。它们分别将调度单位拓宽为完整的沙箱容器、支持快照恢复的 microVM，以及可在不同 Worker 间动态迁移唤醒的 Actor。本文旨在通过对比三者的架构取舍，解析 Agent 运行时正在如何重塑 Serverless 的设计边界。
 
 ## 1. Serverless 是按需求物化资源
 
-先暂时忘掉 Lambda 和函数。一次 Serverless 执行可以抽象为：
+剥离具体云服务形态后，通用的 Serverless 执行流程可抽象如下：
 
 ```text
 需求到达
@@ -45,68 +45,68 @@ OpenSandbox、CubeSandbox 和 Agent Substrate 给出了三种不同答案。它�
   -> 冻结、复用或销毁环境
 ```
 
-这里最重要的不是程序只能运行几十毫秒，而是**逻辑程序与物理资源的绑定是临时的**。调用方不需要维护服务器，也不能把正确性建立在“下一次一定回到同一台 Worker”之上。平台可以保留 warm environment，但它只能是加速手段，不能成为业务正确性的必要条件。
+Serverless 的核心特质在于**逻辑程序与物理资源的绑定是临时的**。调用方无须管理底层服务器，亦不可假设后续请求必然调度至同一物理节点。平台可保留热缓存环境（Warm Environment），但这仅作为性能加速手段，业务逻辑的正确性不可建立在此假设之上。
 
-Serverless 平台因此始终在处理一组矛盾：
+Serverless 基础设施始终致力于平衡一组天然张力：
 
 ```text
-业务方：请求到达时，资源最好已经准备好。
-平台方：没有请求时，最好不保留昂贵资源。
+业务方：请求到达时，计算资源应当即刻就绪。
+平台方：无负载运行时，昂贵的物理资源应当彻底释放。
 ```
 
-冷启动、预热池、快照恢复、资源超卖与多租户调度，都是在这两个目标之间寻找平衡。Berkeley 对 Serverless 的经典讨论也把弹性伸缩、按使用付费和隐藏服务器管理视为核心，而不只是“函数很短”。[^serverless-berkeley]
+冷启动优化、预热缓冲池、内存快照恢复、资源超卖（Overcommit）及多租户调度，均是针对该张力的工程折中。Berkeley 关于 Serverless 计算的经典论述亦将弹性伸缩、按用量计费与屏蔽服务器运维视为核心特征，而非狭义上的“函数执行耗时短”。[^serverless-berkeley]
 
-评价一个 Agent Runtime 是否具有 Serverless 属性，可以固定看四件事：
+评估一个 Agent Runtime 是否具备 Serverless 属性，通常可聚焦于四个核心维度：
 
 | 维度 | 要问的问题 |
 |---|---|
-| 启动延迟 | 从需求到达到环境可执行，需要付出多少物化成本？ |
-| 空闲成本 | 没有工作时，仍保留多少 CPU、物理内存和调度配额？ |
-| 状态保真度 | 恢复后保留 rootfs、进程、内存和网络中的哪些状态？ |
-| 调度自由 | 下一次执行能否放到另一份容量，受什么 locality 约束？ |
+| 启动延迟 | 从需求到达至环境可执行，需要付出多大物化成本？ |
+| 空闲成本 | 无工作负载时，仍保留多少 CPU、物理内存与调度配额？ |
+| 状态保真度 | 恢复执行后，rootfs、进程树、内存与网络连接能保留哪些？ |
+| 调度自由 | 后续执行能否灵活放置于任意计算容量，受何种亲和性约束？ |
 
-讨论资源时，还必须区分几个经常被混成“内存占用”的概念：
+在量化资源开销时，必须清晰区分四个常被笼统概括为“内存占用”的概念：
 
 ```text
-Resource limit          最多允许使用多少
-Scheduler request       调度器提前计账多少
-Guest RAM / VA          guest 可见或 VMM 映射多大的地址空间
-RSS / PSS               当前实际驻留了多少物理页
+Resource limit          调度层允许使用的资源上限
+Scheduler request       调度器预先预留与记账的容量
+Guest RAM / VA          Guest 内部可见或 VMM 映射的虚拟地址空间
+RSS / PSS               当前宿主机实际驻留的物理内存页
 ```
 
-配置 `1 GiB`，可能只是在其中一层记了一个数。它是否立刻转化成 1 GiB 物理内存，取决于具体实现。
+声明 `1 GiB` 往往仅代表在其中某一层登记了配额数值，其是否即刻转化为物理内存占用，完全取决于底层虚拟化与运行时的具体实现。
 
 ## 2. 无状态函数是第一种工程解法
 
-要让下一次调用落到任意一台机器上，最简单的办法不是让调度器记住上一台机器，而是让程序的正确性不再依赖它：
+要让下一次调用落到任意一台机器上，工程设计选择解耦程序正确性与特定宿主节点：
 
 ```text
 output = function(input, external_state)
 ```
 
-业务实体进入数据库，文件进入对象存储，调用衔接交给消息队列和工作流，Secret 与配置由外部服务管理。执行环境只保存本次调用所需的代码、内存与临时缓存。
+业务实体存入数据库，文件沉淀于对象存储，调用编排委托给消息队列与工作流引擎，密钥与配置则由外部配置中心管理。本地执行环境仅保留当次计算所需的运行代码、瞬态内存与局部缓存。
 
-这样做以后，任意兼容 Worker 都能处理下一次请求；失败的执行也可以在别处重试。**无状态不是 Serverless 的目的，而是第一代 Serverless 获得调度自由的办法。**
+在此范式下，任意对等 Worker 均可处理后续请求，异常退出亦可在异地无损重试。**无状态是第一代 Serverless 获得调度自由的工程解法，使业务正确性完全脱敏于宿主位置。**
 
-“无状态”也不意味着 warm environment 中绝对不能存在状态。连接池、全局对象和临时文件都可以留下。真正的约束是：
+无状态并不排斥热环境（Warm Environment）中局部状态的物理存留。数据库连接池、预加载的全局对象与本地临时文件均可保留。核心系统约束在于：
 
-> 下一次调用的正确性，不能依赖上一次 execution environment 仍然存在。
+> 后续调用的正确性，绝不可依赖前次执行环境的持续存续。
 
-为了分析 Agent Runtime，后文把状态统一分成三类：
+为便于剖析 Agent Runtime 的设计差异，本文将运行状态统一划分为三层：
 
 ```text
-Authoritative state   实例消失后仍必须存在的权威状态
-Execution state       当前 CPU、进程、内存、writable rootfs 与网络现场
-Acceleration state    warm Pod、模板页缓存、golden snapshot 等加速层
+Authoritative state   实例销毁后依然必须权威存在的持久状态
+Execution state       当前 CPU、进程树、内存堆栈、可写 rootfs 与网络连接
+Acceleration state    Warm Pod、模板页缓存、Golden Snapshot 等性能加速层
 ```
 
-对于普通函数，Execution state 通常可以丢掉。对于 Agent，它却可能非常昂贵：已经安装的依赖、修改中的 workspace、解释器变量、浏览器页面和后台工具进程，都可能属于下一步工作的一部分。
+在传统批处理或微服务中，Execution state 在调用结束后即可安全丢弃。然而在 Agent 系统中，该层状态极为昂贵：动态安装的依赖包、正在编辑的代码工作区、交互式解释器变量上下文、浏览器 DOM 树以及后台长效诊断工具，均构成后续推理轮次的直接输入。
 
-Agent 暴露了无状态函数的边界。解决办法未必是放弃 Serverless，而可能是扩大它的调度单位：让一个生命周期内有状态的环境，仍然可以被按需物化、暂停和回收。
+Agent 拓展了传统无状态函数的应用边界。系统演进的方向在于扩大调度单位：使具有生命周期状态的环境，依然能够按需物化、挂起与弹性回收。
 
 ## 3. OpenSandbox：一台有租期的临时计算机
 
-从调用者看，OpenSandbox 提供的不是一次函数调用，而是一台远程临时计算机：
+从调用者视角看，OpenSandbox 交付的是一台远程临时计算机：
 
 ```python
 sandbox = await Sandbox.create(
@@ -120,9 +120,9 @@ await sandbox.commands.run(...)
 await sandbox.kill()
 ```
 
-调用方提交 image 或 snapshot、入口命令、环境变量、资源、网络策略和 TTL，得到一个稳定的 `sandboxId`。随后可以在同一个 Sandbox 中多次执行命令、读写文件和维持会话。SDK 的创建流程也会围绕同一个 ID 构造文件、命令、健康检查等服务。[^opensandbox-api]
+调用方声明基础镜像或快照、启动命令、环境变量、计算资源、网络安全策略及生存时间（TTL），获取全局唯一的 `sandboxId`。随后可在此沙箱内连续执行命令、读写文件并维系交互会话。SDK 在创建流程中围绕该统一标识编排文件管理、指令执行与健康检查服务。[^opensandbox-api]
 
-因此，OpenSandbox 的逻辑调度单位不是一次 `commands.run()`，而是一段 Sandbox 生命周期：
+因此，OpenSandbox 的逻辑调度单位由单次 `commands.run()` 扩展为一段完整的 Sandbox 生命周期：
 
 ```text
 create
@@ -131,32 +131,32 @@ create
   -> kill 或 TTL 到期
 ```
 
-Sandbox 生命周期内明确有状态。调用方不需要知道它最终由 Docker container、Kubernetes Pod 还是 Kata microVM 承载，但仍要显式管理这台临时计算机何时创建、暂停和销毁。
+在沙箱生命周期内部，运行状态完整存续。调用方无须感知底层载体是 Docker 容器、Kubernetes Pod 还是 Kata microVM，但需要显式管理该临时主机的创建、暂停与终结。
 
-这也是 OpenSandbox 与传统 FaaS 的第一处分界：FaaS 通常在 invocation 结束后解除绑定；OpenSandbox 要等整个 Sandbox 生命周期结束，才有机会释放当前计算。
+这构成了 OpenSandbox 与传统 FaaS 的核心分界：FaaS 通常在当次调用结束时即刻解绑资源，而 OpenSandbox 只有在整个沙箱租期结束或被显式回收时，平台方能完全释放计算资源。
 
-本文可以把这种抽象称为 **“Serverless Computer”**。这不是项目的官方分类，而是一种分析视角：平台不再只交付一个函数入口，而是按需交付一台完整、可编程、有租期的计算机。
+本文将这种抽象归纳为 **“Serverless Computer”**。该提法并非项目的官方分类。作为本文的架构分析视角，平台按需交付的是一台完整、可编程、有租期的虚拟计算机。
 
 ## 4. OpenSandbox：完整环境如何变成 Serverless
 
-OpenSandbox 可以使用 Docker 或 Kubernetes 后端。在 Kubernetes 路径里，逻辑 Sandbox 与当前执行实例被拆成两层：
+OpenSandbox 支持接入 Docker 或 Kubernetes 后端。在 Kubernetes 路径下，逻辑沙箱与底层执行实例被划分为两层解耦结构：
 
 ```text
-Sandbox ID / CR   逻辑身份、模板、TTL 与 desired state
-Pod / Pod IP      当前执行实例与 endpoint
+Sandbox ID / CR   逻辑身份、模板、TTL 与期望状态（Desired State）
+Pod / Pod IP      当前物理执行实例与交互端点（Endpoint）
 ```
 
-它外置了 Sandbox 身份、模板、TTL、OCI 基础镜像、网络策略，以及可选的 PVC 或对象存储。Kubernetes 负责把这些声明物化成 Pod。若配置 Kata RuntimeClass，microVM 的创建与资源开销继续由 Kubernetes、containerd 和 Kata 负责。
+系统将沙箱元数据、镜像规范、网络策略及持久存储卷（PVC）外置化，交由 Kubernetes Controller 将其物化为 Pod。若启用 Kata RuntimeClass，microVM 的创建与资源管理则下沉至 containerd 与 Kata 处理。
 
-但是，当前进程树、匿名内存、Shell session、network namespace 与打开的连接，仍然属于当前 Pod。OpenSandbox 的 Kubernetes pause 会提交容器 writable rootfs、释放 Pod，再在 resume 时用新的 OCI image 重建；它不会 checkpoint 进程和内存。[^opensandbox-pause]
+然而，瞬态的进程树、匿名内存页、交互式 Shell 终端、网络命名空间及已建立的网络套接字，仍牢固绑定于当前 Pod。OpenSandbox 的 Kubernetes Pause 机制通过将容器的可写 rootfs 提交为增量镜像并销毁 Pod，在 Resume 时基于新镜像拉起新 Pod；该过程并不捕获内存与进程上下文。[^opensandbox-pause]
 
-这意味着一次恢复保存的是**已提交的文件系统状态和声明式配置**，而不是完整执行现场。逻辑 CR 可以在 Pod 丢失后重新协调出新实例，但没有外置的本地写入、进程、内存和连接不会自动回来。
+这意味着沙箱恢复保全的是**已提交的文件系统状态与声明式配置**。逻辑 CR 能够在 Pod 异常退出后拉起新副本，但未提交的本地内存、活跃进程与网络连接将随实例销毁而重置。
 
-资源账本也解释了“配置 1 GiB，服务是否会吃掉 1 GiB”这个常见疑问。OpenSandbox 会把 `resourceLimits` 写入主 sandbox 容器；若调用方没有单独给出 `resourceRequests`，实现默认令主容器的 `requests = limits`。[^opensandbox-resources]
+资源记账机制也解答了“配置 1 GiB，系统是否立即吞吐 1 GiB 物理内存”的疑问。OpenSandbox 会把 `resourceLimits` 写入主沙箱容器；若调用方未单独显式指定 `resourceRequests`，实现层默认令主容器的 `requests = limits`。[^opensandbox-resources]
 
-所以，在 Kubernetes 路径中配置 `memory=1Gi`，意味着主容器向 scheduler 申请 1 GiB 调度容量，同时把 1 GiB 作为限制。完整 Pod 还可能包含其他容器、init container 规则和 RuntimeClass overhead。**这不等于进程立刻产生 1 GiB RSS，但它确实占用了相应的调度账本。**
+因此，在 Kubernetes 路径下配置 `memory=1Gi`，意味着主容器向调度器申请 1 GiB 的调度配额预留，同时将 1 GiB 设为资源上限。整机 Pod 还需计入辅助容器与 RuntimeClass 的额外开销。**这并不等同于进程即刻占满 1 GiB RSS，但确实在调度器的容量账本中完成了全额扣减。**
 
-OpenSandbox 用 Pool 降低冷启动：提前维持一批完整 Ready Pod，分配时直接领取。Pool 的配置明确包含 warm buffer 的上下界。[^opensandbox-pool]
+OpenSandbox 引入预热池（Pool）以削减冷启动时延：在系统侧预先保有就绪状态的 Ready Pod，任务到达时瞬时认领。Pool 配置显式界定了温水池的容量水位。[^opensandbox-pool]
 
 ```text
 更大的 warm Pool
@@ -164,13 +164,13 @@ OpenSandbox 用 Pool 降低冷启动：提前维持一批完整 Ready Pod，分�
   -> 更多常驻 Pod、VM 与 scheduler reservation
 ```
 
-因此，OpenSandbox 已经把完整工作环境纳入 Serverless 控制面，但它的主要交换仍然很传统：要么等待完整 Pod 被创建，要么提前为完整 Pod 支付空闲成本。
+OpenSandbox 成功将完整操作系统工作环境纳入 Serverless 控制面，但其核心工程交换依然延续了传统模式：要么忍受全量 Pod 创建的排队时延，要么预先为温热 Pod 支付常驻物理成本。
 
-下一个问题自然出现了：如果完整 Pod 是昂贵的物化单位，能否不靠堆积更多 warm Pod，而是直接降低每台临时计算机的边际成本？
+由此引申出进一步的系统探索：若全量 Pod 属于较重的物化载体，能否在不堆砌常驻 Pod 的前提下，从底层削减单台临时虚拟机的边际物化成本？
 
 ## 5. CubeSandbox：一台可以恢复执行现场的 microVM
 
-CubeSandbox 给调用方的上层体验与 OpenSandbox 相似：选择 Template，创建一个有稳定 `sandboxID` 的 Sandbox，然后连续执行代码、命令、文件操作、PTY 和网络服务。
+CubeSandbox 在接入层提供了与 OpenSandbox 相似的编程接口：指定 Template，分配唯一且固定的 `sandboxID`，随后持续执行代码片段、终端命令、文件 I/O、PTY 交互及网络服务：
 
 ```python
 sandbox = Sandbox.create(template="agent-python")
@@ -180,15 +180,15 @@ sandbox.pause()
 sandbox.resume()
 ```
 
-`run_code()` 通过代理请求 VM 内的 `envd`，并默认复用解释器的全局命名空间。[^cubesandbox-api] 所以这里真正被管理的也不是一次代码调用，而是一台持续存在的 Sandbox。
+`run_code()` 通过代理请求 VM 内的 `envd`，并默认复用解释器的全局命名空间。[^cubesandbox-api] 平台直接管控的实体是一台具有持久上下文的 Sandbox，而非单次代码调用。
 
-CubeSandbox 的关键区别，是调用方不仅可以销毁，还可以 pause、resume、snapshot、rollback 和 clone。一次成功 pause 会结束当前活 microVM，但保留可恢复的 VM 状态；resume 可以继续使用同一个逻辑 `sandboxID`，重新选择节点并创建 microVM。
+CubeSandbox 的核心突破在于赋予了调用方更细粒度的控制能力：除销毁外，支持执行 pause、resume、snapshot、rollback 及 clone。一次成功的 Pause 会优雅销毁当前宿主机上的活跃 microVM 进程，但完整保全可恢复的 VM 状态镜像；Resume 操作则复用同一逻辑 `sandboxID`，重新选择最优物理节点拉起新的 microVM。
 
-从业务角度看，它仍然是一台临时计算机；从平台角度看，**逻辑 Sandbox 已经不再等同于当前 VMM 进程**。只要最新一次可恢复状态已经被成功提交，当前 microVM 就可以消失。
+在业务视角下，用户依然在操纵一台临时计算机；而在平台架构视角下，**逻辑 Sandbox 已与底层具体的 VMM 进程彻底解耦**。只要最新的可恢复镜像已安全落盘，物理虚拟机便可被立即销毁回收。
 
 ## 6. CubeSandbox：把声明容量与物理驻留分开
 
-CubeSandbox 自己控制从 API、调度器到 Shim、VMM 与 guest agent 的数据路径。它的核心机制不是简单地“使用了 microVM”，而是让大量 Sandbox 共享 Template 的基础状态：
+CubeSandbox 完整自研了从 API、调度器到 Shim、VMM 与 Guest Agent 的数据路径。其核心设计在于让大量并发 Sandbox 共享 Template 镜像的基础物理状态：
 
 ```text
 Template rootfs       --reflink / CoW--> Sandbox rootfs
@@ -199,11 +199,11 @@ Template memory file  --MAP_PRIVATE----> Sandbox guest memory
 写入页：产生当前 VM 的匿名 CoW 页
 ```
 
-恢复 snapshot-backed guest memory 时，Cube 的 VMM 使用 `MAP_NORESERVE | MAP_PRIVATE`；代码注释也明确区分了未访问页、只读文件页与写入后产生的匿名 CoW 页。[^cubesandbox-memory]
+在加载基于快照的 Guest 内存时，Cube 的 VMM 显式调用 `MAP_NORESERVE | MAP_PRIVATE`；底层代码严格区分了未触达页、共享只读文件页以及执行写操作后产生的私有匿名 CoW 页。[^cubesandbox-memory]
 
-这解释了为什么一个声明 `2 GiB` guest memory 的 Sandbox，不会在启动瞬间为自己独占 2 GiB 物理内存。实际驻留更接近 guest working set、私有脏页和 VMM 固定开销。
+这阐明了一个声明 `2 GiB` 内存的沙箱，为何不会在初始化瞬间独占 2 GiB 物理内存。实际的驻留内存主要取决于 Guest 的工作集活跃页、脏页增量以及 VMM 自身的轻量开销。
 
-但这不意味着“2 GiB 不计资源”。声明内存仍然进入 Cube 的调度账本，只是默认调度容量采用内存 2 倍、CPU 3 倍的 overcommit ratio。[^cubesandbox-overcommit] 换句话说：
+但这并不意味声明内存彻底脱离了配额监管。声明规格依然进入 Cube 的调度记账，只是系统默认引入了内存 2 倍、CPU 3 倍的受控超卖比率（Overcommit Ratio）。[^cubesandbox-overcommit] 具体表现为：
 
 ```text
 声明容量       决定 guest 上限与调度分配单位
@@ -211,11 +211,11 @@ Template memory file  --MAP_PRIVATE----> Sandbox guest memory
 物理驻留内存   随实际访问和 CoW 写入增长
 ```
 
-这也是所谓“4 MB Sandbox”最需要澄清的地方。项目材料中的约 `4-5 MiB` 指 **VMM overhead PSS**，不是完整 Sandbox 的总内存。项目另一组 1000 个、每个声明 2 vCPU/2 GiB 的空载 create-only 测试，按整机 `free available` 的变化计算出约 `21.5-25.7 MB` 的单实例均摊增量。[^cubesandbox-benchmark] 两个数字测量边界不同，不能互相替代，更不能直接拿去和另一个系统的 Pod RSS 比较。
+这也是“4 MB Sandbox”指标需要被准确厘清的关键所在。项目测试数据中的 `4-5 MiB` 专指 **VMM Overhead PSS**，并非整个沙箱系统的端到端总内存。在另一项 1000 实例（每实例配置 2 vCPU / 2 GiB）的纯创建压力测试中，依据整机可用内存（Free Available）衰减均摊，测得单实例系统增量约为 `21.5-25.7 MB`。[^cubesandbox-benchmark] 两项指标的统计口径不同，不可混同，亦不可直接与常规 Pod 的完整 RSS 粗暴对比。
 
-Pause 又引入了第二层资源分离。Cube 会保存 VM state、memory 与 rootfs，并销毁当前 microVM，所以活 VM 的物理 CPU 和内存可以被回收。[^cubesandbox-pause] 但是，默认 `paused_resource_release_ratio=0`，暂停中的 Sandbox 仍保留完整调度配额，以提高 resume 成功的确定性。运维可以释放部分或全部额度换取更高密度，但恢复会变成尽力而为。[^cubesandbox-paused-quota]
+Pause 机制在资源层面实现了二级剥离。Cube 保存 VM 寄存器状态、内存镜像与 rootfs 增量后，销毁当前 microVM，使宿主机物理 CPU 与内存得到真实释放。[^cubesandbox-pause] 不过，系统默认设置 `paused_resource_release_ratio=0`，使处于暂停期的沙箱继续保留调度记账名额，以保障后续 Resume 的准入确定性。管理员可按需调大配额释放比率以换取更高的承载密度，此时恢复流程将转为尽力而为（Best-effort）。[^cubesandbox-paused-quota]
 
-因此，CubeSandbox 的 Serverless 性不来自“资源数字消失了”，而来自三组解绑：
+CubeSandbox 的 Serverless 特质源自三层核心解耦：
 
 ```text
 声明 guest RAM != 启动时立即占满物理内存
@@ -223,15 +223,15 @@ Pause 又引入了第二层资源分离。Cube 会保存 VM state、memory 与 r
 启动基线       != 每个实例都复制一份完整内存
 ```
 
-代价同样明确。CoW 与 overcommit 不会创造物理容量；当大量轻载 VM 同时写满内存，平台仍需要实时容量过滤、节点保留阈值、cgroup 与 admission control 保护宿主机。
+该模式的系统权衡十分明确。CoW 与超卖机制无法凭空增加物理承载上限；若大量轻载虚拟机同时爆发全量内存写操作，宿主机依然需要依赖实时容量过滤、预留警戒水位、cgroup 隔离及准入控制实施兜底防护。
 
-即使单台 microVM 已经足够轻，还有一个更上层的问题：长期存在的 Agent 身份，是否必须永远等同于一个 Sandbox 对象？
+当单台 microVM 的开销已优化至极低水平，架构面临更深层的命题：长效存续的 Agent 身份，是否必须与底层的沙箱对象强行绑定？
 
 ## 7. Agent Substrate：一个可以休眠的 Actor
 
-Agent Substrate 把逻辑单位再次向上移动。调用方创建的不是一台立即运行的 Sandbox，而是一个长期存在的 Actor。Create 首先写入一个初始状态为 `SUSPENDED` 的逻辑记录，不立即创建专属 Pod 或启动进程。[^substrate-create]
+Agent Substrate 将逻辑调度单位进一步提升为长期存在的 Actor。Create 操作首先向控制面写入初始状态为 `SUSPENDED` 的持久化记录，不立即分配专属 Pod 或拉起进程。[^substrate-create]
 
-调用方获得稳定的 Actor identity 和地址。业务请求到达时，如果 Actor 尚未运行，Router 会触发 Resume，把它分配给一台 ready Worker，再把流量转发过去。
+调用方获得稳定的全局 Actor 标识与访问端点。当外部请求到达且 Actor 未处于运行态时，Router 控制面自动触发 Resume，将其调度并绑定至处于就绪态的 Worker，随后完成流量转发。
 
 ```text
 长期逻辑 Actor
@@ -242,13 +242,13 @@ Agent Substrate 把逻辑单位再次向上移动。调用方创建的不是一�
   -> 释放 Worker
 ```
 
-一次 HTTP 请求结束不会结束 Actor，也不存在传统 FaaS 意义上的“一次请求一个实例”。真正的调度单位是一次 **Actor activation**。
+单个 HTTP 请求的终结不会终结 Actor 的生命周期，这不同于传统 FaaS “单次调用对应单次实例”的范式。此时核心调度单位演变为 **Actor activation**。
 
-这可以被称为 **“Serverless Actor”**：Actor 拥有长期逻辑生命周期，Worker sandbox 只是它在某段活跃时间内使用的执行载体。业务身份可以持续存在，而昂贵计算只在工作发生时绑定。
+这种模式可归纳为 **“Serverless Actor”**：Actor 拥有持久的业务逻辑生命周期，Worker 沙箱仅充当其在活跃工作周期的瞬态执行载体。业务身份持续存续，高成本物理计算仅在执行任务时动态绑定。
 
 ## 8. Agent Substrate：把 Actor 时间复用到 Worker
 
-Substrate 把 Kubernetes 留在相对较慢的 Worker fleet 管理路径上，再把高频 Actor activation 从 kube-scheduler 的关键路径中移开：
+Substrate 将 Kubernetes 收拢于相对低频的 Worker 集群编排，把高频的 Actor Activation 彻底移出 kube-scheduler 的核心链路：
 
 ```text
 Kubernetes
@@ -261,20 +261,20 @@ Substrate
   -> checkpoint 后终止 sandbox，释放 assignment
 ```
 
-这里必须准确理解“复用”。当前代码明确把每个 Worker 的 active Actor 容量设为 1；WorkerPool 则通过 Kubernetes Deployment 预建完整 Pod。[^substrate-worker] 因此，Substrate 做的是**大量 suspended Actor 对少量 warm Worker 的时间复用**，不是在一个 Worker 里同时塞入许多 active Actor。
+此处的“复用”具有严格的系统边界。当前实现显式限制每个 Worker 仅能承载一个活跃 Actor；WorkerPool 则通过标准 Kubernetes Deployment 预备底座 Pod。[^substrate-worker] 因此，Substrate 实施的是**大量休眠态 Actor 在时间维度上分时复用少量温热 Worker**，而非在单个 Worker 内无序混部多个并发活跃 Actor。
 
-它提供两类不同的停止状态：
+系统提供了两级挂起状态以平衡性能与放置自由：
 
 | 操作 | 状态位置 | 恢复特征 |
 |---|---|---|
 | Pause | checkpoint 留在原节点 | 恢复较快，但受节点 locality 约束 |
 | Suspend | checkpoint 上传为外部 snapshot | 可以换 Worker、换节点恢复 |
 
-Pause 的实现会请求 node-local checkpoint，再释放 Worker assignment；Suspend 会把 snapshot 写入外部位置，并把它记录为 Actor 最新成功提交的可恢复状态。[^substrate-pause-suspend]
+Pause 触发本地检查点保存并释放当前 Worker 占用；Suspend 则将全量快照推送到外部存储系统，并在控制面将其固化为该 Actor 最新的已提交稳态。[^substrate-pause-suspend]
 
-Snapshot scope 还决定恢复保留多少 Execution state：`FULL` 设计为通过后端 checkpoint 保存进程、内存、rootfs 改动与 DurableDir；`DATA` 只保存 DurableDir，恢复时重新启动应用。[^substrate-scope] 这里的“FULL”是接口设计和具体 backend 的 checkpoint/restore 能力，不应被理解成对任意外部连接都提供无条件连续性。
+快照的作用域决定了 Execution state 的恢复保真度：`FULL` 级别通过后端检查点完整保留进程树、内存镜像、rootfs 差分与持久化目录（DurableDir）；`DATA` 级别仅保留持久化数据目录，恢复时重新初始化应用运行时。[^substrate-scope] 这里的 `FULL` 代表接口规范与对应底层的检查点能力，并不意味其能保证任意外部网络长连接的透明保活。
 
-Substrate 的资源账本因此分成两层：
+Substrate 的容量账本因此形成分层管理：
 
 ```text
 WorkerPool request
@@ -285,11 +285,11 @@ Actor limit
   -> suspended Actor 不追加一份 Kubernetes Pod request
 ```
 
-如果系统中存在一万个逻辑 Actor，但只有一百个同时活跃，理论上可以只维持接近活跃并发、再加一定余量的 Worker fleet。存储成本随 Actor 与 snapshot 数量增长，计算成本则主要随 warm Worker baseline 和 active Actor 增长。
+若系统中托管一万个逻辑 Actor，但在同一时刻仅有一百个处于活跃计算状态，集群理论上仅需维系与并发数匹配并略带余量的 Worker 规模。静态存储成本随 Actor 总量与快照实体平缓增长，而计算开销严格受控于温热 Worker 基线及活跃任务数。
 
-不过，这条链路目前仍需要上层参与：仓库中的示例会显式调用 Suspend 来释放 Worker，并没有展示一个通用的自动 idle suspension 闭环；Worker 丢失也可能让尚未成功 checkpoint 的 Actor 进入 `CRASHED`，而不是透明地回滚到任意旧状态。[^substrate-idle-failure]
+当前该技术栈仍依赖应用层的显式协同：官方示例中均通过显式调用 Suspend 来交还 Worker，尚未构建通用的空闲自动挂起闭环；若 Worker 发生物理单点故障，未完成检查点保存的活跃 Actor 将转入 `CRASHED`，无法做到透明的前向故障无损恢复。[^substrate-idle-failure]
 
-所以，Substrate 展示的不是“更小的 Pod”，而是另一种资源关系：
+Substrate 由此确立了一套全新的资源映射拓扑：
 
 ```text
 Actor lifetime       != Worker lifetime
@@ -299,7 +299,7 @@ Request routing      != Kubernetes Pod scheduling
 
 ## 结语：Serverless 不等于无状态函数
 
-把三套系统放回同一个坐标系，可以看到一条连续的演化路径：
+将上述三套系统置于同一演进坐标系中，呈现出一条清晰的技术演进路径：
 
 ```text
 Stateless FaaS
@@ -315,18 +315,18 @@ Agent Substrate
   actor activation -> ready worker sandbox
 ```
 
-OpenSandbox 解决的是如何统一交付和管理完整计算环境；CubeSandbox 解决的是如何降低完整 microVM 的物化与驻留成本；Agent Substrate 解决的是如何让长期存在的逻辑 Actor 只在活跃时占用 Worker。
+OpenSandbox 探索了如何通过统一控制面交付和管理完整的操作系统计算环境；CubeSandbox 攻克了如何利用写时复制与内存共享降低完整 microVM 的物理开销；Agent Substrate 则展示了长周期逻辑 Actor 与瞬态 Worker 资源在时间维度的弹性复用。
 
-三者都不是“无状态”的。它们真正继承的 Serverless 原则，是不断解除两种绑定：
+三类架构均突破了纯粹的无状态约束，但完整继承了 Serverless 解耦资源的核心原则：
 
-1. 解除逻辑身份与某一个物理实例的永久绑定；
-2. 解除长期存在的业务状态与持续占用昂贵计算资源的绑定。
+1. 解耦逻辑身份与特定物理实例的排他性强绑定；
+2. 解耦长效存续的业务状态与对昂贵物理计算资源的持续霸占。
 
-因此，对于 Agent，问题已经不再是“怎样把它强行写成一个函数”，而是：
+对于 Agent 架构，核心议题已演变为：
 
-> 我们能否让一个长期存在、有状态的逻辑程序，只在真正工作时拥有一台计算机？
+> 我们能否让一个长期存在、有状态的逻辑程序，仅在真正执行任务时才动态占有一台计算机？
 
-再向上一层，Agent 的权威状态还可以被继续拆成 Session、Filesystem 与 Agent Memory，由上下文服务在激活时召回并注入不同 Runtime。但那是计算层之上的状态模型。本文想先说明的是：只要逻辑身份、可恢复状态与物理执行实例能够被清楚地拆开，有状态 Agent 并不天然违背 Serverless。
+在此基础之上，Agent 的权威状态进一步分化解耦为会话交互历史、工作区文件实体及长期记忆，由外部状态面在激活时刻精准水合入不同的执行沙箱。这属于算力层之上的上层状态模型。但就底层计算基础设施而言，只要逻辑身份、可恢复状态与物理运行实例能够清晰解耦，有状态的智能体就与 Serverless 理念完全契合。
 
 ---
 
