@@ -154,6 +154,7 @@ export interface RuntimePolicy {
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
     readonly thinkingLevel?: ThinkingLevel;
+    readonly codeModeEnabled?: boolean;
   };
   readonly webSearch: {
     readonly enabled: boolean;

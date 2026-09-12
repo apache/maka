@@ -46,8 +46,8 @@
       "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, a first send that has to reach the Host, and per-Session collapse persisted across a renderer reload; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"
     },
     "settings.spec.ts": {
-      "tests": 4,
-      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
+      "tests": 5,
+      "electron": "Code Mode persistence crosses renderer/preload/main/Host settings IPC; the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
     },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
