@@ -884,8 +884,8 @@ export const ModelCapabilities: Story = {
   },
 };
 
-// Settings → disabled model → edit → save while focused → reopen → cancel.
 // Chromium owns the focus/submit ordering and native dialog focus restoration.
+// Real path: Settings → Models → relay → disabled model → edit → save → reopen → cancel.
 export const ModelParameterSave: Story = {
   render: ModelCapabilities.render,
   play: async ({ canvasElement }) => {
@@ -897,6 +897,9 @@ export const ModelParameterSave: Story = {
     await userEvent.click(configure);
     const field = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     const inputLimit = body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i });
+    const vision = () => body.getByRole('combobox', { name: /^(图片识别|圖片辨識|Send images to the model)$/i });
+    await userEvent.click(vision());
+    await userEvent.click(await body.findByRole('option', { name: /^(支持|支援|Allow images)$/i }));
     const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
@@ -916,8 +919,18 @@ export const ModelParameterSave: Story = {
     const reopened = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     expect(reopened).toHaveValue('128000');
     expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
-    await userEvent.clear(reopened);
-    await userEvent.type(reopened, '256K');
+    expect(vision()).toHaveTextContent(/^(支持|支援|Allow images)$/i);
+    await userEvent.click(vision());
+    await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
+    await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
+    await waitFor(() => expect(configure).toHaveFocus());
+    await userEvent.click(configure);
+    expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
+    expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
+    expect(enable).not.toBeChecked();
+    const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
+    await userEvent.clear(editable);
+    await userEvent.type(editable, '256K');
     await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
