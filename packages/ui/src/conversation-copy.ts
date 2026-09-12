@@ -329,7 +329,7 @@ export interface ConversationCopy {
       contextCompacting: string;
       contextCompacted: string;
       contextCompactionFailedOpen: string;
-      contextProviderDropping: (used: number, prior: number) => string;
+      contextProviderDropping: (used: number, prior: number, contextWindowDeclared?: boolean) => string;
       contextWindowSuggestion: (tokens: number, declared: number | undefined) => string;
       contextWindowOverrun: (used: number, declared: number) => string;
       contextReportedWindowExceeded: (used: number, reported: number) => string;
@@ -555,8 +555,11 @@ const CONVERSATION_COPY = {
         contextCompacting: '正在压缩上下文…',
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
-        contextProviderDropping: (used, prior) =>
-          `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
+        contextProviderDropping: (used, prior, declared) => declared === true
+          ? `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。该模型已声明上下文窗口，Maka 会先行压缩。`
+          : declared === false
+            ? `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`
+            : `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
@@ -712,8 +715,11 @@ const CONVERSATION_COPY = {
         contextCompacting: '正在壓縮上下文…',
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
-        contextProviderDropping: (used, prior) =>
-          `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`,
+        contextProviderDropping: (used, prior, declared) => declared === true
+          ? `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。該模型已宣告上下文視窗，Maka 會先行壓縮。`
+          : declared === false
+            ? `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`
+            : `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供應商拒絕了這次請求。該模型未宣告上下文視窗；上次成功的用量約 ${tokens} tokens，可將視窗設為該值讓 Maka 先行壓縮。`
@@ -895,8 +901,11 @@ const CONVERSATION_COPY = {
         contextCompacting: 'Compacting context…',
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
-        contextProviderDropping: (used, prior) =>
-          `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
+        contextProviderDropping: (used, prior, declared) => declared === true
+          ? `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. A context window is already declared for this model, so Maka will compact first.`
+          : declared === false
+            ? `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`
+            : `The provider is dropping or rewriting context: content was appended, and its reported input usage did not grow.`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`

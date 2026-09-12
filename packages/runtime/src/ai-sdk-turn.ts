@@ -1734,6 +1734,7 @@ export class AiSdkTurn {
                     await this.recordSystemNote('context_provider_dropping', turnId, {
                       inputTokens: stepUsage.inputTokens,
                       priorInputTokens: priorInput,
+                      contextWindowDeclared: midTurnState.capacity !== undefined,
                     });
                   }
                   // Fail closed: reset on every step boundary so a missing final

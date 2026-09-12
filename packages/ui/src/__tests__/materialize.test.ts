@@ -207,6 +207,23 @@ describe("steering timeline", () => {
 });
 
 describe("materializeChat message metadata", () => {
+  test("renders provider dropping guidance from durable declaration state", () => {
+    const base = {
+      type: "system_note" as const,
+      id: "drop",
+      turnId: "t1",
+      ts: 1,
+      kind: "context_provider_dropping" as const,
+      data: { inputTokens: 98_247, priorInputTokens: 124_832 },
+    };
+    const declared = materializeChat([{ ...base, data: { ...base.data, contextWindowDeclared: true } }], "en")[0]?.text;
+    const undeclared = materializeChat([{ ...base, data: { ...base.data, contextWindowDeclared: false } }], "en")[0]?.text;
+    const legacy = materializeChat([base], "en")[0]?.text;
+    assert.match(declared ?? "", /already declared/);
+    assert.match(undeclared ?? "", /Declare a context window/);
+    assert.doesNotMatch(legacy ?? "", /Declare a context window/);
+  });
+
   test("localizes visible system notes", () => {
     const messages: StoredMessage[] = [
       {

@@ -1323,7 +1323,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { kind?: string }).kind === 'context_provider_dropping',
     );
-    assert.deepEqual(note?.data, { inputTokens: 3_716, priorInputTokens: 3_716 });
+    assert.deepEqual(note?.data, {
+      inputTokens: 3_716,
+      priorInputTokens: 3_716,
+      contextWindowDeclared: false,
+    });
   });
 
   test('does not report dropping across the boundary when the input grew', async () => {
@@ -1399,10 +1403,15 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string } =>
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { type?: string }).type === 'system_note',
     );
     assert.equal(note?.kind, 'context_provider_dropping');
+    assert.deepEqual(note?.data, {
+      inputTokens: 100,
+      priorInputTokens: 100,
+      contextWindowDeclared: true,
+    });
   });
 
   test('records provider context dropping only for an unshaped usage decrease', async () => {
@@ -1414,10 +1423,15 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const note = fixture.messages.find(
-      (message): message is { type: 'system_note'; kind: string } =>
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
         (message as { type?: string }).type === 'system_note',
     );
     assert.equal(note?.kind, 'context_provider_dropping');
+    assert.deepEqual(note?.data, {
+      inputTokens: 50,
+      priorInputTokens: 100,
+      contextWindowDeclared: true,
+    });
   });
 
   test('does not call provider context dropping when active pruning explains the decrease', async () => {

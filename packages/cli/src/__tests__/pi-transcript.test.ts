@@ -54,6 +54,24 @@ function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
 }
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders provider dropping guidance from durable declaration state', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'system_note',
+        id: 'drop-1',
+        turnId: 't1',
+        ts: 1,
+        kind: 'context_provider_dropping',
+        data: { inputTokens: 100, priorInputTokens: 100, contextWindowDeclared: true },
+      },
+    ]);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n'),
+      /already declared/,
+    );
+  });
+
   test('renders manual compaction from the typed terminal outcome', async () => {
     for (const [outcome, expected] of [
       [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],
