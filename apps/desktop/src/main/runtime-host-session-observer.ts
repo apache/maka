@@ -964,7 +964,16 @@ export class RuntimeHostSessionObserver {
         if (resolution.state === 'pending') continue;
         const turnId = resolution.state === 'owned'
           ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
-        if (!turnId) continue;
+        if (!turnId) {
+          // A cancelled queued message can outlive the Turn that owned the
+          // queue snapshot. The Host proof is still sufficient to retire the
+          // local delivery record even when there is no Turn left to receive
+          // a message_admission event.
+          if (resolution.state === 'cancelled') {
+            this.#onMessageRetraction(state.sessionId, [resolution.messageId]);
+          }
+          continue;
+        }
         this.#broadcast(state.sessionId, {
           type: 'message_admission',
           id: `host-message-resolution:${next.queue.hostEpoch}:${next.queue.queueRevision}:${resolution.messageId}`,

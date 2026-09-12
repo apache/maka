@@ -3179,6 +3179,7 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
 
 test('requests cancellation proof when an observed queued admission disappears', async () => {
   const events = new AsyncFrameQueue();
+  const queries: string[][] = [];
   const retractions: Array<{ sessionId: string; messageIds: readonly string[] }> = [];
   const queued = {
     entryId: 'entry-1', messageId: 'message-followup', content: { text: 'Follow up' },
@@ -3193,6 +3194,15 @@ test('requests cancellation proof when an observed queued admission disappears',
         activeAssistantStreams: [], transcript: Promise.resolve([]), events,
         async close() { events.end(); },
       }),
+      queryMessageExecutions: async ({ messageIds }) => {
+        queries.push([...messageIds]);
+        return {
+          resolutions: messageIds.map((messageId) => ({
+            messageId,
+            state: 'cancelled' as const,
+          })),
+        };
+      },
     },
     emitSessionsChanged() {},
     onMessageRetraction(sessionId, messageIds) { retractions.push({ sessionId, messageIds }); },
@@ -3209,6 +3219,7 @@ test('requests cancellation proof when an observed queued admission disappears',
       }),
     });
     await waitFor(() => retractions.length === 1);
+    assert.deepEqual(queries, [['message-followup']]);
     assert.deepEqual(retractions, [{ sessionId: 'session-1', messageIds: ['message-followup'] }]);
   } finally { await observer.close(); }
 });
