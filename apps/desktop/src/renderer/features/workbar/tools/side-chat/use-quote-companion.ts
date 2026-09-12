@@ -562,27 +562,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       .catch(() => {
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
       });
-    setExecution(undefined);
+    setExecution((previous) => previous?.rootTurn?.sessionId === forkId ? { ...previous, available: false } : undefined);
     let disposed = false;
     const unsubscribe = sideChat.subscribeEvents(
       forkId,
       (event: SessionEvent) => {
         if (!mountedRef.current) return;
         const admission = pendingAdmissionRef.current;
-        if (event.type === 'error' && event.recoverable) {
-          if (admission) {
-            // Observation failure does not prove whether Host admitted the
-            // dispatched command. Keep its identity until Host events or the
-            // command result provide an authoritative outcome.
-            setError(copyRef.current.errors.sendFailed);
-            return;
-          }
-          setError(copyRef.current.errors.sendFailed);
-          const retry = Promise.reject(new Error(event.message));
-          void retry.catch(() => undefined);
-          subscriptionReadyRef.current = retry;
-          return;
-        }
         if (admission) {
           if (
             event.type === 'message_admission' &&
@@ -603,7 +589,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         applyOwnedEvent(forkId, event);
       },
       resolveReady,
-      rejectReady,
+      (error) => {
+        if (disposed || !mountedRef.current) return;
+        rejectReady(error);
+        const retry = Promise.reject(error);
+        void retry.catch(() => undefined);
+        subscriptionReadyRef.current = retry;
+        setExecution((previous) => previous ? { ...previous, available: false } : undefined);
+        setError(copyRef.current.errors.sendFailed);
+      },
       (projection) => { if (mountedRef.current && !disposed) setExecution(projection); },
     );
     unsubscribeRef.current = () => {

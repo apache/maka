@@ -97,18 +97,6 @@ function messageAdmittedEvent(
   return { type: 'message_admission', id, messageId, turnId, ts, outcome: 'admitted' };
 }
 
-function recoverableErrorEvent(id: string, turnId: string, ts: number): SessionEvent {
-  return {
-    type: 'error',
-    id,
-    turnId,
-    ts,
-    recoverable: true,
-    reason: 'connection_closed',
-    message: 'connection closed',
-  };
-}
-
 function installDom() {
   const parsed = parseHTML('<html><body><div id="root"></div></body></html>');
   const { document, window } = parsed;
@@ -204,6 +192,7 @@ async function renderOwnershipProbe(
   let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
   let eventHandler: ((event: SessionEvent) => void) | undefined;
   let executionHandler: Parameters<WorkbarServices['sideChat']['subscribeEvents']>[4];
+  let observationError: Parameters<WorkbarServices['sideChat']['subscribeEvents']>[3];
   let executionSessionId = '';
   const subscribeEvents = sideChat.subscribeEvents;
   const rendered = await renderProbe(
@@ -211,6 +200,7 @@ async function renderOwnershipProbe(
       ...sideChat,
       subscribeEvents: (sessionId, handler, onSeeded, onSeedError, onExecution) => {
         executionHandler = onExecution;
+        observationError = onSeedError;
         executionSessionId = sessionId;
         eventHandler = handler;
         if (subscribeEvents) {
@@ -241,6 +231,7 @@ async function renderOwnershipProbe(
         rootTurn: turnId ? { sessionId: executionSessionId, turnId, runId: turnId,
           ...(status === 'completed' ? { status, terminalEventId: 'terminal' } : { status }) } : null });
     },
+    failObservation() { observationError?.(new Error('connection closed')); },
     emit(event: SessionEvent) {
       assert.ok(eventHandler);
       eventHandler(event);
@@ -1498,10 +1489,10 @@ test('releases a queued Side Conversation admission from the Host queue retract'
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'false');
 });
 
-test('keeps the same Side Conversation admission across a recoverable subscription error', async () => {
+test('keeps the same Side Conversation admission across an observation failure', async () => {
   let subscriptionCount = 0;
   const pendingSend = deferred<{ ok: true; turnId: string }>();
-  const { container, emit, send, hostTurn } = await renderOwnershipProbe({
+  const { container, failObservation, emit, send } = await renderOwnershipProbe({
     subscribeEvents: (_sessionId, _handler, onSeeded) => {
       subscriptionCount += 1;
       onSeeded?.();
@@ -1519,7 +1510,7 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
   // The lazy fork subscribes exactly once, when the first send commits it.
   assert.equal(subscriptionCount, 1);
   await act(async () => {
-    emit(recoverableErrorEvent('recoverable-subscription-error', 'old-turn', 1));
+    failObservation();
     await Promise.resolve();
   });
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'true');
@@ -1535,6 +1526,10 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
     await Promise.resolve();
   });
   await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'false');
+  await act(async () => {
+    assert.equal(await send('retry after observation failure'), false);
+  });
+  assert.equal(subscriptionCount, 2, 'the next send must reopen observation before dispatch');
 });
 
 test('keeps the active Side Conversation streaming when Stop retracts a queued steer', async () => {
