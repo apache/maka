@@ -1461,10 +1461,22 @@ function connectionHarness(
           ptyListeners.add(listener);
           return () => ptyListeners.delete(listener);
         },
-        snapshot: options.subscriptionSnapshot ?? {
-          projectionRevision: 1,
-          session: { sessionId },
-        },
+        snapshot: options.subscriptionSnapshot ?? continuitySnapshot({
+          session: {
+            sessionId,
+            metadataRevision: 1,
+            status: 'active',
+            createdAt: 1,
+            isArchived: false,
+          },
+          rootTurn: null,
+          queue: {
+            hostEpoch: `host-${label}`,
+            queueRevision: 0,
+            steering: [],
+            followup: [],
+          },
+        }),
         activeAssistantStreams: options.activeAssistantStreams ?? [],
         transcriptBootstrap: {
           throughSequence: null,
