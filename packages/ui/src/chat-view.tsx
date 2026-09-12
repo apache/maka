@@ -152,23 +152,17 @@ export function ChatView(props: {
   messages: StoredMessage[];
   transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
-  liveTurn?: LiveTurnProjection;
+  liveTurns?: readonly LiveTurnProjection[];
   /** Live display content already present when the host activated this conversation surface. */
   initialLiveContentSnapshot?: LiveContentActivationSnapshot;
   shellRunUpdates?: readonly ShellRunUpdate[];
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
   /**
-   * True while the live turn's running status line (spinner · status label ·
-   * elapsed clock) should show, as the trailing entry of the tail turn.
-   *
-   * One flag for the whole turn, replacing the #646 pair that split the wait
-   * into a first-token cue and a mid-turn one and showed neither once the turn
-   * had live content on screen. That split answered "is the model between
-   * steps?"; the question a user actually asks during a five-minute tool run is
-   * "is anything still happening at all?", and nothing on screen answered it.
+   * Host-owned execution identity. Buffered content and the session catalog
+   * never decide which Turn owns the activity footer.
    */
-  runningStatus?: boolean;
+  activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
   /** Durable Deep Research projection supplied by the host for visible progress and resume state. */
   deepResearchRun?: DeepResearchClientProgress;
@@ -345,7 +339,7 @@ export function ChatView(props: {
   // chat survives for the empty-state path; the main message log is driven by
   // `turns` (per @kenji UI-04 turn-grouping projection).
   const drainingMessageIdsKey = JSON.stringify(
-    props.liveTurn?.steps.flatMap((step) => step.text ? [step.stepId] : []) ?? [],
+    props.liveTurns?.flatMap((turn) => turn.steps.flatMap((step) => step.text ? [step.stepId] : [])) ?? [],
   );
   const drainingMessageIds = useMemo(
     () => new Set<string>(JSON.parse(drainingMessageIdsKey) as string[]),
@@ -367,7 +361,7 @@ export function ChatView(props: {
     sessionId: props.activeSession?.id,
     locale,
     messages: visibleMessages,
-    liveTurn: props.liveTurn,
+    liveTurns: props.liveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
   // Derived FROM the projected turns, not beside them: the consumer keys its
@@ -395,39 +389,24 @@ export function ChatView(props: {
   // settled branch, whose derived status is `completed`, rendering an actionable
   // footer on a still-running answer (review P2-B). A tool-only tail renders the
   // running tool from its timeline with no empty live bubble.
-  // The model-wait indicator keeps the tail turn "live" too, so its footer stays
-  // the non-actionable placeholder and the indicator injects into the tail turn
-  // (not the fallback section) — it is, by derivation, only ever true when text /
-  // thinking / tools are all absent.
-  //
-  // Terminal liveTurn is evidence overlay only (e.g. empty shell_run still needs
-  // pre-handoff chunks). It must NOT block footer actions — keeping evidence and
-  // being in-flight are separate signals. Wait indicators alone still mark
-  // streaming, but delayed flags can lag one frame past complete; terminal
-  // evidence must outrank them so copy/regenerate stay actionable.
-  // A live context-compaction Turn is not an assistant stream: it renders one
-  // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
-  // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
-  // article and generic activity footer on top.
-  const isCompactionLive = props.liveTurn?.rootExecutionKind === 'context_compact';
+  // Execution identity comes from the Host. Buffered output can outlive it.
+  const activeContent = props.liveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
+  const isCompactionLive = props.activeTurn?.compacting === true;
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
   // chat messages yet. The empty-state decision (below) keys off `chat.length`,
   // which does not see that overlaid row, so it must treat this as visible
   // content or the row is hidden behind the empty hero.
-  const hasLiveCompactionRow = isCompactionLive && (props.liveTurn?.steps.length ?? 0) === 0;
-  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal) && !isCompactionLive;
-  const streamingActive =
-    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive);
-  const tailTurnId = liveInFlight
-    ? props.liveTurn!.turnId
-    : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
+  const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
+  const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
+  const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
+  const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
   const pendingRunningStartedAt = transientMessages.findLast((message) =>
     message.transientPlacement === 'current_turn'
-    && (tailTurnId === undefined || message.hostTurnId === undefined || message.hostTurnId === tailTurnId),
-  )?.ts ?? props.liveTurn?.startedAt;
-  const boundaryOverlayTurnId = props.liveTurn?.turnId
+    && tailTurnId !== undefined && message.hostTurnId === tailTurnId,
+  )?.ts ?? activeContent?.startedAt;
+  const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
   // One rail tick per turn that carries a user prompt (Codex-style prompt
   // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
@@ -566,7 +545,7 @@ export function ChatView(props: {
         // one only renders inline in the Turn the Host named.
         return (
           message.transientPlacement === 'current_turn'
-          && (message.hostTurnId === undefined || message.hostTurnId === tailTurnId)
+          && message.hostTurnId === tailTurnId
         );
       })
     : [];
@@ -614,7 +593,7 @@ export function ChatView(props: {
     // content here too — otherwise the first question stays invisible for the
     // whole fork round trip (#4654). Once the fork commits `activeSession`
     // arrives and the full transcript below takes over.
-    const hasOptimisticContent = transientMessages.length > 0 || !!props.runningStatus;
+    const hasOptimisticContent = transientMessages.length > 0 || runningStatus;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -664,7 +643,7 @@ export function ChatView(props: {
                 <TransientUserMessage key={message.id} message={message} />
               ))}
               {/* The optimistic message supplies the clock while the session is created. */}
-              {props.runningStatus && (
+              {runningStatus && (
                 <section className="maka-turn" data-live-streaming="true">
                   <LocalizedChatMessage
                     accessibleLabel={conversationCopy.messages.assistantAriaLabel}
@@ -787,6 +766,7 @@ export function ChatView(props: {
                   >
                     <TurnView
                       turn={turn}
+                      activityObserved={turn.turnId === props.activeTurn?.turnId}
                       transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
@@ -794,7 +774,7 @@ export function ChatView(props: {
                       onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
                       editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
                       editUserMessageDisabled={
-                        streamingActive || props.activeSession?.status === 'running'
+                        props.activeTurn !== undefined
                       }
                       failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
                       failedSeverity={turnPresentation?.failedSeverities[turn.turnId]}
@@ -819,9 +799,9 @@ export function ChatView(props: {
                         turn.turnId === tailTurnId
                           ? {
                               onStreamingSettled: props.onStreamingSettled,
-                              runningStatus: props.runningStatus,
-                              providerRetry: props.liveTurn?.providerRetry,
-                              initialLiveContent: props.liveTurn?.turnId
+                              runningStatus,
+                              providerRetry: activeContent?.turnId === tailTurnId ? activeContent.providerRetry : undefined,
+                              initialLiveContent: activeContent?.turnId
                                 === props.initialLiveContentSnapshot?.turnId
                                 ? props.initialLiveContentSnapshot?.entries
                                 : undefined,
@@ -854,10 +834,10 @@ export function ChatView(props: {
                     className="maka-chat-message maka-assistant-answer"
                   >
                     <TurnFooter actions={[]} live context="" activity={
-                      props.liveTurn?.providerRetry ? (
-                        <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
+                      activeContent?.turnId === tailTurnId && activeContent?.providerRetry ? (
+                        <ModelProviderRetryIndicator retry={activeContent.providerRetry} />
                       ) : (
-                        (props.runningStatus && <TurnRunningStatus startedAt={pendingRunningStartedAt} />)
+                        (runningStatus && <TurnRunningStatus startedAt={pendingRunningStartedAt} />)
                       )
                     } />
                   </LocalizedChatMessage>

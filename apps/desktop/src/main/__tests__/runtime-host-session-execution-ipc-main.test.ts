@@ -324,7 +324,7 @@ test('returns explicit ready results for Session observation IPC', async () => {
 
   assert.deepEqual(await ipc.invoke('sessions:observe', 'session-1', 'observer-1'), {
     kind: 'ready',
-    value: [],
+    value: undefined,
   });
   assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'), {
     kind: 'ready',

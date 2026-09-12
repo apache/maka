@@ -69,6 +69,10 @@ import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
+import {
+  SessionBundleServicesProvider,
+  type SessionBundleServices,
+} from '../../src/renderer/features/session-bundle';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
@@ -119,6 +123,13 @@ type Story = StoryObj<typeof meta>;
 
 const NOW = Date.now();
 const noop = () => undefined;
+
+// Both halves open a native file dialog, which a story has none of. Cancelled is
+// the outcome that leaves the page exactly as it was.
+const sessionBundleServices: SessionBundleServices = {
+  exportBundle: async () => ({ ok: false, reason: 'canceled' }),
+  importBundle: async () => ({ ok: false, reason: 'canceled' }),
+};
 
 function makeConnection(input: {
   slug: string;
@@ -1408,6 +1419,26 @@ function archivedTask(
   };
 }
 
+function exportableTask(
+  id: string,
+  name: string,
+  overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+  return { ...archivedTask(id, name, 1, overrides), isArchived: false };
+}
+
+function storySubagentRuntime(agentName: string): SessionSummary['subagentRuntime'] {
+  return {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: agentName.toLowerCase(),
+    agentName,
+    profile: agentName.toLowerCase(),
+    toolNames: ['Read'],
+    categoryPolicy: { read: 'allow' },
+  } as SessionSummary['subagentRuntime'];
+}
+
 function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
   return {
     subagentParent: {
@@ -1418,6 +1449,28 @@ function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
     },
   };
 }
+
+// Live tasks, for the export half. Archived ones are left out of that list on
+// purpose -- a bundle is for carrying work somewhere, not for reviving it -- so
+// the export story needs its own fixture rather than the archived one.
+const exportTaskSessions: SessionSummary[] = [
+  exportableTask('task-compaction', 'Refactor the compaction module'),
+  exportableTask('task-calls', 'Find the call sites', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  // A subagent spawns its own, which is why the parent row counts the subtree
+  // rather than its children.
+  exportableTask('task-usage', 'Scan the usage tables', {
+    ...storyLinkedTo('task-calls'),
+    subagentRuntime: storySubagentRuntime('Explore'),
+  }),
+  exportableTask('task-checkpoint', 'Check the checkpoint read path', {
+    ...storyLinkedTo('task-compaction'),
+    subagentRuntime: storySubagentRuntime('general-purpose'),
+  }),
+  exportableTask('task-hello', 'Say hello'),
+];
 
 const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
@@ -1824,13 +1877,6 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
-function fieldChrome(element: HTMLElement) {
-  const field = element.parentElement;
-  if (!field) throw new Error('Settings field chrome is missing');
-  const style = getComputedStyle(field);
-  return `${style.borderColor} | ${style.boxShadow}`;
-}
-
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -1889,6 +1935,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
           <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
+            <SessionBundleServicesProvider services={sessionBundleServices}>
             <SettingsSurface
               onClose={noop}
               themePref={themePref}
@@ -1911,6 +1958,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
               onSelectedRuntimeHostProfileIdChange={noop}
               snapshotCache={snapshotCache}
             />
+            </SessionBundleServicesProvider>
           </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
       </div>
@@ -1947,7 +1995,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => selector.getAttribute('aria-expanded') === 'true',
+    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -2013,9 +2061,8 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. The popover remains a DOM descendant
-// of its Item after entering the top layer, so focused search must not ring
-// the whole settings row.
+// Real path: 设置 → 通用 → 默认模型. Focus stays on the inline magnetic wheel;
+// the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2025,8 +2072,7 @@ export const GeneralPickerOpenFocusRing: Story = {
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
-      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
+      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
@@ -2035,7 +2081,7 @@ export const GeneralPickerOpenFocusRing: Story = {
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The field carries the
+// Real path: keyboard navigation through 设置 → 通用. The model button carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2044,16 +2090,19 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
+    await waitFor(() => {
+      const style = getComputedStyle(trigger);
+      expect(style.outlineStyle).toBe('solid');
+      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
+    });
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The field loses its own paint there, so the Item retains the focus ring.
+// The model button's outline survives, and the Item retains its shared fallback.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2061,10 +2110,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(fieldChrome(trigger)).toBe(resting);
+    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
+    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };
@@ -2661,7 +2710,7 @@ export const DailyReviewNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path with the Astryx model selector expanded.
+// Real path with the shared magnetic model selector expanded.
 // Real path: Settings → Daily Review → Analysis model.
 export const DailyReviewModelSelectorOpen: Story = {
   decorators: [withSettingsBridge],
@@ -3257,6 +3306,25 @@ export const ImportTasks: Story = {
 // over a source that can hold a thousand sessions, so the term is the only way
 // to reach one by name. Typing here proves the box reaches the query rather
 // than filtering the page already on screen.
+/**
+ * Real path: 设置 → 导入/导出任务 → 导出任务.
+ *
+ * A bundle can be rooted at any node, so every row exports; the nesting says
+ * which subtree a row would carry, and the count on a parent is the whole
+ * subtree rather than its children.
+ */
+export const ImportTasksExport: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory section="import-tasks" archivedTaskSessions={exportTaskSessions} />
+  ),
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await body.findByRole('radio', { name: '导出任务' }));
+    await body.findByText('Refactor the compaction module');
+  },
+};
+
 export const ImportTasksSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,

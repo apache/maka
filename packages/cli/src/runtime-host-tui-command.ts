@@ -20,14 +20,14 @@
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
-import {
-  readRuntimeHostConnectionCatalog,
-  HostHandoffCancelledError,
-} from '@maka/runtime-host/client';
+import { HostHandoffCancelledError } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
-import { connectRuntimeHostCli } from './runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
+} from './runtime-host-cli-context.js';
 import { createCliHostHandoffSurface } from './runtime-host-handoff-surface.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
@@ -174,6 +174,15 @@ async function runFirstRunOnboarding(
     ...(process.stdin.isTTY ? { handoffSurface: createCliHostHandoffSurface(locale) } : {}),
     ...(hostProfileId ? { profileId: hostProfileId } : {}),
   });
+  const onboarding = createRuntimeHostOnboardingSurface(connected.connection, {
+    connectOAuth: (signal) =>
+      connectRuntimeHostCliConnection({
+        clientDataRoot,
+        rootPath,
+        profileId: connected.profile.id,
+        signal,
+      }),
+  });
   try {
     await runMakaPiTui({
       driver: createFirstRunSessionDriver(),
@@ -187,11 +196,22 @@ async function runFirstRunOnboarding(
       turnActivity: {
         activities: new SessionActivityRegistry(),
       } satisfies MakaPiTuiTurnActivitySurface,
-      onboarding: createRuntimeHostOnboardingSurface(connected.connection),
+      onboarding,
     });
-    return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
+    // The overlay is closed: only the default-target metadata is needed, and
+    // an offline primary connection must not prevent the finally cleanup.
+    const catalog = await connected.connection.request(
+      'connection.catalog.query',
+      { kind: 'start' },
+      1_000,
+    );
+    return catalog.kind === 'page' && catalog.defaultTarget !== null;
   } finally {
-    await connected.close();
+    try {
+      await onboarding.close();
+    } finally {
+      await connected.close();
+    }
   }
 }
 

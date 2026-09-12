@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { SessionEvent } from '@maka/core/events';
+import type { SessionObservationMessage } from '../../shared/session-execution-projection.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -49,6 +50,45 @@ import {
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+
+test('projects root lifecycle without fabricating content events', async (t) => {
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot({ rootTurn: null }), activeAssistantStreams: [],
+      transcript: Promise.resolve([]), events, async close() { events.end(); },
+    }) },
+    emitSessionsChanged() {},
+  });
+  const messages: Parameters<RuntimeHostSessionObserverTarget['send']>[1][] = [];
+  t.after(() => observer.close());
+  await observer.observe('session-1', 'execution-observer', {
+    id: 99, send(_channel, message) { messages.push(message); }, once() {}, off() {},
+  });
+  assert.ok(messages.length > 0);
+  assert.equal(messages.length, 1);
+  const seed = messages[0];
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.deepEqual(seed.observerIds, ['execution-observer']);
+    assert.equal(seed.execution.rootTurn, null);
+    assert.deepEqual(seed.events, []);
+  }
+  const seededCount = messages.length;
+  events.push({
+    kind: 'subscription.session_projection', hostEpoch: 'host-1', subscriptionId: 'subscription-1', sequence: 1,
+    snapshot: continuitySnapshot({ projectionRevision: 2 }),
+  });
+  await waitFor(() => messages.length > seededCount);
+  const started = messages.at(-1);
+  assert.equal(started?.type, 'host_execution');
+  if (started?.type === 'host_execution') {
+    assert.equal(started.rootTurn?.turnId, 'turn-1');
+    assert.equal(started.rootTurn?.status, 'running');
+    assert.equal(started.available, true);
+  }
+  await observer.close();
+});
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
@@ -822,7 +862,6 @@ test('broadcasts durable admission and transcript changes from the same message'
     turnId: 'turn-1',
     ts: 2,
     text: 'Continue here',
-    steeringEventId: 'steering-event-1',
   };
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -916,6 +955,69 @@ test('broadcasts durable admission and transcript changes from the same message'
   );
   await observer.close();
 });
+
+for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as const) {
+  test(`proves a removed follow-up is ${resolution} before successor content`, async (t) => {
+    const events = new AsyncFrameQueue();
+    const queries: string[][] = [];
+    const observer = new RuntimeHostSessionObserver({
+      client: {
+        openSession: async () => runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            queue: {
+              hostEpoch: 'host-1', queueRevision: 1, steering: [],
+              followup: [{
+                entryId: 'entry-1', messageId: 'followup-1', content: { text: 'Next question' },
+                placement: 'next_turn', state: 'queued',
+              }],
+            },
+          }),
+          transcript: Promise.resolve([]), events, async close() { events.end(); },
+        }),
+        queryMessageExecutions: async ({ messageIds }) => {
+          queries.push([...messageIds]);
+          if (resolution === 'unavailable') throw new Error('Host proof unavailable');
+          return { resolutions: messageIds.map((messageId) => resolution === 'owned'
+            ? { messageId, state: 'owned' as const, turnId: 'turn-2', runId: 'run-2' }
+            : { messageId, state: resolution }) };
+        },
+      },
+      emitSessionsChanged() {},
+    });
+    t.after(() => observer.close());
+    const target = eventTarget(25);
+    await observer.observe('session-1', 'observer-followup', target, true);
+    target.events.splice(0);
+    events.push({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: { sessionId: 'session-1', turnId: 'turn-2', runId: 'run-2', status: 'running' },
+        queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+      }),
+    });
+    events.push({
+      kind: 'subscription.session_delta', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sessionId: 'session-1', sequence: 2,
+      delta: { kind: 'text', turnId: 'turn-2', runId: 'run-2', messageId: 'answer-2', startOffset: 0, text: 'Next answer' },
+    });
+    await waitFor(() => target.events.some((event) => event.type === 'text_delta'));
+
+    assert.deepEqual(queries, [['followup-1']]);
+    const admissions = target.events.filter((event) => event.type === 'message_admission');
+    assert.deepEqual(admissions.map((event) => ({
+      messageId: event.messageId, turnId: event.turnId, outcome: event.outcome,
+    })), resolution === 'owned' || resolution === 'cancelled' ? [{
+      messageId: 'followup-1', turnId: 'turn-2',
+      outcome: resolution === 'owned' ? 'admitted' : 'retracted',
+    }] : []);
+    if (admissions.length > 0) {
+      assert.ok(target.events.indexOf(admissions[0]!)
+        < target.events.findIndex((event) => event.type === 'text_delta'));
+    }
+  });
+}
 
 test('moves the read marker only as far as the Renderer window reports reaching', async () => {
   const events = new AsyncFrameQueue();
@@ -2029,6 +2131,7 @@ test("abandons a watched Turn and removes it from the catalog when Guest access 
 });
 
 test("reopens an evicted active subscription without a renderer resubscribe", async () => {
+  const reopen = deferred<void>();
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
@@ -2037,6 +2140,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     client: {
       openSession: async () => {
         openCount += 1;
+        if (openCount === 2) await reopen.promise;
         const events = openCount === 1 ? firstEvents : secondEvents;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
@@ -2077,7 +2181,13 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     sequence: 2,
     reason: "slow_consumer",
   });
-  await waitFor(() => openCount === 2 && target.events.length === 2);
+  await waitFor(() => openCount === 2);
+  assert.equal(target.observations.at(-1)?.type, 'host_observation_pending',
+    'observation is invalidated while reopen is still waiting');
+  assert.equal(target.events.length, 1, 'no replacement content is accepted before reopen completes');
+  reopen.resolve();
+  await waitFor(() => target.events.length === 2);
+  assert.equal(target.observations.at(-1)?.type, 'host_observation_seed');
 
   secondEvents.push(deltaFrame(1, 5, " world"));
   await waitFor(() => target.events.length === 3);
@@ -2621,9 +2731,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
     emitSubscriptionRecovered: (sessionId) => {
       recoveredSessions.push(sessionId);
     },
-    emitObservationSeed: (sessionId, phase) => {
-      seedTimeline.push(`${phase}:${sessionId}`);
-    },
     now: () => 50,
   });
   const target = eventTarget(15);
@@ -2646,13 +2753,10 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
 
   assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
   assert.deepEqual(recoveredSessions, ["session-1"]);
-  const pendingAt = seedTimeline.indexOf("pending:session-1");
-  const readyAt = seedTimeline.indexOf("ready:session-1");
+  const pendingAt = seedTimeline.indexOf('event:host_observation_pending');
+  const readyAt = seedTimeline.lastIndexOf('event:host_observation_seed');
   assert.ok(pendingAt >= 0);
   assert.ok(readyAt > pendingAt);
-  assert.ok(
-    seedTimeline.slice(pendingAt + 1, readyAt).some((entry) => entry.startsWith("event:")),
-  );
   assert.ok(sessionChanges.includes("goal-change"));
   assert.deepEqual(
     interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
@@ -2691,7 +2795,6 @@ test('replays durable admission before a terminal successor on subscription reco
       turnId: 'turn-2',
       ts: 20,
       text: 'Continue',
-      steeringEventId: 'follow-up-steering',
     },
     {
       type: 'assistant',
@@ -2771,7 +2874,7 @@ test('replays durable admission before a terminal successor on subscription reco
     target.events
       .filter((event) => event.turnId === 'turn-2')
       .map((event) => event.type),
-    ['message_admission', 'text_complete', 'complete'],
+    ['message_admission', 'queue_update', 'text_complete', 'complete'],
   );
   const admission = target.events.find(
     (event): event is Extract<SessionEvent, { type: 'message_admission' }> =>
@@ -3280,13 +3383,20 @@ function pendingQuestion(interactionId: string, turnId: string, runId: string) {
 
 function eventTarget(
   id: number,
-): RuntimeHostSessionObserverTarget & { events: SessionEvent[] } {
+): RuntimeHostSessionObserverTarget & { events: SessionEvent[]; observations: SessionObservationMessage[] } {
   const events: SessionEvent[] = [];
+  const observations: SessionObservationMessage[] = [];
   return {
     id,
     events,
+    observations,
     send(_channel, event) {
-      events.push(event);
+      if (event.type === 'host_observation_seed') {
+        observations.push(event);
+        events.push(...event.events);
+      } else if (event.type === 'host_execution' || event.type === 'host_observation_error'
+        || event.type === 'host_observation_pending') observations.push(event);
+      else events.push(event);
     },
     once() {},
     off() {},
@@ -3348,14 +3458,15 @@ test('a later observer in the same renderer receives the accumulated active stre
   await observer.observe('session-1', 'feature-first', target);
   events.push(deltaFrame(1, 5, ' world'));
   await waitFor(() => target.events.some((event) => 'text' in event && event.text === ' world'));
-  const before = target.events.length;
-  const seed = await observer.observe('session-1', 'conversation-later', target);
-  assert.equal(opens, 1);
-  assert.equal(target.events.length, before, 'private seeding does not replay to other listeners');
-  assert.ok(seed.some((event) =>
-    event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
-  const after = target.events.length;
   await observer.observe('session-1', 'conversation-later', target);
-  assert.equal(target.events.length, after, 'the same registration is still idempotent');
+  assert.equal(opens, 1);
+  const seed = target.observations.at(-1);
+  assert.equal(seed?.type, 'host_observation_seed');
+  if (seed?.type === 'host_observation_seed') {
+    assert.deepEqual(seed.observerIds, ['conversation-later']);
+    assert.equal(seed.execution.rootTurn?.turnId, 'turn-1');
+    assert.ok(seed.events.some((event) =>
+      event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
+  }
   await observer.close();
 });

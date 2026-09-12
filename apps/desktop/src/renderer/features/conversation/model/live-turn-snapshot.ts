@@ -18,8 +18,8 @@
  */
 
 import type { LiveTurnProjection } from '@maka/ui';
-import type { TurnPhase } from './model-wait-state.js';
-import { hasInFlightToolActivity } from './session-event-health.js';
+import { activeHostTurn, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 
 /**
  * The low-entropy reading of a live turn: everything the shell derives from the
@@ -35,10 +35,8 @@ import { hasInFlightToolActivity } from './session-event-health.js';
  * per delta belongs to the chat surface, not here.
  */
 export interface LiveTurnSnapshot {
-  /** The projected turn's id, kept even once terminal — `deriveTurnActive`'s arm. */
+  /** Identity of the content buffer, independent of execution. */
   turnId: string | undefined;
-  /** Turn phase, or undefined when no turn is in flight (incl. a settled one). */
-  phase: TurnPhase | undefined;
   /** Whether the active text step has emitted anything yet. */
   hasStreamingText: boolean;
   /** Step id of the settled answer, once complete — the handoff key. Its
@@ -54,7 +52,6 @@ export interface LiveTurnSnapshot {
 
 const NO_LIVE_TURN: LiveTurnSnapshot = {
   turnId: undefined,
-  phase: undefined,
   hasStreamingText: false,
   streamingMessageId: undefined,
   hasThinkingText: false,
@@ -70,19 +67,17 @@ export function deriveLiveTurnSnapshot(projection: LiveTurnProjection | undefine
   const streamingTextComplete = textStep?.text?.complete === true;
   return {
     turnId: projection.turnId,
-    phase: projection.terminal ? undefined : projection.phase,
     hasStreamingText: (textStep?.text?.text.length ?? 0) > 0,
     streamingMessageId: streamingTextComplete ? textStep?.stepId : undefined,
     hasThinkingText: (thinkingStep?.thinking?.text.length ?? 0) > 0,
     hasLiveTools: steps.some((step) => step.tools.length > 0),
-    hasInFlightTools: steps.some((step) => hasInFlightToolActivity(step.tools)),
+    hasInFlightTools: steps.some((step) => step.tools.some((tool) => isInFlightToolStatus(tool.status))),
   };
 }
 
 export function liveTurnSnapshotsEqual(a: LiveTurnSnapshot, b: LiveTurnSnapshot): boolean {
   return (
     a.turnId === b.turnId &&
-    a.phase === b.phase &&
     a.hasStreamingText === b.hasStreamingText &&
     a.streamingMessageId === b.streamingMessageId &&
     a.hasThinkingText === b.hasThinkingText &&
@@ -100,11 +95,14 @@ export function liveTurnSnapshotsEqual(a: LiveTurnSnapshot, b: LiveTurnSnapshot)
  * change, so only value equality keeps the sidebar off the token path.
  */
 export function selectStreamingSessionIds(
-  liveTurnBySession: Record<string, LiveTurnProjection>,
+  liveTurnBySession: Record<string, import('@maka/ui').LiveTurnBuffer>,
+  executionBySession: Record<string, SessionExecutionProjection>,
 ): Set<string> {
   const streaming = new Set<string>();
   for (const [sessionId, projection] of Object.entries(liveTurnBySession)) {
-    if (projection.steps.some((step) => step.text?.text && !step.text.complete)) streaming.add(sessionId);
+    const execution = executionBySession[sessionId];
+    const active = execution?.available ? activeHostTurn(execution) : undefined;
+    if (active && projection.find((turn) => turn.turnId === active.turnId)?.steps.some((step) => step.text?.text && !step.text.complete)) streaming.add(sessionId);
   }
   return streaming;
 }

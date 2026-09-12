@@ -134,11 +134,11 @@ describe('createDesktopWorkbarServices', () => {
 
     const subscribe = calls.find((call) => call.name === 'sessions.subscribeEvents');
     assert.ok(subscribe);
-    const initialReady = subscribe.args[2] as (() => void) | undefined;
-    const observationSeed = subscribe.args[3] as
+    const observationSeed = subscribe.args[2] as
       | ((phase: 'pending' | 'ready') => void)
       | undefined;
-    initialReady?.();
+    observationSeed?.('pending');
+    observationSeed?.('ready');
     observationSeed?.('pending');
     observationSeed?.('ready');
 

@@ -519,8 +519,9 @@ export const PinnedAndRecentSections: Story = {
   ),
 };
 
-// Real path: group-by-project — collapsible project rows, sessions nested 8px
-// under the project so titles share one x, worktree mark + project actions.
+// Real path: group-by-project — collapsible project rows, sessions on the
+// project row's left edge so both titles and hover fills share one x, worktree
+// mark + project actions.
 export const ProjectGroups: Story = {
   render: () => {
     const maka = makeProject({
@@ -642,9 +643,11 @@ export const ProjectGroups: Story = {
     expect(projectRow.querySelectorAll('button button')).toHaveLength(0);
     const projectBox = navigation.getBoundingClientRect();
     const taskBox = taskControl.getBoundingClientRect();
+    // The task row sits on the project row's left edge, so the two
+    // hover/selected fills start on the same x — not the 8px nest that used to
+    // offset only the task rows.
     const sessionInset = taskBox.x - projectBox.x;
-    expect(sessionInset).toBeGreaterThanOrEqual(6);
-    expect(sessionInset).toBeLessThan(16);
+    expect(Math.abs(sessionInset)).toBeLessThanOrEqual(1);
     expect(Math.abs(
       projectTitle.getBoundingClientRect().x - taskTitle.getBoundingClientRect().x,
     )).toBeLessThanOrEqual(2);

@@ -237,7 +237,7 @@ export function WorkHubRoot() {
   return (
     <WorkHubHighlightProvider>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
-      {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={busy} onOpen={() => {
+      {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         call(services.presentation.showConversation(presentation.progressRequest));
       }} />}
@@ -292,7 +292,6 @@ export function WorkHubRoot() {
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
-              modelPickerPresentation={showConversation ? 'menu' : 'wheel'}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
               modelSwitchHasHistory={transcript.messages.length > 0}
@@ -326,9 +325,9 @@ export function WorkHubRoot() {
           onRetainWindow={controller.retainWindow}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
-          liveTurn={controller.liveTurn}
+          liveTurns={controller.liveTurns}
           onStreamingSettled={controller.streamingSettled}
-          runningStatus={busy}
+          activeTurn={controller.activeTurn}
           messageLoading={!transcript.ready}
           activeSession={session}
           activeModel={session?.model}

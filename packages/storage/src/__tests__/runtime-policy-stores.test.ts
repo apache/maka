@@ -65,7 +65,11 @@ const execFileAsync = promisify(execFile);
 describe('runtime policy stores', () => {
   test('upgrades schema v2 with the automatic Host shell default', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
-      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      const {
+        shell: _shell,
+        externalAgents: _externalAgents,
+        ...policyV2
+      } = createDefaultRuntimePolicy();
       await writeFile(
         join(root, 'runtime-policy.json'),
         `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
@@ -82,7 +86,41 @@ describe('runtime policy stores', () => {
       const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
         schemaVersion: number;
       };
-      assert.equal(persisted.schemaVersion, 3);
+      assert.equal(persisted.schemaVersion, 4);
+    });
+  });
+
+  test('migrates v3 external agent defaults and persists configuration with revision checks', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { externalAgents: _externalAgents, ...policyV3 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        JSON.stringify({ schemaVersion: 3, revision: 8, policy: policyV3 }),
+      );
+      const before = await stores.runtimePolicy.getSnapshot();
+      assert.deepEqual(before.policy.externalAgents, { antigravity: { executable: '' } });
+      const value = { antigravity: { executable: '/Applications/ACP/agy_acp_server.par' } };
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value },
+      });
+      assert.equal(committed.kind, 'committed');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      const conflict = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value: before.policy.externalAgents },
+      });
+      assert.equal(conflict.kind, 'revision_conflict');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      await assert.rejects(
+        stores.runtimePolicy.mutate({
+          expectedRevision: 9,
+          operation: {
+            kind: 'set_external_agents',
+            value: { antigravity: { executable: 'relative/path' } },
+          },
+        }),
+      );
     });
   });
 
@@ -4306,6 +4344,115 @@ describe('runtime policy stores', () => {
           true,
         );
       }
+    });
+  });
+
+  test('interactive OAuth create commits the requested Connection name and slug', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+      assert.deepEqual(admitted.identity, {
+        connectionId: admitted.identity.connectionId,
+        slug: 'codex-work',
+        providerType: 'openai-codex',
+      });
+      assert.equal(admitted.connection.name, 'Work Codex');
+
+      const completed = await stores.operations.completeInteractiveOAuthLogin(
+        admitted.ticket,
+        'oauth-custom-secret',
+      );
+      assert.equal(completed.kind, 'committed');
+      const saved = (await stores.connectionCatalog.getSnapshot()).connections[0];
+      assert.equal(saved?.connectionId, admitted.identity.connectionId);
+      assert.equal(saved?.slug, 'codex-work');
+      assert.equal(saved?.name, 'Work Codex');
+      assert.deepEqual(
+        await stores.operations.queryInteractiveOAuthLogin('oauth-custom-identity'),
+        {
+          kind: 'authenticated',
+          target,
+          connection: admitted.identity,
+        },
+      );
+
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-custom-identity-collision',
+          target: { ...target, name: 'Other Codex' },
+        }),
+        { kind: 'slug_taken' },
+      );
+    });
+  });
+
+  test('interactive OAuth custom identity is limited to OpenAI Codex', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      await assert.rejects(
+        stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-xai-custom-identity',
+          target: {
+            kind: 'create',
+            providerType: 'xai-oauth',
+            slug: 'xai-work',
+          } as never,
+        }),
+        isStoreError('invalid_connection_input'),
+      );
+    });
+  });
+
+  test('interactive OAuth create reports a slug collision that wins the commit race', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity-race',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+
+      const concurrent = await createConnection(
+        stores,
+        0,
+        connectionDraft('codex-work', 'openai', 'Concurrent Connection'),
+      );
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          admitted.ticket,
+          'oauth-custom-secret',
+        ),
+        { kind: 'slug_taken' },
+      );
+      assert.deepEqual(
+        (await stores.connectionCatalog.getSnapshot()).connections.map(
+          ({ connectionId, slug }) => ({ connectionId, slug }),
+        ),
+        [{ connectionId: concurrent.connectionId, slug: 'codex-work' }],
+      );
+      assert.equal(
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: admitted.identity.connectionId,
+          kind: 'oauth_token',
+        }),
+        null,
+      );
     });
   });
 

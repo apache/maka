@@ -237,6 +237,7 @@ import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
+import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -1129,6 +1130,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     attachmentApprovals,
     stat: (path) => import("node:fs/promises").then(({ stat }) => stat(path)),
     resizeImage: resizeImageForAttachment,
+    mainWindowController,
     nativeCapabilities: {
       browserTools: native.browserTools,
       resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
@@ -1640,6 +1642,12 @@ function registerHostClientIpc(
     client,
     mainWindowController,
     showItemInFolder: (path) => shell.showItemInFolder(path),
+  });
+  registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
+    selectExecutable: async () => {
+      const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,

@@ -31,10 +31,8 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  armLiveTurn,
   dequeueInteractionByRequestId,
   type InteractionQueues,
-  type LiveTurnProjection,
   type NavSelection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -72,9 +70,6 @@ type ComposerImportOwner = {
 };
 
 type RefBox<T> = { current: T };
-type LiveTurnRecordUpdater = (
-  updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
-) => void;
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
@@ -176,7 +171,6 @@ export function createAppShellChatActions(deps: {
   onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
-  setLiveTurnBySession: LiveTurnRecordUpdater;
   setInteractionBySession: InteractionQueueUpdater;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -222,7 +216,6 @@ export function createAppShellChatActions(deps: {
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest,
-    setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -241,44 +234,6 @@ export function createAppShellChatActions(deps: {
 
   function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
     removeTransientMessage(sessionId, turnId);
-  }
-
-  // Explicit orchestration reserves an exact Turn identity before IPC, so its
-  // renderer command surface keeps the existing first-token wait. Ordinary
-  // messages never call this path: LocalIntent presents the message and the
-  // Host subscription alone introduces the actual Turn.
-  function armTurnActive(sessionId: string, turnId: string): void {
-    setLiveTurnBySession((current) => {
-      const active = current[sessionId];
-      if (active?.turnId === turnId && active.phase === 'waiting') return current;
-      return { ...current, [sessionId]: armLiveTurn(turnId) };
-    });
-  }
-
-  /**
-   * The arm was placed under the client's Message identity because that is all
-   * the client had; Runtime Host answers with the Turn identity every later
-   * event will carry. Adopt it, but only while the arm is still the one this
-   * send placed and still waiting — once the authority has said anything about
-   * a Turn here, that Turn is the one on screen and renaming it would retire
-   * the wrong claim.
-   */
-  function rebindTurnActive(sessionId: string, fromTurnId: string, toTurnId: string): void {
-    if (fromTurnId === toTurnId) return;
-    setLiveTurnBySession((current) => {
-      const active = current[sessionId];
-      if (active?.turnId !== fromTurnId || !active.unconfirmed) return current;
-      return { ...current, [sessionId]: { ...active, turnId: toTurnId } };
-    });
-  }
-
-  function disarmTurnActive(sessionId: string, turnId: string): void {
-    setLiveTurnBySession((current) => {
-      if (current[sessionId]?.turnId !== turnId) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
   }
 
   /**
@@ -309,7 +264,6 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    exactTurn?: boolean;
     pendingSteering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
@@ -326,31 +280,17 @@ export function createAppShellChatActions(deps: {
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
         // The Message may well have been admitted, so its row stays for
-        // canonical transcript to settle. The Turn arm is a different claim:
-        // nothing proves a Turn opened under this identity, and no event
-        // carrying it will ever arrive to retire it.
-        if (input.exactTurn) disarmTurnActive(sessionId, messageId);
+        // canonical transcript to settle.
         return { kind: 'unreconciled' };
       }
       removeOptimisticUserMessage(sessionId, messageId);
-      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       if (surfaceVisible) {
         skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
       }
       return { kind: 'refused', skillInvocation: result.skillInvocation };
     }
     if (result.disposition === 'locally_saved') {
-      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       return { kind: 'projected', skillInvocation: result.skillInvocation };
-    }
-    if (input.exactTurn) {
-      if (result.disposition === 'turn_started' && result.turnId) {
-        rebindTurnActive(sessionId, messageId, result.turnId);
-      } else {
-        // Host admitted the Message into a Turn this send did not open, so the
-        // arm placed for an exact Turn describes nothing.
-        disarmTurnActive(sessionId, messageId);
-      }
     }
     if (surfaceVisible) {
       skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
@@ -385,7 +325,6 @@ export function createAppShellChatActions(deps: {
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
-    const steeringTurnId = initialSessionId && !exactTurn ? deps.getRunningTurnId?.(initialSessionId) : undefined;
     const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -423,7 +362,6 @@ export function createAppShellChatActions(deps: {
     try {
       const messageId = crypto.randomUUID();
       async function submitIntoSession(sessionId: string, messageId: string) {
-        if (exactTurn) armTurnActive(sessionId, messageId);
         const attachmentItems =
           pending?.length
             ? Conversation.toComposerIngestItems(pending)
@@ -444,15 +382,14 @@ export function createAppShellChatActions(deps: {
         return submitAndProject({
           sessionId,
           messageId,
-          placement: 'current_turn',
+          placement: exactTurn ? 'current_turn' : 'next_turn',
           command: {
             ...sendCommand,
             ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
-          exactTurn,
-          pendingSteering: Boolean(steeringTurnId),
+          pendingSteering: false,
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -516,7 +453,6 @@ export function createAppShellChatActions(deps: {
       optimisticMessageId = messageId;
       publishTransientUserMessage(sessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
-        ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
         inlineReferences: [],
@@ -544,13 +480,6 @@ export function createAppShellChatActions(deps: {
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
-      }
-      // The turn never reached the runtime — close the model-wait window so the
-      // "正在处理…" indicator doesn't hang after a failed send. Nothing else has
-      // to be undone: the arm was the only claim the send made, and no
-      // subscribeChanges event would reconcile a turn that never started.
-      if (exactTurn && optimisticSessionId && optimisticMessageId) {
-        disarmTurnActive(optimisticSessionId, optimisticMessageId);
       }
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),

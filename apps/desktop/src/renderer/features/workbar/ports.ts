@@ -285,6 +285,7 @@ export interface SideChatSessionPort {
     /** Called after the initial observation seed and each reconnect seed. */
     onReady?: () => void,
     onSeedError?: (error: unknown) => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): WorkbarUnsubscribe;
   subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;
 }

@@ -72,11 +72,12 @@ export function SettingsExpandableRow(props: {
    */
   end?: ReactNode;
   /**
-   * Content that sits beside the built-in trigger while collapsed — a model
-   * row's enable switch, say. Unlike `end`, this keeps the trigger and the
-   * focus return that goes with it.
+   * Content that sits beside the built-in trigger while collapsed, after it —
+   * a model row's enable switch, say, which reads as the row's last control.
+   * Unlike `end`, this keeps the trigger and the focus return that goes with
+   * it.
    */
-  beforeAction?: ReactNode;
+  afterAction?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -125,7 +126,6 @@ export function SettingsExpandableRow(props: {
         align="start"
         end={props.end ?? (
           <>
-            {props.beforeAction}
             <Button
               ref={triggerRef}
               data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
@@ -136,6 +136,7 @@ export function SettingsExpandableRow(props: {
               label={props.actionLabel ?? ''}
               aria-label={props.actionAriaLabel}
             />
+            {props.afterAction}
           </>
         )}
       />

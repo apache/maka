@@ -5,6 +5,9 @@ apps/desktop/src/renderer/app-shell-overlays.tsx
 apps/desktop/src/renderer/app-shell.tsx
 apps/desktop/src/renderer/app.tsx
 apps/desktop/src/renderer/application/contracts/feature-services.tsx
+apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx
+apps/desktop/src/renderer/application/contracts/settings-presentation/settings-route-header.tsx
+apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
@@ -20,8 +23,10 @@ apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
+apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx
+apps/desktop/src/renderer/features/external-agent-settings/page.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
@@ -37,6 +42,9 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-conne
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
+apps/desktop/src/renderer/features/session-bundle/export-tree.tsx
+apps/desktop/src/renderer/features/session-bundle/services-context.tsx
+apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
@@ -83,7 +91,6 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
-apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
 apps/desktop/src/renderer/mcp-brand-marks.tsx
 apps/desktop/src/renderer/mcp-page.tsx
@@ -232,6 +239,7 @@ packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker.tsx
+packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx

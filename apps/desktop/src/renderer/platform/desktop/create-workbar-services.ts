@@ -163,16 +163,10 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToUserQuestion(sessionId, response),
       respondToUserForm: (sessionId, response) =>
         bridge.sessions.respondToUserForm(sessionId, response),
-      subscribeEvents: (sessionId, handler, onReady, onSeedError) =>
-        bridge.sessions.subscribeEvents(
-          sessionId,
-          handler,
-          onReady,
-          (phase) => {
-            if (phase === 'ready') onReady?.();
-          },
-          onSeedError,
-        ),
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError, onExecution) =>
+        bridge.sessions.subscribeEvents(sessionId, handler, (phase) => {
+          if (phase === 'ready') onSeeded?.();
+        }, onSeedError, onExecution),
       subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };

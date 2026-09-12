@@ -21,6 +21,7 @@ import {
   createDefaultRuntimePolicy,
   decodeCanonicalRuntimePolicy,
   decodeRuntimePolicyV2,
+  decodeRuntimePolicyV3,
   normalizeRuntimePolicyMutation,
   type MutateRuntimePolicyInput,
   type MutateRuntimePolicyResult,
@@ -43,7 +44,7 @@ import {
 } from './document-io.js';
 
 const FILE = 'runtime-policy.json';
-const SCHEMA_VERSION = 3 as const;
+const SCHEMA_VERSION = 4 as const;
 
 export interface RuntimePolicyDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -68,7 +69,11 @@ export class RuntimePolicyDocumentOwner {
       'revision',
       'policy',
     ]);
-    if (document.schemaVersion !== 2 && document.schemaVersion !== SCHEMA_VERSION) {
+    if (
+      document.schemaVersion !== 2 &&
+      document.schemaVersion !== 3 &&
+      document.schemaVersion !== SCHEMA_VERSION
+    ) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     return {
@@ -77,7 +82,9 @@ export class RuntimePolicyDocumentOwner {
       policy: decodePersistedDomain(() =>
         document.schemaVersion === 2
           ? decodeRuntimePolicyV2(document.policy)
-          : decodeCanonicalRuntimePolicy(document.policy),
+          : document.schemaVersion === 3
+            ? decodeRuntimePolicyV3(document.policy)
+            : decodeCanonicalRuntimePolicy(document.policy),
       ),
     };
   }
@@ -151,6 +158,8 @@ function applyMutation(policy: RuntimePolicy, operation: RuntimePolicyMutation):
       return { ...policy, webSearch: operation.value };
     case 'set_subagents':
       return { ...policy, subagents: operation.value };
+    case 'set_external_agents':
+      return { ...policy, externalAgents: operation.value };
     case 'set_shell':
       return { ...policy, shell: operation.value };
     case 'patch_agent_settings':

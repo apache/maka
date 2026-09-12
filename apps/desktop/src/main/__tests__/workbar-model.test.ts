@@ -18,7 +18,7 @@
  */
 
 import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/session-catalog-state.js';
-import { sessionIdSetsEqual } from '../../renderer/live-turn-snapshot.js';
+import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
