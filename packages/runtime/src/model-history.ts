@@ -210,6 +210,13 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
         // block with its Read guidance runs to hundreds (#4815 review).
         total += formatAttachmentRefs([attachment]).length;
       }
+      // Directory references project as one fixed envelope per message; count
+      // what it actually emits, or a directory-only message estimates to zero
+      // and the history-compact gate drops a model-visible event from the
+      // replay successors (#4815 review).
+      if (content.directoryReferences?.length) {
+        total += formatDirectoryReferences(content.directoryReferences).length;
+      }
     }
   } else if (content?.kind === 'function_call')
     total += content.name.length + stableJsonLength(content.args);
