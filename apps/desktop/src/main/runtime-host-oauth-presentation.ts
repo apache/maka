@@ -27,6 +27,7 @@ export interface OAuthExternalPresentation {
 
 export interface OAuthPresentationExpectation {
   readonly presented: Promise<OAuthExternalPresentation>;
+  renew(): void;
   cancel(reason?: unknown): void;
 }
 
@@ -36,7 +37,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
 
   constructor(private readonly openSystemBrowser: (url: string) => Promise<void>) {}
 
-  expect(attemptId: string): OAuthPresentationExpectation {
+  expect(attemptId: string, expectedStateHint?: string): OAuthPresentationExpectation {
     if (this.#pending) throw new Error('Another OAuth login is already in progress');
     let resolvePresented!: (presentation: OAuthExternalPresentation) => void;
     let rejectPresented!: (reason?: unknown) => void;
@@ -48,13 +49,15 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     // The timeout can fire before waitForPresentation attaches. Keep a no-op
     // handler; the real waiter still observes the same rejection.
     void presented.catch(() => undefined);
-    const timer = setTimeout(() => {
-      if (this.#pending?.attemptId !== attemptId) return;
+    const expire = () => {
+      if (this.#pending !== pending) return;
       this.#pending = undefined;
       rejectPresented(new Error('Runtime Host did not present OAuth authorization'));
-    }, PRESENTATION_TIMEOUT_MS);
+    };
+    let timer = setTimeout(expire, PRESENTATION_TIMEOUT_MS);
     const pending: PendingPresentation = {
       attemptId,
+      expectedStateHint,
       resolve: (presentation) => {
         clearTimeout(timer);
         presentedSettled = true;
@@ -70,6 +73,11 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     this.#pending = pending;
     return {
       presented,
+      renew: () => {
+        if (this.#pending !== pending) return;
+        clearTimeout(timer);
+        timer = setTimeout(expire, PRESENTATION_TIMEOUT_MS);
+      },
       cancel: (reason = new Error('OAuth presentation cancelled')) => {
         if (this.#pending === pending) pending.reject(reason);
       },
@@ -85,6 +93,9 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     const pending = this.#pending;
     if (!pending || !stateHint) {
       throw new Error('Desktop has no matching OAuth presentation request');
+    }
+    if (pending.expectedStateHint !== undefined && pending.expectedStateHint !== stateHint) {
+      throw new Error('Desktop OAuth presentation belongs to another attempt');
     }
     try {
       await this.openSystemBrowser(url);
@@ -103,6 +114,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
 
 interface PendingPresentation {
   readonly attemptId: string;
+  readonly expectedStateHint?: string;
   resolve(presentation: OAuthExternalPresentation): void;
   reject(reason?: unknown): void;
 }

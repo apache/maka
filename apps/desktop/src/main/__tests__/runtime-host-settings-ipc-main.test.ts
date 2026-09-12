@@ -145,6 +145,21 @@ function createModuleFixture(options: {
       policyRevision += 1;
       return { revision: policyRevision, policy };
     },
+    async updateRuntimePolicyIf(
+      accepts: (value: RuntimePolicy) => boolean,
+      createMutation: (value: RuntimePolicy) => {
+        kind: string;
+        value: RuntimePolicy["externalAgents"];
+      },
+    ) {
+      if (!accepts(policy)) return { revision: policyRevision, policy };
+      const mutation = createMutation(policy);
+      if (mutation.kind === "set_external_agents") {
+        policy = { ...policy, externalAgents: mutation.value };
+      }
+      policyRevision += 1;
+      return { revision: policyRevision, policy };
+    },
     async updateNetworkProxy(input: UpdateNetworkProxyInput) {
       if (input.expectedPolicyRevision !== policyRevision) {
         return {
@@ -263,6 +278,22 @@ test("runtime settings project credential status without a password value", asyn
 
   assert.equal(settings.network.proxy.passwordConfigured, true);
   assert.equal("password" in settings.network.proxy, false);
+});
+
+test("external agent update does not retry past a changed executable", async () => {
+  const fixture = createModuleFixture();
+
+  const unchanged = await fixture.module.update(
+    { externalAgents: { antigravity: { executable: "/managed/agent" } } },
+    { expectedExternalAgentExecutable: "/changed/by/another/client" },
+  );
+  assert.equal(unchanged.externalAgents.antigravity.executable, "");
+
+  const committed = await fixture.module.update(
+    { externalAgents: { antigravity: { executable: "/managed/agent" } } },
+    { expectedExternalAgentExecutable: "" },
+  );
+  assert.equal(committed.externalAgents.antigravity.executable, "/managed/agent");
 });
 
 test("spread-back derived and legacy password fields never enter Runtime policy", async () => {

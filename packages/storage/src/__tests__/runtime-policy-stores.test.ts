@@ -65,7 +65,11 @@ const execFileAsync = promisify(execFile);
 describe('runtime policy stores', () => {
   test('upgrades schema v2 with the automatic Host shell default', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
-      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      const {
+        shell: _shell,
+        externalAgents: _externalAgents,
+        ...policyV2
+      } = createDefaultRuntimePolicy();
       await writeFile(
         join(root, 'runtime-policy.json'),
         `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
@@ -82,7 +86,41 @@ describe('runtime policy stores', () => {
       const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
         schemaVersion: number;
       };
-      assert.equal(persisted.schemaVersion, 3);
+      assert.equal(persisted.schemaVersion, 4);
+    });
+  });
+
+  test('migrates v3 external agent defaults and persists configuration with revision checks', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { externalAgents: _externalAgents, ...policyV3 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        JSON.stringify({ schemaVersion: 3, revision: 8, policy: policyV3 }),
+      );
+      const before = await stores.runtimePolicy.getSnapshot();
+      assert.deepEqual(before.policy.externalAgents, { antigravity: { executable: '' } });
+      const value = { antigravity: { executable: '/Applications/ACP/agy_acp_server.par' } };
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value },
+      });
+      assert.equal(committed.kind, 'committed');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      const conflict = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value: before.policy.externalAgents },
+      });
+      assert.equal(conflict.kind, 'revision_conflict');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      await assert.rejects(
+        stores.runtimePolicy.mutate({
+          expectedRevision: 9,
+          operation: {
+            kind: 'set_external_agents',
+            value: { antigravity: { executable: 'relative/path' } },
+          },
+        }),
+      );
     });
   });
 

@@ -435,8 +435,16 @@ export class DesktopRuntimeHostClient {
   async updateRuntimePolicy(
     buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
   ): Promise<OperationOutput<"runtime.policy.query">> {
+    return this.updateRuntimePolicyIf(() => true, buildOperation);
+  }
+
+  async updateRuntimePolicyIf(
+    accepts: (policy: RuntimePolicy) => boolean,
+    buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
+  ): Promise<OperationOutput<"runtime.policy.query">> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const current = await this.queryRuntimePolicy();
+      if (!accepts(current.policy)) return current;
       const result = await this.request("runtime.policy.mutate", {
         expectedRevision: current.revision,
         operation: buildOperation(current.policy),
@@ -544,6 +552,18 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"connection.onboarding.save">,
   ): Promise<OperationOutput<"connection.onboarding.save">> {
     return this.request("connection.onboarding.save", input);
+  }
+
+  startExternalAgentSetup(input: OperationInput<"external_agents.setup.start">): Promise<OperationOutput<"external_agents.setup.start">> {
+    return this.request("external_agents.setup.start", input);
+  }
+
+  queryExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.query">> {
+    return this.request("external_agents.setup.query", { attemptId });
+  }
+
+  cancelExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.cancel">> {
+    return this.request("external_agents.setup.cancel", { attemptId });
   }
 
   startOAuthLogin(

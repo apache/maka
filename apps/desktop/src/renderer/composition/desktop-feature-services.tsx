@@ -23,6 +23,8 @@ import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
+import { ExternalAgentSettingsServicesProvider } from '../features/external-agent-settings/index.js';
+import { createDesktopExternalAgentSettingsServices } from '../platform/desktop/create-external-agent-settings-services.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
@@ -57,6 +59,7 @@ export function createDesktopFeatureServices() {
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
+    externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
@@ -76,6 +79,7 @@ export function DesktopFeatureServicesProvider(props: {
   return (
     <AppUpdateServicesProvider services={props.services.appUpdate}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
+      <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
           <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
             <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
@@ -99,6 +103,7 @@ export function DesktopFeatureServicesProvider(props: {
             </SessionNavigationServicesProvider>
           </SessionCollaborationServicesProvider>
         </RuntimeHostManagementServicesProvider>
+      </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
     </AppUpdateServicesProvider>
   );

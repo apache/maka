@@ -33,6 +33,7 @@ import type {
   AppIconTarget,
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   ChatDefaultsSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
@@ -1450,11 +1451,21 @@ export interface MakaBridge {
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
+  externalAgents: {
+    selectExecutable(host: DesktopRuntimeHostRef): Promise<string | undefined>;
+    start(input: OperationInput<'external_agents.setup.start'>, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.start'>>;
+    query(attemptId: string, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.query'>>;
+    cancel(attemptId: string, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.cancel'>>;
+  };
   settings: {
     getClient(): Promise<AppSettings>;
     get(host?: DesktopRuntimeHostRef): Promise<RuntimeHostAppSettings>;
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>>;
+    update(
+      patch: UpdateAppSettingsInput,
+      host?: DesktopRuntimeHostRef,
+      guard?: RuntimeHostSettingsUpdateGuard,
+    ): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>>;
     subscribeClientChanged(handler: () => void): () => void;
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
