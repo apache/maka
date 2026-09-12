@@ -18,7 +18,6 @@
  */
 
 import { runtimeEventHasModelVisibleContent, type RuntimeEvent } from '@maka/core/runtime-event';
-import { hasMeaningfulMessageContent } from '@maka/core/events';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -121,19 +120,14 @@ function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMess
     if (event.partial === true || !runtimeEventHasModelVisibleContent(event)) continue;
     const content = event.content;
     if (content?.kind === 'text' && (event.role === 'user' || event.role === 'model')) {
-      const text = content.text.trim();
-      // A message with quotes or attachments is model-visible even when its
-      // text is empty (#4804), and a non-empty text must not erase the
-      // staged refs: both cases render through the shared inline-ref
-      // formatter so the recap carries the actual content, not a count.
-      // The shared predicate decides on the trimmed text, matching this
-      // projection's existing trim behavior.
-      if (hasMeaningfulMessageContent({ ...content, text })) {
-        messages.push({
-          role: event.role === 'user' ? 'user' : 'assistant',
-          content: formatTextWithInlineRefs({ ...content, text }),
-        });
-      }
+      // The gate above already decided visibility through the shared
+      // predicate, which is satisfied by non-empty text or by the structured
+      // carriers — so every event reaching here projects, with its trimmed
+      // text and staged refs rendered by the shared inline-ref formatter.
+      messages.push({
+        role: event.role === 'user' ? 'user' : 'assistant',
+        content: formatTextWithInlineRefs({ ...content, text: content.text.trim() }),
+      });
       continue;
     }
     if (content?.kind !== 'function_response') continue;
