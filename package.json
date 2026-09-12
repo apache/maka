@@ -121,7 +121,13 @@
     "knip": "^6.33.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3",
+    "electron-updater": "^6.8.9",
+    "@playwright/test": "^1.62.1",
+    "@babel/parser": "7.29.7",
+    "ws": "^8.21.3"
   },
   "allowScripts": {
     "esbuild@0.27.7": true,
