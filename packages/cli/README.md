@@ -80,6 +80,13 @@ The public command is `maka`. For a one-off invocation, use
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
 
+## Container
+
+For a glibc-based CLI image, persistent configuration, and the maintainer publication
+workflow, see the [container guide](https://github.com/apache/maka/blob/main/packages/cli/container/README.md).
+The guide distinguishes local builds from published images; GHCR availability requires
+a successful maintainer publication.
+
 ## First run
 
 Start Maka from the project directory the agent should work in:

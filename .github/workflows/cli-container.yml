@@ -1,0 +1,104 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: CLI container
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact published maka-agent npm version (not a dist-tag)
+        required: true
+        type: string
+      publish:
+        description: Publish the tested convenience build to GHCR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-container-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MAKA_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the exact published CLI
+        run: |
+          docker build --build-arg "MAKA_VERSION=$MAKA_VERSION" \
+            --tag maka-cli:tested packages/cli/container
+      - name: Smoke-test the container
+        run: node scripts/smoke-cli-container.mjs maka-cli:tested "$MAKA_VERSION"
+      - name: Export the tested image
+        run: docker save maka-cli:tested | gzip > cli-container.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-container-${{ matrix.arch }}
+          path: cli-container.tar.gz
+          retention-days: 3
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: inputs.publish && github.repository == 'apache/maka' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: container-publication
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      MAKA_VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/apache/maka-cli
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: cli-container-*
+          path: images
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish the tested images and multi-platform manifest
+        run: |
+          for arch in amd64 arm64; do
+            docker load --input "images/cli-container-$arch/cli-container.tar.gz"
+            docker tag maka-cli:tested "$IMAGE:$MAKA_VERSION-$arch"
+            docker push "$IMAGE:$MAKA_VERSION-$arch"
+          done
+          docker buildx imagetools create --tag "$IMAGE:$MAKA_VERSION" \
+            "$IMAGE:$MAKA_VERSION-amd64" "$IMAGE:$MAKA_VERSION-arm64"
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
