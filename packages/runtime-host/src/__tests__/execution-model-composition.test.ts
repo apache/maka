@@ -1397,6 +1397,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
             id: modelId,
             capabilities: { chat: true, functionCalling: true },
             contextWindow: 32_768,
+            inputLimit: 31_744,
             maxOutputTokens: 1_024,
           },
         ],
