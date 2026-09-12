@@ -461,6 +461,11 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
+  const answerContext = accessibleActionContext(
+    turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+    turn.startedAt,
+    locale,
+  );
   // A recorded conversational terminal turn owns presentation beyond its
   // timeline: failure/abort state and recovery actions must remain visible even
   // when the provider produced no assistant event. Inferred legacy turns and
@@ -651,7 +656,7 @@ export const TurnView = memo(function TurnView(props: {
         return (
           <Fragment key={assistantKey}>
             <LocalizedChatMessage
-              accessibleLabel={copy.assistantAriaLabel}
+              accessibleLabel={`${copy.assistantAriaLabel} · ${answerContext}`}
               sender="assistant"
               data-turn-status={turn.status}
               className="maka-chat-message maka-assistant-answer"
@@ -764,11 +769,7 @@ export const TurnView = memo(function TurnView(props: {
                     activityLabel={runningToolLabel}
                   />
                 ) : undefined}
-                context={accessibleActionContext(
-                  turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
-                  turn.startedAt,
-                  locale,
-                )}
+                context={answerContext}
                 onAction={
                   props.onFooterAction
                     ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
