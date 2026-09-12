@@ -1,16 +1,16 @@
 diff --git a/node_modules/@earendil-works/pi-tui/dist/components/editor.js b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
-index 4786b46..25ed0a9 100644
+index ab8b7ea..f60f522 100644
 --- a/node_modules/@earendil-works/pi-tui/dist/components/editor.js
 +++ b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
 @@ -2,7 +2,6 @@ import { getKeybindings } from "../keybindings.js";
  import { decodePrintableKey, matchesKey } from "../keys.js";
  import { KillRing } from "../kill-ring.js";
- import { CURSOR_MARKER } from "../tui.js";
+ import { CURSOR_MARKER, } from "../tui.js";
 -import { UndoStack } from "../undo-stack.js";
  import { cjkBreakRegex, getGraphemeSegmenter, getWordSegmenter, isWhitespaceChar, sliceByColumn, visibleWidth, } from "../utils.js";
  import { findWordBackward, findWordForward } from "../word-navigation.js";
  import { SelectList } from "./select-list.js";
-@@ -243,7 +242,7 @@ export class Editor {
+@@ -251,7 +250,7 @@ export class Editor {
      // to.
      snappedFromCursorCol = null;
      // Undo support
@@ -19,7 +19,7 @@ index 4786b46..25ed0a9 100644
      onSubmit;
      onChange;
      disableSubmit = false;
-@@ -1073,7 +1072,7 @@ export class Editor {
+@@ -1140,7 +1139,7 @@ export class Editor {
          this.pasteCounter = 0;
          this.exitHistoryBrowsing();
          this.scrollOffset = 0;
@@ -28,7 +28,7 @@ index 4786b46..25ed0a9 100644
          this.lastAction = null;
          if (this.onChange)
              this.onChange("");
-@@ -1700,7 +1699,13 @@ export class Editor {
+@@ -1767,7 +1766,13 @@ export class Editor {
          }
      }
      pushUndoSnapshot() {

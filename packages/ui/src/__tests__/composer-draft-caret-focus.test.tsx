@@ -57,6 +57,7 @@ const originalGlobals = {
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
   window: globalThis.window,
+  HTMLElement: globalThis.HTMLElement,
 };
 const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -120,8 +121,21 @@ function harness() {
   let active: Element | null = null;
   const selected: AimedRange[] = [];
   const selection = {
+    get rangeCount(): number {
+      return selected.length;
+    },
     get anchorNode(): Node | null {
       return selected.at(-1)?.container ?? null;
+    },
+    getRangeAt(index: number): Range {
+      const aimed = selected[index];
+      assert.ok(aimed?.container);
+      const range = {
+        startContainer: aimed.container,
+        endContainer: aimed.container,
+        cloneRange: () => range,
+      };
+      return range as unknown as Range;
     },
     removeAllRanges() {
       selected.length = 0;
@@ -138,11 +152,14 @@ function harness() {
   };
   document.getSelection = () => selection as unknown as Selection;
   window.getSelection = () => selection as unknown as Selection;
+  const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  Object.assign(window, { matchMedia });
   Object.defineProperty(document, 'activeElement', { configurable: true, get: () => active });
   Object.assign(globalThis, {
     document,
     window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    HTMLElement: window.HTMLElement,
+    matchMedia,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,

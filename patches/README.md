@@ -68,8 +68,7 @@ same execution budget semantics. Regression coverage lives in
 Promise.race progress, pending-host compute timeout, cumulative compute across
 awaits, and the existing cancellation/drain and resource-limit cases.
 
-## `@earendil-works/pi-tui@0.84.4`
-
+## `@earendil-works/pi-tui@0.85.1`
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
 so a 1 MiB paste followed by 60 words retains roughly 60 MiB of duplicate text.
@@ -138,7 +137,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.5.2`
+## `@astryxdesign/core@0.5.4`
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short
@@ -179,7 +178,9 @@ replaying it. The default remains progressive for a genuinely new stream, and
 rewritten or later text still reveals and fades from a parsed-visible boundary.
 Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
-streaming cursor without adding another parser or scheduler.
+streaming cursor without adding another parser or scheduler. The incremental
+parser preserves the first mutable slice verbatim so a verified prefix ending
+in whitespace is not shortened before rendering.
 
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is

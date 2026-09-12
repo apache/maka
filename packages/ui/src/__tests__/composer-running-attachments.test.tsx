@@ -29,6 +29,8 @@ test('only an attachment-capable running-turn host accepts a pasted image', asyn
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    HTMLElement: globalThis.HTMLElement,
+    matchMedia: globalThis.matchMedia,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
       IS_REACT_ACT_ENVIRONMENT?: boolean;
     }).IS_REACT_ACT_ENVIRONMENT,
@@ -40,7 +42,15 @@ test('only an attachment-capable running-turn host accepts a pasted image', asyn
     getPropertyValue: () => '',
   }) as unknown as CSSStyleDeclaration;
   window.getSelection = () => null;
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  Object.assign(window, { matchMedia });
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    matchMedia,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);

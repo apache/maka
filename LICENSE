@@ -253,7 +253,7 @@ License: MIT
 
 Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
 theme artifacts based on Astryx theme-neutral v0.5.2. Maka also redistributes
-`patches/@astryxdesign+core+0.5.2.patch`, which modifies the MIT-licensed Astryx
+`patches/@astryxdesign+core+0.5.4.patch`, which modifies the MIT-licensed Astryx
 core package. The following MIT License applies to that material:
 
 MIT License
@@ -280,10 +280,10 @@ SOFTWARE.
 
 Pi TUI dependency patch
 
-Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.84.4
-Repository: https://github.com/earendil-works/pi/tree/v0.84.4/packages/tui
-Version: 0.84.4
-Dependency patch: patches/@earendil-works+pi-tui+0.84.4.patch
+Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.85.1
+Repository: https://github.com/earendil-works/pi/tree/v0.85.1/packages/tui
+Version: 0.85.1
+Dependency patch: patches/@earendil-works+pi-tui+0.85.1.patch
 Copyright (c) 2025 Mario Zechner
 License: MIT
 
