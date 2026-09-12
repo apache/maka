@@ -177,7 +177,7 @@ const zhCopy = {
     connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
     generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
     done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
     savedNotConnected: '凭据已保存，但连接未建立，可稍后在设置中重试。',
     savedNotConnectedDetail: (detail: string) => `凭据已保存，但连接未建立：${detail}，可稍后在设置中重试。`,
     errors: {
@@ -316,7 +316,7 @@ const zhTwCopy = {
     connectedRefreshFailed: (message: string) => `連線已完成，但狀態重新整理失敗：${message}`, close: (title: string) => `關閉${title}`,
     generatingAria: '正在生成二維碼', privacy: '憑證僅儲存在本機，不會傳給 renderer 或 Maka 雲端。', openBrowser: '無法掃碼？在瀏覽器中開啟',
     done: '完成', regenerate: '重新生成', refreshQr: '重新整理二維碼', cancel: '取消', generating: '正在生成安全二維碼…', connecting: '授權完成，正在儲存憑證並啟動連線…',
-    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
+    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZhTw(category)}；連續失敗 ${count} 次，約 ${seconds} 秒後自動重試。`, expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
     savedNotConnected: '憑證已儲存，但連線未建立，可稍後在設定中重試。',
     savedNotConnectedDetail: (detail: string) => `憑證已儲存，但連線未建立：${detail}，可稍後在設定中重試。`,
     errors: {
@@ -407,7 +407,7 @@ const enCopy: BotSettingsCopy = {
   },
   onboarding: {
     providers: { dingtalk: { title: 'Set up DingTalk', ariaLabel: 'Set up DingTalk with a QR code', qrAlt: 'DingTalk setup QR code', subtitle: 'Scan in DingTalk to register the app', waiting: 'Scan with DingTalk and confirm authorization', scanned: 'Scanned. Complete confirmation in DingTalk.' }, feishu: { title: 'Set up Feishu', ariaLabel: 'Set up Feishu with a QR code', qrAlt: 'Feishu setup QR code', subtitle: 'Scan with Feishu to create and configure the bot', waiting: 'Scan with Feishu and confirm creation', scanned: 'Scanned. Complete confirmation in Feishu.' }, wecom: { title: 'Set up WeCom', ariaLabel: 'Set up WeCom with a QR code', qrAlt: 'WeCom setup QR code', subtitle: 'Quick setup creates and connects a WeCom bot', waiting: 'Open WeCom and scan to create the bot', scanned: 'Scanned. Complete confirmation in WeCom.' }, wechat: { title: 'Scan to sign in', ariaLabel: 'WeChat QR sign-in', qrAlt: 'WeChat sign-in QR code', subtitle: 'Scan with WeChat to connect', waiting: 'Scan with WeChat and confirm on your phone', scanned: 'Scanned. Complete confirmation in WeChat.' }, qq: { title: 'Set up QQ', ariaLabel: 'Set up QQ with a QR code', qrAlt: 'QQ setup QR code', subtitle: 'Scan with mobile QQ to create and bind a bot', waiting: 'Scan with mobile QQ and confirm binding', scanned: 'Scanned. Complete confirmation in QQ.' } },
-    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
+    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', retrying: (category, count, seconds) => `${retryCategoryEn(category)}; ${count} consecutive ${count === 1 ? 'failure' : 'failures'}. Retrying automatically in about ${seconds}s.`, expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
     savedNotConnected: 'Credentials were saved, but the connection did not start. Retry from settings later.',
     savedNotConnectedDetail: (detail) => `Credentials were saved, but the connection did not start: ${detail}. Retry from settings later.`,
     errors: {
@@ -427,6 +427,36 @@ const BOT_SETTINGS_COPY = {
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
+}
+
+function retryCategoryZh(category: string): string {
+  switch (category) {
+    case 'timeout': return '请求超时';
+    case 'network': return '网络暂时异常';
+    case 'rate_limited': return '服务请求频率受限';
+    case 'server': return '服务端暂时异常';
+    default: return '服务暂时异常';
+  }
+}
+
+function retryCategoryZhTw(category: string): string {
+  switch (category) {
+    case 'timeout': return '請求逾時';
+    case 'network': return '網路暫時異常';
+    case 'rate_limited': return '服務請求頻率受限';
+    case 'server': return '服務端暫時異常';
+    default: return '服務暫時異常';
+  }
+}
+
+function retryCategoryEn(category: string): string {
+  switch (category) {
+    case 'timeout': return 'The request timed out';
+    case 'network': return 'The network is temporarily unavailable';
+    case 'rate_limited': return 'The service is rate limiting requests';
+    case 'server': return 'The service is temporarily unavailable';
+    default: return 'The service is temporarily unavailable';
+  }
 }
 
 const BOT_STATUS_REASON_PATTERNS: ReadonlyArray<{
