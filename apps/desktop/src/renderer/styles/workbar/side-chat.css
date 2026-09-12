@@ -103,3 +103,9 @@
   max-width: 200px;
   padding-inline: var(--space-1-5);
 }
+
+.maka-quote-companion-parent-status {
+  flex: 0 0 auto;
+  padding: var(--space-2);
+  padding-bottom: 0;
+}

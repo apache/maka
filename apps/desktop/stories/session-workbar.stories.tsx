@@ -26,7 +26,8 @@ import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-revi
 import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import { ToastProvider } from '@maka/ui';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
+import { SandboxBoundaryPrompt, ToastProvider } from '@maka/ui';
 import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
@@ -36,10 +37,12 @@ import {
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
   terminalSessionWorkbarTabId,
+  focusParentConversation,
   type QuoteCompanionPanelState,
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
   type WorkbarSessionUsageSummary,
+  type SessionExecutionProjection,
 } from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -118,6 +121,26 @@ const SIDE_CHAT_SESSION: SessionSummary = {
 };
 const TERMINAL_REF = 'shell-run:storybook-terminal';
 const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
+
+const PARENT_SANDBOX_BOUNDARY_REQUEST = {
+  id: 'parent-boundary-event',
+  turnId: 'parent-turn',
+  ts: NOW,
+  type: 'sandbox_boundary_request',
+  requestId: 'parent-boundary-request',
+  toolUseId: 'parent-tool',
+  justification: '下载构建依赖，并把产物写入工作区外的发布目录。',
+  expansion: {
+    filesystem: {
+      entries: [
+        { path: '/Users/maka/release', access: 'write', scope: 'subtree' },
+        { path: '/Users/maka/.config/signing.json', access: 'read', scope: 'exact' },
+      ],
+    },
+    network: { enabled: true },
+  },
+} satisfies SandboxBoundaryRequestEvent;
+
 
 // A terminal whose scrollback runs long — the "very many rows" state a fresh
 // shell never shows.
@@ -776,6 +799,8 @@ function bridge(options: {
   terminalBuffer?: string;
   /** Make `terminal.write` reject, so typing into the terminal shows the write-failed Banner. */
   terminalWriteFails?: boolean;
+  /** Host execution facts for the parent Session the side chat observes. */
+  parentExecution?: SessionExecutionProjection;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
@@ -901,7 +926,15 @@ function bridge(options: {
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       respondToUserForm: async () => undefined,
-      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      subscribeEvents: (_sessionId, _handler, onSeeded, _onSeedError, onExecution) => {
+        onExecution?.(
+          options.parentExecution ?? {
+            type: 'host_execution',
+            available: true,
+            rootTurn: null,
+            pendingInteractionKinds: [],
+          },
+        );
         onSeeded?.();
         return unsubscribe();
       },
@@ -931,6 +964,7 @@ function Workbar(props: {
    * affordance drive `rightCollapsed`, the way the app's reducer does.
    */
   collapsible?: boolean;
+  parentFrame?: 'waiting-approval';
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
@@ -991,13 +1025,22 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn">
-          {props.collapsible && (
+          {props.parentFrame === 'waiting-approval' ? (
+            // ChatComposerRegion owns `.maka-composer-interaction-slot` around
+            // parent prompts; that wrapper is not exported on its own.
+            <div className="maka-composer-interaction-slot">
+              <SandboxBoundaryPrompt
+                request={PARENT_SANDBOX_BOUNDARY_REQUEST}
+                onRespond={async () => undefined}
+              />
+            </div>
+          ) : props.collapsible ? (
             <WorkbarTitlebarActions
               available
               collapsed={collapsed}
               onToggle={() => setCollapsed(false)}
             />
-          )}
+          ) : null}
         </div>
         <WorkbarSurface
           sessionId={SESSION_ID}
@@ -1017,6 +1060,7 @@ function Workbar(props: {
             props.sourceSession ??
             (props.tab === 'side-chat' ? TOOL_PICKER_SOURCE_SESSION : undefined)
           }
+          onOpenParentConversation={focusParentConversation}
         />
       </div>
     </ToastProvider>
@@ -1417,6 +1461,49 @@ export const Files: Story = {
 export const SideChat: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="side-chat" />,
+};
+
+// Real path: 任务工作栏 → 侧边对话 while the parent Session is waiting on a
+// sandbox_boundary approval. The notice is the production companion panel;
+// the parent column mounts the production SandboxBoundaryPrompt, which is
+// what ChatComposerRegion places in its interaction slot.
+export const SideChatParentWaitingApproval: Story = {
+  decorators: [
+    bridge({
+      parentExecution: {
+        type: 'host_execution',
+        available: true,
+        rootTurn: {
+          sessionId: SESSION_ID,
+          turnId: 'parent-turn',
+          runId: 'parent-run',
+          status: 'waiting_for_user',
+        },
+        pendingInteractionKinds: ['sandbox_boundary'],
+      },
+    }),
+  ],
+  render: () => <Workbar tab="side-chat" parentFrame="waiting-approval" />,
+  play: async ({ canvasElement }) => {
+    const notice = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>(
+        '[data-maka-contract="side-chat-parent-status"]',
+      );
+      if (!found) throw new Error('parent status notice is missing');
+      return found;
+    });
+    expect(notice.dataset.status).toBe('waiting_approval');
+    expect(notice.textContent).toContain('主任务等待审批');
+    const slot = canvasElement.querySelector<HTMLElement>(
+      '.mainColumn .maka-composer-interaction-slot',
+    );
+    if (!slot) throw new Error('parent interaction slot is missing');
+    const reject = within(slot).getByRole('button', { name: '拒绝' });
+    const allow = within(slot).getByRole('button', { name: '本任务允许' });
+    const action = within(notice).getByRole('button', { name: '前往主对话' });
+    await userEvent.click(action);
+    expect(document.activeElement === reject || document.activeElement === allow).toBe(true);
+  },
 };
 
 // Real path: 侧边对话 at the column's 320px floor, under a long model label.

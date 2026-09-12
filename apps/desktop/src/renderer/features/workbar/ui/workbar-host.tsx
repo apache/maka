@@ -113,6 +113,7 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  onOpenParentConversation?: () => void;
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -192,6 +193,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
               confirmBypass={() => confirmBypassPermission(toast, locale)}
+              onOpenParentConversation={props.onOpenParentConversation}
             />
           </Suspense>
         </div>

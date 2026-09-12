@@ -54,6 +54,9 @@ export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
 export * from './tools/inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
+export * from './model/parent-task-status.js';
+export { useParentTaskStatus } from './controller/use-parent-task-status.js';
+export { ParentTaskStatusNotice } from './tools/side-chat/parent-task-status-notice.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
@@ -148,7 +151,13 @@ export function createFakeWorkbarServices(
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       respondToUserForm: async () => undefined,
-      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      subscribeEvents: (_sessionId, _handler, onSeeded, _onSeedError, onExecution) => {
+        onExecution?.({
+          type: 'host_execution',
+          available: true,
+          rootTurn: null,
+          pendingInteractionKinds: [],
+        });
         onSeeded?.();
         return noopSubscription();
       },

@@ -27,6 +27,7 @@ import { LocaleProvider } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeWorkbarServices,
+  focusParentConversation,
   useWorkbarController,
   WorkbarServicesProvider,
   type UseWorkbarControllerInput,
@@ -638,5 +639,90 @@ describe('useWorkbarController', () => {
     assert.equal(subscriptions, 1);
     assert.equal(disposals, 1);
     assert.deepEqual(activeSessions, ['a', 'b']);
+  });
+
+  it('exposes the parent conversation callback from the shell', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    let focused = 0;
+    const editable = {
+      focus() {
+        focused += 1;
+      },
+    };
+    const main = {
+      querySelector(selector: string) {
+        return selector.includes('maka-composer [contenteditable') ? editable : null;
+      },
+    };
+    const previousQuery = document.querySelector;
+    document.querySelector = ((selector: string) => {
+      if (selector === '.mainColumn') return main;
+      return previousQuery.call(document, selector);
+    }) as typeof document.querySelector;
+    try {
+      await act(async () => renderController(root, services, input(session('a'))));
+      controller().host.onOpenParentConversation?.();
+      assert.equal(focused, 1);
+    } finally {
+      document.querySelector = previousQuery;
+    }
+  });
+
+  it('focuses a visible parent interaction and skips hidden or disabled controls', () => {
+    installReactRenderer();
+    let focused = '';
+    const hiddenAllow = {
+      disabled: false,
+      closest(selector: string) {
+        return selector.includes('[hidden]') ? this : null;
+      },
+      focus() {
+        focused = 'hidden';
+      },
+    };
+    const disabledAllow = {
+      disabled: true,
+      closest() {
+        return null;
+      },
+      focus() {
+        focused = 'disabled';
+      },
+    };
+    const visibleAllow = {
+      disabled: false,
+      closest() {
+        return null;
+      },
+      focus() {
+        focused = 'interaction';
+      },
+    };
+    const hiddenComposer = {
+      closest(selector: string) {
+        return selector.includes('[hidden]') ? this : null;
+      },
+      focus() {
+        focused = 'composer';
+      },
+    };
+    const previousQuery = document.querySelector;
+    document.querySelector = ((selector: string) => {
+      if (selector !== '.mainColumn') return previousQuery.call(document, selector);
+      return {
+        querySelectorAll(sel: string) {
+          if (sel.includes('interaction-slot')) return [hiddenAllow, disabledAllow, visibleAllow];
+          if (sel.includes('maka-composer [contenteditable')) return [hiddenComposer];
+          return [];
+        },
+      };
+    }) as typeof document.querySelector;
+    try {
+      focusParentConversation();
+      assert.equal(focused, 'interaction');
+    } finally {
+      document.querySelector = previousQuery;
+    }
   });
 });
