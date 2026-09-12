@@ -41,7 +41,22 @@ export interface DesktopLocalMessage {
   readonly quotes?: readonly QuoteRef[];
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
+  readonly admission?: 'turn_started' | 'steering' | 'followup';
+  readonly checking?: boolean;
+  readonly retryScheduled?: boolean;
+  readonly waitingForConnection?: boolean;
   readonly error?: string;
+}
+
+/** Read on demand for editing a definite failure; reading never consumes the original. */
+export interface DesktopLocalMessageDraft {
+  readonly messageId: string;
+  readonly text: string;
+  readonly attachments: readonly AttachmentRef[];
+  readonly stagedAttachments: readonly { name: string; mimeType: string; content: Uint8Array }[];
+  readonly directoryReferences: readonly DirectoryReference[];
+  readonly quotes: readonly QuoteRef[];
+  readonly inlineReferences: readonly InlineReference[];
 }
 
 export interface DesktopCachedTranscript {
@@ -51,6 +66,7 @@ export interface DesktopCachedTranscript {
 
 export interface DesktopSessionLocalBridge {
   listMessages(sessionId: string): Promise<readonly DesktopLocalMessage[]>;
+  readFailedMessage(sessionId: string, messageId: string): Promise<DesktopLocalMessageDraft>;
   /** Only an intent that has never been dispatched can be cancelled locally. */
   cancelMessage(sessionId: string, messageId: string): Promise<void>;
   /** Reconcile the same immutable command; never turn an unknown outcome into a new execution. */

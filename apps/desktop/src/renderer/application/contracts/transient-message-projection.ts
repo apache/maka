@@ -53,6 +53,8 @@ export function mergeTransientMessageProjection(
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
+    ...(!Object.hasOwn(update, 'deliveryTone') && current.deliveryTone !== undefined ? { deliveryTone: current.deliveryTone } : {}),
+    ...(!Object.hasOwn(update, 'deliveryDiagnostic') && current.deliveryDiagnostic !== undefined ? { deliveryDiagnostic: current.deliveryDiagnostic, deliveryDiagnosticLabel: current.deliveryDiagnosticLabel } : {}),
   };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
     ? { ...update, hostTurnId: current.hostTurnId }

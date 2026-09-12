@@ -183,7 +183,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       footer={
         <>
           {props.delivery?.deliveryStatus ? (
-            <span className="maka-message-delivery" role="status" title={props.delivery.deliveryDetail}>
+            <span className="maka-message-delivery-status" data-tone={props.delivery.deliveryTone ?? 'neutral'} role="status" aria-atomic="true" title={props.delivery.deliveryDetail}>
               {props.delivery.deliveryStatus}
             </span>
           ) : props.ts !== undefined ? (
@@ -193,7 +193,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />
           ) : null}
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
           ))}
           <MessageCopyButton
             messageId={props.messageId}
@@ -282,7 +282,7 @@ export function TransientUserMessage(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
   return (
-    <div data-transient-message-id={message.id}>
+    <div data-transient-message-id={message.id} className="maka-transient-message">
       <LocalizedChatMessage
         accessibleLabel={copy.userAriaLabel}
         sender="user"
@@ -298,6 +298,15 @@ export function TransientUserMessage(props: {
           inlineReferences={message.inlineReferences}
           delivery={message}
         />
+        {message.deliveryStatus && (message.deliveryDetail || message.deliveryDiagnostic) && (
+          <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
+            {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
+            {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
+              <summary>{message.deliveryDiagnosticLabel}</summary>
+              <p>{message.deliveryDiagnostic}</p>
+            </details>}
+          </div>
+        )}
       </LocalizedChatMessage>
     </div>
   );

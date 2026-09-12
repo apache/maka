@@ -341,6 +341,31 @@ test('retracted queue attachments can be restored and submitted without re-inges
   assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
 });
 
+test('failed-message byte recovery preserves extension-based kinds and submittable file contents', async () => {
+  const probe = await mountProbe((options) => useComposerAttachments({
+    ...options, toastApi: { error() {} }, service: idleAttachmentService,
+  }));
+  const content = new TextEncoder().encode('original attachment');
+  const stagedAttachments = [
+    { name: 'handler.ts', mimeType: 'text/plain', content },
+    { name: 'report.docx', mimeType: 'application/octet-stream', content },
+  ];
+  await probe.render('normal');
+  await act(() => probe.latest().attachFilePaths(stagedAttachments.map(
+    (item) => new File([item.content], item.name, { type: item.mimeType }),
+  )));
+  assert.deepEqual(probe.latest().pendingAttachments.map((item) => item.kind), ['code', 'doc']);
+  await probe.render('recovered');
+  await act(() => probe.latest().restoreMessageContext('recovered', undefined, {
+    attachments: [], stagedAttachments, directoryReferences: [],
+  }));
+  assert.deepEqual(probe.latest().pendingAttachments.map((item) => item.kind), ['code', 'doc']);
+  for (const item of probe.latest().pendingAttachments) {
+    assert.equal(item.source.type, 'file');
+    if (item.source.type === 'file') assert.equal(await item.source.file.text(), 'original attachment');
+  }
+});
+
 test('files chosen in the native dialog land in the composer now on screen', async () => {
   const picker = stubFilePicker();
   const probe = await mountProbe((options) =>

@@ -43,11 +43,13 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       listMessages: async () => messages,
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async () => {}, reconcileMessage: async () => {},
+      readFailedMessage: async () => { throw new Error('Unexpected draft recovery'); },
     }, children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
       publish: (_id, message) => { transient.set(message.id, message); },
       retire: (_id, messageId) => { transient.delete(messageId); },
-      reportError: (message) => { throw new Error(message); },
+      update: (_id, message) => { if (transient.has(message.id)) transient.set(message.id, message); },
+      canRestoreDraft: () => true, restoreDraft() {},
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');

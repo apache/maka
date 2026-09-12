@@ -42,6 +42,15 @@
   width: 100%;
 }
 
+/* Local rows use the same reading column as canonical Turns, including
+   before admission when no Turn exists to provide the width constraint. */
+.maka-transient-message {
+  width: 100%;
+  max-width: var(--maka-reading-measure);
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
 /* Native anchoring handles ordinary content growth. The scroll authority
    disables it during following and atomic range replacement, when it owns
    the position write itself. */

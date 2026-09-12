@@ -82,6 +82,7 @@ export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<Session
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
+  onMessageRetraction?: (sessionId: string, messageIds: readonly string[]) => void;
   cacheTranscript?: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   client: SessionObserverClient;
   emitSessionsChanged: (
@@ -212,6 +213,7 @@ export class RuntimeHostSessionObserver {
   readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
   readonly #emitRuntimeResourcePtyReset: (sessionId: string) => void;
   readonly #cacheTranscript: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
+  readonly #onMessageRetraction: (sessionId: string, messageIds: readonly string[]) => void;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -239,6 +241,7 @@ export class RuntimeHostSessionObserver {
       deps.emitRuntimeResourcePtyData ?? (() => undefined);
     this.#emitRuntimeResourcePtyReset = deps.emitRuntimeResourcePtyReset ?? (() => undefined);
     this.#cacheTranscript = deps.cacheTranscript ?? (() => undefined);
+    this.#onMessageRetraction = deps.onMessageRetraction ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
@@ -961,7 +964,16 @@ export class RuntimeHostSessionObserver {
         if (resolution.state === 'pending') continue;
         const turnId = resolution.state === 'owned'
           ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
-        if (!turnId) continue;
+        if (!turnId) {
+          // A cancelled queued message can outlive the Turn that owned the
+          // queue snapshot. The Host proof is still sufficient to retire the
+          // local delivery record even when there is no Turn left to receive
+          // a message_admission event.
+          if (resolution.state === 'cancelled') {
+            this.#onMessageRetraction(state.sessionId, [resolution.messageId]);
+          }
+          continue;
+        }
         this.#broadcast(state.sessionId, {
           type: 'message_admission',
           id: `host-message-resolution:${next.queue.hostEpoch}:${next.queue.queueRevision}:${resolution.messageId}`,
@@ -978,6 +990,9 @@ export class RuntimeHostSessionObserver {
   }
 
   #broadcast(sessionId: string, event: SessionEvent | SessionObservationMessage): void {
+    if (event.type === 'message_admission' && event.outcome === 'retracted') {
+      this.#onMessageRetraction(sessionId, [event.messageId]);
+    }
     const state = this.#states.get(sessionId);
     if (!state) return;
     for (const group of state.targets.values()) {

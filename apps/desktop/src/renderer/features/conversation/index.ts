@@ -43,7 +43,7 @@ export {
 export * from './model/session-ui-state.js';
 export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
-export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { SessionLocalMessages, localMessageDraftRecovery } from './controller/session-local-messages.js';
 export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
 export { useAppShellSessionUiState } from './controller/use-app-shell-session-ui-state.js';
 
@@ -60,6 +60,7 @@ export {
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
 
+export { composerFollowUp } from './controller/composer-follow-up.js';
 export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
 export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';

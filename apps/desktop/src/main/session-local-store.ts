@@ -347,6 +347,41 @@ export class DesktopSessionLocalStore {
     });
   }
 
+  /** Host-confirmed cancellation is terminal evidence, even without a transcript row.
+   * Delete in one commit; the delivering worker's ownership check fences a late ACK.
+   */
+  retireRetractedMessages(
+    partition: string, hostEpoch: string, sessionId: string, messageIds: readonly string[],
+  ): boolean {
+    return this.#retireCancelledMessages(partition, sessionId, messageIds, hostEpoch);
+  }
+
+  /** Durable Host tombstones identify a Message across Host process restarts. */
+  retireCancelledMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    return this.#retireCancelledMessages(partition, sessionId, messageIds);
+  }
+
+  #retireCancelledMessages(
+    partition: string, sessionId: string, messageIds: readonly string[], hostEpoch?: string,
+  ): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const remove = this.#db.prepare(
+        'DELETE FROM outbox WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch) continue;
+        if (hostEpoch !== undefined && record.intent.originHostEpoch !== hostEpoch) continue;
+        if (remove.run(partition, sessionId, messageId).changes) changed = true;
+      }
+      // Like retireObservedMessages, removing outbox rows does not invalidate
+      // a pending canonical transcript snapshot for the same Session.
+      return changed;
+    });
+  }
+
   saveTranscript(partition: string, snapshot: DesktopTranscriptReplicaSnapshot): void {
     // Persist durable evidence only. Live assistant fragments and old running
     // claims must not masquerade as current execution after restart.

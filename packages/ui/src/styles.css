@@ -194,12 +194,24 @@
 }
 
 .maka-message-delivery {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-2);
   color: var(--muted-foreground);
   font-size: 0.75rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: end;
 }
+
+.maka-message-delivery-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
+.maka-message-delivery-detail { margin: 0; }
+.maka-message-delivery-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--spacing-2); }
+.maka-message-delivery-status[data-tone="danger"] { color: var(--destructive); }
+.maka-message-delivery-status[data-tone="warning"] { color: var(--foreground); }
+.maka-message-delivery-diagnostic { max-width: 100%; }
+.maka-message-delivery-diagnostic summary { cursor: pointer; }
 
 /* Under both senders, the time and delivery status are content and stay put;
    the actions and the turn meta are chrome and surface on hover or focus of
