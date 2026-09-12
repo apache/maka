@@ -24,14 +24,19 @@ import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
+  FOREIGN_SESSION_SCAN_MAX_AGE_MS,
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import {
+  OPENCODE_DIGEST_MAX_SQLITE_ROWS,
   codexCwdSqlVariants,
+  collectSqliteRowsUntilReadCap,
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
+  isOpenCodeImportEnabled,
 } from '../foreign-session-store.js';
 
 const NOW = Date.now();
@@ -185,12 +190,121 @@ async function seedCodexSqliteGen(
   db.close();
 }
 
+type OpenCodeSessionSeed = {
+  id: string;
+  cwd: string;
+  title?: string;
+  parentId?: string | null;
+  updatedAtMs?: number;
+  archivedAtMs?: number | null;
+  userText?: string;
+  assistantText?: string;
+  filePath?: string;
+  toolOutput?: string;
+  thinking?: string;
+};
+
+async function seedOpenCodeDb(home: string, sessions: OpenCodeSessionSeed[]): Promise<string> {
+  const root = join(home, '.local', 'share', 'opencode');
+  await mkdir(root, { recursive: true });
+  const dbPath = join(root, 'opencode.db');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE session (
+        id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text,
+        time_created integer, time_updated integer, time_archived integer
+      );
+      CREATE TABLE message (
+        id text PRIMARY KEY, session_id text NOT NULL,
+        time_created integer NOT NULL, data text NOT NULL
+      );
+      CREATE TABLE part (
+        id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL,
+        time_created integer NOT NULL, data text NOT NULL
+      );
+    `);
+    const insertSession = db.prepare(
+      'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertMessage = db.prepare(
+      'INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)',
+    );
+    const insertPart = db.prepare(
+      'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+    );
+    let n = 0;
+    const nextId = (prefix: string): string => `${prefix}_${n++}`;
+    for (const session of sessions) {
+      const ts = session.updatedAtMs ?? NOW - 60_000;
+      insertSession.run(
+        session.id,
+        session.parentId ?? null,
+        session.cwd,
+        session.title ?? session.id,
+        ts,
+        ts,
+        session.archivedAtMs ?? null,
+      );
+      const userMsg = nextId('msg');
+      const assistantMsg = nextId('msg');
+      insertMessage.run(userMsg, session.id, ts, JSON.stringify({ role: 'user' }));
+      insertMessage.run(assistantMsg, session.id, ts + 1, JSON.stringify({ role: 'assistant' }));
+      insertPart.run(
+        nextId('part'),
+        userMsg,
+        session.id,
+        ts,
+        JSON.stringify({ type: 'text', text: session.userText ?? 'opencode task' }),
+      );
+      if (session.thinking !== undefined) {
+        insertPart.run(
+          nextId('part'),
+          assistantMsg,
+          session.id,
+          ts + 1,
+          JSON.stringify({ type: 'reasoning', text: session.thinking }),
+        );
+      }
+      insertPart.run(
+        nextId('part'),
+        assistantMsg,
+        session.id,
+        ts + 2,
+        JSON.stringify({ type: 'text', text: session.assistantText ?? 'opencode reply' }),
+      );
+      insertPart.run(
+        nextId('part'),
+        assistantMsg,
+        session.id,
+        ts + 3,
+        JSON.stringify({
+          type: 'tool',
+          tool: 'read',
+          callID: nextId('call'),
+          state: {
+            status: 'completed',
+            input: { filePath: session.filePath ?? '/repo/src/parser.ts' },
+            output: session.toolOutput ?? 'TOOL_OUTPUT rm -rf / should not leak',
+          },
+        }),
+      );
+    }
+  } finally {
+    db.close();
+  }
+  return dbPath;
+}
+
 describe('foreign session store — enable flags', () => {
   it('defaults on, disabled by exactly "0"', () => {
     assert.equal(isClaudeCodeImportEnabled({}), true);
     assert.equal(isClaudeCodeImportEnabled({ MAKA_IMPORT_CLAUDE_CODE: '0' }), false);
     assert.equal(isCodexImportEnabled({ MAKA_IMPORT_CODEX: '1' }), true);
     assert.equal(isCodexImportEnabled({ MAKA_IMPORT_CODEX: '0' }), false);
+    assert.equal(isOpenCodeImportEnabled({}), true);
+    assert.equal(isOpenCodeImportEnabled({ MAKA_IMPORT_OPENCODE: '1' }), true);
+    assert.equal(isOpenCodeImportEnabled({ MAKA_IMPORT_OPENCODE: '0' }), false);
   });
 
   it('reports only sources that are enabled AND present on disk', async () => {
@@ -230,13 +344,13 @@ describe('foreign session store — Claude scan', () => {
     await seedClaudeSession(home, {
       id: 'evil',
       cwd: '/repo',
-      aiTitle: 'safe‮titlewith sk-ant-api03-abcdefghijklmnop injected',
+      aiTitle: 'safe\u202Etitle\u0007with sk-ant-api03-abcdefghijklmnop injected',
     });
     const store = createForeignSessionStore({ homeDir: home, env: {} });
     const [session] = await store.listSessions();
     assert.ok(session);
-    assert.ok(!session.title.includes('‮'));
-    assert.ok(!session.title.includes(''));
+    assert.ok(!session.title.includes('\u202E'));
+    assert.ok(!session.title.includes('\u0007'));
     assert.ok(!session.title.includes('sk-ant-api03-abcdefghijklmnop'), session.title);
   });
 
@@ -498,6 +612,110 @@ describe('foreign session store — Codex scan', () => {
   });
 });
 
+describe('foreign session store — OpenCode scan', () => {
+  it('declares the source only when the database file exists', async () => {
+    const home = await tempHome();
+    await mkdir(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    const empty = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual(await empty.availableSources(), []);
+    await seedOpenCodeDb(home, [{ id: 'ses_visible', cwd: '/repo' }]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual(await store.availableSources(), ['opencode']);
+  });
+
+  it('hides the source when MAKA_IMPORT_OPENCODE is 0', async () => {
+    const home = await tempHome();
+    await seedOpenCodeDb(home, [{ id: 'ses_hidden', cwd: '/repo' }]);
+    const store = createForeignSessionStore({
+      homeDir: home,
+      env: { MAKA_IMPORT_OPENCODE: '0' },
+    });
+    assert.deepEqual(await store.availableSources(), []);
+    assert.deepEqual(await store.listSessions(), []);
+  });
+
+  it('lists parent sessions, filters by cwd, and skips child sessions', async () => {
+    const home = await tempHome();
+    await seedOpenCodeDb(home, [
+      { id: 'ses_one', cwd: '/repo/one', title: '登录修复' },
+      { id: 'ses_two', cwd: '/repo/two', title: 'other' },
+      { id: 'ses_child', cwd: '/repo/one', title: 'subagent', parentId: 'ses_one' },
+    ]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const all = await store.listSessions();
+    assert.deepEqual(all.map((s) => s.id).sort(), ['ses_one', 'ses_two']);
+    assert.equal(all.find((s) => s.id === 'ses_one')?.title, '登录修复');
+    assert.equal(all.find((s) => s.id === 'ses_one')?.source, 'opencode');
+    const filtered = await store.listSessions({ cwd: '/repo/one' });
+    assert.deepEqual(
+      filtered.map((s) => s.id),
+      ['ses_one'],
+    );
+  });
+
+  it('caps listed sessions at 50 and drops rows older than 30 days', async () => {
+    const home = await tempHome();
+    const sessions: OpenCodeSessionSeed[] = [];
+    for (let i = 0; i < FOREIGN_SESSION_SCAN_MAX_SESSIONS + 5; i++) {
+      sessions.push({
+        id: `ses_r${String(i).padStart(3, '0')}`,
+        cwd: '/repo',
+        title: `recent ${i}`,
+        updatedAtMs: NOW - i * 1000,
+      });
+    }
+    sessions.push({
+      id: 'ses_expired',
+      cwd: '/repo',
+      title: 'expired',
+      updatedAtMs: NOW - FOREIGN_SESSION_SCAN_MAX_AGE_MS - 60_000,
+    });
+    await seedOpenCodeDb(home, sessions);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const all = await store.listSessions();
+    assert.equal(all.length, FOREIGN_SESSION_SCAN_MAX_SESSIONS);
+    assert.equal(all[0]!.id, 'ses_r000');
+    assert.ok(!all.some((s) => s.id === 'ses_expired'));
+    assert.ok(!all.some((s) => s.id === 'ses_r054'));
+  });
+
+  it('excludes archived sessions so they cannot fill the scan window', async () => {
+    const home = await tempHome();
+    const sessions: OpenCodeSessionSeed[] = [];
+    for (let i = 0; i < FOREIGN_SESSION_SCAN_MAX_SESSIONS + 5; i++) {
+      sessions.push({
+        id: `ses_arch${String(i).padStart(3, '0')}`,
+        cwd: '/repo',
+        updatedAtMs: NOW - i * 1000,
+        archivedAtMs: NOW - i * 1000,
+      });
+    }
+    sessions.push({
+      id: 'ses_live',
+      cwd: '/repo',
+      updatedAtMs: NOW - 80_000,
+    });
+    await seedOpenCodeDb(home, sessions);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const all = await store.listSessions();
+    assert.deepEqual(
+      all.map((s) => s.id),
+      ['ses_live'],
+    );
+  });
+
+  it('matches OpenCode directory across trailing-separator forms', async () => {
+    const home = await tempHome();
+    await seedOpenCodeDb(home, [{ id: 'ses_trail', cwd: '/repo/one/' }]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const filtered = await store.listSessions({ cwd: '/repo/one' });
+    assert.deepEqual(
+      filtered.map((s) => s.id),
+      ['ses_trail'],
+    );
+  });
+});
+
 describe('foreign session store — digest', () => {
   it('builds a digest with user/assistant text and file paths, dropping tool output', async () => {
     const home = await tempHome();
@@ -592,6 +810,206 @@ describe('foreign session store — digest', () => {
     assert.ok(!flat.includes('rm -rf'), flat);
   });
 
+  it('reads OpenCode digests without tool output, thinking, or child sessions', async () => {
+    const home = await tempHome();
+    await seedOpenCodeDb(home, [
+      {
+        id: 'ses_main',
+        cwd: '/repo',
+        title: 'parser',
+        userText: '帮我修复解析器 AIzaSyA1234567890abcdefghijklmnop',
+        assistantText: '已修复并补了测试',
+        filePath: '/repo/src/parser.ts',
+        toolOutput: 'TOOL_OUTPUT rm -rf / leaked-secret',
+        thinking: 'SECRET_THINKING do not hand off',
+      },
+      {
+        id: 'ses_child',
+        cwd: '/repo',
+        parentId: 'ses_main',
+        userText: 'CHILD_USER',
+        assistantText: 'CHILD_ASSISTANT',
+      },
+    ]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const listed = await store.listSessions();
+    assert.deepEqual(
+      listed.map((s) => s.id),
+      ['ses_main'],
+    );
+    const digest = await store.readDigest(listed[0]!);
+    assert.equal(digest.source, 'opencode');
+    assert.deepEqual(digest.assistantTexts, ['已修复并补了测试']);
+    assert.deepEqual(digest.filesTouched, ['/repo/src/parser.ts']);
+    assert.equal(digest.userMessages.length, 1);
+    assert.match(digest.userMessages[0]!, /帮我修复解析器/);
+    assert.ok(
+      !digest.userMessages[0]!.includes('AIzaSyA1234567890abcdefghijklmnop'),
+      digest.userMessages[0],
+    );
+    const flat = JSON.stringify(digest);
+    assert.ok(!flat.includes('TOOL_OUTPUT'), flat);
+    assert.ok(!flat.includes('rm -rf'), flat);
+    assert.ok(!flat.includes('SECRET_THINKING'), flat);
+    assert.ok(!flat.includes('CHILD_USER'), flat);
+    await assert.rejects(
+      () =>
+        store.readDigest({
+          source: 'opencode',
+          id: 'ses_child',
+          title: 'subagent',
+          cwd: '/repo',
+          updatedAtMs: NOW,
+          transcriptPath: listed[0]!.transcriptPath,
+        }),
+      /child/,
+    );
+  });
+
+  it('stops OpenCode digest iteration at the byte cap and keeps the newest text', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      {
+        id: 'ses_big',
+        cwd: '/repo',
+        userText: 'OLD_USER_SHOULD_DROP',
+        assistantText: 'NEW_ASSISTANT_KEEP',
+      },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const assistant = db
+        .prepare(`SELECT id FROM message WHERE session_id = ? AND data LIKE '%assistant%'`)
+        .get('ses_big') as { id: string };
+      db.prepare(
+        `UPDATE part SET time_created = time_created + 10000 WHERE message_id = ? AND data LIKE '%NEW_ASSISTANT_KEEP%'`,
+      ).run(assistant.id);
+      const insert = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      );
+      const chunk = 'y'.repeat(Math.floor(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES / 2) + 1024);
+      for (let i = 0; i < 3; i++) {
+        insert.run(
+          `part_fill_${i}`,
+          assistant.id,
+          'ses_big',
+          NOW - 55_000 + i,
+          JSON.stringify({ type: 'tool', tool: 'read', state: { output: chunk } }),
+        );
+      }
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(
+      digest.warnings.some((w) => w.includes(`${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES}`)),
+      JSON.stringify(digest.warnings),
+    );
+    assert.ok(
+      digest.assistantTexts.some((t) => t.includes('NEW_ASSISTANT_KEEP')),
+      JSON.stringify(digest.assistantTexts),
+    );
+    const flat = JSON.stringify(digest);
+    assert.ok(!flat.includes('OLD_USER_SHOULD_DROP'), flat);
+  });
+
+  it('stops OpenCode digest walk at an oversize newest row instead of skipping it', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      { id: 'ses_oversize', cwd: '/repo', userText: 'OLD_KEEP_IF_CONTINUE' },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const oversize = 'x'.repeat(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES + 1);
+      db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      ).run('part_huge', 'msg_ignored', 'ses_oversize', NOW + 10_000, oversize);
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(
+      digest.warnings.some((w) => w.includes(`${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES}`)),
+      JSON.stringify(digest.warnings),
+    );
+    assert.ok(!JSON.stringify(digest).includes('OLD_KEEP_IF_CONTINUE'));
+  });
+
+  it('drops OpenCode synthetic text parts from the digest', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      { id: 'ses_synth', cwd: '/repo', userText: 'real user prompt' },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const user = db
+        .prepare(`SELECT id FROM message WHERE session_id = ? AND data LIKE '%user%'`)
+        .get('ses_synth') as { id: string };
+      db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      ).run(
+        'part_synth',
+        user.id,
+        'ses_synth',
+        NOW + 1,
+        JSON.stringify({ type: 'text', text: 'SYNTHETIC_COMPACTION', synthetic: true }),
+      );
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(!JSON.stringify(digest).includes('SYNTHETIC_COMPACTION'));
+    assert.match(digest.userMessages[0]!, /real user prompt/);
+  });
+
+  it('counts non-string SQLite payloads and stops at the row cap', () => {
+    const oversize = collectSqliteRowsUntilReadCap([
+      { data: 'x'.repeat(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES + 1) },
+      { data: JSON.stringify({ type: 'text', text: 'OLDER' }) },
+    ]);
+    assert.equal(oversize.truncated, true);
+    assert.equal(oversize.rows.length, 0);
+
+    const half = {
+      type: 'text',
+      text: 'y'.repeat(Math.floor(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES / 2) + 1024),
+    };
+    const objects = collectSqliteRowsUntilReadCap([
+      { data: { type: 'text', text: 'hello' } },
+      { data: half },
+      { data: half },
+    ]);
+    assert.equal(objects.truncated, true);
+    assert.equal(objects.rows.length, 2);
+    assert.equal((objects.rows[0]!.data as { text: string }).text, 'hello');
+
+    const many = Array.from({ length: OPENCODE_DIGEST_MAX_SQLITE_ROWS + 5 }, (_, i) => ({
+      data: { n: i },
+    }));
+    const capped = collectSqliteRowsUntilReadCap(many);
+    assert.equal(capped.truncated, true);
+    assert.equal(capped.rows.length, OPENCODE_DIGEST_MAX_SQLITE_ROWS);
+
+    const first = collectSqliteRowsUntilReadCap([{ data: 'x'.repeat(1024) }]);
+    const leftoverBytes = FOREIGN_SESSION_DIGEST_MAX_READ_BYTES - first.usedBytes;
+    const leftoverRows = OPENCODE_DIGEST_MAX_SQLITE_ROWS - first.usedRows;
+    const second = collectSqliteRowsUntilReadCap([{ data: 'y'.repeat(leftoverBytes + 1) }], {
+      maxBytes: leftoverBytes,
+      maxRows: leftoverRows,
+    });
+    assert.equal(second.truncated, true);
+    assert.equal(second.rows.length, 0);
+  });
+
   it('refuses a transcript path replaced by an out-of-root symlink', async () => {
     const home = await tempHome();
     const path = await seedClaudeSession(home, { id: 'sym', cwd: '/repo' });
@@ -604,6 +1022,20 @@ describe('foreign session store — digest', () => {
     const { rm } = await import('node:fs/promises');
     await rm(path);
     await symlink(secret, path);
+    await assert.rejects(() => store.readDigest(session as ForeignSessionSummary), /escaped/);
+  });
+
+  it('refuses an OpenCode database replaced by an out-of-root symlink', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [{ id: 'ses_sym', cwd: '/repo' }]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const secret = join(home, 'secret.db');
+    await writeFile(secret, 'not yours', 'utf8');
+    const { rm } = await import('node:fs/promises');
+    await rm(dbPath);
+    await symlink(secret, dbPath);
     await assert.rejects(() => store.readDigest(session as ForeignSessionSummary), /escaped/);
   });
 });
