@@ -18,55 +18,12 @@
  */
 
 /**
- * Pure derivations for the Pricing Settings panel — no React, no IPC — so the
- * row projection and the editor validation are unit-testable without a
- * renderer. The Host adapter already validates the canonical built-in ∪
- * overrides order; this maps entries to display rows and mirrors the Host's
- * `normalizePricingConfig` rules per-field.
+ * Pricing draft conversion and field validation. The UI reads the Host's
+ * effective entries directly; only editable drafts need a different shape.
  */
 
 import { normalizePricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
-
-export interface PricingRowView {
-  readonly modelKey: string;
-  readonly source: 'builtin' | 'custom';
-  /** null for a built-in row; the delete consequence for a custom row. */
-  readonly resetEffect: 'restore_builtin' | 'become_unpriced' | null;
-  readonly inputUsdPer1M: number;
-  readonly outputUsdPer1M: number;
-  /** `undefined` means "Not set" — distinct from an explicit `0`. */
-  readonly cacheReadUsdPer1M: number | undefined;
-  readonly cacheWriteUsdPer1M: number | undefined;
-}
-
-export function derivePricingRows(
-  entries: readonly EffectivePricingEntry[],
-): PricingRowView[] {
-  return entries.map(pricingRowFromEntry);
-}
-
-/** The derived row for `modelKey` within a snapshot's entries, or null. */
-export function findPricingRow(
-  entries: readonly EffectivePricingEntry[],
-  modelKey: string,
-): PricingRowView | null {
-  const entry = entries.find(({ pricing }) => pricing.modelKey === modelKey);
-  return entry ? pricingRowFromEntry(entry) : null;
-}
-
-function pricingRowFromEntry(entry: EffectivePricingEntry): PricingRowView {
-  return {
-    modelKey: entry.pricing.modelKey,
-    source: entry.source,
-    resetEffect: entry.source === 'custom' ? entry.resetEffect : null,
-    inputUsdPer1M: entry.pricing.inputUsdPer1M,
-    outputUsdPer1M: entry.pricing.outputUsdPer1M,
-    cacheReadUsdPer1M: entry.pricing.cacheReadUsdPer1M,
-    cacheWriteUsdPer1M: entry.pricing.cacheWriteUsdPer1M,
-  };
-}
 
 export interface PricingDraft {
   readonly modelKey: string;
@@ -77,24 +34,31 @@ export interface PricingDraft {
   readonly cacheWrite: number | null;
 }
 
+/** In-memory user input survives the Settings Host/loading gates remounting the view. */
+export interface PricingEditorDraft {
+  readonly mode: 'catalog' | 'manual' | 'edit';
+  readonly draft: PricingDraft;
+  readonly cacheOpen: boolean;
+}
+
 /**
  * The editor draft pre-filled from an existing row — shared by the Edit flow and
  * the Add flow's catalog pick. `cacheOpen` is true iff the row carries either
  * cache rate (an explicit `0` counts; only `undefined` is "Not set").
  */
-export function draftFromRow(row: PricingRowView): {
+export function draftFromPricing(pricing: PricingConfig): {
   readonly draft: PricingDraft;
   readonly cacheOpen: boolean;
 } {
   return {
     draft: {
-      modelKey: row.modelKey,
-      input: row.inputUsdPer1M,
-      output: row.outputUsdPer1M,
-      cacheRead: row.cacheReadUsdPer1M ?? null,
-      cacheWrite: row.cacheWriteUsdPer1M ?? null,
+      modelKey: pricing.modelKey,
+      input: pricing.inputUsdPer1M,
+      output: pricing.outputUsdPer1M,
+      cacheRead: pricing.cacheReadUsdPer1M ?? null,
+      cacheWrite: pricing.cacheWriteUsdPer1M ?? null,
     },
-    cacheOpen: row.cacheReadUsdPer1M !== undefined || row.cacheWriteUsdPer1M !== undefined,
+    cacheOpen: pricing.cacheReadUsdPer1M !== undefined || pricing.cacheWriteUsdPer1M !== undefined,
   };
 }
 

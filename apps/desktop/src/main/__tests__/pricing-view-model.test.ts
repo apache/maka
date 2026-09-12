@@ -19,9 +19,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { EffectivePricingEntry } from "@maka/runtime-host/protocol";
 import {
-  derivePricingRows,
+  draftFromPricing,
   validatePricingDraft,
   type PricingDraft,
 } from "../../renderer/features/usage/testing.js";
@@ -34,49 +33,19 @@ const EMPTY: PricingDraft = {
   cacheWrite: null,
 };
 
-test("derivePricingRows maps source and cache presence", () => {
-  const entries: EffectivePricingEntry[] = [
-    {
-      source: "custom",
-      resetEffect: "become_unpriced",
-      pricing: { modelKey: "acme:coder-v2", inputUsdPer1M: 0.8, outputUsdPer1M: 2.4 },
-    },
-    {
-      source: "custom",
-      resetEffect: "restore_builtin",
-      pricing: { modelKey: "anthropic:claude", inputUsdPer1M: 2, outputUsdPer1M: 12 },
-    },
-    {
-      source: "builtin",
-      pricing: {
-        modelKey: "openai:gpt-4o",
-        inputUsdPer1M: 2.5,
-        outputUsdPer1M: 10,
-        cacheReadUsdPer1M: 0,
-      },
-    },
-  ];
-
-  const rows = derivePricingRows(entries);
-
-  // The adapter-provided canonical key order is preserved.
-  assert.deepEqual(
-    rows.map((row) => row.modelKey),
-    ["acme:coder-v2", "anthropic:claude", "openai:gpt-4o"],
-  );
-  const acme = rows[0]!;
-  assert.equal(acme.source, "custom");
-  assert.equal(acme.resetEffect, "become_unpriced");
-
-  const anthropic = rows[1]!;
-  assert.equal(anthropic.resetEffect, "restore_builtin");
-
-  const openai = rows[2]!;
-  assert.equal(openai.source, "builtin");
-  assert.equal(openai.resetEffect, null);
-  // Explicit 0 is preserved and stays distinct from "not set" (undefined).
-  assert.equal(openai.cacheReadUsdPer1M, 0);
-  assert.equal(openai.cacheWriteUsdPer1M, undefined);
+test("prefilled drafts round-trip precision, omitted cache and explicit zero", () => {
+  const pricing = {
+    modelKey: "acme:coder-v2",
+    inputUsdPer1M: 0.000000123456789,
+    outputUsdPer1M: 2.123456789012345,
+    cacheReadUsdPer1M: 0,
+  };
+  const { draft, cacheOpen } = draftFromPricing(pricing);
+  assert.equal(cacheOpen, true);
+  assert.equal(draft.cacheRead, 0);
+  assert.equal(draft.cacheWrite, null);
+  assert.deepEqual(validatePricingDraft(draft, { mode: "add", existingKeys: [] }).config, pricing);
+  assert.equal(draftFromPricing({ ...pricing, cacheReadUsdPer1M: undefined }).cacheOpen, false);
 });
 
 test("validatePricingDraft add flags an empty model key", () => {

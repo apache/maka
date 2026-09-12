@@ -23,12 +23,13 @@
 // rule stays satisfied.
 
 export {
-  derivePricingRows,
+  draftFromPricing,
   validatePricingDraft,
   type PricingDraft,
 } from './pricing-view-model.js';
 export { PricingEditor, formatCache, formatUsd } from './ui/pricing-editor.js';
 export { UsagePricingServicesProvider } from './pricing-services-context.js';
+export { UsageFeatureScope } from './services-context.js';
 export type { UsagePricingServices } from './pricing-ports.js';
 export type { UsageHostRef } from './ports.js';
 export { getPricingSettingsCopy } from '../../locales/settings-pricing-copy.js';

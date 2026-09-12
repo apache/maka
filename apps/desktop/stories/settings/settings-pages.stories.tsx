@@ -69,6 +69,8 @@ import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
+import { UsagePricingServicesProvider, type UsagePricingServices } from '../../src/renderer/features/usage';
+import type { DesktopPricingMutationInput } from '../../src/shared/desktop-pricing';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
@@ -1619,6 +1621,33 @@ const withUsageLongTailBridge = withUsageStoryBridge(usageStats, {
   activeTab: 'requests',
 });
 
+const settingsPricingServices: UsagePricingServices = {
+  loadPricing: async (host) => ({
+    hostEpoch: `epoch-${host.hostId}`,
+    connectionId: `connection-${host.hostId}`,
+    revision: 1,
+    entries: [],
+  }),
+  mutatePricing: async () => { throw new Error('Pricing writes are not configured in this story'); },
+};
+
+const withUsagePricingHostsBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: async () => mergeSettings(createDefaultSettings(), { usage: { activeTab: 'pricing' } }),
+  },
+});
+let pricingStoryMutation: (DesktopPricingMutationInput & { hostId: string }) | undefined;
+const hostSwitchPricingServices: UsagePricingServices = {
+  ...settingsPricingServices,
+  mutatePricing: async (host, base, mutation) => {
+    pricingStoryMutation = { hostId: host.hostId, base, mutation };
+    return { kind: 'saved_refresh_failed', disposition: 'committed' };
+  },
+};
+
 const subagentStorySettings = mergeSettings(createDefaultSettings(), {
   subagents: {
     presets: [
@@ -1794,6 +1823,7 @@ function renderedLinkColors(renderedLink: HTMLElement) {
 
 type SettingsStoryProps = {
   section: SettingsSection;
+  pricingServices?: UsagePricingServices;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
   openProviderCatalog?: boolean;
@@ -1887,28 +1917,30 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
           <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
-            <SettingsSurface
-              onClose={noop}
-              themePref={themePref}
-              onThemeChange={setThemePref}
-              themePalette={themePalette}
-              onThemePaletteChange={setThemePalette}
-              onUiLocalePreferenceChange={noop}
-              uiLocaleUpdateGate={uiLocaleUpdateGate}
-              onDefaultPermissionModeChange={noop}
-              request={{ section: props.section }}
-              openProviderCatalog={props.openProviderCatalog}
-              initialConnectionSlug={props.initialConnectionSlug}
-              initialFocusRef={initialFocusRef}
-              onOpenDailyReview={noop}
-              onOpenKeyboardHelp={noop}
-              onOpenSession={noop}
-              archivedTasks={archivedTasks}
-              onTaskImported={noop}
-              onRemoteHostAdded={noop}
-              onSelectedRuntimeHostProfileIdChange={noop}
-              snapshotCache={snapshotCache}
-            />
+            <UsagePricingServicesProvider services={props.pricingServices ?? settingsPricingServices}>
+              <SettingsSurface
+                onClose={noop}
+                themePref={themePref}
+                onThemeChange={setThemePref}
+                themePalette={themePalette}
+                onThemePaletteChange={setThemePalette}
+                onUiLocalePreferenceChange={noop}
+                uiLocaleUpdateGate={uiLocaleUpdateGate}
+                onDefaultPermissionModeChange={noop}
+                request={{ section: props.section }}
+                openProviderCatalog={props.openProviderCatalog}
+                initialConnectionSlug={props.initialConnectionSlug}
+                initialFocusRef={initialFocusRef}
+                onOpenDailyReview={noop}
+                onOpenKeyboardHelp={noop}
+                onOpenSession={noop}
+                archivedTasks={archivedTasks}
+                onTaskImported={noop}
+                onRemoteHostAdded={noop}
+                onSelectedRuntimeHostProfileIdChange={noop}
+                snapshotCache={snapshotCache}
+              />
+            </UsagePricingServicesProvider>
           </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
       </div>
@@ -2446,6 +2478,70 @@ export const PetsActionBadgeTypography: Story = {
 export const UsageEmpty: Story = {
   decorators: [withUsageEmptyBridge],
   render: () => <SettingsStory section="usage" />,
+};
+
+// Real path: Settings → Usage → Pricing → Add, then select another Host.
+// Settings keys its content by Host identity; the user draft must outlive that
+// real remount and require review against the replacement pricing authority.
+export const UsagePricingHostSwitch: Story = {
+  decorators: [withUsagePricingHostsBridge],
+  render: () => {
+    resetGenerationStoryBridge(runtimeHostProfilesWithRemote);
+    pricingStoryMutation = undefined;
+    return <SettingsStory section="usage" pricingServices={hostSwitchPricingServices} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const navigation = await canvas.findByRole('navigation', { name: '使用统计视图' });
+    await userEvent.click(within(navigation).getByRole('button', { name: '定价配置' }));
+    const add = await canvas.findByRole('button', { name: '添加定价' });
+    await waitFor(() => expect(add).not.toHaveAttribute('aria-disabled', 'true'));
+    await userEvent.click(add);
+    const dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
+    await userEvent.click(dialog.getByRole('button', { name: '模型不在列表中？手动输入' }));
+    await userEvent.type(dialog.getByRole('textbox', { name: /^模型键/ }), 'acme:host-draft');
+    await userEvent.type(dialog.getByRole('spinbutton', { name: /输入价格/ }), '1.25');
+    await userEvent.type(dialog.getByRole('spinbutton', { name: /输出价格/ }), '2.75');
+    await userEvent.tab();
+    const oldInput = dialog.getByRole('textbox', { name: /^模型键/ });
+
+    // An offline event removes the active Host and unmounts the entire page.
+    // The Settings selector then allows switching to the still-ready Remote.
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Settings did not subscribe to Host lifecycle changes');
+    listener({
+      epoch: 'pricing-local-offline', profileId: 'local', profileName: 'Local',
+      profileKind: 'local', profileAccess: 'owner', readiness: 'unavailable', isDefault: true,
+    });
+    await waitFor(() => expect(oldInput.isConnected).toBe(false));
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(await within(document.body).findByRole('option', { name: 'Remote' }));
+    const restoredDialog = await canvas.findByRole('dialog', { name: '添加定价' });
+    const restored = within(restoredDialog);
+    await expect(restored.getByRole('textbox', { name: /^模型键/ })).toHaveValue('acme:host-draft');
+    await expect(restored.getByRole('spinbutton', { name: /输入价格/ })).toHaveValue('1.25');
+    await expect(restored.getByRole('spinbutton', { name: /输出价格/ })).toHaveValue('2.75');
+    const save = restored.getByRole('button', { name: '保存' });
+    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(save);
+    await expect(pricingStoryMutation).toBeUndefined();
+    const review = restored.getByRole('button', { name: '已核对新主机定价' });
+    await waitFor(() => expect(review).not.toHaveAttribute('aria-disabled', 'true'));
+    await userEvent.click(review);
+    await expect(restoredDialog.contains(document.activeElement)).toBe(true);
+    await userEvent.click(save);
+    await waitFor(() => expect(pricingStoryMutation?.hostId).toBe('storybook-remote-host'));
+    await expect(pricingStoryMutation?.base.hostEpoch).toBe('epoch-storybook-remote-host');
+    await expect(pricingStoryMutation?.mutation).toEqual({
+      kind: 'upsert', pricing: { modelKey: 'acme:host-draft', inputUsdPer1M: 1.25, outputUsdPer1M: 2.75 },
+    });
+    await restored.findByText('已保存，但无法加载最新定价');
+    await expect(restoredDialog.contains(document.activeElement)).toBe(true);
+    await userEvent.click(restored.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(restoredDialog.isConnected).toBe(false));
+    await expect(canvas.getByRole('button', { name: '添加定价' })).toHaveFocus();
+    await expect(canvas.queryByText('暂无自定义定价')).not.toBeInTheDocument();
+  },
 };
 // Real path: 设置 → 使用统计 → 供应商统计, with traffic from one provider.
 export const UsageSingleProvider: Story = {

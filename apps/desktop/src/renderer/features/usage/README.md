@@ -42,16 +42,19 @@ to a thin wrapper).
 - `pricing-ports.ts` + `pricing-services-context.tsx` — the two Host-backed
   Pricing capabilities: load one complete effective snapshot and apply one CAS
   mutation against the settings-selected Host.
-- `controller/pricing-controller.ts` — Pricing authority, draft, conflict, and
-  Host-generation fencing. A Host change preserves an open draft, discards its
-  old mutation base, reloads authority, and requires explicit review before the
-  next save. If reconciliation was temporarily unavailable, it retains the
-  exact mutation intent and compares it with the next successful snapshot via
-  the shared pure reconciliation rules in `@maka/runtime-host/protocol`.
+- `controller/pricing-controller.ts` — disposable Pricing authority, conflict,
+  mutation execution, and Host-generation fencing. A Host change or view remount
+  recovers only the scope-owned draft, reloads authority, and requires explicit
+  review before the next save. If reconciliation was temporarily unavailable,
+  it retains the exact mutation intent and compares it with the next successful
+  snapshot via the shared pure reconciliation rules in `@maka/runtime-host/protocol`.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
   (single tagged `{ range, value }` snapshot, reload ticket, unmount isolation,
   Host/generation invalidation, load-failure toast), plus `useUsageServices()`
-  and `useUsageStats(range)`.
+  and `useUsageStats(range)`. It also keeps the Pricing editor's input (mode,
+  draft, and cache-section state) through `usePricingEditorDraft()`, so Settings'
+  Host-keyed content and loading gate cannot discard the user's work. Pricing
+  snapshots and in-flight operations never persist in this scope.
 - `ui/usage-settings-view.tsx` — the surface (overview + tabs + per-tab panels).
   A disposable view: it unmounts on a section change and reads the snapshot from
   the scope via `useUsageStats`, so leaving/returning re-displays the last
@@ -73,8 +76,8 @@ call) plus an `updateUsageSettings` that projects the app-settings update down t
 survives a Skeleton/Banner state or a section change; the disposable
 `UsageSettingsPage` view is rendered in the section content slot and reads the scope
 via context. The scope takes a `host:epoch` `targetKey` as a **prop** (not a React
-`key`): on a change it clears the snapshot and fences the in-flight load *in place*,
-so a Host change never remounts the rest of the Settings surface. The Host-change
+`key`): on a change it clears the snapshot and fences the in-flight load *in place*.
+The scope survives even when Settings replaces its Host-keyed page content. The Host-change
 handler also calls the scope's imperative `fenceTarget()` *synchronously* (alongside
 the other Host-scoped resources), rejecting an in-flight old-Host load before React
 re-renders the new target. That same fence is exposed to the Pricing controller as
@@ -95,15 +98,11 @@ shim, since `settings-error-copy` is not a copy catalog.
 
 ## Follow-up
 
-- Add a `SettingsSurface` integration test for the mount seam this PR moves.
-  `usage-settings-view.test.ts` mounts `UsageFeatureScope` + `UsageSettingsView`
-  directly and drives `fenceTarget()` / `targetKey` by hand; it does not load
-  `settings-surface.tsx`, so the surface's fence call sites
-  (`commitSelectedRuntimeHostProfile`, the generation-change handler) and the
-  `usageTargetKey` derivation are not exercised end-to-end. Those three lifecycle
-  obligations are exactly what a stale head had regressed with every test green, so
-  a surface-level test guarding them is the real coverage; it is deferred to keep
-  this extraction PR contained.
+- The `UsagePricingHostSwitch` Settings story now exercises a real Host lifecycle
+  event, page unmount, profile selection, recovered draft, and save against the
+  replacement Host's CAS base. `usage-settings-view.test.ts` still drives the
+  stats scope's fence and target key directly; broader stats integration coverage
+  remains a follow-up.
 - De-duplicate the controllers. `controller/action-guard.ts` and
   `controller/optimistic-settings-draft.ts` are feature-local copies of the legacy
   `settings/` helpers (which keep ~9 consumers and their own tests). They are

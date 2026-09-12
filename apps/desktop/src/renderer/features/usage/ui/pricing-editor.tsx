@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { EmptyState, Heading, Skeleton, Text } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
@@ -26,13 +26,14 @@ import { Typeahead, createStaticSource, type SearchableItem } from '@astryxdesig
 import { Banner, Button, HStack, NumberInput, TextInput, VStack } from '@maka/ui';
 import { ICON_SIZE, BarChart3, Pencil, Plus, RefreshCcw, RotateCcw, Search, Trash2 } from '@maka/ui/icons';
 import type { PricingSettingsCopy } from '../../../locales/settings-pricing-copy.js';
+import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
 import { usePricingController } from '../controller/pricing-controller.js';
 import type { UsagePricingTarget } from '../pricing-ports.js';
-import type { PricingDraftErrors, PricingRowView } from '../pricing-view-model.js';
+import type { PricingDraftErrors } from '../pricing-view-model.js';
 import { UsageStatsTable, type UsageColumn } from './usage-stats-table.js';
 
 /** A built-in catalog row as a Typeahead item (its `label` is the model key). */
-type CatalogItem = SearchableItem<{ row: PricingRowView }>;
+type CatalogItem = SearchableItem<{ row: EffectivePricingEntry }>;
 
 export function PricingEditor(props: {
   readonly describeError: (error: unknown) => string;
@@ -43,7 +44,6 @@ export function PricingEditor(props: {
     target: props.target,
   });
   const { copy } = c;
-  const addButtonRef = useRef<HTMLButtonElement>(null);
 
   const columns: UsageColumn[] = [
     { header: copy.headers[0], width: 300 },
@@ -63,19 +63,19 @@ export function PricingEditor(props: {
   // ~1.4k built-in catalog is never rendered as a table — it is reachable only
   // through the Add flow's Typeahead picker.
   const rows = c.overrideRows.map((row) => [
-    row.modelKey,
+    row.pricing.modelKey,
     pricingSourceLabel(row, copy),
-    formatUsd(row.inputUsdPer1M),
-    formatUsd(row.outputUsdPer1M),
-    formatCache(row.cacheReadUsdPer1M, copy),
-    formatCache(row.cacheWriteUsdPer1M, copy),
+    formatUsd(row.pricing.inputUsdPer1M),
+    formatUsd(row.pricing.outputUsdPer1M),
+    formatCache(row.pricing.cacheReadUsdPer1M, copy),
+    formatCache(row.pricing.cacheWriteUsdPer1M, copy),
     <PricingRowActions
-      key={row.modelKey}
+      key={row.pricing.modelKey}
       row={row}
       copy={copy}
       disabled={c.writesBlocked}
       onEdit={(trigger) => c.openEdit(row, trigger)}
-      onReset={(trigger) => c.openReset(row, trigger, addButtonRef.current)}
+      onReset={(trigger) => c.openReset(row, trigger)}
     />,
   ]);
 
@@ -98,7 +98,7 @@ export function PricingEditor(props: {
             icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
           />
           <Button
-            ref={addButtonRef}
+            ref={c.addButtonRef}
             variant="primary"
             size="sm"
             icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
@@ -137,7 +137,7 @@ export function PricingEditor(props: {
             actions={<Button variant="secondary" size="sm" label={copy.retry} onClick={() => void c.reload()} />}
             className="settingsUsageEmpty"
           />
-        ) : c.loading && c.overrideRows.length === 0 ? (
+        ) : c.loading && !c.hasAuthority ? (
           // Reserve the ready table geometry with skeleton rows so the real
           // rows land with zero layout shift (DESIGN.md §Loading).
           <UsageStatsTable
@@ -146,14 +146,14 @@ export function PricingEditor(props: {
             rows={pricingSkeletonRows(columns.length)}
             empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
           />
-        ) : (
+        ) : c.hasAuthority ? (
           <UsageStatsTable
             ariaLabel={copy.tableAria}
             columns={columns}
             rows={rows}
             empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
           />
-        )}
+        ) : null}
       </div>
 
       {c.editor !== null ? <PricingEditorDialog controller={c} /> : null}
@@ -164,7 +164,7 @@ export function PricingEditor(props: {
 }
 
 function PricingRowActions(props: {
-  row: PricingRowView;
+  row: Extract<EffectivePricingEntry, { source: 'custom' }>;
   copy: PricingSettingsCopy;
   disabled: boolean;
   onEdit(trigger: HTMLElement | null): void;
@@ -182,7 +182,7 @@ function PricingRowActions(props: {
         size="sm"
         isIconOnly
         isDisabled={props.disabled}
-        label={copy.editAria(row.modelKey)}
+        label={copy.editAria(row.pricing.modelKey)}
         tooltip={copy.edit}
         icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
         onClick={(event) => props.onEdit(event.currentTarget)}
@@ -192,7 +192,7 @@ function PricingRowActions(props: {
         size="sm"
         isIconOnly
         isDisabled={props.disabled}
-        label={isDelete ? copy.deleteAria(row.modelKey) : copy.resetAria(row.modelKey)}
+        label={isDelete ? copy.deleteAria(row.pricing.modelKey) : copy.resetAria(row.pricing.modelKey)}
         tooltip={isDelete ? copy.delete : copy.reset}
         icon={
           isDelete ? (
@@ -213,12 +213,14 @@ function PricingResetDialog(props: {
   const c = props.controller;
   const { copy, resetTarget } = c;
   const descriptionId = useId();
+  const dialogRef = usePricingDialogFocus();
   if (resetTarget === null) return null;
   const isDelete = resetTarget.resetEffect === 'become_unpriced';
   const hasConflict = c.writeState.kind === 'conflict';
 
   return (
     <Dialog
+      ref={dialogRef}
       isOpen
       onOpenChange={(open) => {
         if (!open) c.cancelReset();
@@ -234,7 +236,7 @@ function PricingResetDialog(props: {
           <LayoutContent padding={4}>
             <VStack gap={3}>
               <Text id={descriptionId} type="body" color="secondary">
-                {isDelete ? copy.deleteBody(resetTarget.modelKey) : copy.resetBody(resetTarget.modelKey)}
+                {isDelete ? copy.deleteBody(resetTarget.pricing.modelKey) : copy.resetBody(resetTarget.pricing.modelKey)}
               </Text>
               <PricingWriteNotice
                 writeState={c.writeState}
@@ -285,25 +287,21 @@ function PricingEditorDialog(props: {
 }) {
   const c = props.controller;
   const { copy, draft, validation, editor } = c;
+  const dialogRef = usePricingDialogFocus();
   const isEdit = editor?.mode === 'edit';
   const title = isEdit ? copy.editTitle : copy.addTitle;
   // Show field errors only after a save attempt so a fresh Add form is quiet.
   const [attempted, setAttempted] = useState(false);
-  // Add flow: pick a model from the built-in catalog (Typeahead, pre-fills the
-  // built-in price) or fall back to typing an arbitrary key for a model not in
-  // the catalog (local/new models). Reset both when the editor (re)opens.
-  const [addMode, setAddMode] = useState<'catalog' | 'manual'>('catalog');
-  const [picked, setPicked] = useState<CatalogItem | null>(null);
-  useEffect(() => {
-    setAttempted(false);
-    setAddMode('catalog');
-    setPicked(null);
-  }, [editor]);
-
+  // Selection is the draft's identity, including while a Host reload has no
+  // catalog yet. Keeping a second selected-item state lets the two drift.
+  const picked = useMemo<CatalogItem | null>(
+    () => draft.modelKey ? { id: draft.modelKey, label: draft.modelKey } : null,
+    [draft.modelKey],
+  );
   const catalogSource = useMemo(
     () =>
       createStaticSource<CatalogItem>(
-        c.catalogRows.map((row) => ({ id: row.modelKey, label: row.modelKey, auxiliaryData: { row } })),
+        c.catalogRows.map((row) => ({ id: row.pricing.modelKey, label: row.pricing.modelKey, auxiliaryData: { row } })),
       ),
     [c.catalogRows],
   );
@@ -330,6 +328,7 @@ function PricingEditorDialog(props: {
 
   return (
     <Dialog
+      ref={dialogRef}
       isOpen
       onOpenChange={(open) => {
         if (!open) close();
@@ -353,7 +352,7 @@ function PricingEditorDialog(props: {
                   isReadOnly
                   width="100%"
                 />
-              ) : addMode === 'catalog' ? (
+              ) : editor?.mode === 'catalog' ? (
                 // Add via the built-in catalog: Typeahead renders only the top
                 // matches (never the ~1.4k-row list), and a pick pre-fills the
                 // built-in price. Its `value.label` is the model key it commits.
@@ -363,7 +362,6 @@ function PricingEditorDialog(props: {
                     searchSource={catalogSource}
                     value={picked}
                     onChange={(item) => {
-                      setPicked(item);
                       if (item) {
                         c.pickCatalogModel(item.auxiliaryData!.row);
                       } else {
@@ -389,9 +387,7 @@ function PricingEditorDialog(props: {
                       size="sm"
                       label={copy.manualEntryToggle}
                       onClick={() => {
-                        setPicked(null);
-                        c.clearModel();
-                        setAddMode('manual');
+                        c.clearModel('manual');
                       }}
                     />
                   </HStack>
@@ -419,7 +415,6 @@ function PricingEditorDialog(props: {
                         // Clear the manually-typed key and its rates so catalog
                         // mode cannot save values hidden behind the picker.
                         c.clearModel();
-                        setAddMode('catalog');
                       }}
                     />
                   </HStack>
@@ -526,9 +521,22 @@ function PricingEditorDialog(props: {
   );
 }
 
+/** Keep focus in an open dialog when a pending action disables its button or
+ *  review removes the focused control. Preserve any focus the user moved. */
+function usePricingDialogFocus() {
+  const ref = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (dialog?.open && dialog.ownerDocument.activeElement === dialog.ownerDocument.body) {
+      dialog.focus();
+    }
+  });
+  return ref;
+}
+
 function PricingWriteNotice(props: {
   writeState: ReturnType<typeof usePricingController>['writeState'];
-  latestEntry: PricingRowView | null;
+  latestEntry: EffectivePricingEntry | null;
   copy: PricingSettingsCopy;
   onRefresh(): void;
   refreshBusy: boolean;
@@ -542,10 +550,10 @@ function PricingWriteNotice(props: {
       const latest = latestEntry
         ? ` ${copy.conflictLatest(
             pricingSourceLabel(latestEntry, copy),
-            formatUsd(latestEntry.inputUsdPer1M),
-            formatUsd(latestEntry.outputUsdPer1M),
-            formatCache(latestEntry.cacheReadUsdPer1M, copy),
-            formatCache(latestEntry.cacheWriteUsdPer1M, copy),
+            formatUsd(latestEntry.pricing.inputUsdPer1M),
+            formatUsd(latestEntry.pricing.outputUsdPer1M),
+            formatCache(latestEntry.pricing.cacheReadUsdPer1M, copy),
+            formatCache(latestEntry.pricing.cacheWriteUsdPer1M, copy),
           )}`
         : '';
       return (
@@ -593,7 +601,7 @@ function pricingSkeletonRows(columnCount: number): Array<Array<ReactNode>> {
   );
 }
 
-function pricingSourceLabel(row: PricingRowView, copy: PricingSettingsCopy): string {
+function pricingSourceLabel(row: EffectivePricingEntry, copy: PricingSettingsCopy): string {
   if (row.source === 'builtin') return copy.sourceBuiltin;
   return row.resetEffect === 'restore_builtin' ? copy.sourceCustomFallback : copy.sourceCustomOnly;
 }

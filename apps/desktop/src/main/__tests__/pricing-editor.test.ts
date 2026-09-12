@@ -20,9 +20,10 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { act, createElement } from 'react';
+import { StrictMode, act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import { createDefaultSettings } from '@maka/core/settings';
 import type {
   DesktopPricingMutationInput,
   DesktopPricingMutationOutcome,
@@ -32,6 +33,7 @@ import {
   getPricingSettingsCopy,
   PricingEditor,
   UsagePricingServicesProvider,
+  UsageFeatureScope,
   formatCache,
   formatUsd,
   type UsageHostRef,
@@ -191,6 +193,24 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('keeps fresh authority when a StrictMode mount read settles after the replacement read', async () => {
+    const oldRead = deferred<DesktopPricingSnapshot>();
+    const latest = { ...SNAPSHOT, revision: 6 };
+    let reads = 0;
+    const harness = await renderEditor({
+      strict: true,
+      load: async () => ++reads === 1 ? oldRead.promise : latest,
+      mutate: async () => ({ kind: 'saved', disposition: 'committed', snapshot: latest }),
+    });
+    assert.equal(harness.loadCalls(), 2, 'StrictMode restarts the initial load');
+    await act(async () => oldRead.resolve({ ...SNAPSHOT, entries: [] }));
+    assert.match(harness.container.textContent ?? '', /anthropic:claude/);
+    await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
+    await click(buttonByText(harness.doc, copy.confirmReset));
+    assert.equal(harness.mutations[0]?.base.revision, 6);
+    await act(async () => harness.root.unmount());
+  });
+
   it('reset sends a delete against the loaded snapshot', async () => {
     const committed: DesktopPricingSnapshot = { ...SNAPSHOT, revision: 6, entries: [SNAPSHOT.entries[0]!] };
     const harness = await renderEditor({
@@ -255,6 +275,8 @@ describe('PricingEditor', () => {
       harness.container.querySelector('table')?.textContent ?? '',
       /anthropic:claude/,
     );
+    assert.doesNotMatch(harness.container.textContent ?? '', new RegExp(copy.emptyTitle),
+      'discarded authority must not claim that there are no overrides');
     const addButton = buttonByText(harness.doc, copy.add);
     assert.ok(addButton);
     // A disabled control that carries its reason via tooltip stays focusable and
@@ -413,6 +435,23 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('clears a cancelled reset conflict before opening another editor', async () => {
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'review_required', reason: 'revision_conflict', snapshot: SNAPSHOT }),
+    });
+    await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
+    await click(buttonByText(harness.doc, copy.confirmReset));
+    await click(buttonByText(openDialog(harness.doc)!, copy.cancel));
+    await click(buttonByText(harness.doc, copy.add));
+
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog);
+    assert.doesNotMatch(dialog.textContent ?? '', new RegExp(copy.conflictTitle));
+    assert.ok(buttonByText(dialog, copy.save));
+    await act(async () => harness.root.unmount());
+  });
+
   it('finishes an unavailable upsert when the refreshed authority matches exactly', async () => {
     const committed: DesktopPricingSnapshot = {
       ...SNAPSHOT,
@@ -446,6 +485,24 @@ describe('PricingEditor', () => {
 
     assert.equal(openDialog(harness.doc), undefined, 'the matched draft is complete');
     assert.equal(harness.mutations.length, 1, 'reconciliation never replays the upsert');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('blocks form submission while an upsert still needs reconciliation', async () => {
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    await click(buttonByText(harness.doc, copy.save));
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+
+    await submitEditor(harness.doc);
+
+    assert.equal(harness.mutations.length, 1, 'form submission must obey the same write blocker');
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'the unreconciled draft stays open');
+    assert.match(dialog.textContent ?? '', /openai:gpt-4o/, 'the catalog selection stays visible');
     await act(async () => harness.root.unmount());
   });
 
@@ -516,6 +573,8 @@ describe('PricingEditor', () => {
     assert.equal(harness.loadCalls(), 2, 'a fresh authority reload ran');
     assert.match(harness.container.textContent ?? '', new RegExp(copy.hostChangedTitle));
     assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await submitEditor(harness.doc);
+    assert.equal(harness.mutations.length, 0, 'form submission cannot bypass Host review');
     await click(buttonByText(harness.doc, copy.reviewHostChange));
     assertButtonEnabled(buttonByText(harness.doc, copy.save));
     await click(buttonByText(harness.doc, copy.save));
@@ -552,6 +611,41 @@ describe('PricingEditor', () => {
     });
     assertButtonEnabled(buttonByText(harness.doc, copy.reviewHostChange));
     assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await act(async () => harness.root.unmount());
+  });
+
+  it('preserves the manual draft across the Settings Host gate unmount and rejects its old save', async () => {
+    const previousSave = deferred<DesktopPricingMutationOutcome>();
+    const replacement = { ...SNAPSHOT, hostEpoch: 'epoch-2', connectionId: 'conn-2', revision: 1 };
+    let reads = 0;
+    let writes = 0;
+    const harness = await renderEditor({
+      load: async () => ++reads === 1 ? SNAPSHOT : replacement,
+      mutate: async () => ++writes === 1
+        ? previousSave.promise
+        : { kind: 'saved', disposition: 'committed', snapshot: replacement },
+    });
+    await click(buttonByText(harness.doc, copy.add));
+    await click(buttonByText(harness.doc, copy.manualEntryToggle));
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:retained');
+    const rates = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('[role="spinbutton"]'));
+    await setInput(rates[0], '1.25');
+    await setInput(rates[1], '2.75');
+    await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+    await harness.hideView();
+    assert.equal(openDialog(harness.doc), undefined, 'the Settings gate actually unmounts the view');
+    await harness.rerender('replacement-host:epoch-2');
+    await act(async () => previousSave.resolve({ kind: 'saved', disposition: 'committed', snapshot: SNAPSHOT }));
+
+    assert.equal(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder)?.value, 'acme:retained');
+    const restoredRates = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('[role="spinbutton"]'));
+    assert.equal(restoredRates[0]?.value, '1.25');
+    assert.equal(restoredRates[1]?.value, '2.75');
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await click(buttonByText(harness.doc, copy.reviewHostChange));
+    await click(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 2);
+    assert.deepEqual(harness.mutations[1]?.base, replacement);
     await act(async () => harness.root.unmount());
   });
 
@@ -619,6 +713,37 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('does not dispatch a write after the Host event fences the still-visible editor', async () => {
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'saved_refresh_failed', disposition: 'committed' }),
+    });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    harness.fenceTarget();
+    await click(buttonByText(harness.doc, copy.save));
+
+    assert.equal(harness.mutations.length, 0, 'the stale Host must receive no write');
+    assert.ok(openDialog(harness.doc), 'the draft survives until the replacement Host renders');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('submits once when the form is submitted twice before a render', async () => {
+    const pending = deferred<DesktopPricingMutationOutcome>();
+    const harness = await renderEditor({ load: async () => SNAPSHOT, mutate: async () => pending.promise });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    const form = openDialog(harness.doc)?.querySelector('form');
+    assert.ok(form);
+    await act(async () => {
+      const EventClass = harness.doc.defaultView!.Event;
+      form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.equal(harness.mutations.length, 1);
+    await act(async () => pending.resolve({ kind: 'saved', disposition: 'unchanged', snapshot: SNAPSHOT }));
+    await act(async () => harness.root.unmount());
+  });
+
   it('a reload landing after a mutation does not overwrite the committed authority (P1.2)', async () => {
     // The reset commits a claude-less authority; a refresh started earlier is
     // still in flight and will resolve with the PRE-reset snapshot.
@@ -650,6 +775,25 @@ describe('PricingEditor', () => {
       /anthropic:claude/,
       'a stale reload must not overwrite the committed authority',
     );
+    await act(async () => harness.root.unmount());
+  });
+
+  it('clears an earlier refresh failure when a save returns fresh authority', async () => {
+    const refresh = deferred<DesktopPricingSnapshot>();
+    const committed = { ...SNAPSHOT, revision: 6 };
+    let reads = 0;
+    const harness = await renderEditor({
+      load: async () => ++reads === 1 ? SNAPSHOT : refresh.promise,
+      mutate: async () => ({ kind: 'saved', disposition: 'unchanged', snapshot: committed }),
+    });
+    await click(buttonByLabel(harness.doc, copy.refresh));
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await act(async () => refresh.reject(new Error('read disconnected')));
+    await click(buttonByText(harness.doc, copy.save));
+
+    assert.doesNotMatch(harness.container.textContent ?? '', new RegExp(copy.loadFailedTitle));
+    assert.match(harness.container.textContent ?? '', /anthropic:claude/);
+    assertButtonEnabled(buttonByText(harness.doc, copy.add));
     await act(async () => harness.root.unmount());
   });
 
@@ -788,6 +932,7 @@ async function renderEditor(options: {
   ) => Promise<DesktopPricingMutationOutcome>;
   // Omitted → the default selected Host; `null` → no Host selected.
   host?: UsageHostRef | null;
+  strict?: boolean;
 }) {
   const { document, window } = parseHTML('<div id="root"></div>');
   const matchMedia = (media: string) => ({
@@ -860,7 +1005,7 @@ async function renderEditor(options: {
     ? `${runtimeHost.profileId}:${runtimeHost.hostId}:e1`
     : 'no-host';
   let currentGenerationKey: string | null = defaultGenerationKey;
-  function renderTree(generationKey: string): void {
+  function renderTree(generationKey: string, showView = true): void {
     currentGenerationKey = generationKey;
     const editor = createElement(PricingEditor, {
       describeError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -872,10 +1017,21 @@ async function renderEditor(options: {
           }
         : null,
     });
-    const provided = createElement(UsagePricingServicesProvider, { services, children: editor });
+    const scope = createElement(UsageFeatureScope, {
+      targetKey: generationKey,
+      services: {
+        loadUsageStats: async () => null,
+        updateUsageSettings: async () => createDefaultSettings().usage,
+      },
+      loadErrorTitle: 'Usage load failed',
+      describeError: String,
+      children: showView ? editor : null,
+    });
+    const provided = createElement(UsagePricingServicesProvider, { services, children: scope });
     const toasted = createElement(ToastProvider, { children: provided });
     const localized = createElement(AstryxLocaleProvider, { children: toasted });
-    root.render(createElement(LocaleProvider, { locale: 'en', children: localized }));
+    const tree = createElement(LocaleProvider, { locale: 'en', children: localized });
+    root.render(options.strict ? createElement(StrictMode, null, tree) : tree);
   }
   await act(async () => {
     renderTree(defaultGenerationKey);
@@ -894,6 +1050,9 @@ async function renderEditor(options: {
     container,
     root: root as Root,
     rerender,
+    hideView: async () => {
+      await act(async () => renderTree(currentGenerationKey ?? defaultGenerationKey, false));
+    },
     fenceTarget: () => {
       currentGenerationKey = null;
     },
@@ -908,6 +1067,17 @@ async function click(button: HTMLButtonElement | undefined) {
   assert.ok(button, 'expected a clickable button');
   await act(async () => {
     button.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function submitEditor(doc: Document): Promise<void> {
+  const form = openDialog(doc)?.querySelector('form');
+  assert.ok(form, 'expected the editor form');
+  await act(async () => {
+    const EventClass = doc.defaultView!.Event;
+    form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
     await Promise.resolve();
     await Promise.resolve();
   });

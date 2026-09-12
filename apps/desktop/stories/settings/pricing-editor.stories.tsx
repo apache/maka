@@ -20,9 +20,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { userEvent, within } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
+import { createDefaultSettings } from '@maka/core/settings';
 import {
   PricingEditor,
   UsagePricingServicesProvider,
+  UsageFeatureScope,
   type UsageHostRef,
   type UsagePricingServices,
 } from '../../src/renderer/features/usage/testing';
@@ -34,6 +36,10 @@ import type { DesktopPricingSnapshot } from '../../src/shared/desktop-pricing';
 // (covered by the feature unit tests, not a reachable settings-surface state).
 const STORY_HOST: UsageHostRef = { profileId: 'story-profile', hostId: 'story-host' };
 const GENERATION_KEY = `${STORY_HOST.profileId}:${STORY_HOST.hostId}:e1`;
+const USAGE_SERVICES = {
+  loadUsageStats: async () => null,
+  updateUsageSettings: async () => createDefaultSettings().usage,
+};
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -97,20 +103,27 @@ function PricingTabPanel(props: { services: UsagePricingServices }) {
   return (
     <ToastProvider>
       <UsagePricingServicesProvider services={props.services}>
-        {/* The Usage → 定价配置 tab panel wrapper the surface really renders the
-            editor inside. The surrounding settings-surface chrome (modal, nav
-            sidebar, the centered content column that bounds this width) is
-            exercised by Product/Settings/Pages; this story isolates the tab's
-            own content, capped at a representative content-column width so the
-            table is not reviewed stretched to the full 1280 render frame. */}
-        <div style={{ maxWidth: 720, marginInline: 'auto', padding: 'var(--space-6) var(--space-4)' }}>
-          <div className="settingsUsageTabPanel">
-            <PricingEditor
-              describeError={describeError}
-              target={{ host: STORY_HOST, generationKey: GENERATION_KEY, isCurrent: () => true }}
-            />
+        <UsageFeatureScope
+          targetKey={GENERATION_KEY}
+          services={USAGE_SERVICES}
+          loadErrorTitle="Usage load failed"
+          describeError={describeError}
+        >
+          {/* The Usage → 定价配置 tab panel wrapper the surface really renders the
+              editor inside. The surrounding settings-surface chrome (modal, nav
+              sidebar, the centered content column that bounds this width) is
+              exercised by Product/Settings/Pages; this story isolates the tab's
+              own content, capped at a representative content-column width so the
+              table is not reviewed stretched to the full 1280 render frame. */}
+          <div style={{ maxWidth: 720, marginInline: 'auto', padding: 'var(--space-6) var(--space-4)' }}>
+            <div className="settingsUsageTabPanel">
+              <PricingEditor
+                describeError={describeError}
+                target={{ host: STORY_HOST, generationKey: GENERATION_KEY, isCurrent: () => true }}
+              />
+            </div>
           </div>
-        </div>
+        </UsageFeatureScope>
       </UsagePricingServicesProvider>
     </ToastProvider>
   );

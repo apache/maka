@@ -26,11 +26,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from 'react';
 import { useMountedRef, useToast } from '@maka/ui';
 import type { UsageRange, UsageStats } from '@maka/core/settings';
 import type { UsageServices } from './ports.js';
+import type { PricingEditorDraft } from './pricing-view-model.js';
 
 interface UsageSnapshot {
   readonly range: UsageRange;
@@ -55,6 +58,8 @@ interface UsageScopeValue {
   reload(range: UsageRange): Promise<void>;
   /** True only while the rendered Host generation is still authoritative. */
   isCurrentTarget(): boolean;
+  readonly pricingEditor: PricingEditorDraft | null;
+  readonly setPricingEditor: Dispatch<SetStateAction<PricingEditorDraft | null>>;
 }
 
 const UsageScopeContext = createContext<UsageScopeValue | null>(null);
@@ -93,6 +98,7 @@ export const UsageFeatureScope = forwardRef<
   const toast = useToast();
   const mountedRef = useMountedRef();
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
+  const [pricingEditor, setPricingEditor] = useState<PricingEditorDraft | null>(null);
   const [renderedTargetKey, setRenderedTargetKey] = useState(props.targetKey);
   const reloadTicketRef = useRef(0);
   const targetCurrentRef = useRef(true);
@@ -160,8 +166,10 @@ export const UsageFeatureScope = forwardRef<
       targetKey,
       reload,
       isCurrentTarget,
+      pricingEditor,
+      setPricingEditor,
     }),
-    [services, snapshot, targetKey, reload, isCurrentTarget],
+    [services, snapshot, targetKey, reload, isCurrentTarget, pricingEditor],
   );
 
   return <UsageScopeContext.Provider value={value}>{props.children}</UsageScopeContext.Provider>;
@@ -176,6 +184,12 @@ function useUsageScope(): UsageScopeValue {
 /** Persistence port for the current-range settings update (used by the draft). */
 export function useUsageServices(): UsageServices {
   return useUsageScope().services;
+}
+
+/** Only user input persists above the Host gate; pricing authority stays view-owned. */
+export function usePricingEditorDraft() {
+  const { pricingEditor, setPricingEditor } = useUsageScope();
+  return [pricingEditor, setPricingEditor] as const;
 }
 
 /**
