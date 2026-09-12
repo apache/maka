@@ -2273,8 +2273,10 @@ const makaBridge = {
       onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
+      onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void {
       const observerId = crypto.randomUUID();
+      let lastExecution: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined;
       let disposed = false;
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
@@ -2292,8 +2294,17 @@ const makaBridge = {
         // same-named Session channel.
         unsubscribeEvents = subscribeEveryRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
-          (scope, event: SessionEvent) => {
+          (scope, event: SessionEvent | import('../shared/session-execution-projection.js').SessionObservationMessage) => {
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
+            if (event.type === 'host_execution') {
+              lastExecution = { ...event, rootTurn: event.rootTurn ? { ...event.rootTurn, sessionId } : null };
+              onExecution?.(lastExecution);
+              return;
+            }
+            if (event.type === 'host_observation_error') {
+              onSeedError?.(new Error(event.message));
+              return;
+            }
             handler(projectDesktopSessionEvent(scope, event));
           },
         );
@@ -2303,6 +2314,10 @@ const makaBridge = {
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (payload.sessionId !== session.sessionId) return;
             if (payload.phase === 'pending' || payload.phase === 'ready') {
+              if (payload.phase === 'pending') {
+                if (lastExecution) lastExecution = { ...lastExecution, available: false };
+                onExecution?.(lastExecution);
+              }
               onObservationSeed?.(payload.phase);
             }
           },
@@ -3898,6 +3913,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     onSeeded,
     onObservationSeed,
     onSeedError,
+    onExecution,
   ) => {
     const nextError = nextSessionObservationError;
     nextSessionObservationError = undefined;
@@ -3908,6 +3924,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         onSeeded,
         onObservationSeed,
         onSeedError,
+        onExecution,
       );
     }
     let disposed = false;

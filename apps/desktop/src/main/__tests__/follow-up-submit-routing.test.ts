@@ -20,32 +20,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from '../../renderer/follow-up-submit-routing.js';
 
 describe('follow-up submit routing', () => {
-  it('uses the synchronous turn arm before React publishes streaming state', () => {
-    assert.equal(
-      hasActiveTurnAtSubmit({
-        liveTurn: { turnId: 'turn-1' },
-        runningTurnIds: [],
-      }),
-      true,
-    );
-  });
-
-  it('ignores a terminal projection whose only running id is the same turn', () => {
-    assert.equal(
-      hasActiveTurnAtSubmit({
-        liveTurn: { turnId: 'turn-1', terminal: true },
-        runningTurnIds: ['turn-1'],
-      }),
-      false,
-    );
-  });
-
   it('routes burst input through the selected follow-up lane', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({

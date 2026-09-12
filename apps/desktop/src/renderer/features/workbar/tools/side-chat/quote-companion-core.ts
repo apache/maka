@@ -202,26 +202,6 @@ export async function dismissCompanionCopy(
 }
 
 /**
- * The shared Composer's `streaming` input means Host work is interruptible, not
- * merely that a text delta has arrived. A pending admission remains stoppable
- * before it owns a Turn; an admitted Turn remains stoppable through live output.
- */
-export function deriveCompanionComposerState(
-  hasPendingAdmission: boolean,
-  activeTurnId: string | null,
-  liveTurn: LiveTurnProjection | undefined,
-): { streaming: boolean; processing: boolean } {
-  const activeTurnStreaming = activeTurnId !== null && liveTurn?.terminal !== true;
-  const streaming = hasPendingAdmission || activeTurnStreaming;
-  return {
-    streaming,
-    processing:
-      streaming &&
-      (!activeTurnStreaming || !liveTurn || liveTurn.phase === 'waiting'),
-  };
-}
-
-/**
  * The main-process cleanup authority durably records the fork before attempting
  * the complete session-removal path. A rejection here means the intent remains
  * queued for the next `sessions.list` call or Desktop restart, so renderer

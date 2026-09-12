@@ -100,7 +100,6 @@
     "src/renderer/mcp-page.tsx",
     "src/renderer/model-catalog-choices.ts",
     "src/renderer/model-connection-errors.ts",
-    "src/renderer/model-wait-state.ts",
     "src/renderer/nav-selection.ts",
     "src/renderer/new-task-reload-intent.ts",
     "src/renderer/observable-state.ts",
@@ -206,7 +205,6 @@
     "src/renderer/settings/use-optimistic-settings-draft.ts",
     "src/renderer/settings/web-search-settings-page.tsx",
     "src/renderer/settled-message-merge.ts",
-    "src/renderer/settled-session-transients.ts",
     "src/renderer/shell-chat-model-selection.ts",
     "src/renderer/shell-run-update-state.ts",
     "src/renderer/side-chat-command.ts",
@@ -224,7 +222,6 @@
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
     "src/renderer/use-deep-research-run.ts",
-    "src/renderer/use-delayed-flag.ts",
     "src/renderer/use-external-store-selector.ts",
     "src/renderer/use-new-task-choice.ts",
     "src/renderer/use-onboarding-snapshot.ts",
@@ -332,8 +329,8 @@
           "@maka/core/session-name": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 11,
-        "nonTriviaTokens": 4053
+        "importSpecifiers": 10,
+        "nonTriviaTokens": 3720
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -500,7 +497,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3801
+        "nonTriviaTokens": 3817
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
@@ -710,7 +707,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 69,
+        "importDeclarations": 70,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -786,6 +783,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../shared/session-execution-projection.js": 1,
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
@@ -871,7 +869,7 @@
           "react": 1
         },
         "importSpecifiers": 107,
-        "nonTriviaTokens": 13669
+        "nonTriviaTokens": 13595
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -891,7 +889,7 @@
         "nonTriviaTokens": 360
       },
       "src/renderer/use-app-shell-session-list.ts": {
-        "importDeclarations": 8,
+        "importDeclarations": 7,
         "bridgePaths": {
           "window.maka.sessions.list": 1
         },
@@ -911,20 +909,19 @@
           "./session-catalog-state.js": 1,
           "./session-read-state.js": 1,
           "./session-status-presentation.js": 1,
-          "./settled-session-transients.js": 1,
           "./use-external-store-selector.js": 1,
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 11,
-        "nonTriviaTokens": 581
+        "importSpecifiers": 10,
+        "nonTriviaTokens": 496
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {
         "importDeclarations": 2,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useExternalStoreSelector": 7
+          "useExternalStoreSelector": 8
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -934,7 +931,7 @@
           "./use-external-store-selector.js": 1
         },
         "importSpecifiers": 5,
-        "nonTriviaTokens": 322
+        "nonTriviaTokens": 360
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
         "importDeclarations": 8,
@@ -962,7 +959,7 @@
           "react": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 480
+        "nonTriviaTokens": 466
       }
     },
     "closure": {
@@ -1116,7 +1113,7 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useDeepResearchRun": 1,
-          "useExternalStoreSelector": 2,
+          "useExternalStoreSelector": 3,
           "useState": 1,
           "useUiLocale": 1
         },
@@ -1124,6 +1121,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../shared/session-execution-projection.js": 1,
           "./chat-recovery-notice": 1,
           "./locales/shell-copy": 1,
           "./onboarding-hero": 1,
@@ -1916,15 +1914,6 @@
           "./locales/shell-copy.js": 1,
           "./session-error-presentation.js": 1
         }
-      },
-      "src/renderer/model-wait-state.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/nav-selection.ts": {
         "bridgePaths": {},
@@ -3991,15 +3980,6 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
-      "src/renderer/settled-session-transients.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
       "src/renderer/shell-chat-model-selection.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4164,25 +4144,6 @@
           "react": 1
         }
       },
-      "src/renderer/use-delayed-flag.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 1,
-          "useState": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./model-wait-state.js": 1,
-          "react": 1
-        }
-      },
       "src/renderer/use-external-store-selector.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4341,15 +4302,12 @@
       "src/renderer/use-shell-live-turn.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useDelayedFlag": 3
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./model-wait-state.js": 1,
-          "./use-delayed-flag.js": 1
+          "../shared/session-execution-projection.js": 1
         }
       },
       "src/renderer/use-shell-memory-pill.ts": {
@@ -4584,6 +4542,15 @@
         "dependencyPaths": {
           "@maka/runtime-host/protocol": 1
         }
+      },
+      "src/shared/session-execution-projection.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
       },
       "src/shared/settings-ownership.ts": {
         "bridgePaths": {},

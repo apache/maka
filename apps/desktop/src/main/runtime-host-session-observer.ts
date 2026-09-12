@@ -77,7 +77,7 @@ export interface RuntimeHostRendererTarget<Payload> {
   off(event: "destroyed", listener: () => void): void;
 }
 
-export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent>;
+export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent | import('../shared/session-execution-projection.js').SessionObservationMessage>;
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
@@ -612,6 +612,7 @@ export class RuntimeHostSessionObserver {
       ) {
         throw new Error("Runtime Host Session observer identity was reused");
       }
+      this.#sendExecution(previous.state, previous.group);
       return previous.state.projector?.seedActive(true) ?? [];
     }
     const state = this.#state(sessionId);
@@ -638,7 +639,8 @@ export class RuntimeHostSessionObserver {
     try {
       await state.subscriptionOwner.waitUntilReady();
       if (ptyRef) await this.#syncPtyInterests(state);
-      this.#seedTarget(state, group);
+      if (group.seeded) this.#sendExecution(state, group);
+      else this.#seedTarget(state, group);
       return state.projector?.seedActive(true) ?? [];
     } catch (error) {
       this.#detachObserver(observerId);
@@ -832,6 +834,7 @@ export class RuntimeHostSessionObserver {
   #seedTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
     if (group.seeded) return;
     group.seeded = true;
+    this.#sendExecution(state, group);
     for (const event of state.projector?.seedActive(true) ?? []) {
       this.#send(state, group, event);
     }
@@ -879,6 +882,9 @@ export class RuntimeHostSessionObserver {
     const update = state.projector?.accept(frame);
     if (!update || !state.projector) return;
     state.snapshot = state.projector.snapshot;
+    if (update.previousSnapshot) {
+      for (const group of state.targets.values()) this.#sendExecution(state, group);
+    }
     for (const event of update.events) {
       this.#broadcast(state.sessionId, event);
       if (event.type === "tool_result") {
@@ -925,6 +931,22 @@ export class RuntimeHostSessionObserver {
     }
   }
 
+  #sendExecution(state: ObservedSessionState, group: ObserverTargetGroup): void {
+    if (!state.snapshot || !state.replica) return;
+    try {
+      group.target.send(sessionEventChannel(state.sessionId), {
+        type: 'host_execution',
+        available: true,
+        hostEpoch: state.replica.hostEpoch,
+        revision: state.snapshot.projectionRevision,
+        rootTurn: state.snapshot.rootTurn,
+      });
+    } catch {
+      this.#detachTarget(state, group);
+      void this.#closeIfIdle(state);
+    }
+  }
+
   #send(
     state: ObservedSessionState,
     group: ObserverTargetGroup,
@@ -940,26 +962,18 @@ export class RuntimeHostSessionObserver {
 
   #publishSubscriptionFailure(
     state: ObservedSessionState,
-    error: unknown,
+    error: Error,
   ): void {
     const root = state.snapshot?.rootTurn;
-    const reason =
-      error instanceof RuntimeHostSubscriptionError
-        ? error.reason
-        : "subscription_closed";
-    if (root && !isTerminalTurn(root)) {
-      this.#broadcast(state.sessionId, {
-        type: "error",
-        id: `host-subscription-error:${root.runId}`,
-        turnId: root.turnId,
-        ts: this.#now(),
-        recoverable: true,
-        reason,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Runtime Host Session subscription closed",
-      });
+    this.#emitObservationSeed(state.sessionId, 'pending');
+    for (const group of state.targets.values()) {
+      try {
+        group.target.send(sessionEventChannel(state.sessionId), {
+          type: 'host_observation_error', message: error.message,
+        });
+      } catch {
+        this.#detachTarget(state, group);
+      }
     }
     this.#emitSessionsChanged(
       "status-change",
@@ -1058,6 +1072,7 @@ export class RuntimeHostSessionObserver {
 
       if (replacement) {
         this.#emitObservationSeed(state.sessionId, 'pending');
+        for (const group of state.targets.values()) this.#sendExecution(state, group);
         for (const event of replacement.terminalEvents) {
           this.#broadcast(state.sessionId, event);
         }

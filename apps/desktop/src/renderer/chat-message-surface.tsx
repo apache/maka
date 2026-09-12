@@ -35,7 +35,8 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
+import { selectLiveTurn, selectExecution } from './use-app-shell-session-ui-reads';
+import { chatTurnActivity } from '../shared/session-execution-projection.js';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
@@ -151,6 +152,7 @@ export function ChatMessageSurface({
     isDeepResearchSession(activeSession?.labels),
   );
   const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
+  const execution = useExternalStoreSelector(sessionUiController, selectExecution, activeSessionId);
   const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
@@ -231,6 +233,7 @@ export function ChatMessageSurface({
             {...chatViewRest}
             viewportNavigation={sessionUiController.transcriptViewportNavigation}
             liveTurn={seededLiveTurn}
+            activeTurn={chatTurnActivity(execution)}
             // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
             // the activation reaching the DOM is always this session's.

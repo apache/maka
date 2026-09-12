@@ -102,7 +102,7 @@ describe('single live-turn handoff', () => {
           id: 'message-pending', ts: 1, text: 'send now',
           transientPlacement: 'current_turn',
         }],
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-pending' },
         scrollBehavior: 'smooth',
         onNew() {},
       } satisfies Parameters<typeof ChatView>[0]));
@@ -172,11 +172,13 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'turn-1', ts: 1, text: 'send now',
+          hostTurnId: 'turn-1',
           transientPlacement: 'current_turn',
         },
       ],
       messageLoading: true,
       scrollBehavior: 'smooth',
+      activeTurn: { turnId: 'turn-1' },
       liveTurn: {
         turnId: 'turn-1',
         phase: 'streamed',
@@ -197,7 +199,7 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
-  it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {
+  it('keeps an unresolved Message independent of a Turn without an admission binding', () => {
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
@@ -230,7 +232,7 @@ describe('single live-turn handoff', () => {
 
     const answerIndex = markup.indexOf('maka-assistant-answer');
     assert.ok(answerIndex >= 0);
-    assert.ok(markup.indexOf('send now') < answerIndex);
+    assert.ok(markup.indexOf('send now') > answerIndex);
     assert.equal(markup.includes('do this next'), false, 'queued follow-up stays above the composer until its Turn starts');
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 1);
   });

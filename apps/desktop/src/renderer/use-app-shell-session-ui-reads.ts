@@ -42,6 +42,7 @@ const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messa
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
+export const selectExecution = (state: AppShellSessionUiState, id: string | undefined) => id ? state.executionBySession[id] : undefined;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
 
 /**
@@ -83,6 +84,7 @@ export function useAppShellSessionUiReads(
   );
   return {
     ...messageLoadState,
+    activeExecution: useExternalStoreSelector(controller, selectExecution, activeId),
     messageRetryPendingBySession: useExternalStoreSelector(controller, selectMessageRetryPending),
     stopPendingBySession: useExternalStoreSelector(controller, selectStopPending),
     interactionBySession: useExternalStoreSelector(controller, selectInteraction),

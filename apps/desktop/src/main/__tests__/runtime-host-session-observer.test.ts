@@ -50,6 +50,38 @@ import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-sub
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
+test('projects root lifecycle without fabricating content events', async (t) => {
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => runtimeHostSessionFixture({
+      snapshot: continuitySnapshot({ rootTurn: null }), activeAssistantStreams: [],
+      transcript: Promise.resolve([]), events, async close() { events.end(); },
+    }) },
+    emitSessionsChanged() {},
+  });
+  const messages: Parameters<RuntimeHostSessionObserverTarget['send']>[1][] = [];
+  t.after(() => observer.close());
+  await observer.observe('session-1', 'execution-observer', {
+    id: 99, send(_channel, message) { messages.push(message); }, once() {}, off() {},
+  });
+  assert.ok(messages.length > 0);
+  assert.ok(messages.every((message) => message.type === 'host_execution' && message.rootTurn === null));
+  const seededCount = messages.length;
+  events.push({
+    kind: 'subscription.session_projection', hostEpoch: 'host-1', subscriptionId: 'subscription-1', sequence: 1,
+    snapshot: continuitySnapshot({ projectionRevision: 2 }),
+  });
+  await waitFor(() => messages.length > seededCount);
+  const started = messages.at(-1);
+  assert.equal(started?.type, 'host_execution');
+  if (started?.type === 'host_execution') {
+    assert.equal(started.rootTurn?.turnId, 'turn-1');
+    assert.equal(started.rootTurn?.status, 'running');
+    assert.equal(started.available, true);
+  }
+  await observer.close();
+});
+
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
   const events = new AsyncFrameQueue();
@@ -3182,7 +3214,7 @@ function eventTarget(
     id,
     events,
     send(_channel, event) {
-      events.push(event);
+      if (event.type !== 'host_execution' && event.type !== 'host_observation_error') events.push(event);
     },
     once() {},
     off() {},

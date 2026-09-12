@@ -60,7 +60,7 @@ test('renders the live compaction row in a session with no settled messages', ()
     rootExecutionKind: 'context_compact',
     startedAt: 0,
     steps: [],
-  });
+  }, { activeTurn: { turnId: 'turn-compact', compacting: true } });
 
   // Before the fix, showEmptyState hid this overlaid row behind the empty hero
   // because it keyed off chat.length (0) and never saw the synthesized turn.
@@ -71,7 +71,7 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', phase: 'waiting', steps: [], unconfirmed: true };
   const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: 1000, transientPlacement: 'current_turn' as const };
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
-    const markup = renderChat(liveTurn, { messages, transientMessages: [pending], runningStatus: true });
+    const markup = renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
     assert.match(markup, /Waiting for model output/);
     assert.match(markup, /Please help/);
@@ -79,10 +79,29 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   }
   const committed = renderChat(liveTurn, {
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
-    runningStatus: true,
+    activeTurn: { turnId: liveTurn.turnId! },
   });
   assert.equal((committed.match(/class="maka-turn-processing"/g) ?? []).length, 1);
   assert.match(committed, /data-transcript-turn-id="pending-turn"/);
+});
+
+test('a new Host Turn owns its waiting footer while the previous answer remains buffered', () => {
+  const oldTurn: LiveTurnProjection = {
+    turnId: 'old-turn', phase: 'streamed', terminal: true,
+    steps: [{ stepId: 'old-answer', text: { text: 'Previous answer', complete: true, truncated: false }, tools: [] }],
+  };
+  const messages = [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }];
+  const transientMessages = [{ id: 'new-user', hostTurnId: 'new-turn', text: 'New request', ts: 2, transientPlacement: 'current_turn' as const }];
+  for (const content of [oldTurn, undefined]) {
+    const markup = renderChat(content, { messages, transientMessages, activeTurn: { turnId: 'new-turn' } });
+    const { document } = parseHTML(markup);
+    assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+    assert.equal(document.querySelector('[data-transcript-turn-id="old-turn"] .maka-turn-processing'), null);
+    assert.ok(markup.indexOf('New request') < markup.indexOf('maka-turn-processing'));
+    if (content) assert.match(markup, /Previous answer/);
+  }
+  const idle = renderChat({ ...oldTurn, terminal: undefined }, { messages });
+  assert.doesNotMatch(idle, /maka-turn-processing/);
 });
 
 test('renders the empty hero when an empty session has no live compaction row', () => {
@@ -122,7 +141,7 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
       <LocaleProvider locale="en">
         <ChatSurfaceLayout composer={null}>
           <ChatView messages={[]} activeSession={activeSession} liveTurn={liveTurn}
-            runningStatus transientMessages={[pending]} scrollBehavior="auto" onNew={() => undefined} {...overrides} />
+            activeTurn={{ turnId: liveTurn.turnId! }} transientMessages={[pending]} scrollBehavior="auto" onNew={() => undefined} {...overrides} />
         </ChatSurfaceLayout>
       </LocaleProvider>,
     ));
@@ -138,7 +157,7 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
-  await render({ liveTurn: undefined, runningStatus: false, transientMessages: [] });
+  await render({ liveTurn: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
 });
 

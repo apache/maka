@@ -28,7 +28,6 @@ import {
   createSessionListRefresher,
   type SessionListRefresher,
 } from './session-read-state.js';
-import { reconcileSettledSessionTransients } from './settled-session-transients.js';
 import {
   selectAuthoritativeSessionIds,
   selectCatalogRevision,
@@ -49,12 +48,6 @@ export function useAppShellSessionList(
   toastApi: ToastApi,
   options: {
     catalog: SessionCatalogController;
-    activeIdRef: RefBox<string | undefined>;
-    liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
-    clearTurnTransientStateIfCurrent: (
-      sessionId: string,
-      expected: LiveTurnProjection | undefined,
-    ) => void;
   },
 ) {
   const uiLocale = useUiLocale();
@@ -81,19 +74,10 @@ export function useAppShellSessionList(
 
   if (!refresherRef.current) {
     refresherRef.current = createSessionListRefresher({
-      captureRequestContext: () => options.liveTurnBySessionRef.current,
+      captureRequestContext: () => undefined,
       listSessions: () => window.maka.sessions.list(),
       currentSessions: () => sessionsRef.current,
-      commitSessions: (next, observedLiveTurnBySession) => {
-        const normalized = next.map(normalizeSessionSummaryForDisplay);
-        reconcileSettledSessionTransients({
-          activeId: options.activeIdRef.current,
-          sessions: normalized,
-          observedLiveTurnBySession,
-          clearTurnTransientStateIfCurrent: options.clearTurnTransientStateIfCurrent,
-        });
-        commitSessions(normalized);
-      },
+      commitSessions: (next) => commitSessions(next.map(normalizeSessionSummaryForDisplay)),
       onError: (error) => {
         const locale = uiLocaleRef.current;
         const copy = getDesktopConversationCopy(locale).actions;

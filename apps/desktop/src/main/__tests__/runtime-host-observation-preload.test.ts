@@ -59,6 +59,38 @@ test('observation readiness includes its active seed even when the invoke reply 
   unsubscribe();
 });
 
+test('execution and observation failures stay separate from Runtime events', async () => {
+  const { bridge, events } = await preloadHarness(async (channel) => {
+    if (channel === 'sessions:observe') return { kind: 'ready', value: [] };
+    throw new Error('Unexpected channel: ' + channel);
+  });
+  const sessionId = JSON.stringify([owner.hostId, 'session-1']);
+  const projections: Array<Parameters<NonNullable<Parameters<MakaBridge['sessions']['subscribeEvents']>[5]>>[0]> = [];
+  const failures: unknown[] = [];
+  const ready = deferred<void>();
+  const unsubscribe = bridge.sessions.subscribeEvents(sessionId,
+    () => assert.fail('Observation data must never enter the Runtime event reducer'),
+    () => ready.resolve(), undefined, (error) => failures.push(error), (value) => projections.push(value));
+  await ready.promise;
+  try {
+    events.emit('sessions:event:session-1', {}, owner, {
+      type: 'host_execution', available: true, hostEpoch: 'host-1', revision: 2,
+      rootTurn: { sessionId: 'session-1', turnId: 'new-turn', runId: 'run-1', status: 'running' },
+    });
+    assert.equal(projections.at(-1)?.rootTurn?.sessionId, sessionId);
+    events.emit('sessions:observation-seed', {}, owner, { sessionId: 'session-1', phase: 'pending' });
+    assert.equal(projections.at(-1)?.available, false);
+    assert.equal(projections.at(-1)?.rootTurn?.turnId, 'new-turn');
+    events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_error', message: 'connection lost' });
+    assert.equal(failures.length, 1);
+    events.emit('sessions:event:session-1', {}, owner, {
+      type: 'host_execution', available: true, hostEpoch: 'host-2', revision: 1, rootTurn: null,
+    });
+    assert.equal(projections.at(-1)?.rootTurn, null);
+    assert.equal(projections.at(-1)?.available, true);
+  } finally { unsubscribe(); }
+});
+
 test('cancelled Session observation removes preload listeners without publishing readiness or errors', async () => {
   const started = deferred<void>();
   const observation = deferred<{ kind: 'cancelled' }>();

@@ -18,7 +18,6 @@
  */
 
 import type { LiveTurnProjection } from '@maka/ui';
-import type { TurnPhase } from './model-wait-state.js';
 import { hasInFlightToolActivity } from './session-event-health.js';
 
 /**
@@ -35,10 +34,10 @@ import { hasInFlightToolActivity } from './session-event-health.js';
  * per delta belongs to the chat surface, not here.
  */
 export interface LiveTurnSnapshot {
-  /** The projected turn's id, kept even once terminal — `deriveTurnActive`'s arm. */
+  /** Identity of the content buffer, independent of execution. */
   turnId: string | undefined;
   /** Turn phase, or undefined when no turn is in flight (incl. a settled one). */
-  phase: TurnPhase | undefined;
+  phase: LiveTurnProjection['phase'] | undefined;
   /** Whether the active text step has emitted anything yet. */
   hasStreamingText: boolean;
   /** Step id of the settled answer, once complete — the handoff key. Its

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { chatTurnActivity } from '../../../../shared/session-execution-projection.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
@@ -328,7 +329,7 @@ export function WorkHubRoot() {
           viewportNavigation={controller.viewportNavigation}
           liveTurn={controller.liveTurn}
           onStreamingSettled={controller.streamingSettled}
-          runningStatus={busy}
+          activeTurn={chatTurnActivity(controller.execution)}
           messageLoading={!transcript.ready}
           activeSession={session}
           activeModel={session?.model}

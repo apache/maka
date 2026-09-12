@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { activeHostTurn } from '../shared/session-execution-projection.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
@@ -103,7 +104,6 @@ import {
   parseDesktopSlashCommand,
 } from './desktop-slash-command';
 import {
-  hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
   resolveFollowUpModeAtSubmit,
@@ -470,6 +470,7 @@ function AppShellContent({
     transcriptRestoreUnavailableBySession,
     streamingSessionIds,
     activeLiveTurnSnapshot,
+    activeExecution,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
@@ -700,12 +701,9 @@ function AppShellContent({
     hasInFlightLiveTools,
     hasLiveTurnContent,
     turnActive,
-    showRunningStatus,
-    showProcessingIndicator,
-    showContinuingIndicator,
   } = useShellLiveTurn({
     liveTurn: activeLiveTurnSnapshot,
-    activeSession,
+    execution: activeExecution,
   });
   const petActivityState = derivePetActivityState({
     hasActiveSession: activeSession !== undefined,
@@ -735,7 +733,7 @@ function AppShellContent({
     composerProfileId !== undefined &&
     composerProfileId === taskEntry.selectors.defaultProfileId;
   const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
-    streaming: turnActive || activeStreamingLive,
+    streaming: turnActive,
     sessionStatus: activeSession?.status,
     pending: false,
   });
@@ -1164,7 +1162,7 @@ function AppShellContent({
       const availableCommands = slashCommandsForSurface('desktop').filter(
         desktopSlashCommandAvailability({
           hasSession: Boolean(activeId),
-          streaming: turnActive || activeStreamingLive,
+          streaming: turnActive,
         }),
       );
       const presentation = desktopSlashCommandPresentation(shellCopy.slashCommands);
@@ -1483,8 +1481,7 @@ function AppShellContent({
     uiLocale,
     getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
-      const liveTurn = sessionUiController.liveTurnBySessionRef.current[sessionId];
-      return liveTurn ? (liveTurn.terminal ? undefined : liveTurn.turnId) : activeSession?.runningTurnIds?.[0];
+      return activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -1633,13 +1630,10 @@ function AppShellContent({
       metadata?.workspaceFileReferences,
       sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
     );
-    const liveTurn = sessionId ? sessionUiController.liveTurnBySessionRef.current[sessionId] : undefined;
-    const runningTurnIds = sessionId
-      ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
-      : undefined;
+    const execution = sessionId ? sessionUiController.getState().executionBySession[sessionId] : undefined;
     const followUpAtSubmit = resolveFollowUpModeAtSubmit({
       requestedMode: metadata?.followUpMode,
-      hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
+      hasActiveTurn: Boolean(activeHostTurn(execution)),
       slashCommand,
     });
     if (sessionId && followUpAtSubmit) {
@@ -1973,7 +1967,6 @@ function AppShellContent({
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
-    confirmLiveTurn: sessionUiController.confirmLiveTurn,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2037,6 +2030,7 @@ function AppShellContent({
     activeIdRef,
     handleEvent,
     beginObservationSeed,
+    setExecution: sessionUiController.setExecution,
     completeObservationSeed,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessageLoadPending,
@@ -2548,17 +2542,8 @@ function AppShellContent({
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
-                  // `turnActive` unions the send's zero-lag local arm with the
-                  // runtime's live `runningTurnIds` (turns this renderer did not
-                  // send), so neither witness can veto the other — see
-                  // `deriveTurnActive`. `activeStreamingLive` is folded in
-                  // defensively for the rare replay where the arm was over-cleared.
-                  streaming={turnActive || activeStreamingLive}
-                  // #646: in the first-token wait (Stop up, nothing streams yet) the
-                  // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
-                  // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
-                  processing={(showProcessingIndicator || activeMessageSubmitting) && !activeStreamingLive}
-                  continuing={showContinuingIndicator && !activeStreamingLive}
+                  streaming={turnActive}
+                  processing={activeMessageSubmitting}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
                   pendingMessages={transientMessages}
@@ -2695,7 +2680,6 @@ function AppShellContent({
                 messages={messages}
                 transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}
-                runningStatus={showRunningStatus}
                     onStreamingSettled={
                       activeId ? (messageId) => settleAssistantStreaming(activeId, messageId) : undefined
                     }

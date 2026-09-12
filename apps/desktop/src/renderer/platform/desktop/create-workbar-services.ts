@@ -147,8 +147,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToUserQuestion(sessionId, response),
       respondToUserForm: (sessionId, response) =>
         bridge.sessions.respondToUserForm(sessionId, response),
-      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>
-        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError),
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError, onExecution) =>
+        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError, onExecution),
       subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };

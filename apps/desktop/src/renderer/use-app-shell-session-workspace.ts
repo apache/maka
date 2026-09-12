@@ -51,9 +51,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const sessionUiController = useAppShellSessionUiState();
   const sessionList = useAppShellSessionList(toastApi, {
     catalog,
-    activeIdRef,
-    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
-    clearTurnTransientStateIfCurrent: sessionUiController.clearTurnTransientStateIfCurrent,
   });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);

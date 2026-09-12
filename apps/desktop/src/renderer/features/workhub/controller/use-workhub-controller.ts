@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { activeHostTurn, type SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnEvent,
@@ -64,6 +65,7 @@ export function useWorkHubController() {
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
   const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
+  const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection>();
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
@@ -235,6 +237,7 @@ export function useWorkHubController() {
     setReadError(undefined);
     const attempt = pendingSend.current;
     const pending = attempt && attempt.sessionId === sessionId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected' ? attempt : undefined;
+    setExecution(undefined);
     setLiveTurn(pending ? armLiveTurn(pending.input.turnId) : undefined);
     setStopPending(Boolean(pending?.stop));
     setTransientMessages(pending ? [{
@@ -314,6 +317,7 @@ export function useWorkHubController() {
         handle?.observationChanged(phase);
         if (phase === 'ready') void recoverSend();
       },
+      (projection) => { if (!disposed) setExecution(projection); },
     );
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
@@ -361,7 +365,7 @@ export function useWorkHubController() {
   const attempt = pendingSend.current;
   const pendingTurnId = attempt && attempt.sessionId === sessionId && (attempt.admission === 'pending' || attempt.admission === 'unknown') ? attempt.input.turnId : undefined;
   const runningTurnId =
-    pendingTurnId ?? (liveTurn && !liveTurn.terminal ? liveTurn.turnId : session?.runningTurnIds?.[0]);
+    pendingTurnId ?? activeHostTurn(execution)?.turnId;
   const busy = sending || Boolean(runningTurnId);
   async function send(text: string, attachments: AttachmentRef[], requestedMode?: FollowUpMode) {
     if (!sessionId || !text.trim() || sendingRef.current) return false;
@@ -508,6 +512,7 @@ export function useWorkHubController() {
     reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
     viewportNavigation,
     liveTurn,
+    execution,
     busy,
     sending,
     stopPending,

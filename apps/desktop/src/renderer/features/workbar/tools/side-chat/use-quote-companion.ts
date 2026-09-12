@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { activeHostTurn, type SessionExecutionProjection } from '../../../../../shared/session-execution-projection.js';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   activeInteractionFor,
@@ -55,7 +57,6 @@ import {
   createCompanionDismissalGuard,
   dismissCompanionCopy,
   companionRunEventEffect,
-  deriveCompanionComposerState,
   ensureCompanionFork,
   performCompanionTurn,
   sessionHasExactModelChoice,
@@ -166,6 +167,7 @@ export interface UseQuoteCompanionResult {
    *  durable message with the same id lands. Pass straight to `ChatView`. */
   transientMessages: readonly TransientUserMessageProjection[];
   liveTurn: LiveTurnProjection | undefined;
+  execution: SessionExecutionProjection | undefined;
   streaming: boolean;
   processing: boolean;
   /** Whether the source and any committed companion can execute their exact model. */
@@ -283,16 +285,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const [pendingUserMessages, setPendingUserMessages] = useState<
     TransientUserMessageProjection[]
   >([]);
+  const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
   liveTurnRef.current = liveTurn;
   const [interactions, setInteractions] = useState<InteractionQueues>({});
   const [pendingAdmission, setPendingAdmissionState] = useState<PendingAdmission | null>(null);
-  const { streaming, processing } = deriveCompanionComposerState(
-    pendingAdmission !== null,
-    activeTurnIdRef.current,
-    liveTurn,
-  );
+  const processing = pendingAdmission !== null;
+  const streaming = processing || Boolean(activeHostTurn(execution));
   const turnInFlight = streaming;
   const [regeneratePendingTurnId, setRegeneratePendingTurnId] = useState<string | null>(
     null,
@@ -561,6 +561,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       .catch(() => {
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
       });
+    setExecution(undefined);
+    let disposed = false;
     const unsubscribe = sideChat.subscribeEvents(
       forkId,
       (event: SessionEvent) => {
@@ -601,8 +603,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       },
       resolveReady,
       rejectReady,
+      (projection) => { if (mountedRef.current && !disposed) setExecution(projection); },
     );
-    let disposed = false;
     unsubscribeRef.current = () => {
       if (disposed) return;
       disposed = true;
@@ -1331,6 +1333,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messages,
     transientMessages,
     liveTurn,
+    execution,
     streaming,
     processing,
     modelReady: sourceModelReady && companionModelReady,

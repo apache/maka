@@ -41,8 +41,8 @@ import {
 
 const GRAPH_TURN = { mode: 'graph', source: 'slash_command' } as const;
 
-describe('exact-Turn arm identity', () => {
-  it('adopts the Host Turn identity the admission answered with', async () => {
+describe('orchestrated Message admission', () => {
+  it('does not create an execution claim from a command response', async () => {
     const turnState = createTurnState();
     const restoreWindow = installWindow({
       sessions: {
@@ -72,11 +72,7 @@ describe('exact-Turn arm identity', () => {
       restoreWindow();
     }
 
-    const armed = turnState.liveTurnBySession['session-a'];
-    assert.equal(armed?.turnId, 'host-turn-1');
-    // Still unconfirmed: the Host named the Turn, it has not yet said anything
-    // about running it.
-    assert.equal(armed?.unconfirmed, true);
+    assert.equal(turnState.liveTurnBySession['session-a'], undefined);
   });
 
   it('releases the arm when Host admission opened no Turn under it', async () => {

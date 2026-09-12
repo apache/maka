@@ -148,7 +148,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;
   /** Releases a send's pending claim once the authority names that turn. */
-  confirmLiveTurn: (sessionId: string, turnId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
@@ -200,12 +199,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleSessionChange = useEffectEvent(
     (event: SessionChangedEvent) => {
-      // The authority has spoken about a specific turn — whether it started,
-      // failed to start, or ended. That confirms the send's arm, and the
-      // session's status becomes readable as an answer about it again.
-      if (event.sessionId && event.turnId) {
-        options.confirmLiveTurn(event.sessionId, event.turnId);
-      }
       const refreshedSessions = options.refreshSessions();
       if (event.reason === 'created' || event.reason === 'migrated') {
         void options.refreshProjects();
@@ -321,6 +314,7 @@ export function useActiveSessionEvents(options: {
   observationAuthorityRevision: number;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
+  setExecution?: (sessionId: string, projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void;
   beginObservationSeed?: (sessionId: string) => number;
   completeObservationSeed?: (sessionId: string, generation?: number) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
@@ -448,6 +442,7 @@ export function useActiveSessionEvents(options: {
     );
     options.transcriptRangeRef.current = controller;
     const subscribeSessionEvents = () => {
+      options.setExecution?.(activeId, undefined);
       const attempt = ++observationAttempt;
       const observationGeneration = beginObservationSeed(activeId);
       let unsubscribeRequested = false;
@@ -482,6 +477,9 @@ export function useActiveSessionEvents(options: {
             observationRetryTimer = undefined;
             if (!disposed && attempt === observationAttempt) subscribeSessionEvents();
           }, retryDelayMs);
+        },
+        (projection) => {
+          if (!disposed && attempt === observationAttempt) options.setExecution?.(activeId, projection);
         },
       );
       unsubscribeCurrent = unsubscribe;

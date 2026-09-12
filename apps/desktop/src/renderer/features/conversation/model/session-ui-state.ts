@@ -20,8 +20,9 @@
 import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { confirmLiveTurn, createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
+import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
@@ -31,6 +32,7 @@ export interface AppShellSessionUiState {
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
   liveTurnBySession: Record<string, LiveTurnProjection>;
+  executionBySession: Record<string, SessionExecutionProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
@@ -68,6 +70,7 @@ const SESSION_UI_MAP_KEYS = [
   'messageRetryPendingBySession',
   'stopPendingBySession',
   'liveTurnBySession',
+  'executionBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
@@ -214,6 +217,15 @@ export function createAppShellSessionUiStateController(
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
+    setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
+      updateMap('executionBySession', (current) => {
+        const previous = current[sessionId];
+        if (!projection) return previous?.available
+          ? { ...current, [sessionId]: { ...previous, available: false } } : current;
+        if (previous === projection) return current;
+        return { ...current, [sessionId]: projection };
+      });
+    },
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
     setMessageQueueBySession: createMapSetter('messageQueueBySession'),
@@ -225,32 +237,10 @@ export function createAppShellSessionUiStateController(
         return current[sessionId] === turnId ? current : { ...current, [sessionId]: turnId };
       });
     },
-    /**
-     * The authority said something about `turnId` — it started, failed to
-     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
-     * may settle it again. An answer about a turn this session is not on says
-     * nothing, and leaves the state untouched.
-     */
-    confirmLiveTurn: (sessionId: string, turnId: string) => {
-      updateMap('liveTurnBySession', (current) => {
-        const armed = current[sessionId];
-        if (!armed) return current;
-        const confirmed = confirmLiveTurn(armed, turnId);
-        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
-      });
-    },
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySession.clear(sessionId);
       transcriptReadingAnchors.set(sessionId, undefined);
       replaceState(clearAppShellSessionUiStateForSession(state.getState(), sessionId));
-    },
-    clearTurnTransientStateIfCurrent: (
-      sessionId: string,
-      expected: LiveTurnProjection | undefined,
-    ) => {
-      const current = state.getState();
-      if (current.liveTurnBySession[sessionId] !== expected) return;
-      replaceState(clearAppShellTurnTransientForSession(current, sessionId));
     },
   };
 }

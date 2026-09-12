@@ -42,6 +42,7 @@ async function mountController(failFirstRead = false) {
   const { root } = installReactRenderer();
   let controller!: ReturnType<typeof useWorkHubController>;
   let publish!: (snapshot: WorkHubTranscriptSnapshot) => void;
+  let onExecution: Parameters<WorkHubServices['observe']>[4];
   let observe!: Parameters<WorkHubServices['observe']>[1];
   let loadLatestCount = 0;
   const prefetched: Array<'older' | 'newer'> = [];
@@ -65,6 +66,7 @@ async function mountController(failFirstRead = false) {
     client: { interruptTurn: async (input: typeof interrupts[number]) => {
       interrupts.push({ sessionId: input.sessionId, turnId: input.turnId, runId: input.runId });
       rootTurn!.status = 'cancelled';
+      projectExecution();
       return { retracted: stopRetractions.map((messageId) => ({ messageId })) };
     } },
   } as unknown as RuntimeHostSessionExecutionIpcDeps, ipc);
@@ -82,6 +84,11 @@ async function mountController(failFirstRead = false) {
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({} as Parameters<IpcHandler>[0], ...args);
 
   const sessionId = JSON.stringify(['host-1', 'workhub-coordination']);
+  function projectExecution() {
+    onExecution?.({ type: 'host_execution', available: true, hostEpoch, revision: 1,
+      rootTurn: rootTurn ? { ...rootTurn, sessionId,
+        ...(rootTurn.status === 'running' ? { status: 'running' as const } : { status: rootTurn.status, terminalEventId: 'terminal', abortSource: 'user_stop' }) } : null });
+  }
   const services = {
     resolve: async () => sessionId,
     getSession: async () => ({ id: sessionId, runningTurnIds: [] }),
@@ -90,7 +97,7 @@ async function mountController(failFirstRead = false) {
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
-    observe: (_id: string, handler: typeof observe, _onError: unknown, phase: typeof onPhase) => { observe = handler; onPhase = phase; return () => {}; },
+    observe: (_id: string, handler: typeof observe, _onError: unknown, phase: typeof onPhase, execution: typeof onExecution) => { observe = handler; onPhase = phase; onExecution = execution; return () => {}; },
     openTranscript: async (_id: string, handler: typeof publish) => {
       openCount++;
       if (failFirstRead && openCount === 1) throw new Error('transient initial read failure');
@@ -125,13 +132,13 @@ async function mountController(failFirstRead = false) {
   return {
     get controller() { return controller; }, get openCount() { return openCount; },
     reconnect(epoch = hostEpoch) { hostEpoch = epoch; onPhase('pending'); onPhase('ready'); },
-    complete(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'completed' }; },
+    complete(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'completed' }; projectExecution(); },
     onSteer(handler: typeof onSteer) { onSteer = handler; },
     queueMutations, steers, setSteerResult(value: typeof steerResult) { steerResult = value; },
     setStopRetractions(ids: string[]) { stopRetractions = ids; },
     sessionId, requests, get admission() { return admission; }, latestRead, interrupts,
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
-    admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; },
+    admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; projectExecution(); },
     get loadLatestCount() { return loadLatestCount; },
     prefetched, retained,
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
@@ -197,7 +204,7 @@ test('a lost admission response cannot erase confirmed WorkHub activity', async 
   let sent!: Promise<boolean>;
   await act(async () => { sent = h.controller.send('keep the real activity', []); });
   const turnId = h.requests[0]!.turnId;
-  await act(() => h.emit({ type: 'text_delta', id: 'first-output', turnId, messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit(turnId); h.emit({ type: 'text_delta', id: 'first-output', turnId, messageId: 'answer', ts: 1, text: 'Working' }); });
   await act(async () => { h.admission.reject(new Error('response lost')); assert.equal(await sent, false); });
   assert.equal(h.controller.liveTurn?.turnId, turnId);
   assert.equal(h.controller.liveTurn?.unconfirmed, undefined);
@@ -332,7 +339,7 @@ test('an unknown WorkHub submission converges through the original Host admissio
         h.admission.resolve({ turnId: original.turnId });
       });
       assert.equal(h.interrupts.length, 0, 'explicit Retry cannot inherit the retired Stop intent');
-      await act(async () => h.emit({ type: 'complete', id: 'retry-completed', turnId: original.turnId, ts: 2, stopReason: 'end_turn' }));
+      await act(async () => { h.complete(original.turnId); h.emit({ type: 'complete', id: 'retry-completed', turnId: original.turnId, ts: 2, stopReason: 'end_turn' }); });
       h.resetAdmission();
       let next!: Promise<boolean>;
       await act(async () => { next = h.controller.send('a different message', []); });
@@ -393,7 +400,7 @@ test('WorkHub steering keeps the current Turn and Stop authority and reconciles 
 
 test('uncertain steering retains its identity across Turn completion and rejection preserves the active Turn', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('rejected');
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
@@ -414,7 +421,7 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   }
   assert.equal(h.steers.length, 2, 'edited text or attachments cannot overwrite an unknown attempt');
   assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId]);
-  await act(() => h.emit({ type: 'complete', id: 'done', turnId: 'active-turn', ts: 2, stopReason: 'end_turn' }));
+  await act(() => { h.complete('active-turn'); h.emit({ type: 'complete', id: 'done', turnId: 'active-turn', ts: 2, stopReason: 'end_turn' }); });
   h.setSteerResult('admitted');
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
   assert.equal(h.steers[2]![1], messageId);
@@ -425,7 +432,7 @@ test('uncertain steering retains its identity across Turn completion and rejecti
 
 test('Host retraction resolves an uncertain WorkHub attempt before the next draft is sent', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('unknown');
   await act(async () => { assert.equal(await h.controller.send('old direction', [], 'steer'), false); });
   const messageId = h.steers[0]![1];
@@ -439,7 +446,7 @@ test('Host retraction resolves an uncertain WorkHub attempt before the next draf
 
 test('steering observed before its admission response renders once and outranks an uncertain receipt', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('unknown');
   h.onSteer(([, messageId, text]) => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', messageId, ts: 2, content: { text } }));
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
@@ -452,7 +459,7 @@ test('steering observed before its admission response renders once and outranks 
 
 test('WorkHub Host queue owns restored, consumed and retracted rows without transient mirrors', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   const entry = { entryId: 'queued', messageId: 'queued', placement: 'current_turn' as const, state: 'queued' as const, content: { text: 'change direction' } };
   const project = (state: 'queued' | 'in_flight') => h.emit({
     type: 'queue_update', id: 'snapshot', turnId: 'active-turn', ts: 2,
@@ -500,7 +507,7 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
 
 test('WorkHub defaults to follow-up and moves each message into its admitted successor Turn', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   const attachments: AttachmentRef[] = [{ kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } }];
   await act(async () => {
     assert.equal(await h.controller.send('first follow-up', attachments), true);
@@ -532,7 +539,7 @@ test('WorkHub defaults to follow-up and moves each message into its admitted suc
 
 test('a queued follow-up returns the window to the tail so its own retry guard can clear', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('unknown');
   await act(async () => { assert.equal(await h.controller.send('queued while parked in history', []), false); });
   const messageId = h.steers[0]![1];
@@ -558,7 +565,7 @@ test('the transcript band reaches WorkHub’s window', async () => {
 
 test('follow-up admission before an uncertain response keeps its successor placement', async () => {
   const h = await mountController();
-  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   h.setSteerResult('unknown');
   h.onSteer(([, messageId]) => h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId, ts: 2, outcome: 'admitted' }));
   await act(async () => { assert.equal(await h.controller.send('next request', []), true); });
