@@ -127,9 +127,9 @@ const GUIDANCE = {
   },
   'zh-TW': {
     client: '請更新 Desktop，使它與此 Host 相容。不會降級現有 Host。',
-    binding: 'WSL 管理綁定不可用。請先在 Runtime Host 設定中恢復管理入口，再進行更新。',
-    source: '已安裝的 WSL 管理程式無法驗證正在執行的按需 Host。請在 Runtime Host 設定中檢查服務狀態。',
+    binding: 'WSL 管理綁定無法使用。請先在 Runtime Host 設定中恢復管理入口，再進行更新。',
+    source: '已安裝的 WSL 管理程式無法驗證正在執行的依需求啟動的 Host。請在 Runtime Host 設定中檢查服務狀態。',
     target: '目前 Desktop 無法驗證合適的替換套件。請更新 Desktop，或透過開發環境明確管理選定的開發套件；現有 Host 會被保留。',
-    development: '選定的開發構建',
+    development: '選定的開發建置版本',
   },
 } as const;

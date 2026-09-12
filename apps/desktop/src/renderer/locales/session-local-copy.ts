@@ -53,9 +53,9 @@ const catalog = {
   },
   'zh-TW': {
     saved: '已儲存於本機 · 等待傳送',
-    sending: '正在投遞至 Host',
+    sending: '正在傳送至 Host',
     accepted: 'Host 已接受',
-    unknown: 'Host 接受結果未知',
+    unknown: '尚無法確認 Host 是否已接收',
     failed: '未傳送 · 本機副本已保留',
     remove: '移除本機副本',
     check: '核對狀態',

@@ -134,7 +134,7 @@ const ARTIFACT_COPY = {
       previewNamed: (name) => `預覽 ${name}`, empty: '暫無生成檔案', emptyHint: '助手生成檔案後會顯示在這裡。',
       back: '返回生成檔案列表', moreActions: (name) => `${name} 的更多操作`,
       openInFinder: '在 Finder 中開啟', saveAs: '另存為', copy: '複製',
-      saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未透過。', write_failed: '目標位置無法寫入。', deleted: '生成檔案已刪除，不能另存。', source_failed: '生成檔案傳輸中斷，請重試。', size_mismatch: '生成檔案大小在傳輸過程中發生變化，請重試。', target_write_failed: '目標位置無法寫入。', replace_failed: '替換目標檔案失敗，原檔案已保留。', default: '無法儲存生成檔案。' },
+      saveFailures: { not_found: '生成檔案不存在。', not_allowed: '生成檔案路徑檢查未通過。', write_failed: '目標位置無法寫入。', deleted: '生成檔案已刪除，不能另存。', source_failed: '生成檔案傳輸中斷，請重試。', size_mismatch: '生成檔案大小在傳輸過程中發生變化，請重試。', target_write_failed: '目標位置無法寫入。', replace_failed: '替換目標檔案失敗，原檔案已保留。', default: '無法儲存生成檔案。' },
       actionFailed: '生成檔案操作失敗，請稍後重試。',
     },
     preview: {
@@ -146,7 +146,7 @@ const ARTIFACT_COPY = {
       highlightLimited: (limit, lines) => `為保證流暢，僅高亮前 ${limit}、最多 ${lines} 行，其餘內容以純文本顯示。`,
       diffLinesLimited: (count) => `為保證流暢，另有 ${count} 行未在預覽中展開。`,
       readFailed: { title: '無法讀取生成檔案', description: '路徑可能已被外部刪除。請透過更多選單「在 Finder 中開啟」檢查檔案位置。' },
-      notAllowed: { title: '無法讀取生成檔案', description: '路徑檢查未透過，檔案已不在允許預覽的生成檔案目錄內。' },
+      notAllowed: { title: '無法讀取生成檔案', description: '路徑檢查未通過，檔案已不在允許預覽的生成檔案目錄內。' },
       tooLarge: (bytes) => ({ title: '檔案超出預覽大小', description: `${bytes} 位元組超過文本預覽閾值，請透過更多選單開啟或另存完整內容。` }),
       unsupportedMime: { title: '不支援的檔案型別', description: '該生成檔案的 MIME 型別不在內聯預覽允許列表中。請使用工具欄「在 Finder 中開啟」或「另存為」。' },
     },

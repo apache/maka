@@ -58,8 +58,8 @@ const COPY = {
   },
   'zh-TW': {
     title: '正在開啟工作區', detail: 'Maka 正在準備本機背景服務。',
-    slow: '此次啟動耗時較長。更新可能需要下載或建置安裝套件；你可以最小化此視窗，Maka 會繼續處理。',
-    copy: '複製診斷資訊', copied: '已複製診斷資訊', copyFailed: '無法複製診斷資訊', elapsed: '已用時',
+    slow: '此次啟動耗時較長。更新可能需要下載或建置安裝套件；你可以將此視窗最小化，Maka 會繼續處理。',
+    copy: '複製診斷資訊', copied: '已複製診斷資訊', copyFailed: '無法複製診斷資訊', elapsed: '已耗時',
     phases: {
       prepare: '正在準備 Maka', storage: '正在檢查本機資料', connect: '正在連線至 Runtime Host',
       package: '正在準備 Runtime Host 安裝套件', checking: '正在檢查託管服務',

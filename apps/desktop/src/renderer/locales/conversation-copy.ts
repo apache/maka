@@ -721,7 +721,7 @@ const COPY = {
       inspector: '追蹤',
       sideChat: '側邊對話',
       sideChatNumbered: (index) => `側邊對話 ${index}`,
-      openTab: '開啟或關閉工作欄的面',
+      openTab: '開啟或關閉工作欄面板',
       openTools: '開啟工具',
       launcher: {
         review: '檢視目前 Git 工作區變化',

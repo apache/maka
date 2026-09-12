@@ -34,10 +34,10 @@ const WORK_BOARD_ERROR_COPY = {
   },
   'zh-TW': {
     invalid_input: '這項操作無效，請檢查後重試',
-    not_found: '這則事項已不存在',
-    operation_conflict: '這則事項已發生變化，請重新整理後重試',
-    corrupt_record: '這則事項暫時無法讀取',
-    must_archive_first: '請先封存，再刪除這則事項',
+    not_found: '這項事項已不存在',
+    operation_conflict: '這項事項已發生變化，請重新整理後重試',
+    corrupt_record: '這項事項暫時無法讀取',
+    must_archive_first: '請先封存，再刪除這項事項',
     unknown: '操作失敗，請稍後重試',
   },
   en: {
