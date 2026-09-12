@@ -172,7 +172,6 @@ const staticCatalogConnections = [
   },
 ];
 
-// Relay examples from https://openrouter.ai/rankings (2026-09-12); declarations stay connection-scoped.
 const relayConnections = [
   {
     ...makeConnection({
@@ -180,18 +179,18 @@ const relayConnections = [
       name: 'House Relay',
       providerType: 'openai-compatible',
       baseUrl: 'https://relay.example.com/v1',
-      defaultModel: 'openai/gpt-5.6-luna',
+      defaultModel: 'gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
-        { id: 'openai/gpt-5.6-luna' },
-        { id: 'deepseek/deepseek-v4-flash-0731' },
-        { id: 'z-ai/glm-5.3-flash' },
-        { id: 'google/gemini-3.8-flash' },
+        { id: 'gpt-5.6-luna' },
+        { id: 'deepseek-v4-flash-0731' },
+        { id: 'glm-5.3-flash' },
+        { id: 'gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['openai/gpt-5.6-luna', 'deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
-    modelOverrides: { 'openai/gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
+    enabledModelIds: ['gpt-5.6-luna', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
+    modelOverrides: { 'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
   },
 ];
 
@@ -344,7 +343,7 @@ function createBridge(input: {
       const current = connections.find((connection) => connection.connectionId === identity.connectionId);
       if (!current) throw new Error('Connection not found');
       const models = current.slug === 'relay-house'
-        ? [...(current.models ?? []).filter((model) => model.id !== 'z-ai/glm-5.3'), { id: 'z-ai/glm-5.3' }]
+        ? [...(current.models ?? []).filter((model) => model.id !== 'glm-5.3'), { id: 'glm-5.3' }]
         : [...(current.models ?? [])];
       const updated = { ...current, models, modelSource: 'fetched' as const, updatedAt: NOW };
       connections = connections.map((connection) => connection.connectionId === identity.connectionId
@@ -898,7 +897,7 @@ export const RefreshModelCatalog: Story = {
     const refresh = await canvas.findByRole('button', { name: /^(?:更新模型目录|更新模型目錄|Update model catalog)$/i });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       refresh.click();
-      await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*z-ai\/glm-5\.3$/i });
+      await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*glm-5\.3$/i });
       await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
       await waitFor(() => expect(refresh).not.toBeDisabled());
     }
