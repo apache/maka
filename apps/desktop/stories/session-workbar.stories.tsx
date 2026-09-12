@@ -1087,6 +1087,31 @@ export const SeveralFacesAtColumnFloor: Story = {
   render: () => (
     <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
   ),
+  play: async ({ canvasElement }) => {
+    // Astryx's TabList hides its own overflow scrollbar (`scrollbar-width:
+    // none`) and scrolls the strip instead. The app default must not override
+    // that: as a `*` rule in `layer(components)` it out-ranked the component
+    // layer and re-showed the bar (#2538). The app default now lives in the
+    // lower `base` layer, so it no longer competes with the strip's `none`.
+    const tablist = await within(canvasElement).findByRole('tablist');
+    const nodes = [tablist, ...tablist.querySelectorAll<HTMLElement>('*')];
+    const strip = nodes.find((node) => getComputedStyle(node).overflowX === 'auto');
+    if (!strip) {
+      throw new Error('expected the tab strip to expose a horizontal scroll container');
+    }
+    expect(getComputedStyle(strip).scrollbarWidth).toBe('none');
+
+    // Keeping the default universal is equally important: `scrollbar-width`
+    // does not inherit, so a root-only rule would leave this scrollport `auto`.
+    const reviewPanel = await waitFor(() => {
+      const element = canvasElement.querySelector<HTMLElement>(
+        '.maka-session-review-panel',
+      );
+      if (!element) throw new Error('expected the review panel to render');
+      return element;
+    });
+    expect(getComputedStyle(reviewPanel).scrollbarWidth).toBe('thin');
+  },
 };
 
 // Below 991px the column stacks under the conversation at full width. The

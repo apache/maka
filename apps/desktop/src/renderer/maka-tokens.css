@@ -1228,6 +1228,39 @@
 @layer base {
   * { box-sizing: border-box; border-color: var(--border); }
 
+  /* One scrollbar for the whole app (visual system 2.0 T5-F): the platform
+     thin bar, coloured with `--border-strong` over a transparent gutter. The
+     universal selector is intentional because `scrollbar-width` is not
+     inherited. This base-layer default yields to element-owned declarations
+     in the higher Astryx and product component layers, such as a TabList
+     strip's `none` (#2538). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: var(--radius-pill);
+    background: var(--border-strong);
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    /* One step above --border-strong's 16%, scoped to the thumb only. */
+    background-color: oklch(from var(--foreground) l c h / 0.28);
+  }
+
   /* The root font-size stays at the browser default (16px) ON PURPOSE.
      It used to be pinned to 13px to express Maka's density, but the root is
      not a density knob: it is an implicit multiplier on every rem in the
