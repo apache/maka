@@ -199,6 +199,10 @@ type ShellCopy = {
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
     retryCatalog: string;
+    archivedProjectTitle: string;
+    archivedProjectDescription: string;
+    archivedProjectRestore: string;
+    archivedProjectCancel: string;
     remoteDirectoryTitle(host: string): string;
     remoteDirectoryBreadcrumbs: string;
     remoteDirectoryHome: string;
@@ -803,6 +807,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
       retryCatalog: '重试加载',
+      archivedProjectTitle: '项目已归档',
+      archivedProjectDescription: '该项目已归档，是否需要恢复？',
+      archivedProjectRestore: '恢复',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上添加项目`,
       remoteDirectoryBreadcrumbs: '当前文件夹',
       remoteDirectoryHome: '主目录',
@@ -1304,6 +1312,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
       catalogUnavailable: 'Runtime Host 暫時不可用',
       retryCatalog: '重試載入',
+      archivedProjectTitle: '專案已歸檔',
+      archivedProjectDescription: '該專案已歸檔，是否需要恢復？',
+      archivedProjectRestore: '恢復',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上新增專案`,
       remoteDirectoryBreadcrumbs: '目前資料夾',
       remoteDirectoryHome: '主目錄',
@@ -1807,6 +1819,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',
       retryCatalog: 'Retry loading',
+      archivedProjectTitle: 'Project archived',
+      archivedProjectDescription: 'This project is archived. Restore it?',
+      archivedProjectRestore: 'Restore',
+      archivedProjectCancel: 'Cancel',
       remoteDirectoryTitle: (host: string) => `Add a project on ${host}`,
       remoteDirectoryBreadcrumbs: 'Current folder',
       remoteDirectoryHome: 'Home',

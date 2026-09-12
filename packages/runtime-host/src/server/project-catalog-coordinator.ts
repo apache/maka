@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { reportUnexpectedOperation } from '@maka/core/redaction';
 import type { ProjectRecord } from '@maka/core/project';
 import {
   ProjectArchivedError,
@@ -143,6 +144,7 @@ export class HostProjectCatalogCoordinator {
       if (error instanceof TypeError || isInvalidPathError(error)) {
         return mutationFailure('invalid_request', 'Project catalog input is invalid');
       }
+      reportUnexpectedOperation(`runtime-host:project-catalog:${input.kind}`, error);
       this.requestDrain();
       return mutationFailure(
         'commit_outcome_unknown',
