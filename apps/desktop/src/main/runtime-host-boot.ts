@@ -1640,6 +1640,7 @@ function registerHostClientIpc(
     client,
     mainWindowController,
     showItemInFolder: (path) => shell.showItemInFolder(path),
+    openPath: (path) => shell.openPath(path),
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,

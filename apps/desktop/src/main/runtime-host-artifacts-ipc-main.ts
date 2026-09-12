@@ -42,6 +42,7 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly showItemInFolder: (path: string) => void;
+  readonly openPath?: (path: string) => Promise<string>;
   readonly presentationRoot?: string;
 }
 
@@ -96,7 +97,12 @@ export function registerRuntimeHostArtifactsIpc(
           `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
         );
         await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
-        deps.showItemInFolder(path);
+        if (artifact.kind === 'html' && deps.openPath) {
+          const error = await deps.openPath(path);
+          if (error) return { ok: false as const, reason: "open-failed" as const };
+        } else {
+          deps.showItemInFolder(path);
+        }
         return { ok: true as const, opened: artifact.name };
       } catch {
         return { ok: false as const, reason: "open-failed" as const };
