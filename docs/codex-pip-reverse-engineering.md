@@ -248,6 +248,14 @@ only — which makes it the one real-machine check that keeps working when the
 rest cannot run.
 
 The physics and the anchor scoring were covered without a desktop in
-`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts` (deleted by
-#2478); after #3293 replaced the transcribed constants, that exact-coverage
-claim no longer holds — see computer-use-cursor-provenance.md.
+`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`; #2478
+deleted that test, which only ends the coverage it provided — nothing has
+taken its place. The module under test is untouched: `pip-motion.ts` is
+byte-identical across the #3293 cursor replacement (implemented in #3456),
+which rebuilt the agent cursor engine and its glyphs — including the PiP
+glyph — without replacing the PiP window's motion constants. The dragging
+and settling springs and the throw factors transcribed above are still
+defined there and still drive `pip-window.ts`. Cursor provenance is tracked
+in computer-use-cursor-provenance.md, and it concerns the agent cursor only;
+the PiP window's motion model is a separate surface with no provenance
+change to record.
