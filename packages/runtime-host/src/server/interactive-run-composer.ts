@@ -65,6 +65,7 @@ import type { PluginSkillService } from '@maka/runtime/plugin-skill-service';
 import type { ScannedSkill } from '@maka/runtime/skills';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
 import { resolveTurnShellPlan, type TurnShellPlan } from '@maka/runtime/shell-detect';
+import { projectBuiltinToolsForPermissionMode } from './builtin-tool-permission-projection.js';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -145,6 +146,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     input.builtinTools && input.shell
       ? { ...input.builtinTools, shell: input.shell }
       : input.builtinTools;
+  const effectivePermissionMode = input.permissionMode ?? input.plan?.permissionMode;
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(
     input.skills,
     input.pluginSkills,
@@ -165,7 +167,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
-        input.permissionMode ?? input.plan?.permissionMode,
+        effectivePermissionMode,
         input.plan,
         input.deepResearch?.tools,
       );
@@ -189,7 +191,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
           mode: input.plan.mode,
           tools: candidateTools,
           hasActiveExecution: activeExecution !== undefined,
-          fullAccess: input.plan.permissionMode === 'bypass',
+          fullAccess: effectivePermissionMode === 'bypass',
         })
       : candidateTools;
     // A bound tool list is an exact child/local activation ceiling. Dynamic
@@ -262,7 +264,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               workspaceInstructions,
               promptState.memory,
               input.plan?.mode === 'plan'
-                ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
+                ? renderPlanModePrompt({ fullAccess: effectivePermissionMode === 'bypass' })
                 : undefined,
               input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
@@ -552,10 +554,9 @@ function buildDefaultHostTools(
   plan?: InteractiveRunComposerInput['plan'],
   deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
-  const projectedBuiltinOptions =
-    builtinOptions && permissionMode !== undefined
-      ? { ...builtinOptions, declareSandboxBoundary: permissionMode !== 'bypass' }
-      : builtinOptions;
+  const projectedBuiltinOptions = builtinOptions
+    ? projectBuiltinToolsForPermissionMode(builtinOptions, permissionMode)
+    : undefined;
   const builtins = projectedBuiltinOptions ? buildBuiltinTools(projectedBuiltinOptions) : [];
   const question = buildAskUserQuestionTool();
   const sandboxBoundaryTools =

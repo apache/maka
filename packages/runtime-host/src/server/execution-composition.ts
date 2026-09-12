@@ -1262,6 +1262,7 @@ export async function createExecutionRuntimeHostComposition(
       );
       const childTools = createHostChildAgentToolComposition({
         builtinTools: { ...builtinTools, shell },
+        permissionMode: header.permissionMode,
         hostTools,
         worktreePatchWriteBackAvailable: true,
       }).childTools;

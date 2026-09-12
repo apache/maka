@@ -29,6 +29,10 @@ import { type MakaTool } from '@maka/runtime/tool-runtime';
 
 import { type SessionManager } from '@maka/runtime/session-manager';
 
+import type { PermissionMode } from '@maka/core/permission';
+
+import { projectBuiltinToolsForPermissionMode } from './builtin-tool-permission-projection.js';
+
 type ChildAgentAuthority = Pick<
   SessionManager,
   'spawnChildSession' | 'listChildAgents' | 'readChildAgentOutput'
@@ -47,10 +51,13 @@ export interface HostChildAgentToolComposition {
 /** Composes the parent control tools and the exact catalog-child capability union. */
 export function createHostChildAgentToolComposition(input: {
   readonly builtinTools: BuildBuiltinToolsOptions;
+  readonly permissionMode?: PermissionMode;
   readonly hostTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
 }): HostChildAgentToolComposition {
-  const builtinTools = buildBuiltinTools(input.builtinTools);
+  const builtinTools = buildBuiltinTools(
+    projectBuiltinToolsForPermissionMode(input.builtinTools, input.permissionMode),
+  );
   const childTools = buildChildAgentTools([...builtinTools, ...(input.hostTools ?? [])]);
   const definitions = listRunnableBuiltinAgentDefinitions({
     tools: childTools,

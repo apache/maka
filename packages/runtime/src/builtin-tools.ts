@@ -92,6 +92,7 @@ import {
   refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
   selectedBashBoundaryExpansion,
+  stripHistoricalBashBoundaryFields,
 } from './sandbox-boundary-declaration.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
@@ -707,16 +708,7 @@ function buildExecutorBashTool(
             .strict()
             .superRefine(refineBashBoundaryDeclaration),
         )
-      : z.preprocess((input) => {
-          // Historical calls may retain boundary fields after a session mode switch.
-          if (typeof input !== 'object' || input === null || Array.isArray(input)) return input;
-          const {
-            boundary_intent: _intent,
-            required_boundary: _boundary,
-            ...fields
-          } = input as Record<string, unknown>;
-          return fields;
-        }, z.object(executorBashFields).strict()),
+      : z.preprocess(stripHistoricalBashBoundaryFields, z.object(executorBashFields).strict()),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async (input, ctx) => {

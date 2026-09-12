@@ -111,7 +111,47 @@ test('the interactive tool surface follows the session permission mode', () => {
   }
 });
 
-test('top-level bypass projects Bash without a plan store and overrides the plan mode', () => {
+test('explicit Bash boundary declaration options override the permission-mode default', () => {
+  for (const { permissionMode, declareSandboxBoundary, expectedKeys } of [
+    {
+      permissionMode: 'ask' as const,
+      declareSandboxBoundary: false,
+      expectedKeys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+    },
+    {
+      permissionMode: 'bypass' as const,
+      declareSandboxBoundary: true,
+      expectedKeys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+    },
+  ]) {
+    const composer = createFixtureComposer({
+      permissionMode,
+      builtinTools: {
+        declareSandboxBoundary,
+        shellRuns: {
+          runForegroundBash: () => Promise.reject(new Error('not used')),
+          runBackgroundBash: () => Promise.reject(new Error('not used')),
+        },
+      },
+    });
+    const bash = composer.tools.find(({ name }) => name === 'Bash');
+    if (!bash) throw new Error('Bash tool missing');
+    assert.deepEqual(
+      Object.keys(z.toJSONSchema(bash.parameters as z.ZodTypeAny).properties ?? {}),
+      expectedKeys,
+      `${permissionMode}/${String(declareSandboxBoundary)}`,
+    );
+  }
+});
+
+test('top-level bypass projects Bash without a plan store and overrides the plan mode', async () => {
   for (const plan of [
     undefined,
     {
@@ -123,7 +163,7 @@ test('top-level bypass projects Bash without a plan store and overrides the plan
         proposals: [],
         executions: [],
       },
-      mode: 'agent' as const,
+      mode: 'plan' as const,
       permissionMode: 'ask' as const,
     },
   ]) {
@@ -147,6 +187,19 @@ test('top-level bypass projects Bash without a plan store and overrides the plan
       composer.tools.some(({ name }) => name === 'request_sandbox_boundary'),
       false,
     );
+    if (plan) {
+      assert.equal(
+        composer.tools.some(({ name }) => name === 'Write'),
+        true,
+      );
+      const prompt = await composer.resolveSystemPrompt({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: '/workspace',
+      });
+      assert.match(prompt.text ?? '', /Full access is active/);
+      assert.doesNotMatch(prompt.text ?? '', /do not modify files/);
+    }
   }
 });
 
