@@ -55,7 +55,6 @@
     "src/renderer/interrupted-resume.ts",
     "src/renderer/keyboard-help.tsx",
     "src/renderer/live-content-seed.ts",
-    "src/renderer/live-turn-reconciler.tsx",
     "src/renderer/local-memory-digest.ts",
     "src/renderer/locales/agent-graph-copy.ts",
     "src/renderer/locales/artifact-copy.ts",
@@ -706,7 +705,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 69,
+        "importDeclarations": 68,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -821,7 +820,6 @@
           "./follow-up-submit-routing": 1,
           "./keyboard-help": 1,
           "./live-content-seed": 1,
-          "./live-turn-reconciler": 1,
           "./locales/conversation-copy": 1,
           "./locales/shell-copy": 1,
           "./locales/shell-remaining-copy.js": 1,
@@ -866,8 +864,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 105,
-        "nonTriviaTokens": 13563
+        "importSpecifiers": 104,
+        "nonTriviaTokens": 13558
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1428,22 +1426,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {}
-      },
-      "src/renderer/live-turn-reconciler.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useExternalStoreSelector": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./features/conversation/index.js": 1,
-          "./use-external-store-selector": 1,
-          "react": 1
-        }
       },
       "src/renderer/local-memory-digest.ts": {
         "bridgePaths": {},

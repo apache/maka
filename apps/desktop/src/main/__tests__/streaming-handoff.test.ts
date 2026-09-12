@@ -181,7 +181,6 @@ describe('single live-turn handoff', () => {
       activeTurn: { turnId: 'turn-1' },
       liveTurns: [{
         turnId: 'turn-1',
-        phase: 'streamed',
         steps: [{
           stepId: 'assistant-1',
           text: { text: 'live answer', truncated: false, complete: false },
@@ -220,7 +219,6 @@ describe('single live-turn handoff', () => {
       scrollBehavior: 'smooth',
       liveTurns: [{
         turnId: 'host-turn',
-        phase: 'streamed',
         steps: [{
           stepId: 'assistant-1',
           text: { text: 'live answer', truncated: false, complete: false },
@@ -240,7 +238,6 @@ describe('single live-turn handoff', () => {
   it('renders one ordered timeline: thinking before its tool and answer', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'assistant-1',
         thinking: { text: '先检查', truncated: false, complete: false },
@@ -279,7 +276,6 @@ describe('single live-turn handoff', () => {
       scrollBehavior: 'smooth',
       liveTurns: [{
         turnId: 'turn-1',
-        phase: 'streamed',
         terminal: true,
         steps: [{
           stepId: 'assistant-1',
@@ -309,7 +305,6 @@ describe('single live-turn handoff', () => {
       scrollBehavior: 'smooth',
       liveTurns: [{
         turnId: 'turn-1',
-        phase: 'streamed',
         steps: [{
           stepId: 'assistant-1',
           text: { text, truncated: false, complete: false },
@@ -733,7 +728,6 @@ describe('single live-turn handoff', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [{
         turnId: 'turn-1',
-        phase: 'streamed',
         steps: [{
           stepId: 'step-1',
           tools: [{
@@ -786,7 +780,6 @@ describe('single live-turn handoff', () => {
   it('retains errored live evidence when persistence cannot be confirmed', async () => {
     const projection: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'step-1',
         tools: [{
@@ -857,7 +850,6 @@ describe('single live-turn handoff', () => {
   it('reconciles persisted stream evidence while the next tool batch is running', () => {
     const projection: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [
         {
           stepId: 'step-1',
@@ -904,7 +896,6 @@ describe('single live-turn handoff', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [{
         turnId: 'turn-1',
-        phase: 'streamed',
         steps: [{
           stepId: 'tool:tool-1',
           tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'completed', args: {} }],

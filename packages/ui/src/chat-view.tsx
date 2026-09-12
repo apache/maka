@@ -766,6 +766,7 @@ export function ChatView(props: {
                   >
                     <TurnView
                       turn={turn}
+                      activityObserved={turn.turnId === props.activeTurn?.turnId}
                       transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}

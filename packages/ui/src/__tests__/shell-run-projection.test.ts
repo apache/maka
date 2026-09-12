@@ -100,7 +100,6 @@ describe('ShellRun UI projection', () => {
 
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -132,7 +131,6 @@ describe('ShellRun UI projection', () => {
     liveResult.output.screen = 'still running';
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -168,7 +166,6 @@ describe('ShellRun UI projection', () => {
   test('applies a durable update that arrives before the live Bash result', () => {
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],

@@ -594,6 +594,28 @@ test('releases an async companion compaction after a Host interruption', async (
   assert.equal((compactionErrors[0]?.error as SessionEvent | undefined)?.type, 'abort');
 });
 
+test('consecutive compactions each stop their observed Host Turn', async () => {
+  let count = 0;
+  const stopped: unknown[] = [];
+  const h = await renderOwnershipProbe({
+    compact: async (sessionId) => ({ kind: 'started', turn: {
+      sessionId, turnId: `compact-${++count}`, runId: `run-${count}`, status: 'running',
+    } }),
+    stop: async (_id, target) => { stopped.push(target); },
+  });
+  await commitIdleCompanion(h);
+  for (let n = 1; n <= 2; n++) {
+    await act(async () => { assert.equal(await h.send('/compact'), true); h.hostTurn(`compact-${n}`); });
+    await act(async () => { await h.stop(); });
+    assert.deepEqual(stopped.at(-1), { kind: 'turn', turnId: `compact-${n}` });
+    await act(async () => {
+      h.emit({ type: 'abort', id: `abort-${n}`, turnId: `compact-${n}`, ts: n, reason: 'user_stop' });
+      h.hostTurn(null);
+    });
+  }
+  assert.equal(stopped.length, 2);
+});
+
 test('does not settle a pending companion compaction from another turn outcome', async () => {
   const pendingCompact = deferred<ContextCompactResult>();
   let compactCalls = 0;
@@ -1423,7 +1445,7 @@ test('keeps a Side Conversation admission when Host stop outcome is unknown', as
 
 test('stops a bound Side Conversation by its exact Host Turn identity', async () => {
   let stoppedTarget: SideChatStopTarget;
-  const { send, stop } = await renderOwnershipProbe({
+  const { send, stop, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'host-turn-1' }),
     stop: async (_sessionId, target) => {
       stoppedTarget = target;
@@ -1431,6 +1453,7 @@ test('stops a bound Side Conversation by its exact Host Turn identity', async ()
   });
   await act(async () => {
     assert.equal(await send('start this exact turn'), true);
+    hostTurn('host-turn-1');
     await Promise.resolve();
   });
   await act(async () => {
@@ -2072,8 +2095,8 @@ function QuoteCompanionOwnershipProbe(props: {
   return createElement('div', {
     'data-companion-id': companion.companionSession?.id ?? '',
     'data-error': companion.error ?? '',
-    'data-live-turn-id': companion.liveTurn?.turnId ?? '',
-    'data-live-text': companion.liveTurn?.steps.find((step) => step.text)?.text?.text ?? '',
+    'data-live-turn-id': companion.liveTurns?.at(-1)?.turnId ?? '',
+    'data-live-text': companion.liveTurns?.at(-1)?.steps.find((step) => step.text)?.text?.text ?? '',
     'data-streaming': String(companion.streaming),
     'data-active-turn': companion.activeTurn?.turnId ?? '',
     'data-processing': String(companion.processing),

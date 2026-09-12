@@ -57,7 +57,6 @@ const backgroundUpdate: ShellRunUpdate = {
 function streamingTurn(text: string): LiveTurnProjection {
   return {
     turnId: 'turn-3',
-    phase: 'streamed',
     steps: [{
       stepId: 'step-1',
       contentOrder: ['text'],
@@ -107,7 +106,6 @@ describe('incremental transcript projection', () => {
     // live "compacting" row.
     const liveTurn: LiveTurnProjection = {
       turnId: 'turn-compact',
-      phase: 'waiting',
       steps: [],
       rootExecutionKind: 'context_compact',
       startedAt: 1,
@@ -406,7 +404,6 @@ describe('incremental transcript projection', () => {
       messages: [],
       liveTurns: [{
         turnId: 'turn-live',
-        phase: 'streamed',
         steps: [{
           stepId: 'tool:bash-live',
           contentOrder: ['tools'],

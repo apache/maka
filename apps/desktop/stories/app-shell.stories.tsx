@@ -587,7 +587,7 @@ export const StreamingTurn: Story = {
           { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
         ],
         liveTurns: [{
-          turnId: 'turn-s', phase: 'streamed', steps: [{
+          turnId: 'turn-s', steps: [{
             stepId: 'msg-assistant-s',
             text: { text: '直接挂载 Astryx AppShell，通过官方插槽组合真实产品子组件，只隔离 IPC。', truncated: false, complete: false },
             tools: [],
@@ -620,7 +620,7 @@ export const RunningStatusDuringToolRun: Story = {
           { type: 'turn_state', id: 'state-t', turnId: 'turn-t', ts: NOW - 120_000, status: 'running' },
         ],
         liveTurns: [{
-          turnId: 'turn-t', phase: 'streamed', steps: [{
+          turnId: 'turn-t', steps: [{
             stepId: 'msg-assistant-t',
             tools: [{
               toolUseId: 'tool-t-1',
@@ -884,7 +884,6 @@ export const ProviderRetrying: Story = {
         ],
         liveTurns: [{
           turnId: 'turn-rr',
-          phase: 'streamed',
           steps: [{ stepId: 'msg-assistant-rr', tools: [] }],
           providerRetry: {
             event: {
@@ -1084,7 +1083,6 @@ export const ComputerUseObservability: Story = {
         ],
         liveTurns: [{
           turnId: 'turn-cu',
-          phase: 'streamed',
           steps: [{
             stepId: 'msg-assistant-cu',
             tools: [
@@ -2118,7 +2116,6 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
         ],
         liveTurns: question && !settled ? [{
           turnId: 'turn-tail',
-          phase: 'streamed',
           steps: [{
             stepId: 'msg-assistant-tail',
             text: {
@@ -3612,7 +3609,6 @@ function CompactionRunningScene(props: { motionEnabled?: boolean }) {
         ],
         liveTurns: [{
           turnId: 'turn-compact',
-          phase: 'waiting',
           steps: [],
           rootExecutionKind: 'context_compact',
           startedAt,

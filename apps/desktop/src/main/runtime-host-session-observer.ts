@@ -792,6 +792,7 @@ export class RuntimeHostSessionObserver {
         this.#prepareSubscriptionActivation(state, subscription, recovered),
       acceptFrame: (frame) => this.#acceptFrame(state, frame),
       recoveryStarted: (error) => {
+        this.#emitObservationSeed(state.sessionId, 'pending');
         console.warn(
           "[runtime-host-session-observer] recovering subscription",
           subscriptionFailureIdentity(state, error),

@@ -395,7 +395,6 @@ export type CompanionRunEventEffect =
   | { kind: 'ignore' }
   | {
       kind: 'active';
-      terminal: boolean;
       /** Undefined keeps the existing error, null clears it. */
       error?: string | null;
     };
@@ -416,7 +415,6 @@ export function companionRunEventEffect(
   if (event.type === 'error') {
     return {
       kind: 'active',
-      terminal: true,
       error: stopRequested ? null : sessionEventErrorMessage(event, locale),
     };
   }
@@ -424,11 +422,10 @@ export function companionRunEventEffect(
     event.type === 'abort' ||
     (event.type === 'complete' && event.stopReason === 'user_stop')
   ) {
-    return { kind: 'active', terminal: true, error: null };
+    return { kind: 'active', error: null };
   }
   return {
     kind: 'active',
-    terminal: isCompanionTurnTerminal(event),
   };
 }
 

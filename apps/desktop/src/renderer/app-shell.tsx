@@ -73,7 +73,6 @@ import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
-import { LiveTurnReconciler } from './live-turn-reconciler';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
@@ -2320,7 +2319,7 @@ function AppShellContent({
           desktopConversationCopy.actions.messageReadFailedTitle,
           localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale))}
       />
-      <LiveTurnReconciler
+      <Conversation.LiveTurnReconciler
         controller={sessionUiController}
         activeId={activeId}
         messages={messages}

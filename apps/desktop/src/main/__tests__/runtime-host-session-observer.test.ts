@@ -2061,6 +2061,8 @@ test("abandons a watched Turn and removes it from the catalog when Guest access 
 });
 
 test("reopens an evicted active subscription without a renderer resubscribe", async () => {
+  const reopen = deferred<void>();
+  const phases: string[] = [];
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
@@ -2069,6 +2071,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     client: {
       openSession: async () => {
         openCount += 1;
+        if (openCount === 2) await reopen.promise;
         const events = openCount === 1 ? firstEvents : secondEvents;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
@@ -2097,6 +2100,7 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     },
     emitSessionsChanged: (reason, sessionId) =>
       sessionChanges.push({ reason, sessionId }),
+    emitObservationSeed: (_sessionId, phase) => phases.push(phase),
   });
   const target = eventTarget(12);
   await observer.observe("session-1", "observer-1", target);
@@ -2109,7 +2113,12 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
     sequence: 2,
     reason: "slow_consumer",
   });
-  await waitFor(() => openCount === 2 && target.events.length === 2);
+  await waitFor(() => openCount === 2);
+  assert.deepEqual(phases, ['pending'], 'observation is invalidated while reopen is still waiting');
+  assert.equal(target.events.length, 1, 'no replacement content is accepted before reopen completes');
+  reopen.resolve();
+  await waitFor(() => target.events.length === 2);
+  assert.equal(phases.at(-1), 'ready');
 
   secondEvents.push(deltaFrame(1, 5, " world"));
   await waitFor(() => target.events.length === 3);

@@ -22,7 +22,11 @@ import { describe, it } from 'node:test';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import type { SessionSummary } from '@maka/core/session';
-import { armLiveTurn } from '@maka/ui';
+import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
+import type { StoredMessage } from '@maka/core/session';
+import { act, createElement } from 'react';
+import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 import {
   clearAppShellSessionUiStateForSession,
@@ -52,6 +56,32 @@ function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
     },
   };
 }
+
+it('reconciles late predecessor content after its durable answer is already loaded', async () => {
+  const { root } = installReactRenderer();
+  try {
+    const controller = createAppShellSessionUiStateController();
+    const b = { turnId: 'B', steps: [{ stepId: 'bash', tools: [{ toolUseId: 'bash', toolName: 'Bash', args: {}, status: 'running' as const }] }] };
+    controller.setLiveTurnBySession(() => ({ session: [b] }));
+    controller.setExecution('session', { type: 'host_execution', available: true,
+      rootTurn: { sessionId: 'session', turnId: 'B', runId: 'run-B', status: 'running' } });
+    const messages: StoredMessage[] = [
+      { type: 'assistant', id: 'answer-A', turnId: 'A', ts: 1, text: 'Alpha completed full answer', modelId: 'test' },
+      { type: 'turn_state', id: 'terminal-A', turnId: 'A', ts: 2, status: 'completed' },
+    ];
+    const reconcile = (_id: string, durable: readonly StoredMessage[]) => controller.setLiveTurnBySession((current) => {
+      const next = reconcileLiveTurnBuffer(current.session!, durable);
+      return next === current.session ? current : { ...current, session: next ?? [] };
+    });
+    await act(async () => { root.render(createElement(LiveTurnReconciler, { controller, activeId: 'session', messages, reconcile })); });
+    await act(async () => {
+      controller.setLiveTurnBySession((current) => ({ ...current, session: applyLiveTurnBufferEvent(current.session, {
+        type: 'text_delta', id: 'late-A', turnId: 'A', messageId: 'answer-A', ts: 1, text: 'Alpha',
+      }, 'en')! }));
+    });
+    assert.deepEqual(controller.getState().liveTurnBySession.session, [b], 'late A cannot shadow its full durable answer while B stays unchanged');
+  } finally { cleanupFakeDom(); }
+});
 
 function healthSnapshot(sessionId: string): SessionEventStreamSnapshot {
   return { sessionId, status: 'connected', subscribedAt: 1, checkedAt: 1 };

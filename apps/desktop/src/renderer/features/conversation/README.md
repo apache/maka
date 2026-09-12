@@ -26,6 +26,11 @@ public API includes task-readiness presentation and a headless
 restoration, landmark refresh, and history navigation, while exposing explicit
 capture, send preparation, and history commands to AppShell.
 
+`LiveTurnReconciler` owns the handoff of every retained Turn's content to the
+durable transcript. It subscribes to the whole buffer; selecting only the Host
+execution root would miss late predecessor content. AppShell continues to use
+the low-frequency summary for its chrome.
+
 Successful send preparation publishes a one-shot viewport command through the
 Session UI controller. The message surface forwards that port to ChatView,
 where the scroll authority follows the tail. History catches up in the background

@@ -178,7 +178,6 @@ test('WorkHub shows the submitted prompt before admission and keeps it until its
   assert.deepEqual(followed, [h.sessionId]);
   const turnId = h.requests[0]!.turnId;
   assert.equal(h.controller.liveTurn?.turnId, turnId, 'waiting feedback starts before admission');
-  assert.equal(h.controller.liveTurn?.phase, 'waiting');
   assert.equal(h.controller.busy, true);
   await act(async () => { h.admission.resolve({ turnId }); assert.equal(await sent, true); });
   assert.equal(h.controller.transientMessages.length, 1, 'an acknowledgement is not a durable message');

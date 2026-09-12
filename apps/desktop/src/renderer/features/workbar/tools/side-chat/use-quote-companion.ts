@@ -168,7 +168,6 @@ export interface UseQuoteCompanionResult {
    *  before the durable transcript echoes them back. Reconciled away once the
    *  durable message with the same id lands. Pass straight to `ChatView`. */
   transientMessages: readonly TransientUserMessageProjection[];
-  liveTurn: LiveTurnProjection | undefined;
   liveTurns: LiveTurnBuffer | undefined;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
@@ -255,7 +254,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSessionId;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
-  const stopRequestRef = useRef<Promise<unknown> | null>(null);
+  const stopRequestRef = useRef<{ promise: Promise<unknown>; turnId?: string } | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const pendingAdmissionRef = useRef<PendingAdmission | null>(null);
   const reconcilingAdmissionRef = useRef<PendingAdmission | null>(null);
@@ -290,7 +289,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   >([]);
   const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
-  const liveTurn = liveTurns?.find((turn) => turn.turnId === activeTurnIdRef.current) ?? liveTurns?.at(-1);
   const liveTurnsRef = useRef(liveTurns);
   liveTurnsRef.current = liveTurns;
   const [interactions, setInteractions] = useState<InteractionQueues>({});
@@ -406,6 +404,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         stopRequestRef.current !== null,
         localeRef.current,
       );
+      if ((event.type === 'complete' || event.type === 'abort' || (event.type === 'error' && !event.recoverable))
+        && stopRequestRef.current?.turnId === event.turnId) stopRequestRef.current = null;
       if (!ownTurnIdsRef.current.has(event.turnId)) return;
 
       // Interaction queue (so a boundary expansion surfaces) + live stream.
@@ -431,13 +431,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             setLiveTurns((prev) => (prev ? reconcileLiveTurnBuffer(prev, next) : prev));
             if (activeTurnIdRef.current === settledTurnId) {
               activeTurnIdRef.current = null;
-              stopRequestRef.current = null;
             }
           })
           .catch(() => {
             if (!mountedRef.current || activeTurnIdRef.current !== settledTurnId) return;
             activeTurnIdRef.current = null;
-            stopRequestRef.current = null;
             setError((current) => current ?? copyRef.current.errors.settlementFailed);
           })
           .finally(() => {
@@ -462,6 +460,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       hasContentRef.current = true;
       setHasContent(true);
       activeTurnIdRef.current = turnId;
+      if (stopRequestRef.current && stopRequestRef.current.promise === admission.stopPromise) {
+        stopRequestRef.current.turnId = turnId;
+      }
       ownTurnIdsRef.current.add(turnId);
       admission.consumeOnAdmission?.();
       setError(null);
@@ -508,7 +509,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       // The send is being abandoned (retracted / failed): the optimistic bubble
       // would otherwise linger with no turn to reconcile it away.
       dropOptimisticUserMessage(admission.messageId);
-      if (stopRequestRef.current === admission.stopPromise) stopRequestRef.current = null;
+      if (stopRequestRef.current?.promise === admission.stopPromise) stopRequestRef.current = null;
       if (message) setError(message);
     },
     [dropOptimisticUserMessage, setPendingAdmission],
@@ -1092,28 +1093,29 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             admission.stopPromise = undefined;
             resolveAdmission(id, admission, admission.messageId);
           }
-          if (stopRequestRef.current === stopPromise) stopRequestRef.current = null;
+          if (stopRequestRef.current?.promise === stopPromise) stopRequestRef.current = null;
           return 'unknown' as const;
         },
       );
       admission.stopPromise = stopPromise;
-      stopRequestRef.current = stopPromise;
+      stopRequestRef.current = { promise: stopPromise };
       await stopPromise;
       return;
     }
-    const activeTurnId = activeTurnIdRef.current;
+    const activeTurnId = activeHostTurn(execution)?.turnId;
+    if (!activeTurnId) return;
     const stopPromise = sideChat.stop(
       id,
-      activeTurnId ? { kind: 'turn', turnId: activeTurnId } : undefined,
+      { kind: 'turn', turnId: activeTurnId },
     );
-    stopRequestRef.current = stopPromise;
+    stopRequestRef.current = { promise: stopPromise, turnId: activeTurnId };
     try {
       await stopPromise;
     } catch {
-      if (stopRequestRef.current === stopPromise) stopRequestRef.current = null;
+      if (stopRequestRef.current?.promise === stopPromise) stopRequestRef.current = null;
       // best-effort; the terminal event still reconciles state
     }
-  }, [releaseAdmission, resolveAdmission, sideChat]);
+  }, [execution, releaseAdmission, resolveAdmission, sideChat]);
 
   const steer = useCallback(async (text: string): Promise<boolean> => {
     const id = companionIdRef.current;
@@ -1325,7 +1327,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     hasContent,
     messages,
     transientMessages,
-    liveTurn,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
     streaming,

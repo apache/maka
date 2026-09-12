@@ -37,10 +37,10 @@ const selectExecution = (state: AppShellSessionUiState, id: string | undefined) 
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession, state.executionBySession);
 
 /**
- * The active session's raw projection — the one selection that moves per token.
- * Shared by the low-frequency summary and the content reconciler.
+ * Select the execution root's content for the low-frequency Shell summary.
+ * Content handoff subscribes to selectLiveTurns so older buffered turns remain visible to it.
  */
-export const selectLiveTurn = (state: AppShellSessionUiState, sessionId: string | undefined) =>
+const selectLiveTurn = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.liveTurnBySession[sessionId]?.find((turn) => turn.turnId === state.executionBySession[sessionId]?.rootTurn?.turnId)
     ?? state.liveTurnBySession[sessionId]?.at(-1) : undefined;
 
