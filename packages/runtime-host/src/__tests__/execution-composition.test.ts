@@ -963,6 +963,90 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('production composition enables an explicit resume after user Stop by default', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'default-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'turn-default-interactive-resume',
+          content: { text: FAKE_HOLD_OPEN_PROMPT },
+        },
+        context,
+      );
+      assert.equal(started.ok, true);
+      if (!started.ok || started.result.kind !== 'started') return;
+      const stopped = await composition.handlers['turn.stop'](
+        {
+          sessionId: session.id,
+          turnId: started.result.turn.turnId,
+          runId: started.result.turn.runId,
+        },
+        context,
+      );
+      assert.equal(stopped.ok, true);
+
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      if (plan.ok) assert.equal(plan.result.disposition, 'ready');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production composition preserves an explicit interactive resume kill switch', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: false,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'disabled-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      assert.deepEqual(plan.ok && plan.result, {
+        sessionId: session.id,
+        disposition: 'parked',
+        reason: 'resume_feature_disabled',
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -1284,12 +1368,10 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
   });
 });
 
-test('WorkHub does not record resume while safe-boundary resume is disabled', async () => {
+test('WorkHub does not record resume when only interactive resume is enabled by default', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
-      safeBoundaryResume: false,
-    });
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context = {
       hostEpoch: 'execution-composition-test',
       connectionId: 'workhub-disabled-resume-client',
@@ -2641,7 +2723,7 @@ async function createCapturedExecutionComposition(
   };
   try {
     if (options.safeBoundaryResume === true) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
-    if (options.safeBoundaryResume === false) delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    if (options.safeBoundaryResume === false) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
     // The production composition no longer registers a test backend of its
     // own; the deterministic one arrives through the same `primaryBackendFactory`
     // seam the Desktop E2E run uses.

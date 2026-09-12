@@ -196,7 +196,7 @@ Workspace 数据默认放在 Electron `userData` 下：
 - API key 一类的机密存在本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
 - 写文件、跑 Shell 的工具必须先过沙箱边界。
 - `runtime.sqlite` 是当前生效的那份记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
-- 中断回合的续跑默认关闭。只有设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 才会打开 Desktop **安全恢复**、CLI `/resume` 和启动时自动续跑——这些路径会真的请求模型、消耗 token。
+- Desktop 与 CLI/TUI `/resume` 默认可以显式恢复中断回合；成功续跑会请求模型并消耗 token。设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` 可关闭新的 resume planning；设置 `=1` 会额外开启 WorkHub 模型驱动 resume。启动恢复只修复已经 admission 的 continuation，不会自动选择普通的 failed 或 cancelled Turn。
 
 细节见 [SECURITY.md](./SECURITY.md)、[隐私](./docs/workspace-privacy-context.md)、[续跑](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
 
