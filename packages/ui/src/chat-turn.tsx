@@ -373,7 +373,7 @@ function MessageCopyButton(props: {
  * "message stack + tools panel at end" layout so the user sees the
  * narrative of "ask → tools fired → answer" as one work unit.
  */
-export const TurnView = memo(function TurnView(props: {
+export const TurnView = memo(function TurnView(inputProps: {
   turn: TurnViewModel;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
@@ -463,7 +463,15 @@ export const TurnView = memo(function TurnView(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
-  const { turn } = props;
+  const { turn } = inputProps;
+  // Live state is a separate projection and may lag the durable transcript.
+  // Once that transcript records a terminal outcome, normalize the input so
+  // every downstream surface uses the durable state. Inferred `completed`
+  // remains eligible because active legacy turns use it.
+  const props =
+    turn.statusSource === 'recorded' && turn.status !== 'running'
+      ? { ...inputProps, liveStreaming: undefined }
+      : inputProps;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   // A recorded conversational terminal turn owns presentation beyond its
@@ -472,7 +480,7 @@ export const TurnView = memo(function TurnView(props: {
   // internal operations do not carry enough evidence for a recovery action.
   const showAssistantMessage =
     turn.timeline.length > 0 ||
-    !!props.liveStreaming ||
+    !!inputProps.liveStreaming ||
     (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
   // #1307: the collapsed "Processing" fold is derived at render time from the
   // flat timeline. Settled turn identities are stable (memoized projections),
@@ -486,18 +494,12 @@ export const TurnView = memo(function TurnView(props: {
   const toolSurfaceOwnsSpinner = turn.timeline.some(
     (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
   );
-  // Live state is a separate projection and may lag the durable transcript.
-  // Once that transcript records a terminal outcome, it owns the turn chrome;
-  // inferred `completed` remains eligible because active legacy turns use it.
-  const hasRecordedTerminalStatus =
-    turn.statusSource === 'recorded' && turn.status !== 'running';
-  const activeLiveStreaming = hasRecordedTerminalStatus ? undefined : props.liveStreaming;
   return (
     <section
       className="maka-turn"
       data-maka-contract="markdown-flow"
       data-turn-id={turn.turnId}
-      data-live-streaming={activeLiveStreaming ? 'true' : undefined}
+      data-live-streaming={props.liveStreaming ? 'true' : undefined}
       data-search-highlight={props.searchHighlighted ? 'true' : undefined}
       tabIndex={props.searchHighlighted ? -1 : undefined}
     >
@@ -596,7 +598,7 @@ export const TurnView = memo(function TurnView(props: {
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
               turn.status === 'running' ||
-              !!activeLiveStreaming
+              !!props.liveStreaming
             }
             editDisabledReason={
               (turn.user.attachments?.length ?? 0) > 0
@@ -684,20 +686,20 @@ export const TurnView = memo(function TurnView(props: {
                         ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
                         : undefined
                     }
-                    initialLiveContent={activeLiveStreaming?.initialLiveContent}
+                    initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ) : (
                   <TurnTimelineEntry
                     key={timelineEntryKey(item, index)}
                     item={item}
-                    onStreamingSettled={activeLiveStreaming?.onStreamingSettled}
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
                       props.onSwitchToBypassAndRetry
                         ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
                         : undefined
                     }
-                    initialLiveContent={activeLiveStreaming?.initialLiveContent}
+                    initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
               )}
@@ -759,13 +761,13 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome && (activeLiveStreaming || props.footerActions?.length) ? (
+            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
               <TurnFooter
-                actions={activeLiveStreaming ? [] : props.footerActions ?? []}
-                live={!!activeLiveStreaming}
-                activity={activeLiveStreaming?.providerRetry ? (
-                  <ModelProviderRetryIndicator retry={activeLiveStreaming.providerRetry} />
-                ) : activeLiveStreaming?.runningStatus ? (
+                actions={props.liveStreaming ? [] : props.footerActions ?? []}
+                live={!!props.liveStreaming}
+                activity={props.liveStreaming?.providerRetry ? (
+                  <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
+                ) : props.liveStreaming?.runningStatus ? (
                   <TurnRunningStatus
                     startedAt={turn.startedAt}
                     showSpinner={!toolSurfaceOwnsSpinner}
