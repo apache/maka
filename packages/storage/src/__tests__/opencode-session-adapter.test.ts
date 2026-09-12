@@ -460,7 +460,12 @@ describe('OpenCodeSessionAdapter', () => {
           },
         ];
         f.parts = [
-          { id: 'p_1', message_id: 'm_user', time_created: 1, data: { type: 'text', text: 'prompt' } },
+          {
+            id: 'p_1',
+            message_id: 'm_user',
+            time_created: 1,
+            data: { type: 'text', text: 'prompt' },
+          },
           {
             id: 'p_2',
             message_id: 'm_assistant',
@@ -472,15 +477,17 @@ describe('OpenCodeSessionAdapter', () => {
               state: { status: 'completed', input: {}, output: cjk },
             },
           },
-          { id: 'p_3', message_id: 'm_assistant', time_created: 3, data: { type: 'text', text: 'tail' } },
+          {
+            id: 'p_3',
+            message_id: 'm_assistant',
+            time_created: 3,
+            data: { type: 'text', text: 'tail' },
+          },
         ];
         return f;
       });
       const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
-      const { session, truncated } = await adapter.readSessionBounded(
-        fixture.session.id,
-        2_000,
-      );
+      const { session, truncated } = await adapter.readSessionBounded(fixture.session.id, 2_000);
 
       // The CJK payload alone outgrows the budget, so it and the rows behind
       // it are cut — and none of that payload is fetched into the result.

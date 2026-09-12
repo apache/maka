@@ -80,10 +80,7 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
-import {
-  isUsableOpencodeSessionId,
-  OpenCodeSessionAdapter,
-} from './opencode-session-adapter.js';
+import { isUsableOpencodeSessionId, OpenCodeSessionAdapter } from './opencode-session-adapter.js';
 
 export interface ForeignSessionScanOptions {
   /** Only sessions whose recorded cwd equals this path (after realpath-free

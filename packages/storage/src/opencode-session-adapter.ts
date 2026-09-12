@@ -252,10 +252,14 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
           .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
           .all(sessionId);
         const partRows = db
-          .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
+          .prepare(
+            'SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id',
+          )
           .all(sessionId);
         return {
-          messages: messageRows.map((row, index) => requireRow(toMessageRow(row), 'message', index)),
+          messages: messageRows.map((row, index) =>
+            requireRow(toMessageRow(row), 'message', index),
+          ),
           parts: partRows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
           truncated: false,
         };
@@ -295,7 +299,9 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         maxReadBytes - fitMessages.used,
       );
       return {
-        messages: fitMessages.rows.map((row, index) => requireRow(toMessageRow(row), 'message', index)),
+        messages: fitMessages.rows.map((row, index) =>
+          requireRow(toMessageRow(row), 'message', index),
+        ),
         parts: fitParts.rows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
         truncated: fitMessages.truncated || fitParts.truncated,
       };
