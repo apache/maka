@@ -55,7 +55,7 @@ test('a running goal reads as running and offers pause, with elapsed and tokens'
   // condition remains visible in the goal chip and the controls below retain
   // their explicit action labels in server output.
   assert.ok(markup.includes('12m'));
-  assert.ok(markup.includes('12k / 100k'));
+  assert.ok(markup.includes('12K / 100K'));
   assert.ok(markup.includes('Autonomous goal running'));
   assert.ok(!markup.includes('Autonomous goal paused'));
   assert.ok(markup.includes('Pause autonomous goal after 3/50 iterations'));
@@ -82,7 +82,7 @@ test('a paused goal reads as paused and offers resume, not pause', () => {
   assert.ok(!markup.includes('Pause autonomous goal'));
   // Elapsed shows (frozen), tokens stay hidden without a budget.
   assert.ok(markup.includes('12m'));
-  assert.ok(!markup.includes('12k'));
+  assert.ok(!markup.includes('12K'));
 });
 
 test('a waiting goal reads as waiting without looking active or paused', () => {
@@ -102,5 +102,5 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
   assert.ok(!markup.includes('Autonomous goal paused'));
   assert.ok(markup.includes('Pause autonomous goal after 4/50 iterations'));
   assert.ok(!markup.includes('Resume autonomous goal'));
-  assert.ok(markup.includes('12k / 100k'));
+  assert.ok(markup.includes('12K / 100K'));
 });

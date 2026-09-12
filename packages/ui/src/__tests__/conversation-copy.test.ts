@@ -21,6 +21,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getConversationCopy } from '../conversation-copy.js';
 
+test('goal token labels use shared compact units in every locale', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const { goalTokens } = getConversationCopy(locale).chat;
+    assert.equal(goalTokens(45_200, 100_000), '45.2K / 100K');
+    assert.equal(goalTokens(12_647_391, 20_000_000), '12.6M / 20M');
+  }
+});
+
 test('labels the Chinese default thinking level as default', () => {
   assert.equal(getConversationCopy('zh-CN').model.defaultLevel, '默认');
   assert.equal(getConversationCopy('zh-TW').model.defaultLevel, '預設');

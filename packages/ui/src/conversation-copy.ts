@@ -31,18 +31,12 @@ import {
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
 } from '@maka/core/deep-research';
+import { formatCompactTokenCount } from './compact-token-count.js';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
-
-/** Compact token count for chip labels: 45,200 → "45k". */
-function formatCompactTokenCount(count: number): string {
-  if (count < 1_000) return `${count}`;
-  const thousands = count / 1_000;
-  return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
-}
 
 /** Wall-clock units per locale (zh uses words, en letters); each copy entry supplies its own. */
 interface DurationUnits {
@@ -380,7 +374,7 @@ export interface ConversationCopy {
     resumeGoal: (condition: string, iteration: number, max: number) => string;
     /** Wall-clock elapsed label for the goal chip, e.g. "12m". */
     goalElapsed: (elapsedMs: number) => string;
-    /** Token usage label for the goal chip when a budget exists, e.g. "12k / 100k". */
+    /** Token usage label for the goal chip when a budget exists, e.g. "12K / 100K". */
     goalTokens: (spent: number, budget: number) => string;
     loadFailed: string;
     loading: string;
