@@ -24,8 +24,8 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
-import { ArtifactPreview } from '../../renderer/features/workbar/tools/artifacts/artifact-preview.js';
 import {
+  ArtifactPreview,
   createFakeWorkbarServices,
   WorkbarServicesProvider,
 } from '../../renderer/features/workbar/testing.js';
