@@ -25,7 +25,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import {
+  RuntimeTranscriptOversizedTurnError,
+  RuntimeTranscriptQuery,
+} from '../runtime-transcript-query.js';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -108,6 +116,125 @@ describe('SqliteRuntimeStore', () => {
       );
       // Exact-id retry of an already-stored event keeps its dedup answer.
       await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+    });
+  });
+
+  it('bounds a transcript Turn by the bytes it stores, not by its JSON string length', async () => {
+    await withStore(async (store) => {
+      const run = {
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+      };
+      await store.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        buildInvocationOpenedEvent({
+          id: 'oversized-opening',
+          run,
+          openedAt: 1,
+          opening: {
+            kind: 'invocation_opened',
+            protocol: 'invocation_opened_v1',
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: 'fake-connection',
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: '/tmp',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: DEFAULT_TOOL_MODE,
+            },
+            root: { kind: 'user' },
+            source: { kind: 'fresh' },
+          },
+        }),
+      );
+      // Every character here is three stored bytes, so a budget read as UTF-16
+      // code units admits a Turn three times the size it was asked to bound.
+      const text = '本'.repeat(4_000);
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-prompt',
+        ...run,
+        ts: 2,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text },
+      });
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-terminal',
+        ...run,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const request = {
+        direction: 'newer' as const,
+        throughOrdinal: Number.MAX_SAFE_INTEGER,
+        position: 1,
+        limit: 8,
+        maxEvents: 64,
+      };
+      await assert.rejects(
+        store.readTranscriptInvocations(run.sessionId, { ...request, maxBytes: 6_000 }),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      const served = await store.readTranscriptInvocations(run.sessionId, {
+        ...request,
+        maxBytes: 64_000,
+      });
+      assert.equal(served.length, 1);
+    });
+  });
+
+  it('pages the transcript without reading rows the page does not contain', async () => {
+    await withStore(async (store, dbPath) => {
+      for (let turn = 0; turn < 4; turn += 1) await appendSettledTurn(store, turn);
+      store.close();
+      const db = new DatabaseSync(dbPath);
+      try {
+        const executed: { sql: string; bind: unknown[] }[] = [];
+        const query = new RuntimeTranscriptQuery(
+          watchStatements(db, executed),
+          () =>
+            ({
+              sessionId: 'session-1',
+            }) as unknown as RuntimeInvocationRecord,
+        );
+        const request = {
+          throughOrdinal: Number.MAX_SAFE_INTEGER,
+          position: 6,
+          limit: 1,
+          maxEvents: 64,
+          maxBytes: 64_000,
+        };
+        query.highWater('session-1');
+        query.invocations('session-1', { ...request, direction: 'older' });
+        query.invocations('session-1', { ...request, direction: 'newer' });
+        // A full scan is how a page starts costing the Session it sits in: the
+        // rows it walks are every Turn's, not the page's.
+        for (const { sql, bind } of executed) {
+          const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(bind as [])) as unknown as {
+            detail: string;
+          }[];
+          const scans = plan.filter((step) => step.detail.startsWith('SCAN'));
+          assert.deepEqual(scans, [], `${scans[0]?.detail} in ${sql}`);
+        }
+      } finally {
+        db.close();
+      }
     });
   });
 
@@ -872,6 +999,177 @@ describe('SqliteRuntimeStore', () => {
       );
     });
   });
+
+  for (const initialKind of ['fresh', 'continuation'] as const) {
+    it(`authenticates repeated handoff under one ${initialKind} logical admission across reopen`, async () => {
+      await withStore(async (store, dbPath) => {
+        const manual = continuationClaim();
+        let source: RuntimeEvent;
+        const segments: ReturnType<typeof runtimePrefixSegment>[] = [];
+        if (initialKind === 'continuation') {
+          const ancestor = continuationSourcePrefix();
+          await persistImmutablePrefix(store, ancestor);
+          segments.push(runtimePrefixSegment(ancestor));
+          await store.claimContinuation({ claim: manual });
+          source = continuationStartEvent(manual);
+          await store.commitContinuationStart({ claim: manual, event: source });
+        } else {
+          source = {
+            ...continuationStartEvent(manual),
+            id: 'root-opening',
+            actions: undefined,
+            content: {
+              ...manual.targetOpening,
+              source: { kind: 'fresh' },
+              root: { kind: 'goal', goalId: 'original-goal' },
+              lineage: { parentRunId: 'owning-agent', parentTurnId: 'owning-turn' },
+            },
+          };
+          await store.appendRuntimeEvent(source.sessionId, source.runId, source);
+        }
+        const rootRunId = source.runId;
+        const logicalIdentity = {
+          sessionId: source.sessionId,
+          turnId: source.turnId,
+          runId: rootRunId,
+        };
+        for (let index = 0; index < 2; index += 1) {
+          const target = {
+            sessionId: source.sessionId,
+            turnId: source.turnId,
+            runId: `handoff-run-${index}`,
+            invocationId: `handoff-invocation-${index}`,
+          };
+          const claimId = `handoff-claim-${index}`;
+          const seal: RuntimeEvent = {
+            ...source,
+            id: `pause-${index}`,
+            content: undefined,
+            ts: 15 + index,
+            actions: {
+              endInvocation: true,
+              handoffPause: {
+                protocol: 'runtime_handoff_pause_v1',
+                handoffId: `handoff-${index}`,
+                remainingSteps: null,
+                hostEpoch: 'old-host',
+                rootRunId,
+                successorRunId: target.runId,
+                successorInvocationId: target.invocationId,
+                claimId,
+              },
+            },
+          };
+          await store.appendRuntimeEvent(seal.sessionId, seal.runId, seal);
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          segments.push(
+            runtimePrefixSegment(
+              await store.readImmutableRuntimePrefix({
+                sessionId: source.sessionId,
+                runId: source.runId,
+              }),
+            ),
+          );
+          const boundary = createRuntimeBoundaryCursor(
+            segments as [(typeof segments)[number], ...typeof segments],
+          );
+          const proposed = continuationClaimForBoundary(boundary, { claimId, target });
+          assert.equal(source.content?.kind, 'invocation_opened');
+          const opening = source.content as ContinuationClaimV1['targetOpening'];
+          assert.equal(proposed.targetOpening.source.kind, 'continuation');
+          const claim: ContinuationClaimV1 = {
+            ...proposed,
+            targetOpening: {
+              ...opening,
+              source: {
+                ...(proposed.targetOpening.source as Extract<
+                  ContinuationClaimV1['targetOpening']['source'],
+                  { kind: 'continuation' }
+                >),
+                kind: 'handoff',
+                rootRunId,
+                claimId,
+                boundaryDigest: boundary.manifestDigest,
+              },
+            },
+          };
+          for (const targetOpening of [
+            { ...claim.targetOpening, root: { kind: 'user' as const } },
+            { ...claim.targetOpening, lineage: { parentRunId: 'stolen-owner' } },
+            { ...claim.targetOpening, configuration: { ...opening.configuration, cwd: '/other' } },
+          ]) {
+            if (JSON.stringify(targetOpening) === JSON.stringify(claim.targetOpening)) continue;
+            await assert.rejects(
+              store.claimContinuation({ claim: { ...claim, targetOpening } }),
+              /sealed source authority/,
+            );
+          }
+          await assert.rejects(
+            store.claimContinuation({
+              claim: {
+                ...claim,
+                target: { ...claim.target, invocationId: 'unauthorized-physical-target' },
+              },
+            }),
+            /sealed source authority/,
+          );
+          assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+          assert.equal((await store.claimContinuation({ claim })).kind, 'existing');
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          source = continuationStartEvent(claim, { id: `handoff-start-${index}` });
+          await store.commitContinuationStart({ claim, event: source });
+          await store.commitContinuationStart({ claim, event: source });
+          const live = await readLogicalRuntimeExecution(store, logicalIdentity);
+          assert.equal(live?.root.runId, rootRunId);
+          assert.equal(live?.tip.runId, source.runId);
+          assert.equal(live?.pendingHandoff, undefined);
+          await assert.rejects(
+            store.appendRuntimeEvent(source.sessionId, 'rogue', {
+              ...source,
+              id: `rogue-${index}`,
+              runId: 'rogue',
+              invocationId: 'rogue',
+              content: { kind: 'text', text: 'unauthorized' },
+              actions: undefined,
+            }),
+            /target identity conflict/,
+          );
+        }
+        const terminal: RuntimeEvent = {
+          ...source,
+          id: 'logical-completion',
+          content: undefined,
+          status: 'completed',
+          actions: { endInvocation: true },
+        };
+        await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+        store.close();
+        const reopened = createSqliteRuntimeStore(dbPath);
+        try {
+          const claims = await reopened.listContinuationClaimsForRecovery(source.sessionId);
+          assert.equal(claims.length, initialKind === 'fresh' ? 2 : 3);
+          assert.equal(claims.at(-1)?.claim.target.turnId, source.turnId);
+          assert.deepEqual(
+            (await reopened.readRuntimeEvents(source.sessionId, source.runId)).at(-1),
+            encodeCanonicalRuntimeEvent(terminal).event,
+          );
+          assert.equal(
+            (await readLogicalRuntimeExecution(reopened, logicalIdentity))?.tip.terminalEvent
+              ?.status,
+            'completed',
+          );
+        } finally {
+          reopened.close();
+        }
+      });
+    });
+  }
 
   it('rejects a continuation claim whose immediate source boundary is not durable', async () => {
     await withStore(async (store) => {
@@ -2103,6 +2401,87 @@ function continuationStartEvent(
       },
     },
   };
+}
+
+/** A DatabaseSync that records what each statement was actually run with. */
+function watchStatements(
+  db: DatabaseSync,
+  executed: { sql: string; bind: unknown[] }[],
+): DatabaseSync {
+  return {
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      const record =
+        <T>(call: (...bind: unknown[]) => T) =>
+        (...bind: unknown[]) => {
+          executed.push({ sql, bind });
+          return call(...bind);
+        };
+      return {
+        all: record((...bind) => statement.all(...(bind as []))),
+        get: record((...bind) => statement.get(...(bind as []))),
+        iterate: record((...bind) => statement.iterate(...(bind as []))),
+      };
+    },
+  } as unknown as DatabaseSync;
+}
+
+async function appendSettledTurn(store: Store, index: number): Promise<void> {
+  const run = {
+    sessionId: 'session-1',
+    invocationId: `invocation-${index}`,
+    runId: `run-${index}`,
+    turnId: `turn-${index}`,
+  };
+  await store.appendRuntimeEvent(
+    run.sessionId,
+    run.runId,
+    buildInvocationOpenedEvent({
+      id: `opened-${index}`,
+      run,
+      openedAt: index * 10,
+      opening: {
+        kind: 'invocation_opened',
+        protocol: 'invocation_opened_v1',
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: '/tmp',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: DEFAULT_TOOL_MODE,
+        },
+        root: { kind: 'user' },
+        source: { kind: 'fresh' },
+      },
+    }),
+  );
+  await store.appendRuntimeEvent(run.sessionId, run.runId, {
+    id: `prompt-${index}`,
+    ...run,
+    ts: index * 10 + 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: `turn ${index}` },
+  });
+  await store.appendRuntimeEvent(run.sessionId, run.runId, {
+    id: `terminal-${index}`,
+    ...run,
+    ts: index * 10 + 2,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    status: 'completed',
+    actions: { endInvocation: true },
+  });
 }
 
 function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {

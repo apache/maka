@@ -70,7 +70,6 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       createTestAiSdkBackend({
         sessionId: ctx.sessionId,
         header: ctx.header,
-        appendMessage: async () => {},
         connection: {
           slug: 'mock-main',
           providerType: 'anthropic',
@@ -208,7 +207,6 @@ test('a turn aborted before dispatch does not create a canonical sent attempt', 
       backend = createTestAiSdkBackend({
         sessionId: ctx.sessionId,
         header: ctx.header,
-        appendMessage: async () => {},
         connection: {
           slug: 'mock-main',
           providerType: 'anthropic',

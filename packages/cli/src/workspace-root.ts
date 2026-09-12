@@ -24,8 +24,4 @@ export {
   resolveMakaClientDataRoot,
   resolveMakaDataRoots,
   resolveMakaWorkspaceRoot,
-  type DeriveMakaDataRootsInput,
-  type MakaDataRoots,
-  type ResolveMakaClientDataRootInput,
-  type ResolveMakaWorkspaceRootInput,
 } from '@maka/storage/workspace-root';

@@ -25,6 +25,8 @@ import type {
   ConnectionEffectFailureClass,
   ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
   ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+  OAuthConnectionIdentity,
+  OAuthLoginFailureCode,
 } from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
@@ -62,6 +64,7 @@ export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
   requiresBaseUrl: boolean;
+  setupMethod: 'api_key' | 'oauth';
 }
 
 export type OnboardingIdentityChoice = {
@@ -154,8 +157,35 @@ export type OnboardingSaveResult =
     }
   | OnboardingFailure;
 
+export interface OnboardingOAuthPresentation {
+  readonly url: string;
+  readonly stateHint?: string;
+}
+
+export interface OnboardingOAuthInput {
+  readonly target: ConnectionOnboardingTarget;
+  readonly signal: AbortSignal;
+  readonly onPresentation: (presentation: OnboardingOAuthPresentation) => void;
+}
+
+export type OnboardingOAuthFailureReason =
+  | OAuthLoginFailureCode
+  | 'connection_not_found'
+  | 'operation_conflict'
+  | 'unavailable';
+
+export type OnboardingOAuthResult =
+  | { readonly kind: 'authenticated'; readonly connection: OAuthConnectionIdentity }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'unconfirmed' }
+  | { readonly kind: 'failed'; readonly reason: OnboardingOAuthFailureReason };
+
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;
+  /** Observe a Host-owned OAuth attempt. An unconfirmed result retains the
+   * attempt for reconciliation when the same target is retried. Polling,
+   * cancellation convergence and presentation stay behind this interface. */
+  loginOAuth?(input: OnboardingOAuthInput): Promise<OnboardingOAuthResult>;
   verify(input: OnboardingVerifyInput): Promise<OnboardingVerifyResult>;
   save(input: OnboardingSaveInput): Promise<OnboardingSaveResult>;
 }
@@ -173,3 +203,15 @@ export interface MakaForeignSessionReader {
 }
 
 export type MakaPiTuiTurnActivitySurface = MakaPiTuiTurnActivity;
+
+/** The TUI requests owner actions; its connection never grants installation authority. */
+export interface MakaPiTuiHostControl {
+  status(): Promise<string>;
+  prepare(
+    input: {
+      action: 'stop' | 'restart' | 'update';
+      target?: string;
+    },
+    confirm: (detail: string) => Promise<'cancel' | 'safe' | 'interrupt'>,
+  ): Promise<boolean>;
+}

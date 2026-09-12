@@ -26,7 +26,6 @@ import {
   buildToolSchemaPlan,
   validateCodeModeToolInput,
 } from '../tool-schema-builder.js';
-import { toolSchemaCharsForDiagnostics } from '../request-shape.js';
 import type { MakaTool } from '../tool-runtime.js';
 import type { ToolAvailabilityPlan } from '../tool-availability.js';
 
@@ -58,102 +57,80 @@ function availability(): ToolAvailabilityPlan {
   };
 }
 
-test('builds the Code Mode provider surface and schema bindings independently', () => {
+test('builds an exec-only Code Mode surface with the nestable catalog', () => {
   const base = availability();
-  const baseVisibleChars = toolSchemaCharsForDiagnostics(base.providerTools, base.activeTools);
-  base.diagnostics = (activeTools, visibleToolSchemaChars) => ({
-    mode: 'search',
-    enabledSourceIds: [],
-    visibleToolCount: activeTools.length,
-    fullToolCount: 3,
-    hiddenToolCount: 1,
-    visibleToolSchemaChars,
-    fullToolSchemaChars: baseVisibleChars + 100,
-    toolSchemaCharReduction: 100,
-  });
+  const nestedTools = buildNestableToolSnapshot(base.providerTools, base.activeTools);
   const result = buildToolSchemaPlan({
-    boundTools: base.providerTools.filter((candidate) => candidate !== invalidTool),
     availability: base,
-    requestedToolMode: 'code_mode',
+    toolMode: 'code_mode',
     codeModeExecTool: execTool,
+    nestedTools,
   });
 
-  assert.equal(result.toolMode, 'code_mode');
   assert.deepEqual(
     result.providerTools.map((candidate) => candidate.name),
-    ['exec', 'lookup', 'native_search', 'invalid'],
+    ['exec', 'invalid'],
   );
-  assert.deepEqual(result.availability.activeTools, ['exec', 'lookup', 'native_search']);
-  assert.deepEqual(result.availability.projectActiveTools?.().activeTools, [
-    'exec',
-    'native_search',
-  ]);
-  assert.deepEqual(result.availability.currentRepairToolNames(), ['exec', 'lookup']);
+  assert.deepEqual(result.availability.activeTools, ['exec']);
+  assert.deepEqual(result.availability.projectActiveTools?.().activeTools, ['exec']);
+  assert.deepEqual(result.availability.currentRepairToolNames(), ['exec']);
+  assert.equal(result.availability.diagnostics(['exec'], 100), undefined);
+  assert.deepEqual(Object.keys(result.modelTools), ['exec', 'invalid']);
+  assert.equal(result.modelTools.exec?.kind, 'function');
+  assert.strictEqual(result.providerTools[1], invalidTool);
+  const catalog = JSON.parse(result.providerTools[0]!.description.split('\n').at(-1)!);
+  assert.deepEqual(
+    catalog.map((entry: { name: string }) => entry.name),
+    ['lookup'],
+  );
+  assert.equal(catalog[0].description, 'lookup description');
+  assert.equal(catalog[0].inputSchema.properties.id.type, 'string');
+  assert.deepEqual(catalog[0].inputSchema.required, ['id']);
+  assert.deepEqual(base.activeTools, ['lookup', 'native_search']);
+  assert.equal(execTool.description, 'exec description');
+  assert.deepEqual([...nestedTools.keys()], ['lookup']);
+});
+
+test('keeps the direct availability plan and provider-native bindings unchanged', () => {
+  const direct = availability();
+  const result = buildToolSchemaPlan({
+    availability: direct,
+    toolMode: 'direct',
+    codeModeExecTool: execTool,
+    nestedTools: buildNestableToolSnapshot(direct.providerTools, direct.activeTools),
+  });
+
+  assert.strictEqual(result.availability, direct);
+  assert.strictEqual(result.providerTools, direct.providerTools);
+  assert.deepEqual(
+    result.providerTools.map((candidate) => candidate.name),
+    ['lookup', 'native_search', 'invalid'],
+  );
   assert.deepEqual(result.modelTools.native_search, {
     kind: 'provider',
     providerTool: { kind: 'openai-web-search' },
   });
   assert.equal(result.modelTools.lookup?.kind, 'function');
-  assert.equal(result.modelTools.exec?.kind, 'function');
-
-  const visibleToolSchemaChars = toolSchemaCharsForDiagnostics(
-    result.providerTools,
-    result.availability.activeTools,
-  );
-  const diagnostic = result.availability.diagnostics(
-    result.availability.activeTools,
-    visibleToolSchemaChars,
-  );
-  assert.equal(diagnostic?.visibleToolCount, 3);
-  assert.equal(diagnostic?.fullToolCount, 4);
-  assert.equal(diagnostic?.visibleToolSchemaChars, visibleToolSchemaChars);
-  assert.equal(
-    diagnostic?.fullToolSchemaChars,
-    baseVisibleChars + 100 + (visibleToolSchemaChars - baseVisibleChars),
-  );
+  assert.equal(result.modelTools.exec, undefined);
 });
 
-test('keeps the direct availability plan unchanged', () => {
-  const direct = availability();
+test('projects a filtered catalog without changing the executable snapshot', () => {
+  const base = availability();
+  const boundary = tool('request_sandbox_boundary');
+  base.providerTools.push(boundary);
+  base.activeTools.push(boundary.name);
+  const nestedTools = buildNestableToolSnapshot(base.providerTools, base.activeTools);
+  const visibleCatalog = new Map([...nestedTools].filter(([name]) => name !== boundary.name));
   const result = buildToolSchemaPlan({
-    boundTools: direct.providerTools,
-    availability: direct,
-    requestedToolMode: undefined,
+    availability: base,
+    toolMode: 'code_mode',
     codeModeExecTool: execTool,
+    nestedTools: visibleCatalog,
   });
 
-  assert.equal(result.toolMode, 'direct');
-  assert.strictEqual(result.availability, direct);
-  assert.deepEqual(
-    result.providerTools.map((candidate) => candidate.name),
-    ['lookup', 'native_search', 'invalid'],
-  );
-});
-
-test('rejects invalid modes and a caller-owned Code Mode exec name', () => {
-  const direct = availability();
-  for (const requestedToolMode of ['legacy_mode', null]) {
-    assert.throws(
-      () =>
-        buildToolSchemaPlan({
-          boundTools: direct.providerTools,
-          availability: direct,
-          requestedToolMode,
-          codeModeExecTool: execTool,
-        }),
-      /invalid tool mode/i,
-    );
-  }
-  assert.throws(
-    () =>
-      buildToolSchemaPlan({
-        boundTools: [tool('exec')],
-        availability: direct,
-        requestedToolMode: 'code_mode',
-        codeModeExecTool: execTool,
-      }),
-    /reserved for Code Mode/i,
-  );
+  assert.doesNotMatch(result.providerTools[0]!.description, /request_sandbox_boundary/);
+  assert.strictEqual(nestedTools.get(boundary.name), boundary);
+  assert.deepEqual([...visibleCatalog.keys()], ['lookup']);
 });
 
 test('selects only active function tools that may be nested', () => {

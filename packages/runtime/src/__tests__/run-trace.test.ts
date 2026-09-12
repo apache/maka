@@ -91,7 +91,7 @@ describe('RunTrace error diagnostics', () => {
       record: (event) => events.push(event),
     });
 
-    trace.modelStreamFailed('Other', {
+    trace.modelStreamFailed('unknown', {
       status: 502,
       code: 'upstream_reset',
       message: 'upstream stream reset',

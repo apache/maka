@@ -209,7 +209,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
-  const credentialProbePending = requiresCredential && (hasSecret === 'loading' || hasSecret === 'error');
+  // `loading` is the normal first-frame state while the local credential
+  // vault answers. Rendering it as a full-width warning made every successful
+  // detail open flash the banner for one paint. Keep the durable warning for
+  // a read failure; the key row already carries the quiet loading hint and the
+  // action buttons remain gated by `hasUsableCredential` until the read lands.
+  const credentialProbeFailed = requiresCredential && hasSecret === 'error';
   const hasUsableCredential = !requiresCredential || hasSecret === true;
   const credentialTroubleshootingCopy = needsOAuth
     ? copy.oauthTroubleshooting
@@ -874,7 +879,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     retired,
     oauthLoginService,
     supportsRemoteDiscovery,
-    credentialProbePending,
+    credentialProbeFailed,
     hasUsableCredential,
     apiKeyStatusHint,
     hasApiKeyChange,

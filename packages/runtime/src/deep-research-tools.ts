@@ -106,7 +106,7 @@ export interface DeepResearchArtifactStore {
   get(artifactId: string): Promise<ArtifactRecord | null>;
   readText(
     artifactId: string,
-    options?: { maxBytes?: number; includeDeleted?: boolean },
+    options?: { maxBytes?: number },
   ): Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
   delete(artifactId: string): Promise<void>;
 }
@@ -114,12 +114,6 @@ export interface DeepResearchArtifactStore {
 export interface BuildDeepResearchToolsDeps {
   store: DeepResearchStore;
   artifactStore: DeepResearchArtifactStore;
-  onArtifactCreated?: (event: {
-    reason: 'created';
-    artifactId: string;
-    sessionId: string;
-    ts: number;
-  }) => void | Promise<void>;
 }
 
 export function buildDeepResearchTools(deps: BuildDeepResearchToolsDeps): MakaTool[] {
@@ -219,12 +213,7 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       const ref = run.artifacts.find((artifact) => artifact.artifactId === input.artifact_id);
       if (!ref) throw new Error('Research artifact is not part of this session workspace');
       const record = await deps.artifactStore.get(input.artifact_id);
-      if (
-        !record ||
-        record.sessionId !== ctx.sessionId ||
-        record.source !== 'deep_research' ||
-        record.status !== 'live'
-      ) {
+      if (!record || record.sessionId !== ctx.sessionId || record.source !== 'deep_research') {
         throw new Error('Research artifact is missing, deleted, or belongs to another session');
       }
       const read = await deps.artifactStore.readText(input.artifact_id, {
@@ -237,14 +226,19 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       }
       const offset = input.offset_chars ?? 0;
       const maxChars = input.max_chars ?? DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS;
-      const characters = Array.from(read.text);
-      const end = Math.min(characters.length, offset + maxChars);
-      const chunk = safeResearchArtifactContent(characters.slice(offset, end).join(''));
+      const selected: string[] = [];
+      let total = 0;
+      for (const character of read.text) {
+        if (total >= offset && total < offset + maxChars) selected.push(character);
+        total += 1;
+      }
+      const end = Math.min(total, offset + maxChars);
+      const chunk = safeResearchArtifactContent(selected.join(''));
       return [
-        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${characters.length}">`,
+        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${total}">`,
         `Name: ${normalizeInlineText(ref.name)}`,
         ...(ref.locator ? [`Locator: ${normalizeInlineText(ref.locator)}`] : []),
-        `Truncated: ${end < characters.length}`,
+        `Truncated: ${end < total}`,
         '',
         chunk,
         '</deep-research-artifact>',
@@ -432,16 +426,6 @@ function buildSaveArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       } catch (error) {
         await deps.artifactStore.delete(artifactId).catch(() => undefined);
         throw error;
-      }
-      try {
-        await deps.onArtifactCreated?.({
-          reason: 'created',
-          artifactId,
-          sessionId: ctx.sessionId,
-          ts: artifact.createdAt,
-        });
-      } catch {
-        // Renderer notification is best effort; both durable authorities already committed.
       }
       return `Saved ${input.role} artifact ${artifactId}.\n${renderRunStatus(run)}`;
     },
@@ -872,7 +856,7 @@ async function validateArtifactIntegrity(
   ref: DeepResearchArtifactRef,
 ): Promise<void> {
   const record = await artifactStore.get(ref.artifactId);
-  if (!record || record.status !== 'live') {
+  if (!record) {
     throw new Error(`Deep Research artifact ${ref.artifactId} is missing or deleted`);
   }
   if (record.sessionId !== sessionId || record.source !== 'deep_research') {

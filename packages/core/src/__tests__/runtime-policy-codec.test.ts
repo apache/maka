@@ -61,6 +61,26 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
+test('Code Mode is opt-in and survives policy decoding', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.notEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults.codeModeEnabled, true);
+  assert.equal(
+    decodeCanonicalRuntimePolicy({
+      ...policy,
+      chatDefaults: { ...policy.chatDefaults, codeModeEnabled: true },
+    }).chatDefaults.codeModeEnabled,
+    true,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalRuntimePolicy({
+        ...policy,
+        chatDefaults: { ...policy.chatDefaults, codeModeEnabled: 'true' },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('preserves a valid default thinking level and rejects unknown levels', () => {
   const policy = {
     ...createDefaultRuntimePolicy(),
@@ -217,6 +237,29 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
     RuntimePolicyDomainDecodeError,
   );
 });
+
+for (const [slug, detail] of [
+  ['', 'Slug is required'],
+  ['Not A Slug', 'Slug must be lowercase letters, digits, and hyphens'],
+  ['a'.repeat(65), 'Slug must be 64 characters or fewer'],
+]) {
+  test(`catalog decoding preserves the diagnostic: ${detail}`, () => {
+    assert.throws(
+      () =>
+        decodeCanonicalConnectionCatalogEntry({
+          connectionId: '123e4567-e89b-42d3-a456-426614174000',
+          revision: 1,
+          slug,
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: [],
+          models: [],
+        }),
+      { name: 'RuntimePolicyDomainDecodeError', message: `connection slug: ${detail}` },
+    );
+  });
+}
 
 test('rejects new connections for the retired Gemini CLI account provider', () => {
   assert.throws(

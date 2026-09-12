@@ -534,6 +534,123 @@ describe('plan context compaction', () => {
     assert.deepEqual(seenNewlyFolded, ['call-a', 'res-a']);
     assert.equal(second.checkpoint.previousCheckpointId, first.checkpoint.checkpointId);
   });
+
+  test('keeps rolling forward when the effective coverage is unchanged', async () => {
+    const events = longTurnEvents();
+    const longerEvents = [
+      ...events,
+      call('call-c', 'cc', 'turn-1'),
+      result('res-c', 'cc', 'turn-1'),
+    ];
+    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
+    // Coverage ends at `res-a`: the first fold's covered span contains it.
+    const first = await planHistoryCompaction(
+      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+    );
+    assert.equal(first.decision, 'compacted');
+    if (first.decision !== 'compacted') return;
+
+    let seenNewlyFolded: string[] = [];
+    const second = await planHistoryCompaction(
+      planInput({
+        orderedEvents: longerEvents,
+        previousCheckpoint: first.checkpoint,
+        projectEffectiveCoverage: identityFold,
+        summarize: ({ newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+          seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
+          assert.equal(previousCheckpoint?.checkpointId, first.checkpoint.checkpointId);
+          return structuredSummary('rolled-forward summary');
+        },
+      }),
+    );
+    assert.equal(second.decision, 'compacted');
+    if (second.decision !== 'compacted') return;
+    assert.deepEqual(seenNewlyFolded, ['call-b', 'res-b']);
+    assert.equal(second.checkpoint.previousCheckpointId, first.checkpoint.checkpointId);
+  });
+
+  test('discards a previous checkpoint whose effective coverage drifted before roll-forward (#4845 review)', async () => {
+    const events = longTurnEvents();
+    const longerEvents = [
+      ...events,
+      call('call-c', 'cc', 'turn-1'),
+      result('res-c', 'cc', 'turn-1'),
+    ];
+    const identityFold = async (covered: readonly RuntimeEvent[]) => [...covered];
+    // First fold: no transition exists, so the effective view IS the raw view
+    // and the checkpoint (covering through `res-a`) pins that digest.
+    const first = await planHistoryCompaction(
+      planInput({ orderedEvents: events, projectEffectiveCoverage: identityFold }),
+    );
+    assert.equal(first.decision, 'compacted');
+    if (first.decision !== 'compacted') return;
+
+    // A cross-turn projection transition then archives `res-a` — INSIDE the
+    // first checkpoint's coverage — leaving the raw prefix untouched. The
+    // inherited summary still quotes the raw body, but the view it describes
+    // no longer exists.
+    const foldWithArchive = async (covered: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> =>
+      covered.map((event) => {
+        if (event.id !== 'res-a') return event;
+        const content = event.content as Extract<
+          RuntimeEvent['content'],
+          { kind: 'function_response' }
+        >;
+        return {
+          ...event,
+          content: {
+            ...content,
+            modelProjection: {
+              version: 1 as const,
+              kind: 'text' as const,
+              text: '[archived: artifact-res-a]',
+            },
+          },
+        };
+      });
+
+    let summarizeSawPrevious: string | undefined;
+    let seenCovered: string[] = [];
+    let seenNewlyFolded: string[] = [];
+    const second = await planHistoryCompaction(
+      planInput({
+        orderedEvents: longerEvents,
+        previousCheckpoint: first.checkpoint,
+        projectEffectiveCoverage: foldWithArchive,
+        summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+          summarizeSawPrevious = previousCheckpoint?.checkpointId;
+          seenCovered = coveredRuntimeEvents.map((event) => event.id);
+          seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
+          return structuredSummary('re-summarized effective span');
+        },
+      }),
+    );
+    assert.equal(second.decision, 'compacted');
+    if (second.decision !== 'compacted') return;
+
+    // The drifted checkpoint is discarded: nothing is inherited (the text
+    // summarizer cannot prepend the stale summary, the codex path receives no
+    // stale provider state), the whole effective span is re-summarized, and
+    // the new checkpoint records no lineage to the stale one.
+    assert.equal(summarizeSawPrevious, undefined);
+    assert.deepEqual(seenNewlyFolded, seenCovered);
+    assert.deepEqual(seenCovered, [
+      'prior-0',
+      'prior-1',
+      'anchor',
+      'call-a',
+      'res-a',
+      'call-b',
+      'res-b',
+    ]);
+    assert.equal(second.checkpoint.previousCheckpointId, undefined);
+    // Coverage identity stays raw: the new checkpoint still matches the ledger
+    // prefix, now with the drifted effective digest pinned.
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(second.checkpoint, longerEvents.slice(0, 7)).reason,
+      undefined,
+    );
+  });
 });
 
 function base(id: string, turnId: string): Omit<RuntimeEvent, 'role' | 'author' | 'content'> {

@@ -1,0 +1,580 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { useEffect, useRef, useState } from 'react';
+import {
+  applyLiveTurnBufferEvent,
+  retainLiveTurn,
+  type LiveTurnBuffer,
+  armLiveTurn,
+  createTranscriptViewportNavigation,
+  reconcileLiveTurnBuffer,
+  settleLiveTurnBufferStep,
+  useUiLocale,
+  type LiveTurnProjection,
+  type TransientUserMessageProjection,
+} from '@maka/ui';
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared/workhub-conversation.js';
+import type { AttachmentRef, FollowUpMode, MessageQueuePlacement } from '@maka/core/events';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import { startWorkHubCoordinationLifecycle } from './coordination-lifecycle.js';
+import { useWorkHubServices } from '../services.js';
+import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
+import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } from '../ports.js';
+
+const emptyTranscript: WorkHubTranscriptSnapshot = {
+  messages: [],
+  hasOlder: false,
+  hasNewer: false,
+  ready: false,
+};
+interface SendAttempt {
+  sessionId: string;
+  input: WorkHubAnswerInput;
+  admission: 'pending' | 'unknown' | 'admitted' | 'terminal' | 'rejected';
+  reconciling?: boolean;
+  stop?: 'requested' | 'sending' | 'resend';
+}
+export function useWorkHubController() {
+  const services = useWorkHubServices();
+  const locale = useUiLocale();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const [sessionId, setSessionId] = useState<string>();
+  const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
+    [],
+  );
+  const [choices, setChoices] = useState<ChatModelChoice[]>([]);
+  const [transcript, setTranscript] = useState(emptyTranscript);
+  // Reconciliation reads the published view, never a source page held by input.
+  const transcriptRef = useRef(emptyTranscript);
+  // Renderer completion is a one-shot signal; publication may arrive later.
+  const settledBeforePublication = useRef(new Set<string>());
+  const [viewportNavigation] = useState(createTranscriptViewportNavigation);
+  const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
+  const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
+  const [execution, setExecution] = useState<SessionExecutionProjection>();
+  const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === execution?.rootTurn?.turnId) ?? liveTurns?.at(-1);
+  const [sending, setSending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const [readError, setReadError] = useState<string>();
+  const [readRevision, setReadRevision] = useState(0);
+  const retryResolution = useRef<() => void>(() => undefined);
+  const refreshSessions = useRef<() => void>(() => undefined);
+  const range = useRef<WorkHubTranscript | undefined>(undefined);
+  const currentSessionId = useRef(sessionId);
+  currentSessionId.current = sessionId;
+  const sendingRef = useRef(false);
+  const pendingSend = useRef<SendAttempt | undefined>(undefined);
+  const pendingQueued = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; placement: MessageQueuePlacement; observed: boolean }>(undefined);
+  const report = (reason: unknown) =>
+    setError(reason instanceof Error ? reason.message : String(reason));
+
+  async function stopTurn(target: string, turnId: string): Promise<boolean> {
+    const retracted = await services.stop(target, turnId);
+    if (!retracted) return false;
+    if (currentSessionId.current === target && retracted.length > 0) {
+      const ids = new Set(retracted);
+      setTransientMessages((messages) => messages.filter((message) => !ids.has(message.id)));
+      setMessageQueue((queue) => ({ ...queue, entries: queue.entries.filter((entry) => !ids.has(entry.messageId)) }));
+      if (pendingQueued.current?.sessionId === target && ids.has(pendingQueued.current.messageId)) pendingQueued.current = undefined;
+    }
+    return true;
+  }
+
+  async function deliverStop(attempt: SendAttempt): Promise<void> {
+    if (!attempt.stop || pendingSend.current !== attempt || currentSessionId.current !== attempt.sessionId) return;
+    if (attempt.stop !== 'requested') { attempt.stop = 'resend'; return; }
+    attempt.stop = 'sending';
+    let failed = false;
+    try {
+      const result = await stopTurn(attempt.sessionId, attempt.input.turnId);
+      if (result) attempt.stop = undefined;
+    } catch (reason) {
+      failed = true;
+      if (currentSessionId.current === attempt.sessionId) report(reason);
+    } finally {
+      // An observation may arrive while the stop owner is still reading its
+      // old snapshot. Retry only for that new evidence, never on a timer.
+      const again = (attempt.stop as SendAttempt['stop']) === 'resend';
+      if (attempt.stop) attempt.stop = 'requested';
+      if (pendingSend.current === attempt && currentSessionId.current === attempt.sessionId)
+        setStopPending(Boolean(attempt.stop) && !failed);
+      if (again) void deliverStop(attempt);
+    }
+  }
+
+  function reconcileAdmission(target: string, turnId: string, terminal = false) {
+    const attempt = pendingSend.current;
+    if (!attempt || attempt.sessionId !== target || attempt.input.turnId !== turnId || attempt.admission === 'rejected') return;
+    if (attempt.admission === 'unknown' && currentSessionId.current === target) setError(undefined);
+    if (terminal) {
+      attempt.admission = 'terminal';
+      attempt.stop = undefined;
+      setStopPending(false);
+    } else if (attempt.admission !== 'terminal') {
+      attempt.admission = 'admitted';
+      void deliverStop(attempt);
+    }
+  }
+
+  function acceptAnswer(attempt: SendAttempt, result: WorkHubAnswerResult): boolean {
+    if (pendingSend.current !== attempt) return result.kind !== 'not_admitted';
+    const current = currentSessionId.current === attempt.sessionId;
+    if (result.kind === 'unknown') {
+      // Late Host evidence outranks a missing response; never turn confirmed
+      // execution back into an uncertain local submission.
+      if (attempt.admission === 'pending' || attempt.admission === 'unknown') {
+        attempt.admission = 'unknown';
+        attempt.input = { ...attempt.input, originHostEpoch: result.originHostEpoch };
+        if (current) setError(workHubLiveCopy[localeRef.current].sendUnknown);
+      }
+      return true;
+    }
+    if (result.kind === 'not_admitted') {
+      if (attempt.admission === 'admitted' || attempt.admission === 'terminal') return true;
+      attempt.admission = 'rejected';
+      attempt.stop = undefined;
+      if (current) {
+        setStopPending(false);
+        setTransientMessages((messages) => messages.filter((message) => message.hostTurnId !== attempt.input.turnId));
+        setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== attempt.input.turnId || !turn.unconfirmed));
+        setError(workHubLiveCopy[localeRef.current].sendNotAdmitted);
+      }
+      return false;
+    }
+    const terminal = result.status === 'completed' || result.status === 'failed' || result.status === 'cancelled';
+    reconcileAdmission(attempt.sessionId, result.turnId, terminal);
+    if (current) {
+      setError(undefined);
+      if (terminal) refreshSessions.current();
+      setLiveTurns((previous) => {
+        if (attempt.admission === 'terminal') return previous;
+        return reconcileLiveTurnBuffer(retainLiveTurn(previous, armLiveTurn(result.turnId)), transcriptRef.current.messages);
+      });
+    }
+    return true;
+  }
+
+  async function recoverSend(): Promise<void> {
+    const attempt = pendingSend.current;
+    if (!attempt || attempt.sessionId !== currentSessionId.current || attempt.admission !== 'unknown' || attempt.reconciling) return;
+    attempt.reconciling = true;
+    try {
+      acceptAnswer(attempt, await services.answer(attempt.sessionId, attempt.input));
+    } catch (reason) {
+      // A failed recovery read says nothing about the original admission.
+      if (pendingSend.current === attempt && currentSessionId.current === attempt.sessionId) report(reason);
+    } finally {
+      attempt.reconciling = false;
+    }
+  }
+
+  useEffect(
+    () =>
+      startWorkHubCoordinationLifecycle({
+        resolve: services.resolve,
+        subscribeHostChanges: services.subscribeHosts,
+        subscribeAvailabilityChanges: services.subscribeAvailability,
+        onResolving: () => {
+          currentSessionId.current = undefined;
+          setSessionId(undefined);
+          setStopPending(false);
+          setError(undefined);
+        },
+        onResolved: setSessionId,
+        reportFailure: (reason, action) => {
+          report(reason);
+          retryResolution.current = action;
+        },
+      }),
+    [services],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let revision = 0;
+    const refresh = () => {
+      const read = ++revision;
+      void Promise.all([services.listSessions(), sessionId ? services.getSession(sessionId) : undefined])
+        .then(([next, coordination]) => {
+          if (!disposed && read === revision) {
+            setSessions((current) => {
+              if (!coordination) return next;
+              const known = current.find((entry) => entry.id === coordination.id);
+              return [...next, known && known.revision > coordination.revision ? known : coordination];
+            });
+            for (const turnId of coordination?.runningTurnIds ?? []) reconcileAdmission(sessionId!, turnId);
+          }
+        })
+        .catch((reason: unknown) => {
+          if (!disposed) report(reason);
+        });
+    };
+    const unsubscribe = services.subscribeSessions(refresh);
+    refreshSessions.current = refresh;
+    refresh();
+    return () => {
+      disposed = true;
+      if (refreshSessions.current === refresh) refreshSessions.current = () => undefined;
+      unsubscribe();
+    };
+  }, [services, sessionId]);
+
+  useEffect(() => {
+    setChoices([]);
+    transcriptRef.current = emptyTranscript;
+    settledBeforePublication.current.clear();
+    setTranscript(emptyTranscript);
+    setReadError(undefined);
+    const attempt = pendingSend.current;
+    const pending = attempt && attempt.sessionId === sessionId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected' ? attempt : undefined;
+    setExecution(undefined);
+    setLiveTurns(pending ? [armLiveTurn(pending.input.turnId)] : undefined);
+    setStopPending(Boolean(pending?.stop));
+    setTransientMessages(pending ? [{
+      id: pending.input.turnId, hostTurnId: pending.input.turnId, text: pending.input.text,
+      attachments: pending.input.attachments, ts: Date.now(), transientPlacement: 'current_turn',
+    }] : []);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setMessageQueue({ entries: [] });
+    let disposed = false;
+    let handle: WorkHubTranscript | undefined;
+    let observationPhase: 'pending' | 'ready' = 'pending';
+    const readFailed = (reason: unknown) => {
+      if (!disposed) setReadError(reason instanceof Error ? reason.message : String(reason));
+    };
+    const transcriptAbort = new AbortController();
+    const refreshModels = () => {
+      void services
+        .modelChoices(sessionId)
+        .then((next) => {
+          if (!disposed) setChoices(next);
+        })
+        .catch((reason: unknown) => {
+          if (!disposed) report(reason);
+        });
+    };
+    const unsubscribeModels = services.subscribeAvailability(refreshModels);
+    refreshModels();
+    const unsubscribe = services.observe(
+      sessionId,
+      (event) => {
+        if (disposed) return;
+        if (event.type === 'queue_update') {
+          const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
+          setMessageQueue({ entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision });
+          // Host evidence retires local submission placeholders. Queue state
+          // lives only in messageQueue, including after reconnect or withdrawal.
+          const ids = new Set(entries.map((entry) => entry.messageId));
+          if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
+          setTransientMessages((previous) => previous.filter((message) => !ids.has(message.id)));
+        }
+        if (event.type === 'message_admission') {
+          if (event.outcome === 'admitted') {
+            if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current.observed = true;
+            setMessageQueue((previous) => ({ ...previous, entries: previous.entries.filter((entry) => entry.messageId !== event.messageId) }));
+            setTransientMessages((previous) => previous.map((message) => message.id === event.messageId
+              ? { ...message, hostTurnId: event.turnId, transientPlacement: 'current_turn', pendingSteering: false }
+              : message));
+          } else {
+            if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current = undefined;
+            setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
+          }
+        }
+        if (event.type === 'steering_message') {
+          setMessageQueue((previous) => ({ ...previous, entries: previous.entries.filter((entry) => entry.messageId !== event.messageId) }));
+          if (pendingQueued.current?.messageId === event.messageId) pendingQueued.current.observed = true;
+          // The live Turn now owns this row, before the durable transcript
+          // necessarily catches up. Retire its admission placeholder.
+          setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
+        }
+        reconcileAdmission(sessionId, event.turnId, event.type === 'abort' || event.type === 'error' || event.type === 'complete');
+        setLiveTurns((previous) => {
+          const next = applyLiveTurnBufferEvent(previous, event, localeRef.current);
+          return next ? reconcileLiveTurnBuffer(next, transcriptRef.current.messages) : next;
+        });
+      },
+      (reason) => {
+        observationPhase = 'pending';
+        handle?.observationChanged('pending');
+        readFailed(reason);
+      },
+      (phase) => {
+        if (disposed) return;
+        observationPhase = phase;
+        handle?.observationChanged(phase);
+        if (phase === 'ready') void recoverSend();
+      },
+      (projection) => { if (!disposed) setExecution(projection); },
+    );
+    const opening = services.openTranscript(sessionId, (snapshot) => {
+      if (disposed) return;
+      const attempt = pendingSend.current;
+      if (attempt?.sessionId === sessionId) {
+        const messages = snapshot.messages.filter((message) => message.turnId === attempt.input.turnId);
+        if (messages.length) reconcileAdmission(sessionId, attempt.input.turnId,
+          messages.some((message) => message.type === 'turn_state' && message.status !== 'running'));
+      }
+      const queued = pendingQueued.current;
+      if (queued?.sessionId === sessionId && snapshot.messages.some((message) =>
+        message.type === 'user' && message.id === queued.messageId)) queued.observed = true;
+      viewportNavigation.commitRange(sessionId, () => {
+        if (disposed) return;
+        transcriptRef.current = snapshot;
+        setTranscript(snapshot);
+        if (snapshot.ready && observationPhase === 'ready') setReadError(undefined);
+        setTransientMessages((previous) => previous.filter((pending) =>
+          !snapshot.messages.some((message) => message.type === 'user' &&
+            (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
+        ));
+        const settled = snapshot.messages.filter((message) =>
+          message.type === 'assistant' && settledBeforePublication.current.delete(message.id));
+        setLiveTurns((previous) => {
+          let next = previous;
+          for (const message of settled) if (next) next = settleLiveTurnBufferStep(next, message.id);
+          return next ? reconcileLiveTurnBuffer(next, snapshot.messages) : next;
+        });
+      });
+    }, transcriptAbort.signal, readFailed);
+    void opening
+      .then((opened) => {
+        handle = opened;
+        if (disposed) void opened.close();
+        else {
+          range.current = opened;
+          opened.observationChanged(observationPhase);
+        }
+      })
+      .catch(readFailed);
+    return () => {
+      disposed = true;
+      transcriptAbort.abort();
+      unsubscribe();
+      unsubscribeModels();
+      if (range.current === handle) range.current = undefined;
+      void handle?.close().catch(() => undefined);
+    };
+  }, [services, sessionId, readRevision]);
+
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  const attempt = pendingSend.current;
+  const pendingTurnId = attempt && attempt.sessionId === sessionId && (attempt.admission === 'pending' || attempt.admission === 'unknown') ? attempt.input.turnId : undefined;
+  const runningTurnId =
+    pendingTurnId ?? activeHostTurn(execution)?.turnId;
+  const busy = sending || Boolean(runningTurnId);
+  async function send(text: string, attachments: AttachmentRef[], requestedMode?: FollowUpMode) {
+    if (!sessionId || !text.trim() || sendingRef.current) return false;
+    const target = sessionId;
+    const placement = requestedMode === 'steer' ? 'current_turn' : 'next_turn';
+    const previousQueued = pendingQueued.current;
+    const sameQueued = previousQueued?.sessionId === target && previousQueued.text === text &&
+      JSON.stringify(previousQueued.attachments) === JSON.stringify(attachments) ? previousQueued : undefined;
+    if (previousQueued?.sessionId === target && !previousQueued.observed &&
+      (!sameQueued || sameQueued.placement !== placement)) {
+      setError(workHubLiveCopy[localeRef.current][previousQueued.placement === 'current_turn' ? 'retrySteering' : 'retryFollowup']);
+      return false;
+    }
+    const queuedTurnId = sameQueued?.turnId ?? runningTurnId;
+    sendingRef.current = true;
+    setSending(true);
+    setError(undefined);
+    try {
+      if (queuedTurnId) {
+        const attempt = sameQueued ?? { sessionId: target, turnId: queuedTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], placement, observed: false };
+        pendingQueued.current = attempt;
+        if (!attempt.observed) setTransientMessages((messages) => [...messages.filter((message) => message.id !== attempt.messageId), {
+          id: attempt.messageId, hostTurnId: queuedTurnId, text, attachments: [...attachments],
+          ts: Date.now(), transientPlacement: attempt.placement, pendingSteering: attempt.placement === 'current_turn',
+        }]);
+        viewportNavigation.followLatest(target);
+        // A queued message becomes visible only where the tail is, and its own
+        // retry guard waits on seeing it. Issue the read before admission so an
+        // uncertain enqueue — the case that arms the guard — is covered too.
+        void range.current?.loadLatest().catch((reason: unknown) => {
+          if (currentSessionId.current === target) report(reason);
+        });
+        const result = await services.enqueueMessage(target, attempt.messageId, text, attachments, attempt.placement);
+        if (result === 'rejected' && pendingQueued.current === attempt) {
+          pendingQueued.current = undefined;
+          setTransientMessages((messages) => messages.filter((message) => message.id !== attempt.messageId));
+        }
+        if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
+        if (pendingQueued.current === attempt) pendingQueued.current = undefined;
+        return true;
+      }
+      const previous = pendingSend.current;
+      const sameRejected = previous?.sessionId === target && previous.admission === 'rejected' && previous.input.text === text && JSON.stringify(previous.input.attachments ?? []) === JSON.stringify(attachments);
+      const attempt: SendAttempt = {
+        sessionId: target,
+        input: { turnId: sameRejected ? previous.input.turnId : crypto.randomUUID(), text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
+        admission: 'pending',
+      };
+      pendingSend.current = attempt;
+      setLiveTurns((previous) => retainLiveTurn(previous, armLiveTurn(attempt.input.turnId)));
+      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.input.turnId), {
+        id: attempt.input.turnId, hostTurnId: attempt.input.turnId, text, ts: Date.now(),
+        attachments: [...attachments], transientPlacement: 'current_turn',
+      }]);
+      viewportNavigation.followLatest(target);
+      // Return a historical range to the tail without delaying message admission.
+      void range.current?.loadLatest().catch((reason: unknown) => {
+        if (currentSessionId.current === target) report(reason);
+      });
+      const result = await services.answer(target, attempt.input);
+      return acceptAnswer(attempt, result);
+    } catch (reason) {
+      if (queuedTurnId) {
+        if (currentSessionId.current === target) report(reason);
+        return false;
+      }
+      if (currentSessionId.current === target) {
+        const attempt = pendingSend.current;
+        const failedTurnId = attempt?.input.turnId;
+        if (attempt?.admission === 'pending') {
+          attempt.admission = 'rejected';
+          attempt.stop = undefined;
+          setStopPending(false);
+        }
+        setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
+        setLiveTurns((previous) => previous?.filter((turn) => turn.turnId !== failedTurnId || !turn.unconfirmed));
+        report(reason);
+      }
+      return false;
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  }
+  async function stop() {
+    if (!sessionId || !runningTurnId || stopPending) return;
+    setStopPending(true);
+    const attempt = pendingSend.current;
+    if (attempt?.sessionId === sessionId && attempt.input.turnId === runningTurnId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected') {
+      attempt.stop = 'requested';
+      await deliverStop(attempt);
+      return;
+    }
+    try {
+      await stopTurn(sessionId, runningTurnId);
+    } catch (reason) {
+      report(reason);
+    } finally {
+      setStopPending(false);
+    }
+  }
+  async function changeModel(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }) {
+    if (!sessionId || !session || busy) return;
+    try {
+      const result = await services.configureModel(sessionId, {
+        expectedRevision: session.revision,
+        modelTarget: {
+          kind: 'explicit',
+          connectionId: input.llmConnectionId,
+          connectionSlug: input.llmConnectionSlug,
+          model: input.model,
+        },
+      });
+      if (result.kind === 'revision_conflict')
+        throw new Error(workHubLiveCopy[localeRef.current].modelConflict);
+      // Complete the selection only after its authoritative model and revision
+      // are available to the next pick. Older background reads must not undo it.
+      const updated = await services.getSession(sessionId);
+      if (currentSessionId.current !== sessionId) return;
+      setSessions((current) => current.map((entry) =>
+        entry.id === sessionId && entry.revision <= updated.revision ? updated : entry,
+      ));
+      setError(undefined);
+    } catch (reason) {
+      if (currentSessionId.current !== sessionId) return;
+      refreshSessions.current();
+      report(reason);
+    }
+  }
+  async function mutateQueue(action: (target: string) => Promise<void>) {
+    if (!sessionId) return;
+    setError(undefined);
+    try { await action(sessionId); }
+    catch (reason) { report(reason); throw reason; }
+  }
+  return {
+    services,
+    sessionId,
+    session,
+    sessions,
+    choices,
+    transcript,
+    transientMessages,
+    messageQueue,
+    updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
+    deleteQueuedEntry: (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId)),
+    promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
+    reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
+    viewportNavigation,
+    liveTurn,
+    liveTurns,
+    activeTurn: chatTurnActivity(execution),
+    busy,
+    sending,
+    stopPending,
+    error: readError ?? error,
+    canRetry: Boolean(readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
+    send,
+    stop,
+    changeModel,
+    retry: () => {
+      const attempt = pendingSend.current;
+      if (readError && sessionId) {
+        setReadError(undefined);
+        setReadRevision((revision) => revision + 1);
+      } else if (attempt && attempt.sessionId === sessionId && attempt.admission === 'unknown') {
+        void recoverSend();
+      } else if (attempt && attempt.sessionId === sessionId && attempt.admission === 'rejected') {
+        void send(attempt.input.text, attempt.input.attachments ?? []);
+      } else retryResolution.current();
+    },
+    prefetchHistory: (edge: 'older' | 'newer') =>
+      range.current?.prefetchHistory(edge) ?? Promise.resolve(false),
+    retainWindow: (window: { firstTurnId: string; lastTurnId: string }) =>
+      range.current?.retain(window),
+    loadLatest: () => range.current?.loadLatest(),
+    report,
+    streamingSettled(messageId?: string) {
+      if (!messageId || currentSessionId.current !== sessionId) return;
+      if (!transcriptRef.current.messages.some((message) => message.id === messageId && message.type === 'assistant')) {
+        settledBeforePublication.current.add(messageId);
+        return;
+      }
+      setLiveTurns((previous) => {
+        const next = previous ? settleLiveTurnBufferStep(previous, messageId) : undefined;
+        return next ? reconcileLiveTurnBuffer(next, transcriptRef.current.messages) : next;
+      });
+    },
+  };
+}

@@ -24,7 +24,7 @@
  * actions gain a dependency.
  */
 
-import type { LiveTurnProjection, TransientUserMessageProjection } from '@maka/ui';
+import type { TransientUserMessageProjection } from '@maka/ui';
 
 /** Installs a `window.maka` bridge double; the returned function restores it. */
 export function installWindow(maka: unknown): () => void {
@@ -46,25 +46,6 @@ export function installWindow(maka: unknown): () => void {
     } else {
       delete target.window;
     }
-  };
-}
-
-/**
- * The live-turn arm as a real map rather than a black-hole stub: a send that
- * never lands must leave nothing behind, and that cannot be asserted against a
- * no-op setter.
- */
-export function createTurnState() {
-  const liveTurnBySession: Record<string, LiveTurnProjection> = {};
-  return {
-    liveTurnBySession,
-    setLiveTurnBySession(
-      updater: (c: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
-    ) {
-      const next = updater({ ...liveTurnBySession });
-      for (const key of Object.keys(liveTurnBySession)) delete liveTurnBySession[key];
-      Object.assign(liveTurnBySession, next);
-    },
   };
 }
 
@@ -94,6 +75,7 @@ export function createTransientState() {
 export function createActionsDeps() {
   const activeIdRef = { current: undefined as string | undefined };
   return {
+    onFollowLatest: async (_sessionId: string) => true,
     uiLocale: 'en' as const,
     activeIdRef,
     captureComposerImportOwner: () => ({
@@ -111,12 +93,11 @@ export function createActionsDeps() {
     },
     setActiveId: () => undefined,
     setMessageLoadErrorBySession: () => undefined,
-    setMessages: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
-    setLiveTurnBySession: () => undefined,
+    isMessagePublished: (_message: unknown) => false,
     setInteractionBySession: () => undefined,
     respondToUserForm: async () => undefined,
     showModelSetupToast: () => undefined,

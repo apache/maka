@@ -17,11 +17,11 @@
  * under the License.
  */
 
-import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
+import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
@@ -30,7 +30,8 @@ export interface AppShellSessionUiState {
   messageLoadErrorBySession: Record<string, string>;
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
-  liveTurnBySession: Record<string, LiveTurnProjection>;
+  liveTurnBySession: Record<string, LiveTurnBuffer>;
+  executionBySession: Record<string, SessionExecutionProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
@@ -68,6 +69,7 @@ const SESSION_UI_MAP_KEYS = [
   'messageRetryPendingBySession',
   'stopPendingBySession',
   'liveTurnBySession',
+  'executionBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
@@ -77,18 +79,6 @@ const SESSION_UI_MAP_KEYS = [
 type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSION_UI_MAP_KEYS[number]>;
 const allSessionUiMapsAreListed: Record<MissingSessionUiMapKey, never> = {};
 void allSessionUiMapsAreListed;
-
-// An authoritative session-list refresh heals a session whose turn ended while
-// its SessionEvent stream wasn't being followed, and must drop only the live
-// projection. The independently-scoped maps (message load error / retry, the
-// permission queue, stop-pending) each have
-// their own lifecycle and must survive a mere turn settle — a full
-// `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
-// Event-stream health is scoped the same way but lives outside this state; see
-// `sessionEventHealthBySessionRef`.
-const TURN_TRANSIENT_MAP_KEYS = [
-  'liveTurnBySession',
-] as const satisfies readonly AppShellSessionUiStateMapKey[];
 
 export function createInitialAppShellSessionUiState(): AppShellSessionUiState {
   return Object.fromEntries(SESSION_UI_MAP_KEYS.map((key) => [key, {}])) as unknown as AppShellSessionUiState;
@@ -131,17 +121,6 @@ export function clearAppShellSessionUiStateForSession(
   return nextState;
 }
 
-export function clearAppShellTurnTransientForSession(
-  state: AppShellSessionUiState,
-  sessionId: string,
-): AppShellSessionUiState {
-  let nextState = state;
-  for (const key of TURN_TRANSIENT_MAP_KEYS) {
-    nextState = clearSessionUiStateMap(nextState, key, sessionId);
-  }
-  return nextState;
-}
-
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
 ) {
@@ -155,6 +134,7 @@ export function createAppShellSessionUiStateController(
   // controller still owns the same deletion lifetime as every other Session
   // UI registry.
   const transcriptReadingAnchors = createTranscriptReadingAnchorRegistry();
+  const transcriptViewportNavigation = createTranscriptViewportNavigation();
 
   // The ref mirrors whatever is about to become current, so it is already
   // correct when the synchronous notification reaches a listener that reads it.
@@ -208,10 +188,20 @@ export function createAppShellSessionUiStateController(
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionEventHealthBySession.ref,
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
+    transcriptViewportNavigation,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
+    setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
+      updateMap('executionBySession', (current) => {
+        const previous = current[sessionId];
+        if (!projection) return previous?.available
+          ? { ...current, [sessionId]: { ...previous, available: false } } : current;
+        if (previous === projection) return current;
+        return { ...current, [sessionId]: projection };
+      });
+    },
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
     setMessageQueueBySession: createMapSetter('messageQueueBySession'),
@@ -223,54 +213,15 @@ export function createAppShellSessionUiStateController(
         return current[sessionId] === turnId ? current : { ...current, [sessionId]: turnId };
       });
     },
-    /**
-     * The authority said something about `turnId` — it started, failed to
-     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
-     * may settle it again. An answer about a turn this session is not on says
-     * nothing, and leaves the state untouched.
-     */
-    confirmLiveTurn: (sessionId: string, turnId: string) => {
-      updateMap('liveTurnBySession', (current) => {
-        const armed = current[sessionId];
-        if (!armed) return current;
-        const confirmed = confirmLiveTurn(armed, turnId);
-        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
-      });
-    },
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySession.clear(sessionId);
       transcriptReadingAnchors.set(sessionId, undefined);
       replaceState(clearAppShellSessionUiStateForSession(state.getState(), sessionId));
     },
-    clearTurnTransientStateIfCurrent: (
-      sessionId: string,
-      expected: LiveTurnProjection | undefined,
-    ) => {
-      const current = state.getState();
-      if (current.liveTurnBySession[sessionId] !== expected) return;
-      replaceState(clearAppShellTurnTransientForSession(current, sessionId));
-    },
   };
 }
 
 export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;
-
-/**
- * Owns the controller for the component's lifetime. Deliberately does NOT
- * subscribe: readers select what they need through
- * `useExternalStoreSelector`, so no single component re-renders for every
- * write to the store (#1985).
- *
- * Returns the controller itself rather than a bag of its members. The bag had
- * to name every setter, so did the workspace hook above it, and so did
- * AppShell's destructure — three places to edit for one new map, and three
- * chances for them to disagree about what the store offers.
- */
-export function useAppShellSessionUiState(): AppShellSessionUiStateController {
-  const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
-  controllerRef.current ??= createAppShellSessionUiStateController();
-  return controllerRef.current;
-}
 
 function createRuntimeSessionRegistry<T>() {
   const ref: { current: Record<string, T> } = { current: {} };

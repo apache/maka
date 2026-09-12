@@ -225,6 +225,10 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
       .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
 
+  // Ordinals here are positions in the append log, read off it every time, so
+  // there is nothing stored for a resequence to move.
+  async resequenceSessionEventOrdinals(_sessionId: string): Promise<void> {}
+
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
     const ordered: Array<{ event: RuntimeEvent; runId: string; eventIndex: number }> = [];
     for (const [eventKey, events] of this.runtimeEvents.entries()) {

@@ -49,6 +49,9 @@ import {
 } from "@maka/ui";
 import { Cpu, ICON_SIZE } from "@maka/ui/icons";
 import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
+import { getPeerMeshCopy } from "../locales/peer-mesh-copy.js";
+import type { UiLocale } from "@maka/core/ui-locale";
+
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
@@ -59,7 +62,6 @@ import {
 } from './runtime-host-management-dialog.js';
 import {
   PeerMeshPeerIdButton,
-  getRuntimeHostPeerMeshCopy,
   RuntimeHostAddComputerMenu,
   RuntimeHostConnectionCodeDialog,
   RuntimeHostPairingRecoveryButton,
@@ -93,7 +95,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
-  const peerMeshCopy = getRuntimeHostPeerMeshCopy(locale);
+  const peerMeshCopy = getPeerMeshCopy(locale);
   const pairingActionCopy: RuntimeHostPairingActionCopy = {
     retry: copy.resolvePairingRecovery,
     retryFailed: copy.resolvePairingRecoveryFailed,
@@ -409,10 +411,10 @@ export function RuntimeHostProfilesSection(props: {
             localAccessEnabling
               ? copy.remoteAccessEnabling
               : localAccess?.state === 'unsupported'
-              ? localAccess.message
-              : localAccess?.state === 'unavailable'
                 ? localAccess.message
-                : copy.thisComputerRemoteAccessHelp
+                : localAccess?.state === 'unavailable'
+                  ? localAccess.message
+                  : copy.thisComputerRemoteAccessHelp
           }
           end={(
             <HStack gap={2} align="center">
@@ -672,7 +674,7 @@ export function RuntimeHostProfilesSection(props: {
                                 displayValue={abbreviatePeerId(profile.transport.reachability.lease.peerId)}
                                 copyLabel={peerMeshCopy.copyPeerId(profile.transport.reachability.lease.peerId)}
                                 copiedTitle={peerMeshCopy.peerIdCopied}
-                                failedTitle={peerMeshCopy.peerIdCopyFailed}
+                                failedTitle={copy.peerIdCopyFailed}
                                 errorMessage={(error) => settingsActionErrorMessage(error, locale)}
                                 className="settingsRuntimeHostPeerId"
                               />
@@ -695,13 +697,13 @@ export function RuntimeHostProfilesSection(props: {
                         <Badge variant="neutral" label={copy.unavailable} />
                       ) : null}
                       {entry.peerPath ? (
-                        <Tooltip content={peerPathDetail(entry.peerPath, peerMeshCopy)}>
+                        <Tooltip content={peerPathDetail(entry.peerPath, locale)}>
                           <span>
                             <Badge
                               variant="neutral"
                               label={entry.peerPath.kind === 'direct'
-                                ? peerMeshCopy.peerPathDirect
-                                : peerMeshCopy.peerPathTransit}
+                                ? copy.peerPathDirect
+                                : copy.peerPathTransit}
                             />
                           </span>
                         </Tooltip>
@@ -844,8 +846,9 @@ export function RuntimeHostProfilesSection(props: {
 
 function peerPathDetail(
   path: RuntimeHostPeerConnectionPath,
-  copy: ReturnType<typeof getRuntimeHostPeerMeshCopy>,
+  locale: UiLocale,
 ): string {
+  const copy = getSettingsProjectsCopy(locale).runtimeHost;
   if (path.kind === 'transit') {
     return `${copy.peerPathTransit} · ${abbreviatePeerId(path.relayPeerId)}`;
   }
@@ -855,10 +858,9 @@ function peerPathDetail(
       ? 'QUIC'
       : path.transport === 'tcp'
         ? 'TCP'
-        : copy.peerPathOther;
+        : copy.peerPathTransportOther;
   return `${copy.peerPathDirect} · ${transport}`;
 }
-
 
 function abbreviatePeerId(peerId: string): string {
   return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;

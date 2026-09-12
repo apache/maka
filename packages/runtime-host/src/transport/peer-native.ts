@@ -20,6 +20,7 @@
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import type { RuntimeHostByteStream } from './framed-byte-stream-transport.js';
+import type { PeerResumeState } from './resumable-peer-stream.js';
 
 const AUTHENTICATION_MAX_BYTES = 12 * 1024;
 const AUTHENTICATION_RESULT_MAX_BYTES = 256;
@@ -34,6 +35,7 @@ export type RuntimeHostPeerErrorCode =
   | 'transit_unavailable'
   | 'peer_native_unavailable'
   | 'peer_native_failed'
+  | 'peer_capacity_exceeded'
   | 'peer_connect_in_progress';
 
 export class RuntimeHostPeerError extends Error {
@@ -296,6 +298,7 @@ function loadNativeModule(path: string): RuntimeHostPeerNativeModule {
 export async function writeRuntimeHostPeerAuthentication(
   stream: RuntimeHostPeerNativeStream,
   credential: string,
+  resume?: PeerResumeState,
 ): Promise<void> {
   if (!credential || /\s/u.test(credential)) {
     throw new RuntimeHostPeerError(
@@ -303,19 +306,50 @@ export async function writeRuntimeHostPeerAuthentication(
       'Runtime Host access credential is invalid',
     );
   }
-  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, credential })}\n`, 'utf8'));
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(resume ? { v: 2, credential, resume } : { v: 1, credential })}\n`,
+        'utf8',
+      ),
+    ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication write timed out',
+  );
 }
 
 export async function writeRuntimeHostPeerAuthenticationResult(
   stream: RuntimeHostPeerNativeStream,
   accepted: boolean,
+  detail?: { readonly received: number } | { readonly reason: 'capacity_exceeded' },
 ): Promise<void> {
-  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, accepted })}\n`, 'utf8'));
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(
+          detail && 'reason' in detail
+            ? { v: 2, accepted: false, reason: detail.reason }
+            : detail
+              ? { v: 2, accepted, resume: detail }
+              : { v: 1, accepted },
+        )}\n`,
+        'utf8',
+      ),
+    ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication response write timed out',
+  );
 }
 
 export async function readRuntimeHostPeerAuthentication(
   stream: RuntimeHostPeerNativeStream,
-): Promise<{ readonly credential: string; readonly remainder: Buffer }> {
+): Promise<{
+  readonly credential: string;
+  readonly remainder: Buffer;
+  readonly resume?: PeerResumeState;
+}> {
   const decoded = await readBoundedJsonLine(
     stream,
     AUTHENTICATION_MAX_BYTES,
@@ -324,13 +358,21 @@ export async function readRuntimeHostPeerAuthentication(
   if (!isAuthenticationPreface(decoded.value)) {
     throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication preface is invalid');
   }
-  return { credential: decoded.value.credential, remainder: decoded.remainder };
+  return {
+    credential: decoded.value.credential,
+    remainder: decoded.remainder,
+    ...('resume' in decoded.value ? { resume: decoded.value.resume } : {}),
+  };
 }
 
 export async function readRuntimeHostPeerAuthenticationResult(
   stream: RuntimeHostPeerNativeStream,
   timeoutMs = RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
-): Promise<{ readonly accepted: boolean; readonly remainder: Buffer }> {
+): Promise<{
+  readonly accepted: boolean;
+  readonly remainder: Buffer;
+  readonly resume?: { readonly received: number };
+}> {
   const decoded = await withStreamDeadline(
     readBoundedJsonLine(stream, AUTHENTICATION_RESULT_MAX_BYTES, 'Peer authentication result'),
     stream,
@@ -340,7 +382,17 @@ export async function readRuntimeHostPeerAuthenticationResult(
   if (!isAuthenticationResult(decoded.value)) {
     throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication result is invalid');
   }
-  return { accepted: decoded.value.accepted, remainder: decoded.remainder };
+  if ('reason' in decoded.value) {
+    throw new RuntimeHostPeerError(
+      'peer_capacity_exceeded',
+      'Runtime Host peer connection capacity is full; close unused Host or shared Session connections and retry',
+    );
+  }
+  return {
+    accepted: decoded.value.accepted,
+    remainder: decoded.remainder,
+    ...('resume' in decoded.value ? { resume: decoded.value.resume } : {}),
+  };
 }
 
 async function readBoundedJsonLine(
@@ -358,7 +410,8 @@ async function readBoundedJsonLine(
       const encoded = buffered.subarray(0, newline);
       return {
         value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(encoded)) as unknown,
-        remainder: buffered.subarray(newline + 1),
+        remainder:
+          newline + 1 === buffered.length ? Buffer.alloc(0) : buffered.subarray(newline + 1),
       };
     }
     if (buffered.byteLength >= maxBytes) {
@@ -378,7 +431,6 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
   readonly #endListeners = new Set<() => void>();
   readonly #errorListeners = new Set<(error: Error) => void>();
   readonly #stream: RuntimeHostPeerNativeStream;
-  readonly #initialData: Buffer;
   #resolveClosed!: () => void;
   #resume: (() => void) | undefined;
   #paused = false;
@@ -386,11 +438,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
 
   constructor(stream: RuntimeHostPeerNativeStream, initialData: Buffer = Buffer.alloc(0)) {
     this.#stream = stream;
-    this.#initialData = initialData;
     this.closed = new Promise((resolve) => {
       this.#resolveClosed = resolve;
     });
-    queueMicrotask(() => void this.#pump());
+    queueMicrotask(() => void this.#pump(initialData));
   }
 
   onData(listener: (chunk: Buffer) => void): void {
@@ -432,9 +483,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
     this.#resume = undefined;
   }
 
-  async #pump(): Promise<void> {
+  async #pump(initialData: Buffer): Promise<void> {
     try {
-      if (this.#initialData.byteLength > 0) this.#emitData(this.#initialData);
+      if (initialData.byteLength > 0) this.#emitData(initialData);
+      initialData = Buffer.alloc(0);
       while (!this.#closed) {
         if (this.#paused) {
           await new Promise<void>((resolve) => {
@@ -442,12 +494,14 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
           });
           if (this.#closed) return;
         }
-        const chunk = await this.#stream.read();
+        let chunk = await this.#stream.read();
         if (!chunk) {
           for (const listener of this.#endListeners) listener();
           return;
         }
         this.#emitData(chunk);
+        // Listeners own any data they retain; the read loop no longer needs it.
+        chunk = null;
       }
     } catch (error) {
       this.#emitError(normalizePeerError(error));
@@ -608,14 +662,19 @@ function isCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-function isAuthenticationPreface(value: unknown): value is { v: 1; credential: string } {
+function isAuthenticationPreface(
+  value: unknown,
+): value is { v: 1; credential: string } | { v: 2; credential: string; resume: PeerResumeState } {
   return (
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    Object.keys(value).length === 2 &&
     'v' in value &&
-    value.v === 1 &&
+    ((value.v === 1 && Object.keys(value).length === 2) ||
+      (value.v === 2 &&
+        Object.keys(value).length === 3 &&
+        'resume' in value &&
+        isResumeState(value.resume))) &&
     'credential' in value &&
     typeof value.credential === 'string' &&
     value.credential.length > 0 &&
@@ -623,14 +682,55 @@ function isAuthenticationPreface(value: unknown): value is { v: 1; credential: s
   );
 }
 
-function isAuthenticationResult(value: unknown): value is { v: 1; accepted: boolean } {
+function isResumeState(value: unknown): value is PeerResumeState {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.keys(value).length === 3 &&
+    'sessionId' in value &&
+    typeof value.sessionId === 'string' &&
+    /^[a-f0-9]{64}$/u.test(value.sessionId) &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    (value.generation as number) > 0 &&
+    'received' in value &&
+    isCount(value.received)
+  );
+}
+
+function isAuthenticationResult(
+  value: unknown,
+): value is
+  | { v: 1; accepted: boolean }
+  | { v: 2; accepted: boolean; resume: { readonly received: number } }
+  | { v: 2; accepted: false; reason: 'capacity_exceeded' } {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 3 &&
+    'v' in value &&
+    value.v === 2 &&
+    'accepted' in value &&
+    value.accepted === false &&
+    'reason' in value &&
+    value.reason === 'capacity_exceeded'
+  )
+    return true;
   return (
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    Object.keys(value).length === 2 &&
     'v' in value &&
-    value.v === 1 &&
+    ((value.v === 1 && Object.keys(value).length === 2) ||
+      (value.v === 2 &&
+        Object.keys(value).length === 3 &&
+        'resume' in value &&
+        typeof value.resume === 'object' &&
+        value.resume !== null &&
+        Object.keys(value.resume).length === 1 &&
+        'received' in value.resume &&
+        isCount(value.resume.received))) &&
     'accepted' in value &&
     typeof value.accepted === 'boolean'
   );
@@ -667,6 +767,7 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
     value === 'transit_unavailable' ||
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||
+    value === 'peer_capacity_exceeded' ||
     value === 'peer_connect_in_progress'
   );
 }

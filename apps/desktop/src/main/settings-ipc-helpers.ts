@@ -33,7 +33,7 @@ import {
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
-import type { BotTestResult } from '@maka/runtime/bots';
+import type { BotTestErrorCode, BotTestResult } from '@maka/runtime/bots';
 import { collectPersonalizationWarnings } from '@maka/runtime/system-prompt/personalization-prompt';
 import { getTavilyCredentialSource } from "./web-search/credentials.js";
 
@@ -195,68 +195,48 @@ export function toSettingsTestResult(
   provider: BotProvider,
   result: BotTestResult,
 ): SettingsTestResult {
-  const failure = result.ok
-    ? undefined
-    : botTestFailure(provider, result.error);
+  const failure = result.ok ? undefined : botTestFailure(provider, result);
   return {
     ok: result.ok,
     code: result.ok ? "bot_credentials_valid" : failure?.code,
+    // Presenters localize through settingsTestResultMessage; this field stays
+    // an English diagnostic for support dumps and is never rendered.
     message: result.ok
       ? `${botDisplayLabel(provider)} credentials are valid${result.identity?.username ? ` for ${result.identity.username}` : ""}.`
-      : (failure?.message ??
-        `${botDisplayLabel(provider)} connection test failed.`),
+      : `${botDisplayLabel(provider)} connection test failed (${failure?.code ?? "bot_connection_failed"}).`,
     details: {
       ...(result.identity ? { identity: result.identity } : {}),
       ...(result.capabilities ? { capabilities: result.capabilities } : {}),
-      ...(result.hint ? { hint: result.hint } : {}),
     },
   };
 }
 
-export function botTestErrorMessage(
-  provider: BotProvider,
-  error: unknown,
-): string {
-  return botTestFailure(provider, error).message;
-}
+const BOT_TEST_FAILURE_CODES = {
+  token_missing: 'bot_token_missing',
+  token_invalid: 'bot_token_invalid',
+  feishu_credentials_missing: 'bot_app_credentials_missing',
+  slack_tokens_missing: 'slack_tokens_missing',
+  wecom_credentials_missing: 'wecom_credentials_missing',
+  dingtalk_credentials_missing: 'dingtalk_credentials_missing',
+  dingtalk_no_access_token: 'dingtalk_no_access_token',
+  qq_credentials_missing: 'qq_credentials_missing',
+  qq_no_access_token: 'qq_no_access_token',
+  wechat_bridge_url_invalid: 'wechat_bridge_url_invalid',
+  wechat_ilink_credentials_incomplete: 'wechat_ilink_credentials_incomplete',
+  connection_failed: 'bot_connection_failed',
+} satisfies Record<BotTestErrorCode, SettingsTestResultCode>;
 
 function botTestFailure(
   provider: BotProvider,
-  error: unknown,
-): { code: SettingsTestResultCode; message: string } {
-  const label = botDisplayLabel(provider);
-  const raw = redactSecrets(
-    error instanceof Error ? error.message : String(error ?? ""),
-  ).trim();
-  const lower = raw.toLowerCase();
-
-  if (lower.includes("bot token is required")) {
-    return {
-      code: "bot_token_missing",
-      message: `${label} requires a Bot Token.`,
-    };
+  result: Pick<BotTestResult, "errorCode" | "error">,
+): { code: SettingsTestResultCode } {
+  const resolved =
+    result.errorCode && Object.hasOwn(BOT_TEST_FAILURE_CODES, result.errorCode)
+      ? BOT_TEST_FAILURE_CODES[result.errorCode]
+      : 'bot_connection_failed';
+  if (result.error) {
+    // Redacted diagnostic for the support log only; product copy is code-keyed.
+    console.warn(`[bots:${provider}] ${resolved}: ${redactSecrets(result.error)}`);
   }
-  if (lower.includes("invalid bot token")) {
-    return {
-      code: "bot_token_invalid",
-      message: `${label} rejected the Bot Token.`,
-    };
-  }
-  if (
-    provider === "feishu" &&
-    /appid|app_id|appsecret|app_secret|required/.test(lower)
-  ) {
-    return {
-      code: "bot_app_credentials_missing",
-      message: "Feishu requires an App ID and App Secret.",
-    };
-  }
-
-  const classified = generalizedErrorMessage(raw, "");
-  return {
-    code: "bot_connection_failed",
-    message: classified
-      ? `${label} connection test failed: ${classified}.`
-      : `${label} connection test failed.`,
-  };
+  return { code: resolved };
 }

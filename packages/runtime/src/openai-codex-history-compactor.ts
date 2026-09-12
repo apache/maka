@@ -134,7 +134,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       return state;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
-      if (classifyError(error) === 'ContextLength') {
+      if (classifyError(error) === 'context_overflow') {
         throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
       }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
@@ -171,7 +171,7 @@ export function shouldFallbackFromOpenAiCodexHistoryCompaction(
   if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
   if (error.reason !== 'provider_error') return false;
   const diagnostic = providerFailureDiagnostic(error);
-  return diagnostic.errorClass === 'RequestRejected' && !diagnostic.retryable;
+  return diagnostic.errorClass === 'request_rejected' && !diagnostic.retryable;
 }
 
 function hasAbortCause(error: unknown): boolean {

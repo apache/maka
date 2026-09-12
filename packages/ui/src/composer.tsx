@@ -128,7 +128,7 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
-import { ComposerMessageQueue } from './composer-message-queue.js';
+import { ComposerMessageQueue, projectComposerMessageQueue } from './composer-message-queue.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -247,6 +247,7 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     disabled?: boolean;
+    placeholder?: string;
     /**
      * Prevent submission while leaving the draft and recovery controls usable.
      * Hosts use this for configuration failures that the model picker can fix.
@@ -281,6 +282,7 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
+    pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
     queuedMessages?: readonly MessageQueueEntryProjection[];
     queuedMessageRevision?: number;
     /** Promote a queued follow-up into the active Turn (调整方向). */
@@ -314,6 +316,8 @@ export const Composer = forwardRef<
     pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
     onRemoveDirectory?(index: number): void;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
+    /** Hosts that can submit context without a text prompt opt in. */
+    allowAttachmentOnlySend?: boolean;
     pendingAttachments?: readonly {
       displayName: string;
       kind: AttachmentRef['kind'];
@@ -347,6 +351,8 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    /** Maximum input height in the upstream editor's row units. */
+    maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
     modelSwitchHasHistory?: boolean;
     /** Identity recovery must not present the stale target as a checked, selectable row. */
@@ -402,6 +408,12 @@ export const Composer = forwardRef<
     contextUsage?: {
       usageTokens?: number;
       declaredContextWindow?: number;
+      /**
+       * The window the usage number was metered against, frozen at call time.
+       * When present it outranks the metadata window, so a live reading keeps
+       * its numerator and denominator from the same request.
+       */
+      meteredContextWindow?: number;
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
@@ -424,6 +436,8 @@ export const Composer = forwardRef<
      * the moment the first message creates the session.
      */
     workspacePicker?: WorkspacePickerModel;
+    /** Host actions that share the composer's existing footer. */
+    footerAccessory?: ReactNode;
     /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
@@ -1259,7 +1273,7 @@ export const Composer = forwardRef<
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
-    if (!text) return;
+    if (!text && !(props.allowAttachmentOnlySend && props.pendingAttachments?.length)) return;
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
@@ -1447,7 +1461,7 @@ export const Composer = forwardRef<
     props.sendBlocked ||
     sendPending ||
     importActionBusy ||
-    !text.trim() ||
+    (!text.trim() && !(props.allowAttachmentOnlySend && props.pendingAttachments?.length)) ||
     noModelConnection;
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.
@@ -1458,10 +1472,11 @@ export const Composer = forwardRef<
   // returns to Send (the host queues it as a follow-up). Stop is not lost in
   // that window: Esc interrupts from the input, which is where the hands already
   // are.
-  const stopShown = props.streaming === true && !text.trim();
-  // The pending plate renders the follow-up queue only: steering entries are
-  // already handed to the active Turn and leave the plate at that moment.
-  const queueCount = props.queuedMessages?.length ?? 0;
+  const stopShown = props.streaming === true && (!text.trim() || props.sendBlocked === true);
+  // A Host receipt is not model consumption. Keep steering above the composer
+  // until the host surface retires its transient on steering_message.
+  const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
+  const queueCount = queuedMessages.length;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1665,7 +1680,7 @@ export const Composer = forwardRef<
       )}
       {!props.hidden && queueCount > 0 ? (
           <ComposerMessageQueue
-            queuedMessages={props.queuedMessages!}
+            queuedMessages={queuedMessages}
             queueRevision={props.queuedMessageRevision}
           copy={copy}
           onPromoteEntry={props.onPromoteQueuedEntry}
@@ -1836,9 +1851,9 @@ export const Composer = forwardRef<
                 className="maka-composer-editor"
                 value={text}
                 onChange={onInputChange}
-                placeholder={copy.placeholder}
+                placeholder={props.placeholder ?? copy.placeholder}
                 label={copy.textareaAriaLabel}
-                maxRows={COMPOSER_MAX_ROWS}
+                maxRows={props.maxInputRows ?? COMPOSER_MAX_ROWS}
                 // Prompt history stays ours: persisted, shared across input
                 // surfaces, and clearable from Settings · 数据 (see
                 // use-composer-history.ts).
@@ -2190,6 +2205,7 @@ export const Composer = forwardRef<
                   icon={mark.icon}
                 />
               ))}
+              {props.footerAccessory}
             </div>
           )}
           sendButton={stopShown ? (
@@ -2247,16 +2263,20 @@ export const Composer = forwardRef<
 function ContextUsageAction(props: {
   usageTokens?: number;
   declaredContextWindow?: number;
+  meteredContextWindow?: number;
   metadataContextWindow?: number;
   onOpen(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // A window from either source is enough to show a share: the user's
-  // declaration when there is one, otherwise the model's reported window. The
-  // distinction matters for the compaction threshold, which only a declaration
-  // arms, not for reading a number off the screen. With no window at all the
-  // usage stands on its own.
-  const window = props.declaredContextWindow ?? props.metadataContextWindow;
+  // A window from any source is enough to show a share, and the order is a
+  // claim about which window the number was earned against: the user's
+  // declaration first — it is the user's intent, and the only one that arms
+  // the compaction threshold — then the metered window frozen alongside the
+  // usage, so a live reading keeps its numerator and denominator from the
+  // same request, and only then the model's reported metadata. With no window
+  // at all the usage stands on its own.
+  const window =
+    props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
   const label =
     props.usageTokens !== undefined && window !== undefined && window > 0
       ? `${Math.round((props.usageTokens / window) * 100)}%`

@@ -21,7 +21,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { useUiLocale } from '@maka/ui';
+import { useUiLocale, type UiLocale } from '@maka/ui';
+
+import { ExpectedOperationError, unexpectedErrorFallback } from './application/contracts/operation-diagnostics.js';
 import type {
   CreateWorkBoardItemInput,
   WorkBoardItem,
@@ -31,6 +33,9 @@ import type {
 import { ListTodo } from '@maka/ui/icons';
 import { useWorkBoard } from './use-work-board.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import {
+  workBoardErrorCodeCopy,
+} from './locales/work-board-error-copy.js';
 
 type WorkBoardPanelCopy = ReturnType<typeof getDesktopConversationCopy>['workBoardPanel'];
 
@@ -139,7 +144,8 @@ export function WorkBoardPanel(props: {
   projectId: string | null;
   projectAliases?: readonly string[];
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workBoardPanel;
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workBoardPanel;
   const [filter, setFilter] = useState<'inbox' | 'project'>('inbox');
   const projectScopeIds = useMemo(() => {
     if (props.projectId === null) return undefined;
@@ -175,7 +181,7 @@ export function WorkBoardPanel(props: {
       await action();
       return true;
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : copy.actionFailed);
+      setActionError(workBoardActionErrorText(error, locale, copy.actionFailed));
       return false;
     }
   };
@@ -283,7 +289,7 @@ export function WorkBoardPanel(props: {
           role="alert"
           className="maka-work-board-message"
           title={copy.loadFailed}
-          description={board.error}
+          description={workBoardErrorCodeCopy(locale, board.error) ?? copy.actionFailed}
           endContent={
             <Button size="sm" variant="ghost" label={copy.retry} onClick={board.retry} />
           }
@@ -296,7 +302,7 @@ export function WorkBoardPanel(props: {
               role="alert"
               className="maka-work-board-message"
               title={copy.loadFailed}
-              description={board.continuationError}
+              description={workBoardErrorCodeCopy(locale, board.continuationError) ?? copy.actionFailed}
               endContent={
                 <Button
                   size="sm"
@@ -387,4 +393,15 @@ export function WorkBoardPanel(props: {
       )}
     </section>
   );
+}
+
+/** Resolve one thrown action failure into Work Board copy: expected codes map
+ * through the catalog, everything else logs redacted diagnostics and shows
+ * the action-failed fallback. Module-level so the presentation test drives the
+ * exact branch `runAction` uses instead of re-implementing it. */
+export function workBoardActionErrorText(error: unknown, locale: UiLocale, fallback: string): string {
+  if (error instanceof ExpectedOperationError) {
+    return workBoardErrorCodeCopy(locale, error.code) ?? fallback;
+  }
+  return unexpectedErrorFallback(error, fallback, 'work-board');
 }

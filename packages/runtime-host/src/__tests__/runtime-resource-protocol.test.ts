@@ -257,18 +257,20 @@ test('Runtime Resource invalidations batch lightweight unique identities', () =>
   );
 });
 
-test('Runtime Resource PTY data remains an ordered Session subscription frame', () => {
+test('Runtime Resource PTY data has an independent sequence and explicit recovery marker', () => {
   const frame = {
     kind: 'subscription.runtime_resource_pty_data' as const,
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
-    sequence: 4,
     sessionId: 'session-1',
     ref: runtimeRef,
     ptySequence: 9,
     data: '\u001b[2Jready',
   };
   assert.deepEqual(decodeSubscriptionFrame(frame), frame);
+  assert.deepEqual(decodeSubscriptionFrame({ ...frame, reset: true }), { ...frame, reset: true });
+  assertInvalid(() => decodeSubscriptionFrame({ ...frame, sequence: 4 }));
+  assertInvalid(() => decodeSubscriptionFrame({ ...frame, reset: false }));
   assertInvalid(() => decodeSubscriptionFrame({ ...frame, ptySequence: 0 }));
 });
 

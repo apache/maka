@@ -17,45 +17,53 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { ClientSettingsChange } from './client-settings-tools.js';
+
+type ConfirmationCopy = {
+  labels: Record<ClientSettingsChange['key'], string>;
+  on: string;
+  off: string;
+  message: string;
+  buttons: [string, string];
+};
+
+const COPY = {
+  'zh-CN': {
+    labels: { theme: '主题', palette: '配色', uiLocale: '界面语言', runComplete: '回答完成通知', keepSystemAwake: '保持系统唤醒' },
+    on: '开启',
+    off: '关闭',
+    message: '允许 Maka 更新此客户端的设置吗？',
+    buttons: ['应用更改', '取消'],
+  },
+  'zh-TW': {
+    labels: { theme: '主題', palette: '色彩配置', uiLocale: '介面語言', runComplete: '回答完成通知', keepSystemAwake: '保持系統喚醒' },
+    on: '開啟',
+    off: '關閉',
+    message: '允許 Maka 更新此用戶端的設定嗎？',
+    buttons: ['套用變更', '取消'],
+  },
+  en: {
+    labels: { theme: 'Theme', palette: 'Palette', uiLocale: 'UI language', runComplete: 'Run-complete notifications', keepSystemAwake: 'Keep system awake' },
+    on: 'true',
+    off: 'false',
+    message: "Allow Maka to update this client's settings?",
+    buttons: ['Apply changes', 'Cancel'],
+  },
+} satisfies UiCatalog<ConfirmationCopy>;
 
 export function clientSettingsConfirmation(
   changes: readonly ClientSettingsChange[],
   locale: UiLocale,
 ): { message: string; detail: string; buttons: [string, string] } {
-  const labels: Record<ClientSettingsChange['key'], readonly [string, string, string]> = {
-    theme: ['Theme', '主题', '主題'],
-    palette: ['Palette', '配色', '色彩配置'],
-    uiLocale: ['UI language', '界面语言', '介面語言'],
-    runComplete: ['Run-complete notifications', '回答完成通知', '回答完成通知'],
-    keepSystemAwake: ['Keep system awake', '保持系统唤醒', '保持系統喚醒'],
-  };
-  const localeIndex = locale === 'en' ? 0 : locale === 'zh-CN' ? 1 : 2;
-  const value = (input: string | boolean | undefined): string => {
-    if (locale === 'en') return String(input);
-    if (input === true) return locale === 'zh-CN' ? '开启' : '開啟';
-    if (input === false) return locale === 'zh-CN' ? '关闭' : '關閉';
-    return String(input);
-  };
+  const copy = COPY[locale];
+  const value = (input: string | boolean | undefined): string =>
+    input === true ? copy.on : input === false ? copy.off : String(input);
   return {
-    message:
-      locale === 'en'
-        ? "Allow Maka to update this client's settings?"
-        : locale === 'zh-CN'
-          ? '允许 Maka 更新此客户端的设置吗？'
-          : '允許 Maka 更新此用戶端的設定嗎？',
+    message: copy.message,
     detail: changes
-      .map(
-        (change) =>
-          `${labels[change.key][localeIndex]}: ${value(change.current)} → ${value(change.next)}`,
-      )
+      .map((change) => `${copy.labels[change.key]}: ${value(change.current)} → ${value(change.next)}`)
       .join('\n'),
-    buttons:
-      locale === 'en'
-        ? ['Apply changes', 'Cancel']
-        : locale === 'zh-CN'
-          ? ['应用更改', '取消']
-          : ['套用變更', '取消'],
+    buttons: [...copy.buttons],
   };
 }

@@ -306,6 +306,7 @@ export function GeneralSettingsPage(props: {
           onRefresh={props.onRefreshConnections}
           permissionMode={props.settings.chatDefaults.permissionMode}
           thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+          codeModeEnabled={props.settings.chatDefaults.codeModeEnabled === true}
           onUpdate={props.onUpdate}
         />
       ) : null}
@@ -502,6 +503,7 @@ function GeneralDefaultsCard(props: {
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
   thinkingLevel?: ThinkingLevel;
+  codeModeEnabled: boolean;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -516,12 +518,12 @@ function GeneralDefaultsCard(props: {
   const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
-  const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
-  >();
-  const [saving, setSaving] = useState(false);
-  const [savingPermissionMode, setSavingPermissionMode] = useState(false);
-  const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  type SaveKey = "default-model" | "permission-mode" | "thinking-level";
+  const persistGuard = useKeyedActionGuard<SaveKey>();
+  const [savingRows, setSavingRows] = useState<Partial<Record<SaveKey, boolean>>>({});
+  function setRowSaving(key: SaveKey, saving: boolean) {
+    setSavingRows((current) => ({ ...current, [key]: saving }));
+  }
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -549,7 +551,7 @@ function GeneralDefaultsCard(props: {
     if (!props.connectionsBridge || !props.connectionsInteractive) return;
     const releaseSave = persistGuard.begin("default-model");
     if (!releaseSave) return;
-    setSaving(true);
+    setRowSaving("default-model", true);
     try {
       const parsed = parseModelChoiceValue(nextValue);
       await props.connectionsBridge.setDefaultModel(
@@ -573,7 +575,7 @@ function GeneralDefaultsCard(props: {
       }
     } finally {
       releaseSave();
-      if (mountedRef.current) setSaving(false);
+      if (mountedRef.current) setRowSaving("default-model", false);
     }
   }
 
@@ -610,7 +612,7 @@ function GeneralDefaultsCard(props: {
         return;
       }
     }
-    setSavingPermissionMode(true);
+    setRowSaving("permission-mode", true);
     try {
       await props.onUpdate({ chatDefaults: { permissionMode: nextMode } });
     } catch (error) {
@@ -624,7 +626,7 @@ function GeneralDefaultsCard(props: {
       }
     } finally {
       releaseSave();
-      if (mountedRef.current) setSavingPermissionMode(false);
+      if (mountedRef.current) setRowSaving("permission-mode", false);
     }
   }
 
@@ -632,7 +634,7 @@ function GeneralDefaultsCard(props: {
     if (!props.settingsInteractive) return;
     const releaseSave = persistGuard.begin("thinking-level");
     if (!releaseSave) return;
-    setSavingThinkingLevel(true);
+    setRowSaving("thinking-level", true);
     try {
       await props.onUpdate({ chatDefaults: { thinkingLevel: next } });
     } catch (error) {
@@ -646,7 +648,19 @@ function GeneralDefaultsCard(props: {
       }
     } finally {
       releaseSave();
-      if (mountedRef.current) setSavingThinkingLevel(false);
+      if (mountedRef.current) setRowSaving("thinking-level", false);
+    }
+  }
+
+  async function persistCodeMode(codeModeEnabled: boolean) {
+    if (!props.settingsInteractive) return;
+    try {
+      await props.onUpdate({ chatDefaults: { codeModeEnabled } });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.updateFailed, settingsActionErrorMessage(error, locale), undefined,
+          host ? { profileId: host.profileId } : undefined);
+      }
     }
   }
 
@@ -655,6 +669,23 @@ function GeneralDefaultsCard(props: {
       title={sections.chatDefaults}
       description={sections.chatDefaultsHelp}
     >
+      {props.settingsAvailable ? (
+        <SettingsRow
+          label="Code Mode"
+          description={copy.codeModeHelp}
+          end={
+            <Switch
+              label="Code Mode"
+              isLabelHidden
+              value={props.codeModeEnabled}
+              isDisabled={!props.settingsInteractive}
+              changeAction={persistCodeMode}
+            />
+          }
+        />
+      ) : props.showSettingsPlaceholder ? (
+        <SettingsRowSkeleton label="Code Mode" description={copy.codeModeHelp} width="3rem" />
+      ) : null}
       {props.connectionsAvailable ? (
         <SettingsRow
           label={copy.defaultModel}
@@ -666,8 +697,7 @@ function GeneralDefaultsCard(props: {
               leadingOption={{ value: "", label: copy.notSet }}
               renderProviderMark={(type) => <ProviderBrandMark type={type} />}
               ariaLabel={copy.defaultModel}
-              disabled={saving || !props.connectionsInteractive}
-              loading={saving}
+              disabled={savingRows["default-model"] || !props.connectionsInteractive}
               triggerClassName="settingsModelPickerTrigger"
               onValueChange={persistDefault}
             />
@@ -691,7 +721,7 @@ function GeneralDefaultsCard(props: {
                 void persistPermissionMode(mode);
               }}
               align="end"
-              disabled={savingPermissionMode || !props.settingsInteractive}
+              disabled={savingRows["permission-mode"] || !props.settingsInteractive}
               ariaLabel={copy.defaultPermission}
             />
           }
@@ -728,7 +758,7 @@ function GeneralDefaultsCard(props: {
                   label: conversationCopy.model.level[level],
                 })),
               ]}
-              isDisabled={savingThinkingLevel || !props.settingsInteractive}
+              isDisabled={savingRows["thinking-level"] || !props.settingsInteractive}
             />
           }
         />

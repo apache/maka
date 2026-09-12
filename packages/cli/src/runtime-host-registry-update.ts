@@ -19,6 +19,7 @@
 
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
+import type { RuntimeHostServiceErrorCode } from '@maka/runtime-host/operator';
 import {
   isProductReleaseVersion,
   isSha512PackageIntegrity,
@@ -38,7 +39,10 @@ export interface RuntimeHostUpdateCandidate extends RuntimeHostNpmDeploymentIden
 
 export class RuntimeHostUpdateDiscoveryError extends Error {
   constructor(
-    readonly code: 'target_unavailable' | 'registry_unavailable' | 'invalid_registry_metadata',
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
+      'target_unavailable' | 'registry_unavailable' | 'invalid_registry_metadata'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {

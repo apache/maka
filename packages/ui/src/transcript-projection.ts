@@ -60,9 +60,9 @@ export interface TranscriptProjectionInput {
    * turn is only reused when its value matches.
    */
   sessionId?: string;
-  locale?: UiLocale;
+  locale: UiLocale;
   messages: readonly StoredMessage[];
-  liveTurn?: LiveTurnProjection;
+  liveTurns?: readonly LiveTurnProjection[];
   shellRunUpdates?: readonly ShellRunUpdate[];
 }
 
@@ -80,7 +80,7 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Stage inputs, remembered so a stage only reruns when its own input moved.
   let lastMessages: readonly StoredMessage[] | undefined;
   let lastLocale: UiLocale | undefined;
-  let lastLiveTurn: LiveTurnProjection | undefined;
+  let lastLiveTurn: readonly LiveTurnProjection[] | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
 
   // Stage outputs.
@@ -89,6 +89,10 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Tracked separately from `lastMessages` because a refresh can leave the
   // settled projection untouched, which must not force the live overlay to run.
   let liveTurnsFrom: readonly TurnViewModel[] | undefined;
+  // The locale the overlay last ran with. The live "compacting" row is localized
+  // inside overlayLiveTurn, so a locale switch that leaves the settled turns
+  // reference unchanged (identity reconciliation) must still re-run the overlay.
+  let lastOverlayLocale: UiLocale | undefined;
   let overlayEntries: ReadonlyMap<string, ShellRunOverlayEntry> = new Map();
   let lastTurns: readonly TurnViewModel[] = NO_TURNS;
 
@@ -101,6 +105,7 @@ export function createTranscriptProjection(): TranscriptProjection {
     settledTurns = NO_TURNS;
     liveTurns = NO_TURNS;
     liveTurnsFrom = undefined;
+    lastOverlayLocale = undefined;
     overlayEntries = new Map();
     lastTurns = NO_TURNS;
   }
@@ -116,6 +121,10 @@ export function createTranscriptProjection(): TranscriptProjection {
     const updatesMoved = lastUpdates === undefined
       || lastUpdates.length !== updates.length
       || updates.some((update, index) => update !== lastUpdates![index]);
+    const buffersMoved = input.liveTurns !== lastLiveTurn && (
+      input.liveTurns?.length !== lastLiveTurn?.length
+      || input.liveTurns?.some((turn, index) => turn !== lastLiveTurn?.[index]) === true
+    );
 
     // Same inputs, same answer, without advancing any owned state — which is
     // what makes projecting during render safe under double invocation.
@@ -123,7 +132,7 @@ export function createTranscriptProjection(): TranscriptProjection {
       hasProjected
       && input.messages === lastMessages
       && input.locale === lastLocale
-      && input.liveTurn === lastLiveTurn
+      && !buffersMoved
       && !updatesMoved
     ) {
       return lastTurns;
@@ -137,10 +146,15 @@ export function createTranscriptProjection(): TranscriptProjection {
       lastMessages = input.messages;
       lastLocale = input.locale;
     }
-    if (liveTurnsFrom !== settledTurns || input.liveTurn !== lastLiveTurn) {
-      liveTurns = overlayLiveTurn(settledTurns, input.liveTurn);
+    if (
+      liveTurnsFrom !== settledTurns ||
+      buffersMoved ||
+      input.locale !== lastOverlayLocale
+    ) {
+      liveTurns = (input.liveTurns ?? []).reduce<readonly TurnViewModel[]>((turns, live) => overlayLiveTurn(turns, live, input.locale), settledTurns);
       liveTurnsFrom = settledTurns;
-      lastLiveTurn = input.liveTurn;
+      lastLiveTurn = input.liveTurns;
+      lastOverlayLocale = input.locale;
     }
     if (updatesMoved) {
       overlayEntries = foldShellRunUpdates(updates);

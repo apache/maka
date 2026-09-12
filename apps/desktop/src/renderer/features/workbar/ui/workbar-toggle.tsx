@@ -23,9 +23,17 @@ import { IconButton, useUiLocale } from '@maka/ui';
 import { PanelRightClose, PanelRightOpen } from '@maka/ui/icons';
 import { getShellCopy } from '../../../locales/shell-copy';
 
-/** Shared titlebar/panel toggle for the Workbar column. */
+/**
+ * Shared titlebar/panel toggle for the Workbar column.
+ *
+ * `md` is the titlebar rail's size, shared with the sidebar and search
+ * actions it stands beside. In the workbar's own bar it stands beside the
+ * strip's `sm` tabs and the `sm` `[+]` instead, so that caller passes `sm` —
+ * three controls in one row have to report one height.
+ */
 export function WorkbarToggle(props: {
   collapsed: boolean;
+  size?: 'sm' | 'md';
   className?: string;
   onToggle(): void;
 }) {
@@ -43,7 +51,7 @@ export function WorkbarToggle(props: {
           />
         )}
         variant="ghost"
-        size="md"
+        size={props.size ?? 'md'}
         className={
           props.className
             ? `maka-titlebar-action ${props.className}`
@@ -71,7 +79,9 @@ export function WorkbarTitlebarActions(props: {
       role="toolbar"
       aria-label={copy.workspaceActions}
     >
-      <WorkbarToggle collapsed onToggle={props.onToggle} />
+      {/* `sm`, like the toggle in the workbar's own bar: this is that control,
+          standing where it stood, so collapsing must not resize it. */}
+      <WorkbarToggle collapsed size="sm" onToggle={props.onToggle} />
     </div>
   );
 }

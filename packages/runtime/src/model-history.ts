@@ -256,22 +256,6 @@ export function groupEventsByTurn(
   }));
 }
 
-// ============================================================================
-// Output type
-// ============================================================================
-
-/**
- * One model-facing history entry. `content` is the canonical
- * RuntimeEventContent (discriminated by `kind`); `role` is the
- * model-history lane the entry plays for the next model call.
- */
-export interface ModelHistoryEntry {
-  role: RuntimeEventRole;
-  content: RuntimeEventContent;
-  ts: number;
-  eventId: string;
-}
-
 export interface TextModelMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -510,92 +494,8 @@ export interface RuntimeEventModelReplayPlan {
 }
 
 // ============================================================================
-// Options
-// ============================================================================
-
-export interface BuildModelHistoryOptions {
-  /**
-   * Include function_call / function_response entries. Default `true`.
-   * Set `false` for providers whose replay format cannot represent prior
-   * tool turns (the V0.1 ai-sdk text-only replay path).
-   */
-  includeToolEvents?: boolean;
-  /**
-   * Include system-role events (system notes / instructions). Default
-   * `false`. System instructions are normally injected fresh by the
-   * runner each turn, not replayed from durable history.
-   */
-  includeSystemEvents?: boolean;
-  /**
-   * Include thinking-content entries. Default `false`. Thinking replay
-   * is provider-specific (Anthropic signed signatures); callers that
-   * need it opt in and reattach signatures from the event content.
-   */
-  includeThinking?: boolean;
-}
-
-// ============================================================================
 // Projection
 // ============================================================================
-
-/**
- * Build the model-visible history from a RuntimeEvent stream.
- *
- * Events SHOULD be supplied in causal order; the projection preserves
- * input order. Partial events are always excluded — callers MUST NOT
- * replay transient streaming chunks into the next model call.
- *
- * The default options match the durable-history policy: user/model text
- * and tool calls/responses are kept; thinking, system notes, token usage,
- * permission acks, and diagnostics are dropped.
- */
-export function buildModelHistoryFromRuntimeEvents(
-  events: readonly RuntimeEvent[],
-  options: BuildModelHistoryOptions = {},
-): ModelHistoryEntry[] {
-  const includeToolEvents = options.includeToolEvents ?? true;
-  const includeSystemEvents = options.includeSystemEvents ?? false;
-  const includeThinking = options.includeThinking ?? false;
-
-  const out: ModelHistoryEntry[] = [];
-  for (const event of events) {
-    // 1. Never replay transient streaming chunks.
-    if (isPartialRuntimeEvent(event)) continue;
-
-    // 2. Only model-visible content kinds (text/thinking/function_*).
-    if (!runtimeEventHasModelVisibleContent(event)) continue;
-
-    const content = event.content;
-    if (!content) continue;
-
-    // 3. System-role events are UI notes by default; opt in for
-    //    model-injected system instructions.
-    if (event.role === 'system' && !includeSystemEvents) continue;
-
-    // 4. Thinking replay is provider-specific; opt in.
-    if (content.kind === 'thinking' && !includeThinking) continue;
-
-    // 5. Tool function_call / function_response; opt out for text-only.
-    if (
-      !includeToolEvents &&
-      (content.kind === 'function_call' || content.kind === 'function_response')
-    ) {
-      continue;
-    }
-
-    out.push({
-      role: event.role,
-      content,
-      ts: event.ts,
-      eventId: event.id,
-    });
-  }
-  return out;
-}
-
-export interface RuntimeEventTextMessageOptions {
-  includeSystemEvents?: boolean;
-}
 
 export interface BuildRuntimeEventModelReplayPlanOptions {
   includeSystemEvents?: boolean;
@@ -1054,47 +954,6 @@ export function buildRuntimeEventModelReplayPlan(
   };
 }
 
-/**
- * Convert projected RuntimeEvent history into the current AI SDK text-only
- * message shape. Tool/function and thinking entries are intentionally skipped.
- */
-export function buildTextModelMessagesFromRuntimeEvents(
-  events: readonly RuntimeEvent[],
-  options: RuntimeEventTextMessageOptions = {},
-): TextModelMessage[] {
-  const history = buildModelHistoryFromRuntimeEvents(events, {
-    includeToolEvents: false,
-    includeSystemEvents: options.includeSystemEvents ?? false,
-    includeThinking: false,
-  });
-  const out: TextModelMessage[] = [];
-  for (const entry of history) {
-    if (entry.content.kind !== 'text') continue;
-    if (entry.role === 'tool') continue;
-    if (entry.role === 'system' && !options.includeSystemEvents) continue;
-    const role =
-      entry.role === 'model'
-        ? 'assistant'
-        : entry.role === 'user'
-          ? 'user'
-          : entry.role === 'system'
-            ? 'system'
-            : undefined;
-    if (!role) continue;
-    const steering = entry.content.steering === true && role === 'user';
-    out.push({
-      role,
-      content: steering
-        ? buildSteeringEnvelope(formatTextWithInlineRefs(entry.content))
-        : formatTextWithInlineRefs(entry.content),
-      // Keep the structured identity even in the text-only shape: dedupe
-      // against the live injection set works by ledger event id.
-      ...(steering ? { providerOptions: steeringProviderOptions(entry.eventId) } : {}),
-    });
-  }
-  return out;
-}
-
 function modelTextRole(role: RuntimeEventRole): TextModelMessage['role'] | undefined {
   switch (role) {
     case 'user':
@@ -1196,30 +1055,6 @@ export function steeringMessagesMissingFromBase(
   return injected.filter((message) => {
     const eventId = steeringEventIdOf(message);
     return eventId === undefined || !present.has(eventId);
-  });
-}
-
-/**
- * The messages with THIS TURN'S injected steering removed (transport-retry
- * base). Only the injected set may be stripped: the retry attempt's own
- * request projection re-appends exactly that accumulator, while a historical,
- * ledger-replayed steering message (same marker, different event id) is part
- * of the base that nothing re-appends — stripping it would erase it from
- * every post-retry request.
- */
-export function stripSteeringMessages(
-  messages: readonly ModelMessage[],
-  injected: readonly ModelMessage[],
-): ModelMessage[] {
-  const ids = new Set<string>();
-  for (const message of injected) {
-    const eventId = steeringEventIdOf(message);
-    if (eventId !== undefined) ids.add(eventId);
-  }
-  if (ids.size === 0) return [...messages];
-  return messages.filter((message) => {
-    const eventId = steeringEventIdOf(message);
-    return eventId === undefined || !ids.has(eventId);
   });
 }
 

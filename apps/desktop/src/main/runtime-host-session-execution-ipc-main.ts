@@ -26,6 +26,10 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
+import {
   type SessionChangedEvent,
   type SessionChangedReason,
 } from '@maka/core/session';
@@ -54,13 +58,20 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
-import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
+import {
+  RuntimeHostObservationCancelledError,
+  type RuntimeHostSessionObservationRegistry,
+} from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
-import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
+import type {
+  DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
+} from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
@@ -115,6 +126,7 @@ type RuntimeHostSessionExecutionClient = Pick<
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+const DESKTOP_MESSAGE_QUERY_MAX_ENTRIES = 4_096;
 
 async function submitMessageWithReconnect(
   client: Pick<RuntimeHostSessionExecutionClient, 'getSession' | 'submitMessage'>,
@@ -174,11 +186,13 @@ export interface RuntimeHostSessionExecutionIpcDeps {
 export interface RuntimeHostSessionObservationIpcDeps {
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
+    | 'acknowledgeTranscriptTail'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'observe'
     | 'openTranscript'
-    | 'releaseTarget'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -187,28 +201,31 @@ export interface RuntimeHostSessionObservationIpcDeps {
 export function registerRuntimeHostSessionObservationIpc(
   deps: RuntimeHostSessionObservationIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
-  enableE2eControls = false,
 ): void {
   handleReconnectableRead(
     ipcMain,
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
-        normalizedSessionId,
-        requiredId(observerId, 'Session observer'),
-        event.sender as RuntimeHostSessionObserverTarget,
-        await deps.resolveSideConversation(normalizedSessionId),
+      return observationIpcResult(
+        deps.observations.observe(
+          normalizedSessionId,
+          requiredId(observerId, 'Session observer'),
+          event.sender as RuntimeHostSessionObserverTarget,
+          await deps.resolveSideConversation(normalizedSessionId),
+        ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) =>
-      deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
+      observationIpcResult(
+        deps.observations.openTranscript(
+          requiredId(sessionId, 'Session'),
+          requiredId(consumerId, 'Transcript consumer'),
+          event.sender as RuntimeHostTranscriptTarget,
+        ),
       ),
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
@@ -223,10 +240,34 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
-  if (enableE2eControls) {
-    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
-      deps.observations.releaseTarget(event.sender.id),
+  ipcMain.handle('sessions:transcript:load-after', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAfter(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
     );
+  });
+  ipcMain.handle('sessions:transcript:load-latest', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptLatest(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
+    await deps.observations.acknowledgeTranscriptTail(
+      normalizeTranscriptTailAcknowledgement(input),
+      event.sender.id,
+    );
+  });
+}
+
+async function observationIpcResult<T>(
+  operation: Promise<T>,
+): Promise<RuntimeHostObservationIpcResult<T>> {
+  try {
+    return { kind: 'ready', value: await operation };
+  } catch (error) {
+    if (error instanceof RuntimeHostObservationCancelledError) return { kind: 'cancelled' };
+    throw error;
   }
 }
 
@@ -261,16 +302,47 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessages({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      // Keep the transport limit at the Runtime Host seam so renderer callers
+      // can query their complete optimistic projection as one operation.
+      const cancelledMessageIds: string[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessages({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        cancelledMessageIds.push(...result.cancelledMessageIds);
+      }
+      if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
+        throw new Error('Duplicate cancelled Message identities');
+      }
+      return { cancelledMessageIds };
     },
   );
 
   ipcMain.handle(
     'sessions:queryMessageExecutions',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessageExecutions({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      const resolutions: TurnMessageExecutionResolution[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessageExecutions({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        resolutions.push(...result.resolutions);
+      }
+      return { resolutions };
     },
   );
 
@@ -428,10 +500,8 @@ export function registerRuntimeHostSessionExecutionIpc(
       // the row it already rendered, and what makes a retry the same Message.
       // Minting one here would hand back an identity the caller never showed.
       if (!command.messageId) throw new Error("Submitted message has no identity");
-      const session = await deps.client.getSession(sessionId);
-      if (!session) {
-        throw new Error(`Runtime Host Session not found: ${sessionId}`);
-      }
+      // Host admission validates the target, including reserved Sessions
+      // such as WorkHub that intentionally do not appear in the task catalog.
       let attachments = retainedAttachmentsForSession(
         sessionId,
         command.retainedAttachments ?? [],
@@ -827,12 +897,36 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
   if (!Number.isSafeInteger(maxBytes)) {
     throw new Error('Invalid Desktop transcript range byte limit');
   }
+  if (
+    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
+  ) {
+    throw new Error('Invalid Desktop transcript navigation');
+  }
   return {
     consumerId: requiredId(value.consumerId, 'Transcript consumer'),
     sessionId: requiredId(value.sessionId, 'Session'),
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
+    navigation: value.navigation as number,
+  };
+}
+
+function normalizeTranscriptTailAcknowledgement(
+  input: unknown,
+): DesktopTranscriptTailAcknowledgement {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid Desktop transcript tail acknowledgement');
+  }
+  const value = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(value.through) || (value.through as number) < 0) {
+    throw new Error('Invalid Desktop transcript tail watermark');
+  }
+  return {
+    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
+    sessionId: requiredId(value.sessionId, 'Session'),
+    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
+    through: value.through as number,
   };
 }
 
@@ -948,6 +1042,24 @@ async function requireInteraction(
 function requiredId(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) {
     throw new Error(`Invalid ${label} identity`);
+  }
+  return value;
+}
+
+function requiredMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
+    throw new Error('Invalid Message identities');
+  }
+  const messageIds = value.map(requiredMessageId);
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw new Error('Duplicate Message identities');
+  }
+  return messageIds;
+}
+
+function requiredMessageId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value)) {
+    throw new Error('Invalid Message identity');
   }
   return value;
 }

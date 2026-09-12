@@ -259,6 +259,13 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
   });
 
+  test('publishes a new compatibility epoch for named OAuth identity and slug failures', () => {
+    // Epoch 109 is the current main boundary. Named create inputs and the
+    // slug_taken output extend closed wire shapes, so older peers must be
+    // rejected during handshake rather than failing midway through setup.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 109);
+  });
+
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
     // Epoch 50 is already used by WorkHub coordination summaries on main.
     // The context-budget detail therefore needs its own strictly newer
@@ -435,6 +442,20 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
+  });
+
+  test('publishes a new compatibility epoch for external Session import failure reasons', () => {
+    // model_unavailable / source_unreadable let the shell classify import
+    // failures by stable code; older peers cannot decode the new codes.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 117);
+  });
+
+  test('publishes a new compatibility epoch for event-addressed transcript cursors', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 118);
+  });
+
+  test('publishes a new compatibility epoch for context-compaction transcript state', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 124);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1491,7 +1512,9 @@ describe('Runtime Host bootstrap protocol', () => {
         originHostEpoch: 'epoch-1',
         sessionId: 'session-1',
         messageId: 'message-1',
-        content: { text: 'adjust the active turn' },
+        content: {
+          text: 'adjust the active turn',
+        },
         placement: 'current_turn' as const,
       },
     };
@@ -2219,6 +2242,7 @@ describe('Runtime Host bootstrap protocol', () => {
         connections: 1,
         activeOperations: 0,
         activeResidencies: 0,
+        upgradeBlockingActivity: true,
         protocolVersion: 0,
         compatibilityEpoch: 9,
         pid: 42,
@@ -2230,6 +2254,44 @@ describe('Runtime Host bootstrap protocol', () => {
         logs,
       }),
     );
+  });
+
+  test('decodes the required upgrade blocking activity fact in diagnostics', () => {
+    const base = {
+      hostEpoch: 'epoch-1',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      compositionModules: ['interactive'],
+      residencies: [],
+      state: 'ready',
+      connections: 1,
+      activeOperations: 0,
+      activeResidencies: 0,
+      upgradeBlockingActivity: false,
+      protocolVersion: 0,
+      compatibilityEpoch: 9,
+      pid: 42,
+      processUptimeSeconds: 1,
+      nodeVersion: '22.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.6.0',
+      logs: [],
+    };
+    const spec = HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'];
+
+    assert.deepEqual(spec.decodeOutput(base), { ...base });
+    assert.deepEqual(spec.decodeOutput({ ...base, upgradeBlockingActivity: true }), {
+      ...base,
+      upgradeBlockingActivity: true,
+    });
+    assert.throws(
+      () => spec.decodeOutput({ ...base, upgradeBlockingActivity: 'yes' }),
+      isInvalidFrame,
+    );
+    const missing = { ...base } as Record<string, unknown>;
+    delete missing.upgradeBlockingActivity;
+    assert.throws(() => spec.decodeOutput(missing), isInvalidFrame);
   });
 
   test('rejects terminal snapshots with fields from another terminal variant', () => {

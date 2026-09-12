@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
@@ -30,7 +35,7 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, runHostHandoff } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -52,8 +57,10 @@ import {
   type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -81,6 +88,143 @@ test('uses the manager-owned launch barrier for local candidate startup', async 
 
   assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
   assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('updates a protocol-compatible managed Host before exposing a candidate over its old storage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-managed-schema-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  acquireOperationalStateDatabase(root).close();
+  const databasePath = join(root, 'runtime.sqlite');
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP TABLE usage_model_call_attempts;
+    CREATE TABLE usage_model_call_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      session_id TEXT
+    );
+    INSERT INTO usage_model_call_attempts VALUES ('retained', 1, '{}', 'deleted-session');
+    UPDATE operational_schema_migrations SET version = 6 WHERE scope = 'usage';
+  `);
+  legacy.close();
+  const ipc = ipcHarness();
+  const old = connectionHarness('old');
+  const updated = connectionHarness('updated');
+  let starts = 0;
+  let repairs = 0;
+  const candidate = await runHostHandoff({
+    observe: async () => {
+      try {
+        const host = starts++ === 0 ? old : updated;
+        const result = await startDesktopRuntimeHostCandidate({
+          ...deps(ipc),
+          workspaceRoot: root,
+          rootPath: root,
+          candidateEntrypoint: 'unused.js',
+          candidateLaunchBarrier: {
+            connect: async () => ({
+              kind: 'connected',
+              connection: host.connection,
+              registration: { lifecycleMode: 'supervised', pid: 123 },
+            }),
+          },
+        } as unknown as DesktopRuntimeHostCandidateStartInput);
+        assert.equal(result.kind, 'ready');
+        if (result.kind !== 'ready')
+          throw new Error('Expected a ready candidate');
+        return { kind: 'ready', value: result.candidate };
+      } catch (error) {
+        assert.ok(
+          error instanceof Error && canRepairManagedRuntimeHostStartup(error),
+        );
+        return {
+          kind: 'blocked',
+          blocker: {
+            identity: 'managed-schema-before',
+            target: { name: 'Local', location: 'local' },
+            reason: 'repair',
+            mayExitNaturally: false,
+            activity: {
+              connections: 0,
+              activeOperations: 0,
+              processUptimeSeconds: 1,
+              residencies: [],
+            },
+            replacement: {
+              kind: 'repair',
+              canReplaceIdle: true,
+              canInterrupt: true,
+              execute: async (authority) => {
+                repairs += 1;
+                assert.equal(authority, 'refuse_active_work');
+                assert.equal(
+                  old.closeCalls,
+                  1,
+                  'release the old connection before managed update',
+                );
+                assert.equal(
+                  old.capabilityRegistrations,
+                  0,
+                  'do not expose capabilities before storage admission',
+                );
+                assert.equal(ipc.size, 0);
+                const preserved = new DatabaseSync(databasePath, {
+                  readOnly: true,
+                });
+                try {
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT version FROM operational_schema_migrations WHERE scope = 'usage'",
+                      )
+                      .get()?.version,
+                    6,
+                  );
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+                      )
+                      .get()?.record_json,
+                    '{}',
+                  );
+                } finally {
+                  preserved.close();
+                }
+                // Simulate the updated owning Host, not Desktop, performing migration.
+                acquireOperationalStateDatabase(root).close();
+                return { kind: 'completed' };
+              },
+            },
+          },
+        };
+      }
+    },
+    openSurface: () => ({
+      update: (view) => assert.equal(view.state, 'progress', 'idle repair needs no consent'),
+      close: () => {},
+    }),
+  });
+  t.after(() => candidate.close());
+  assert.equal(starts, 2);
+  assert.equal(repairs, 1);
+  assert.equal(updated.capabilityRegistrations, 1);
+  const current = acquireOperationalStateDatabase(root, {
+    schemaMigration: 'require_current',
+  });
+  try {
+    assert.equal(
+      current.database
+        .prepare(
+          "SELECT session_id FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+        )
+        .get()?.session_id,
+      'deleted-session',
+    );
+  } finally {
+    current.close();
+  }
 });
 
 test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
@@ -261,7 +405,7 @@ test('rejects a stale Host identity when raw Session IDs collide', async () => {
       browserReleased.push(sessionId);
     },
     computerUseTools: emptyComputerUseTools(),
-    releaseComputerUseSession: (sessionId) => {
+    releaseDesktopInteractionSession: (sessionId) => {
       computerReleased.push(sessionId);
     },
   };
@@ -355,6 +499,42 @@ test('tears down the whole candidate when the Host connection closes', async () 
   assert.equal(host.closeCalls, 1);
 });
 
+test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const firstHost = connectionHarness('closed-during-start');
+  const replaceCapabilities = firstHost.connection.replaceClientCapabilities;
+  firstHost.connection.replaceClientCapabilities = async (...args) => {
+    const result = await replaceCapabilities(...args);
+    // The final initialization response succeeds, immediately followed by EOF.
+    firstHost.disconnect();
+    return result;
+  };
+  const firstTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const first = await createDesktopRuntimeHostCandidate(firstHost.connection, {
+    ...deps(ipc), ipcMain: firstTarget,
+  });
+  t.after(() => first.close());
+  firstTarget.completeRegistration();
+  router.activate(TEST_TARGET_EPOCH);
+  const pending = ipc.invoke('sessions:list').then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+
+  const secondHost = connectionHarness('replacement');
+  const secondTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const second = await createDesktopRuntimeHostCandidate(secondHost.connection, {
+    ...deps(ipc), ipcMain: secondTarget,
+  });
+  t.after(() => second.close());
+  secondTarget.completeRegistration();
+  const result = await pending;
+  assert.ok('value' in result, `supported read was rejected: ${'error' in result ? result.error : ''}`);
+  assert.deepEqual((result.value as SessionCatalogProjection[]).map(({ id }) => id), ['session-replacement']);
+});
+
 test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {
   const ipc = ipcHarness();
   const host = connectionHarness('client-ipc');
@@ -382,7 +562,7 @@ test('starts without registering an empty native capability set', async () => {
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     }),
   );
 
@@ -402,7 +582,7 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => {
         const value = implementation;
         return [
@@ -459,7 +639,7 @@ test('releases all native Session resources on retirement and generation close',
         browserReleased.push(sessionId);
       },
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession: (sessionId) => {
+      releaseDesktopInteractionSession: (sessionId) => {
         computerReleased.push(sessionId);
       },
     }),
@@ -564,15 +744,63 @@ test('closes the claimed Host connection when native capability construction fai
           resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
-          releaseComputerUseSession() {},
+          releaseDesktopInteractionSession() {},
         }),
       ),
-    // The desktop-local schema check moved into the shared protocol decoder,
-    // which rejects a non-object tool schema root with its own wording.
     /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
+  assert.equal(host.closeCalls, 1);
+});
+
+test('isolates an invalid dynamic MCP tool without dropping the Host connection', async () => {
+  // Per-tool isolation: one bad tool is skipped and the provider still
+  // constructs, so the Host connection stays alive.
+  const ipc = ipcHarness();
+  const host = connectionHarness('invalid-capability');
+  const invalidTool = {
+    ...nativeTool(),
+    parameters: z.string(),
+  } as unknown as MakaTool;
+  const healthyTool = {
+    ...nativeTool(),
+    name: 'healthy_mcp',
+    impl: async () => 'healthy',
+  };
+
+  const candidate = await createDesktopRuntimeHostCandidate(
+    host.connection,
+    deps(ipc, {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: emptyComputerUseTools(),
+      releaseDesktopInteractionSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools',
+          tools: [invalidTool, healthyTool],
+        },
+      ],
+    }),
+  );
+
+  assert.equal(host.capabilityRegistrations, 1);
+  assert.equal(host.closeCalls, 0);
+  assert.deepEqual(
+    await host.invokeCapability({
+      ...capabilityFrame('session-invalid-capability'),
+      offerId: 'desktop_mcp',
+      serverId: 'desktop_mcp',
+      toolName: 'healthy_mcp',
+    }),
+    { content: [{ type: 'text', text: 'healthy' }] },
+  );
+
+  await candidate.close();
   assert.equal(host.closeCalls, 1);
 });
 
@@ -590,7 +818,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
         released.push(`browser:${sessionId}`);
       },
       computerUseTools: emptyComputerUseTools(),
-      releaseComputerUseSession: (sessionId) => {
+      releaseDesktopInteractionSession: (sessionId) => {
         released.push(`computer:${sessionId}`);
       },
     }),
@@ -638,7 +866,8 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     firstIpc.sender.sent.some(
       ({ hostId, payload }) =>
         hostId === TEST_HOST_ID &&
-        (payload as { type?: unknown }).type === 'user_question_request',
+        (payload as { type?: unknown }).type === 'host_observation_seed'
+        && (payload as { events: Array<{ type: string }> }).events.some((event) => event.type === 'user_question_request'),
     ),
   );
   assert.equal(
@@ -684,27 +913,19 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
 
   const seedPendingAt = resyncs.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
-      && (payload as { phase?: unknown }).phase === 'pending',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_pending',
   );
   const seedReadyAt = resyncs.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
-      && (payload as { phase?: unknown }).phase === 'ready',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_seed',
   );
   assert.ok(seedPendingAt >= 0);
   assert.ok(seedReadyAt > seedPendingAt);
-  const sessionEventIndexes = resyncs.flatMap(({ channel }, index) =>
-    channel === 'sessions:event:session-1' ? [index] : [],
-  );
-  assert.ok(sessionEventIndexes.length > 0);
-  assert.ok(
-    sessionEventIndexes.every(
-      (index) => index > seedPendingAt && index < seedReadyAt,
-    ),
-  );
+  const seed = resyncs[seedReadyAt]!.payload as { execution: { available: boolean }; events: unknown[] };
+  assert.equal(seed.execution.available, true);
+  assert.ok(seed.events.length > 0);
   assert.ok(
     resyncs.some(
       ({ channel, payload }) =>
@@ -745,7 +966,6 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: 'host-second-observer',
     subscriptionId: 'subscription-second-observer',
-    sequence: 1,
     sessionId: 'session-1',
     ref,
     ptySequence: 5,
@@ -803,12 +1023,16 @@ test('retries candidate startup when a restored observation cannot seed', async 
       ),
     /Failed to restore Session observations: session-1/,
   );
-  assert.deepEqual(
-    seedEvents
-      .filter(({ channel }) => channel === 'sessions:observation-seed')
-      .map(({ payload }) => (payload as { phase?: unknown }).phase),
-    ['pending'],
-  );
+  // Restore startup and subscription failure may both invalidate observation.
+  // Neither is evidence that the Host Turn ended or observation became ready.
+  const failureEvents = seedEvents
+    .filter(({ channel }) => channel === 'sessions:event:session-1')
+    .map(({ payload }) => payload as { type?: unknown; message?: unknown });
+  assert.ok(failureEvents.some((event) =>
+    event.type === 'host_observation_error' && event.message === 'restore failed'));
+  assert.ok(failureEvents.some((event) => event.type === 'host_observation_pending'));
+  assert.ok(failureEvents.every((event) =>
+    event.type === 'host_observation_error' || event.type === 'host_observation_pending'));
   seedEvents.length = 0;
 
   const recoveredHost = connectionHarness('restore-recovered', {
@@ -830,25 +1054,16 @@ test('retries candidate startup when a restored observation cannot seed', async 
   );
   const pendingAt = seedEvents.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { phase?: unknown }).phase === 'pending',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_pending',
   );
   const readyAt = seedEvents.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { phase?: unknown }).phase === 'ready',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_seed',
   );
   assert.ok(pendingAt >= 0);
   assert.ok(readyAt > pendingAt);
-  const catchUpEventIndexes = seedEvents.flatMap(({ channel }, index) =>
-    channel === 'sessions:event:session-1' ? [index] : [],
-  );
-  assert.ok(catchUpEventIndexes.length > 0);
-  assert.ok(
-    catchUpEventIndexes.every(
-      (index) => index > pendingAt && index < readyAt,
-    ),
-  );
   await recoveredCandidate.close();
   await observations.close();
 });
@@ -1028,10 +1243,14 @@ function deps(
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: emptyComputerUseTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   },
 ): DesktopRuntimeHostCandidateDeps {
   return {
+    mainWindowController: {
+      showSaveDialog: async () => ({ canceled: true }),
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+    },
     ipcMain,
     workspaceRoot: '/workspace',
     attachmentApprovals: createAttachmentApprovalRegistry(),
@@ -1044,7 +1263,7 @@ function deps(
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
-    completeComputerUseTurn() {},
+    completeDesktopInteractionTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
       rejectCreation: async () => undefined,
@@ -1101,6 +1320,7 @@ function connectionHarness(
   let startTurnCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
+  const ptyListeners = new Set<(frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void>();
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -1108,6 +1328,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'list_start'
@@ -1221,7 +1442,7 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => subscriptionFrames.end();
+      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
@@ -1236,6 +1457,10 @@ function connectionHarness(
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
+        subscribePtyData(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void) {
+          ptyListeners.add(listener);
+          return () => ptyListeners.delete(listener);
+        },
         snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
@@ -1289,6 +1514,10 @@ function connectionHarness(
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
+      if (frame.kind === 'subscription.runtime_resource_pty_data') {
+        for (const listener of ptyListeners) listener(frame);
+        return;
+      }
       activeSubscriptionFrames.push(frame);
     },
     publishSessionCatalogChange: (sessionId: string) => {

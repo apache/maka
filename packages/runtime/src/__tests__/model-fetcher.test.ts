@@ -363,6 +363,34 @@ describe('fetchProviderModels', () => {
     );
   });
 
+  test('connection discovery classifies a wholly policy-blocked Copilot catalog as auth', async () => {
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [
+          {
+            id: 'policy-blocked',
+            model_picker_enabled: true,
+            supported_endpoints: ['/responses'],
+            policy: { state: 'unconfigured' },
+            capabilities: { supports: { tool_calls: true } },
+          },
+        ],
+      });
+    });
+
+    const outcome = await runConnectionModelDiscoveryEffect(
+      {
+        providerType: 'github-copilot',
+        baseUrl: server.url,
+        defaultModel: 'policy-blocked',
+      },
+      'github-account-token',
+      { fetch: globalThis.fetch },
+    );
+
+    assert.deepEqual(outcome, { ok: false, error: { kind: 'auth' } });
+  });
+
   test('connection discovery classifies structurally invalid JSON from a real HTTP response', async () => {
     const secret = 'raw-provider-secret';
     for (const body of [

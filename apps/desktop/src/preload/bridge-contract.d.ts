@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
   ConnectionTestResult,
@@ -32,6 +33,7 @@ import type {
   AppIconTarget,
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   ChatDefaultsSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
@@ -71,12 +73,16 @@ import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
+import type {
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -138,6 +144,39 @@ import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+/**
+ * What Settings › Import/export tasks gets back from a bundle operation.
+ *
+ * Stated here rather than in a file of its own: the renderer reaches this
+ * contract through the bridge, and a separate module would join the legacy
+ * AppShell closure, which the renderer architecture check freezes.
+ *
+ * `detail` is only set for `failed` -- the reason code no reader can act on.
+ * Without it the page says "that did not work" and the cause is gone, which is
+ * exactly the case where the user has nothing else to go on.
+ */
+export type SessionBundleFailureReason =
+  | 'canceled'
+  | 'candidate_set_stale'
+  | 'not_found'
+  | 'session_busy'
+  | 'operation_conflict'
+  | 'source_unreadable'
+  | 'failed';
+
+export type SessionBundleFailure = {
+  readonly ok: false;
+  readonly reason: SessionBundleFailureReason;
+  readonly detail?: string;
+};
+
+export type SessionBundleExportIpcResult =
+  | { readonly ok: true; readonly sessionCount: number; readonly path: string }
+  | SessionBundleFailure;
+
+export type SessionBundleImportIpcResult =
+  | { readonly ok: true; readonly sessionCount: number }
+  | SessionBundleFailure;
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type {
   SessionCollaborationCancelResult,
@@ -184,6 +223,7 @@ export type AppIconImportResult =
 
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
@@ -246,6 +286,11 @@ export type DesktopSessionStopResult =
   | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
 
+/** Cancellation proof aggregated across every Runtime Host query batch. */
+export interface DesktopMessageCancellationQueryResult {
+  readonly cancelledMessageIds: readonly string[];
+}
+
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
   copyId: string;
@@ -273,50 +318,11 @@ export type PermissionOverlayStartResult =
       message?: string;
     };
 
-export type AppUpdateStatus =
-  | { state: 'idle'; currentVersion: string }
-  | { state: 'checking'; currentVersion: string }
-  | { state: 'not-available'; currentVersion: string; latestVersion?: string }
-  | {
-      state: 'available';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | {
-      state: 'downloading';
-      currentVersion: string;
-      latestVersion: string;
-      progress: {
-        percent: number;
-        bytesPerSecond?: number;
-        transferred?: number;
-        total?: number;
-      };
-    }
-  | { state: 'verifying'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'downloaded';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | { state: 'installing'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'error';
-      currentVersion: string;
-      message: string;
-      operation: 'check' | 'download' | 'install';
-      latestVersion?: string;
-    };
-
-export type AppUpdateInstallRequest = {
-  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
-  allowInterruptActiveTasks: boolean;
-};
-
-export type AppUpdateInstallResult =
-  | { ok: true }
-  | { ok: false; reason: 'active_tasks' }
-  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+export type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
 
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
@@ -745,6 +751,9 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 }
 
 export interface MakaBridge {
+  sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
+  workHubControl: import('../shared/workhub-control.js').WorkHubControlBridge;
+  workHubPresentation: import('../shared/workhub-presentation.js').WorkHubPresentationBridge;
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,
@@ -752,6 +761,7 @@ export interface MakaBridge {
       allowInsecure?: boolean,
     ): Promise<DesktopSessionCollaborationPrepareResult>;
     getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+    renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
     revokeGrant(
       sessionId: string,
       grantId: string,
@@ -771,6 +781,8 @@ export interface MakaBridge {
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     subscribeMountChanges(handler: () => void): () => void;
     removeMount(mountId: string): Promise<void>;
+    retryMount(mountId: string): Promise<void>;
+    renameMount(mountId: string, name: string): Promise<void>;
     requestTurn(
       sessionId: string,
       input:
@@ -1038,22 +1050,13 @@ export interface MakaBridge {
     ): () => void;
   };
   workHub: {
+    getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
+    prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
+    answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
+    configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
-    /** Persist one deterministic clarification or routing summary. */
-    record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }>;
-    /** Read one bounded, Host-issued candidate set for a coordination action. */
-    candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
-    /** Submit a typed proposal; trusted creation context is added outside the renderer. */
-    act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>>;
+
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
@@ -1150,10 +1153,12 @@ export interface MakaBridge {
           Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
         >;
       },
+      /** Revision transactions require Host admission before committing/clearing their draft. */
+      options?: { waitForHostAdmission?: boolean },
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
@@ -1169,7 +1174,7 @@ export interface MakaBridge {
     queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],
-    ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult>;
+    ): Promise<DesktopMessageCancellationQueryResult>;
     queryMessageExecutions(
       sessionId: string,
       messageIds: readonly string[],
@@ -1224,9 +1229,9 @@ export interface MakaBridge {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
+      onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
@@ -1247,22 +1252,19 @@ export interface MakaBridge {
     setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
     subscribePlanChanges(sessionId: string, handler: () => void): () => void;
-    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState>;
-    abandonPlanProposal(
-      sessionId: string,
-      proposalId: string,
-    ): Promise<PlanSessionState>;
+    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
+    abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanSessionState>;
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
       expectedStoreVersion: number;
       turnId: string;
-    }): Promise<{ turnId: string; executionId: string }>;
-    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
+    }): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>>;
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<PlanControlIpcResult<{
       turnId: string;
       executionId: string;
-    }>;
-    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState>;
+    }>>;
+    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
     setModelConfiguration(sessionId: string, input: {
       llmConnectionId: string;
       llmConnectionSlug: string;
@@ -1309,6 +1311,23 @@ export interface MakaBridge {
       adapterId: string;
       sourceSessionId: string;
     }, host?: DesktopRuntimeHostRef): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
+  };
+  sessionBundles: {
+    /**
+     * Picks a destination, then writes the Session and its subagent subtree.
+     *
+     * `sessionId` is the projected, host-scoped id the renderer holds. Always
+     * routed to the Local Host: the picker returns a path on this machine, and
+     * that is the Host whose filesystem it names.
+     */
+    export(input: {
+      sessionId: string;
+      suggestedName: string;
+      /** Projected ids of the Sessions the user was shown. See the Host operation. */
+      confirmedSubtree?: readonly string[];
+    }): Promise<SessionBundleExportIpcResult>;
+    /** Picks a `.maka-session` file and merges it into the Local workspace. */
+    import(): Promise<SessionBundleImportIpcResult>;
   };
   projects: {
     getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{
@@ -1437,11 +1456,21 @@ export interface MakaBridge {
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
+  externalAgents: {
+    selectExecutable(host: DesktopRuntimeHostRef): Promise<string | undefined>;
+    start(input: OperationInput<'external_agents.setup.start'>, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.start'>>;
+    query(attemptId: string, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.query'>>;
+    cancel(attemptId: string, host: DesktopRuntimeHostRef): Promise<OperationOutput<'external_agents.setup.cancel'>>;
+  };
   settings: {
     getClient(): Promise<AppSettings>;
     get(host?: DesktopRuntimeHostRef): Promise<RuntimeHostAppSettings>;
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>>;
+    update(
+      patch: UpdateAppSettingsInput,
+      host?: DesktopRuntimeHostRef,
+      guard?: RuntimeHostSettingsUpdateGuard,
+    ): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>>;
     subscribeClientChanged(handler: () => void): () => void;
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
@@ -1508,13 +1537,13 @@ export interface MakaBridge {
     getState(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
     save(content: string, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
     reset(host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
-    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
-    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
+    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string }>;
+    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string }>;
     setEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
     setAgentReadEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
-    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
-    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
-    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
+    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }>;
+    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }>;
+    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }>;
   };
   attachments: {
     pickDirectory(): Promise<{ ok: true; reference: import('@maka/core/events').DirectoryReference } | { ok: false; reason: 'cancelled' }>;
@@ -1810,11 +1839,10 @@ export interface MakaBridge {
     getState(): Promise<E2eFixtureState | null>;
   };
   artifacts: {
-    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactDescriptor[]>;
+    list(sessionId: string): Promise<ArtifactDescriptor[]>;
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult>;
     readBinary(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
     delete(sessionId: string, artifactId: string): Promise<void>;
-    subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void;
   };
   skills: {
     list(host?: DesktopRuntimeHostRef): Promise<SkillEntry[]>;

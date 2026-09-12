@@ -221,6 +221,10 @@ impl Control {
             .is_empty()
     }
 
+    pub(super) fn connection_ids(&self) -> Vec<ConnectionId> {
+        lock(&self.shared).connections.keys().copied().collect()
+    }
+
     pub(super) fn eligible_connections(
         &self,
         peer_id: PeerId,

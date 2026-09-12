@@ -665,6 +665,33 @@ test('message execution query reports the Turn that durably owns each Message', 
   });
 });
 
+test('message execution disposition reuses a held Session admission', async () => {
+  const fixture = createFixture();
+  const content = { text: 'pending delegation' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'pending-delegation',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+    admittedAt: 10,
+  });
+
+  assert.deepEqual(
+    await fixture.sessionAdmission.run(ROOT.sessionId, (lease) =>
+      fixture.coordinator.readMessageExecutionDispositionAdmitted(
+        ROOT.sessionId,
+        'pending-delegation',
+        lease,
+      ),
+    ),
+    { kind: 'pending' },
+  );
+});
+
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
   let preflightCalls = 0;
   const fixture = createFixture(undefined, async () => {
@@ -675,7 +702,7 @@ test('submit re-runs admission when the queue revision moves during preflight', 
       // steering outside the admission lock while it awaits, so the queue
       // revision moves and the stale candidate must be re-admitted instead
       // of surfacing a spurious session_busy to the client.
-      const [lease] = owner.pull();
+      const [lease] = await owner.pull();
       assert.ok(lease);
       owner.ack([lease.id]);
     }
@@ -760,7 +787,7 @@ test('persists prepared Skill content while projecting the submitted text', asyn
   assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering[0]?.content, {
     text: '/skill:writer steer',
   });
-  const [steering] = owner.pull();
+  const [steering] = await owner.pull();
   assert.deepEqual(steering?.content, {
     text: '<invoked-skill>Prepared</invoked-skill>\n\n/skill:writer steer',
     displayText: '/skill:writer steer',
@@ -1076,7 +1103,7 @@ test('invalidates the canonical projection after each observable queue mutation'
   const owner = fixture.coordinator.bindRun(ROOT);
 
   assert.equal((await submit(fixture, 'steering-1', 'first', 'current_turn')).ok, true);
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   owner.release();
@@ -1463,13 +1490,14 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     ['proved-steering', 'already delivered'],
     ['still-pending', 'deliver after recovery'],
   ] as const) {
+    const content = { text };
     await fixture.admissions.commitMessageAdmission({
       sessionId: ROOT.sessionId,
       turnId: ROOT.turnId,
       runId: ROOT.runId,
       messageId,
-      content: { text },
-      submittedContentDigest: messageContentDigest({ text }),
+      content,
+      submittedContentDigest: messageContentDigest(content),
       submittedPlacement: 'current_turn',
       placement: 'current_turn',
       disposition: 'steering',
@@ -1486,6 +1514,8 @@ test('active recovery rebuilds only admissions without a durable proof', async (
     fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
     ['still-pending'],
   );
+  const [lease] = await fixture.coordinator.bindRun(ROOT).pull();
+  assert.deepEqual(lease?.content, { text: 'deliver after recovery' });
 });
 
 test('a retry of a recovered queued Message reuses its durable Skill outcome', async () => {
@@ -1583,7 +1613,7 @@ test('binds the exact reserved Run after a pre-bind stop fence', async () => {
   assert.equal(fixture.liveResidencies(), 0);
 
   const owner = fixture.coordinator.bindRun(ROOT);
-  assert.deepEqual(owner.pull(), []);
+  assert.deepEqual(await owner.pull(), []);
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(batch.sources, []);
@@ -1676,7 +1706,7 @@ test('pull crosses the retract commit cut and only queued entries are retracted'
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
   await submit(fixture, 'follow-1', 'later', 'next_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.retract'](
@@ -1818,7 +1848,7 @@ test('entry retract of an in-flight steering lease conflicts', async () => {
   const owner = fixture.coordinator.bindRun(ROOT);
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.entry.retract'](
@@ -1963,7 +1993,7 @@ test('entry update of an in-flight steering lease conflicts', async () => {
   const owner = fixture.coordinator.bindRun(ROOT);
 
   await submit(fixture, 'steer-1', 'steer me', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const outcome = await fixture.coordinator.handlers['queue.entry.update'](
@@ -2102,7 +2132,7 @@ test('entry promote moves a follow-up into the steering queue', async () => {
   assert.equal(again.ok, false);
   if (!again.ok) assert.equal(again.error.code, 'operation_conflict');
 
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.deepEqual(
     leases.map((lease) => lease.messageId),
     ['follow-2'],
@@ -2145,7 +2175,7 @@ test('a carried follow-up promoted in its successor requeues after nack', async 
     operationContext(),
   );
   assert.equal(promoted.ok, true);
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.deepEqual(
     leases.map((lease) => lease.messageId),
     ['carried-followup'],
@@ -2182,7 +2212,7 @@ test('an acked carried follow-up is not redelivered after restart', async () => 
     operationContext(),
   );
   assert.equal(promoted.ok, true);
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.equal(leases.length, 1);
   owner.ack(leases.map((lease) => lease.id));
   fixture.events.push({
@@ -2335,6 +2365,123 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
   await fixture.coordinator.close();
 });
 
+test('one provider boundary waits for a steering submit whose durable commit is pending', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const storing = deferred<void>();
+  const stored = deferred<void>();
+  const commit = fixture.admissions.commitMessageAdmission;
+  fixture.admissions.commitMessageAdmission = async (admission) => {
+    storing.resolve();
+    await stored.promise;
+    return commit(admission);
+  };
+  const submitting = submit(fixture, 'delayed-steer', 'change direction', 'current_turn');
+  await storing.promise;
+  let pulled = false;
+  const pulling = owner.pull().then((batch) => {
+    pulled = true;
+    return batch;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    pulled,
+    false,
+    'the final boundary cannot treat an unfinished admission as an empty queue',
+  );
+  stored.resolve();
+  assert.equal((await submitting).ok, true);
+  const batch = await pulling;
+  assert.deepEqual(
+    batch.map((lease) => lease.messageId),
+    ['delayed-steer'],
+  );
+  assert.equal(batch[0]?.content.text, 'change direction');
+  owner.ack(batch.map((lease) => lease.id));
+  owner.release();
+  const terminal = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(terminal.sources, [], 'the admitted steering was consumed by the original Turn');
+  fixture.coordinator.completeIdle(terminal);
+  await fixture.coordinator.close();
+});
+
+test('steering edits and reorders settle before one complete batch is pulled; follow-ups advance one per Turn', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  for (const id of ['steer-1', 'steer-2', 'steer-3']) await submit(fixture, id, id, 'current_turn');
+  for (const id of ['follow-1', 'follow-2']) await submit(fixture, id, id, 'next_turn');
+  const entries = fixture.coordinator.projection(ROOT.sessionId).steering;
+  const update = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      updateId: 'update-steering',
+      entryId: entries[1]!.entryId,
+      expectedQueueRevision: fixture.coordinator.projection(ROOT.sessionId).queueRevision,
+      text: 'edited second instruction',
+    },
+    operationContext(),
+  );
+  assert.equal(update.ok, true);
+  const storing = deferred<void>();
+  const stored = deferred<void>();
+  fixture.admissions.reorderMessageAdmissions = async (_sessionId, ids, disposition) => {
+    assert.equal(disposition, 'steering');
+    assert.deepEqual(ids, ['steer-3', 'steer-1', 'steer-2']);
+    storing.resolve();
+    await stored.promise;
+  };
+  const reorder = fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-steering',
+      entryIds: [entries[2]!.entryId, entries[0]!.entryId, entries[1]!.entryId],
+    },
+    operationContext(),
+  );
+  await storing.promise;
+  let pulled = false;
+  const pulling = owner.pull().then((batch) => {
+    pulled = true;
+    return batch;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(pulled, false, 'the same boundary waits for durable queue mutations');
+  stored.resolve();
+  assert.equal((await reorder).ok, true);
+  const batch = await pulling;
+  assert.deepEqual(
+    batch.map((lease) => lease.messageId),
+    ['steer-3', 'steer-1', 'steer-2'],
+  );
+  assert.equal(batch[2]?.content.text, 'edited second instruction');
+  assert.deepEqual(await owner.pull(), []);
+  owner.ack(batch.map((lease) => lease.id));
+  owner.release();
+  const first = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    first.sources.map((message) => message.messageId),
+    ['follow-1'],
+  );
+  const successor = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(first, successor);
+  const next = fixture.coordinator.bindRun(successor);
+  next.release();
+  const second = fixture.coordinator.beginTerminalTransition(successor);
+  assert.deepEqual(
+    second.sources.map((message) => message.messageId),
+    ['follow-2'],
+  );
+  const last = { sessionId: ROOT.sessionId, turnId: 'turn-3', runId: 'run-3' };
+  fixture.coordinator.commitNextRoot(second, last);
+  fixture.coordinator.bindRun(last).release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(last));
+  await fixture.coordinator.close();
+});
+
 test('queued mutations reject a queue that is draining into the next Turn', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -2452,7 +2599,7 @@ test('concurrent and completed retract retries preserve one exact cut', async ()
   await submit(fixture, 'steer-1', 'first', 'current_turn');
   await submit(fixture, 'steer-2', 'second', 'current_turn');
   await submit(fixture, 'follow-1', 'later', 'next_turn');
-  const leases = owner.pull();
+  const leases = await owner.pull();
   assert.equal(leases.length, 2);
   const retracted = fixture.coordinator.handlers['queue.retract'](
     {
@@ -2546,7 +2693,7 @@ test('an interrupt generation fence makes a late nack discard its in-flight entr
     attachments: [attachment('interrupt', 'queued.png')],
   };
   await submitContent(fixture, 'follow-1', interruptedContent, 'next_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
 
   const interrupted = fixture.coordinator.handlers['turn.interrupt'](
@@ -2630,7 +2777,7 @@ test('stale interrupt deletion reclaims state after terminal transition complete
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
   await submit(fixture, 'consumed-before-stale', 'consume', 'current_turn');
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   const rootRead = fixture.delayRootState();
@@ -2884,7 +3031,7 @@ test('run settlement hands off only steering admissions with immutable proof', a
   await submit(fixture, 'steer-proved', 'provider must see this', 'current_turn');
   const admittedAt = fixture.readMessageAdmission('steer-proved')?.admittedAt;
   assert.ok(admittedAt);
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
   owner.release();
@@ -3582,7 +3729,7 @@ test('canonical content preserves ordered attachment and quote identity across q
     quotes: followupQuotes,
   });
 
-  const [lease] = owner.pull();
+  const [lease] = await owner.pull();
   assert.ok(lease);
   assert.deepEqual(lease.content, {
     text: '<model>first</model>',
@@ -3679,6 +3826,7 @@ function createFixture(
   const terminal = deferred<TurnSnapshot>();
   let coordinator: HostMessageCoordinator;
   const root: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: async () => {
       return { isArchived: false };
     },
@@ -3780,6 +3928,7 @@ function createFixture(
     hostEpoch: 'epoch-1',
     root,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: async (_sessionId, messageId) => receipts.get(messageId),
       readImmutableSteeringMessageProof: async (_sessionId, messageId) => {
         const event = events.find(

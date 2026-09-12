@@ -449,7 +449,16 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           'on_demand',
         );
         if (managedLaunchRejection !== undefined) {
-          return { kind: 'failed', reason: managedLaunchRejection };
+          // A managed endpoint that accepted a connection but did not answer
+          // is temporarily unavailable, not evidence that the client needs a
+          // new operator. Keep reconnecting without ever launching a replacement.
+          return {
+            kind: 'failed',
+            reason:
+              managedLaunchRejection === 'managed_root_requires_operator' && sawUnresponsiveEndpoint
+                ? 'host_unresponsive'
+                : managedLaunchRejection,
+          };
         }
         try {
           const remaining = deadline - performance.now();

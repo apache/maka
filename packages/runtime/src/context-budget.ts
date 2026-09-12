@@ -215,12 +215,16 @@ export function mergeContextBudgetDiagnosticPatches(
   return mergeContextBudgetDiagnostic(left as ContextBudgetDiagnostic, right);
 }
 
-// A history fold reaches the user as one note per send, whichever stage
-// performed it: the replay of an existing checkpoint at turn start
-// (`priorReplay`) or a fold the request-projection hook made before a request
-// of this send (`activeStep`, pre_turn or mid_turn). Since #4486 every new fold
-// happens in the hook, so a note keyed on replay alone would arrive one turn
-// late — the turn that was compacted would show nothing (#4559).
+// A history fold reaches the user as one note per send. Since #4486 every fresh
+// fold a send performs is an `activeStep` (the request-projection hook), so a
+// `replaced` decision warrants a note only when it is that fresh fold. A
+// `priorReplay` `replaced` is a passive re-application of a checkpoint that some
+// other path already noted on its own turn — explicit compaction writes its own
+// note there (`runtime-kernel`) — and `history-compaction.ts` re-emits it on
+// every later send whose history still matches, so counting it here would
+// duplicate that note again and again (#3587). A `failedOpen` replay is instead
+// a genuine event of this send (the fold was dropped and the full history went
+// out), so it keeps both stages.
 function hasHistoryCompactDecision(
   contextBudget: ContextBudgetDiagnostic | undefined,
   decision: 'replaced' | 'failedOpen',
@@ -228,9 +232,10 @@ function hasHistoryCompactDecision(
   return (
     contextBudget?.compactionDecisions?.some(
       (candidate) =>
-        (candidate.stage === 'priorReplay' || candidate.stage === 'activeStep') &&
         candidate.boundaryKind === 'historyCompact' &&
-        candidate.decision === decision,
+        candidate.decision === decision &&
+        (candidate.stage === 'activeStep' ||
+          (decision === 'failedOpen' && candidate.stage === 'priorReplay')),
     ) === true
   );
 }

@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  ContextCompactionStartedEvent,
+  SessionEvent,
+} from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -43,7 +47,7 @@ interface AssistantAccumulator {
 }
 
 export interface RuntimeHostSessionProjectionSeed {
-  readonly durableSteeringMessages: readonly {
+  readonly durableUserMessages: readonly {
     readonly messageId: string;
     readonly turnId: string;
   }[];
@@ -55,10 +59,9 @@ export function createRuntimeHostSessionProjectionSeed(
   snapshot: SessionContinuitySnapshot,
 ): RuntimeHostSessionProjectionSeed {
   return {
-    durableSteeringMessages: transcript
+    durableUserMessages: transcript
       .filter(
-        (message): message is Extract<StoredMessage, { type: 'user' }> =>
-          message.type === 'user' && message.steeringEventId !== undefined,
+        (message): message is Extract<StoredMessage, { type: 'user' }> => message.type === 'user',
       )
       .map((message) => ({ messageId: message.id, turnId: message.turnId })),
     activeAssistantMessages:
@@ -87,7 +90,7 @@ export interface RuntimeHostProjectionUpdate {
 export class RuntimeHostSessionProjector {
   #snapshot: SessionContinuitySnapshot;
   readonly #now: () => number;
-  readonly #durableSteeringTurnByMessage: Map<string, string>;
+  readonly #durableTurnByMessage: Map<string, string>;
   // Only live/synthesized messages for the current root belong here. Durable
   // transcript identity stays in the admission map above, so this render
   // ledger cannot grow with the lifetime of the session.
@@ -104,8 +107,8 @@ export class RuntimeHostSessionProjector {
   ) {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
-    this.#durableSteeringTurnByMessage = new Map(
-      seed.durableSteeringMessages.map(({ messageId, turnId }) => [messageId, turnId]),
+    this.#durableTurnByMessage = new Map(
+      seed.durableUserMessages.map(({ messageId, turnId }) => [messageId, turnId]),
     );
     this.#projectMessageAdmissions = projectMessageAdmissions;
     const root = snapshot.rootTurn;
@@ -160,18 +163,27 @@ export class RuntimeHostSessionProjector {
     const root = this.#snapshot.rootTurn;
     if (!root) return [];
     const events: SessionEvent[] = [];
+    const queueEvents =
+      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
+        ? [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())]
+        : [];
     if (this.#projectMessageAdmissions) {
       events.push(
         ...projectMessageAdmissionEvents(
           root,
-          [...this.#durableSteeringTurnByMessage]
+          [...this.#durableTurnByMessage]
             .filter(([, turnId]) => turnId === root.turnId)
             .map(([messageId]) => messageId),
           this.#now(),
         ),
       );
     }
-    if (isRuntimeHostTerminalTurn(root)) return events;
+    if (isRuntimeHostTerminalTurn(root)) return [...events, ...queueEvents];
+    // Re-derive the running compaction row on reconnect / restart: the Host keeps
+    // the compaction Turn alive, so a reconnecting client learns of it here.
+    if (root.rootExecutionKind === 'context_compact') {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
@@ -196,7 +208,7 @@ export class RuntimeHostSessionProjector {
     }
     for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
       if (
-        this.#durableSteeringTurnByMessage.has(entry.messageId) ||
+        this.#durableTurnByMessage.has(entry.messageId) ||
         this.#renderedSteeringMessageIds.has(entry.messageId)
       )
         continue;
@@ -210,22 +222,19 @@ export class RuntimeHostSessionProjector {
         content: structuredClone(entry.content),
       });
     }
-    if (queueHasEntries(this.#snapshot.queue)) {
-      events.push(projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now()));
-    }
-    return events;
+    return [...events, ...queueEvents];
   }
 
   noteDurableTranscriptMessages(messages: readonly StoredMessage[]): SessionEvent[] {
     const events: SessionEvent[] = [];
     for (const message of messages) {
-      if (message.type !== 'user' || message.steeringEventId === undefined) continue;
-      const previousTurnId = this.#durableSteeringTurnByMessage.get(message.id);
-      this.#durableSteeringTurnByMessage.set(message.id, message.turnId);
+      if (message.type !== 'user') continue;
+      const previousTurnId = this.#durableTurnByMessage.get(message.id);
+      this.#durableTurnByMessage.set(message.id, message.turnId);
       if (!this.#projectMessageAdmissions || previousTurnId === message.turnId) continue;
       events.push({
         type: 'message_admission',
-        id: `host-admission:${message.steeringEventId}`,
+        id: `host-admission:${message.turnId}:${message.id}`,
         turnId: message.turnId,
         ts: this.#now(),
         messageId: message.id,
@@ -386,7 +395,7 @@ export class RuntimeHostSessionProjector {
       const event = projectSessionEvent(frame);
       if (event.type === 'steering_message') {
         if (
-          this.#durableSteeringTurnByMessage.has(event.messageId) ||
+          this.#durableTurnByMessage.has(event.messageId) ||
           this.#renderedSteeringMessageIds.has(event.messageId)
         ) {
           return emptyUpdate(events);
@@ -414,13 +423,10 @@ export class RuntimeHostSessionProjector {
       root && queueChanged(previousSnapshot.queue, next.queue)
         ? newlyInFlight(previousSnapshot.queue, next.queue)
         : [];
-    if (this.#projectMessageAdmissions) {
-      events.push(...projectMessageRetractionEvents(previousSnapshot, next, this.#now()));
-    }
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
       for (const entry of enteredActiveTurn) {
         if (
-          this.#durableSteeringTurnByMessage.has(entry.messageId) ||
+          this.#durableTurnByMessage.has(entry.messageId) ||
           this.#renderedSteeringMessageIds.has(entry.messageId)
         )
           continue;
@@ -437,6 +443,20 @@ export class RuntimeHostSessionProjector {
       events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
     }
     if (startedTurn) this.#accumulators.clear();
+    // Emit the presentation-only compaction-started event when the root Turn
+    // FIRST becomes a `context_compact` run, not only when the runId changes.
+    // The real lifecycle is `admitted (no rootExecutionKind) → running/
+    // context_compact` at the SAME runId, so gating on startedTurn would miss
+    // the live transition and only surface the row on reconnect via seedActive.
+    const rootIsCompaction =
+      !!root && !isRuntimeHostTerminalTurn(root) && root.rootExecutionKind === 'context_compact';
+    const previousWasCompaction =
+      !!previousRoot &&
+      !isRuntimeHostTerminalTurn(previousRoot) &&
+      previousRoot.rootExecutionKind === 'context_compact';
+    if (root && rootIsCompaction && !previousWasCompaction) {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
@@ -473,6 +493,10 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        // Forward the typed compaction outcome already carried by the canonical
+        // Turn snapshot so the renderer can settle the running toast and show the
+        // terminal state. This projects an existing snapshot field (no turn-state
+        // persistence), so checkpointId stays a string.
         ...(root.contextCompactionOutcome
           ? { contextCompactionOutcome: root.contextCompactionOutcome }
           : {}),
@@ -519,26 +543,22 @@ function projectMessageAdmissionEvents(
   }));
 }
 
-function projectMessageRetractionEvents(
-  previous: SessionContinuitySnapshot,
-  next: SessionContinuitySnapshot,
-  ts: number,
-): SessionEvent[] {
-  const root = next.rootTurn ?? previous.rootTurn;
-  if (!root || previous.queue.hostEpoch !== next.queue.hostEpoch) return [];
-  const retained = new Set(
-    [...next.queue.steering, ...next.queue.followup].map((entry) => entry.messageId),
-  );
-  return [...previous.queue.steering, ...previous.queue.followup]
-    .filter((entry) => entry.state === 'queued' && !retained.has(entry.messageId))
-    .map((entry) => ({
-      type: 'message_admission' as const,
-      id: `host-retraction:${next.queue.hostEpoch}:${next.queue.queueRevision}:${entry.messageId}`,
-      turnId: root.turnId,
-      ts,
-      messageId: entry.messageId,
-      outcome: 'retracted' as const,
-    }));
+/**
+ * Presentation-only event that drives the renderer's live "compacting" row.
+ * Emitted on both the live transition (`accept`) and reconnect (`seedActive`)
+ * with a deterministic id keyed on the run, so a reconnect re-emits it
+ * idempotently.
+ */
+function contextCompactionStartedEvent(
+  turn: { runId: string; turnId: string },
+  now: number,
+): ContextCompactionStartedEvent {
+  return {
+    type: 'context_compaction_started',
+    id: `host-compaction-started:${turn.runId}`,
+    turnId: turn.turnId,
+    ts: now,
+  };
 }
 
 export function projectRuntimeHostInteractionRequest(
@@ -781,7 +801,9 @@ function accumulatorKey(kind: 'text' | 'thinking', messageId: string): string {
   return `${kind}\0${messageId}`;
 }
 
-function frameIdentity(frame: SubscriptionFrame): string {
+function frameIdentity(
+  frame: Exclude<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>,
+): string {
   return `host-frame:${frame.hostEpoch}:${frame.subscriptionId}:${frame.sequence}`;
 }
 

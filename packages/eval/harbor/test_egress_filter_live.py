@@ -21,7 +21,8 @@ Unit tests cannot see addon order: script `next_layer` runs before the built-in
 classifier assigns `TCPLayer`. This test starts the pinned proxy image and a
 local origin, then asserts what a live cell would observe.
 
-It needs Docker, the pinned proxy image, and `python:3.12-slim`, so it is opt-in:
+It needs Docker, the pinned proxy image, `python:3.12-slim`, and `openssl`, so it is
+opt-in:
 
     MAKA_EVAL_EGRESS_PROXY_TEST=1 python3 harbor/test_egress_filter_live.py
 """
@@ -48,7 +49,7 @@ COMMAND_TIMEOUT_S = 60
 CLOSE_TIMEOUT_S = 2.0
 
 ORIGIN_SCRIPT = r"""
-import base64, hashlib, json, socket, threading
+import base64, hashlib, json, socket, ssl, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 stats = {"raw_recv": 0, "raw_closed": 0, "upgrade_recv": 0, "upgrade_closed": 0}
@@ -139,6 +140,9 @@ threading.Thread(target=serve_raw, daemon=True).start()
 threading.Thread(target=lambda: ThreadingHTTPServer(("0.0.0.0", 19080), HttpHandler).serve_forever(), daemon=True).start()
 threading.Thread(target=lambda: ThreadingHTTPServer(("0.0.0.0", 19082), WsHandler).serve_forever(), daemon=True).start()
 threading.Thread(target=lambda: ThreadingHTTPServer(("0.0.0.0", 19083), UpgradeHandler).serve_forever(), daemon=True).start()
+tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); tls.load_cert_chain("/origin/cert.pem", "/origin/key.pem")
+https = ThreadingHTTPServer(("0.0.0.0", 19443), HttpHandler); https.socket = tls.wrap_socket(https.socket, server_side=True)
+threading.Thread(target=https.serve_forever, daemon=True).start()
 ThreadingHTTPServer(("0.0.0.0", 19084), StatsHandler).serve_forever()
 """
 
@@ -336,6 +340,14 @@ class LiveEgressFilterTest(unittest.TestCase):
         cls.origin = f"maka-eval-egress-live-{run_id}-origin"
         cls.workdir = Path(tempfile.mkdtemp(prefix="maka-eval-egress-proxy-live-"))
         (cls.workdir / "origin.py").write_text(ORIGIN_SCRIPT)
+        # mitmproxy handshakes with the upstream before answering the client, so a
+        # public upstream made every TLS case depend on the runner's egress.
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=origin",
+             "-addext", "subjectAltName=DNS:origin",
+             "-keyout", str(cls.workdir / "key.pem"), "-out", str(cls.workdir / "cert.pem")],
+            check=True, capture_output=True, timeout=COMMAND_TIMEOUT_S,
+        )
         cls.addClassCleanup(shutil.rmtree, cls.workdir, ignore_errors=True)
         cls.addClassCleanup(cls._down)
         subprocess.run(["docker", "network", "create", cls.network], check=True, timeout=COMMAND_TIMEOUT_S)
@@ -351,10 +363,10 @@ class LiveEgressFilterTest(unittest.TestCase):
                 "--network-alias",
                 "origin",
                 "-v",
-                f"{cls.workdir / 'origin.py'}:/origin.py:ro",
+                f"{cls.workdir}:/origin:ro",
                 ORIGIN_IMAGE,
                 "python",
-                "/origin.py",
+                "/origin/origin.py",
             ],
             check=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -372,7 +384,11 @@ class LiveEgressFilterTest(unittest.TestCase):
                 "127.0.0.1::8080",
                 "-v",
                 f"{HARBOR_DIR / 'egress_filter.py'}:/opt/maka-eval/egress_filter.py:ro",
+                "-v",
+                f"{cls.workdir / 'cert.pem'}:/opt/maka-eval/origin-ca.pem:ro",
                 PROXY_IMAGE,
+                "--set",
+                "ssl_verify_upstream_trusted_ca=/opt/maka-eval/origin-ca.pem",
             ],
             check=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -507,7 +523,7 @@ class LiveEgressFilterTest(unittest.TestCase):
             incoming,
             outgoing,
             server_side=False,
-            server_hostname="example.com",
+            server_hostname="origin",
         )
         try:
             tls.do_handshake()
@@ -519,7 +535,7 @@ class LiveEgressFilterTest(unittest.TestCase):
 
         with socket.create_connection(("127.0.0.1", cls.proxy_port), 5) as sock:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            sock.sendall(b"CONNECT origin:19443 HTTP/1.1\r\nHost: origin:19443\r\n\r\n")
             header = b""
             while b"\r\n\r\n" not in header:
                 chunk = sock.recv(4096)
@@ -604,7 +620,7 @@ class LiveEgressFilterTest(unittest.TestCase):
                 "/dev/null",
                 "--write-out",
                 "%{http_code}",
-                "https://example.com/",
+                "https://origin:19443/",
             ],
             capture_output=True,
             text=True,

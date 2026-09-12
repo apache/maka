@@ -202,6 +202,11 @@ export type AdmitRootTurnResult =
 export interface RootTurnAdmissionStore {
   admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -588,6 +593,33 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       ) {
         throw new Error('Root Turn identity is already rejected');
       }
+      if (admission.execution.kind === 'safe_boundary_continuation') {
+        const sourceOwner = this.#lease.database
+          .prepare(`
+            SELECT turn_id
+            FROM core_root_turn_admissions
+            WHERE session_id = ?
+              AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+              AND json_extract(record_json, '$.execution.sourceRunId') = ?
+              AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+            ORDER BY admitted_at, turn_id
+            LIMIT 1
+          `)
+          .get(
+            admission.sessionId,
+            admission.execution.sourceTurnId,
+            admission.execution.sourceRunId,
+          ) as { turn_id?: unknown } | undefined;
+        if (typeof sourceOwner?.turn_id === 'string') {
+          const owner = readSqliteRootTurnAdmission(
+            this.#lease.database,
+            admission.sessionId,
+            sourceOwner.turn_id,
+          );
+          if (!owner) throw new Error('Root continuation index has no durable admission');
+          return { kind: 'conflict', admission: owner };
+        }
+      }
       for (const source of admission.sourceMessages) {
         const proof = this.#lease.database
           .prepare(`
@@ -633,6 +665,43 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(turnId, 'Invalid turn id');
     return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceTurnId, 'Invalid source turn id');
+    assertSafeId(sourceRunId, 'Invalid source run id');
+    const row = this.#lease.database
+      .prepare(`
+        SELECT turn_id, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ?
+          AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+          AND json_extract(record_json, '$.execution.sourceRunId') = ?
+          AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+        ORDER BY admitted_at, turn_id
+        LIMIT 1
+      `)
+      .get(sessionId, sourceTurnId, sourceRunId) as
+      | {
+          turn_id?: unknown;
+          record_json?: unknown;
+        }
+      | undefined;
+    if (!row) return undefined;
+    if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
+      throw new Error('Invalid SQLite root turn continuation admission row');
+    }
+    const admission = normalizeRootTurnAdmission(
+      JSON.parse(row.record_json),
+      sessionId,
+      row.turn_id,
+    );
+    return admission;
   }
 
   async readRootTurnStartRejection(
@@ -1747,7 +1816,10 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const providerRetry = execution.kind === 'linked_child_provider_retry';
   const inputlessExecution =
     execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
-  const sourceBatch = execution.kind === 'external_message' && admission.sourceMessages.length > 1;
+  const allowsQueueSources =
+    execution.kind === 'external_message' ||
+    (execution.kind === 'workhub_coordination' && execution.operation !== 'action');
+  const sourceBatch = allowsQueueSources && admission.sourceMessages.length > 1;
   const messageLessExecution = inputlessExecution || providerRetry || sourceBatch;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
@@ -1773,7 +1845,7 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: execution has an invalid input requirement',
     );
   }
-  if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
+  if (!allowsQueueSources && admission.sourceMessages.length !== 0) {
     throw new Error(
       'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
@@ -1960,12 +2032,35 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     });
   }
   if (value.kind === 'workhub_coordination') {
-    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+    const routingDecision = normalizeWorkHubRoutingDecision(value.routingDecision);
+    if (
+      !hasExactKeys(value, [
+        'kind',
+        'inputDigest',
+        ...(value.capabilityBinding === undefined ? [] : ['capabilityBinding']),
+        ...(value.routingDecision === undefined ? [] : ['routingDecision']),
+        ...(value.operation === undefined ? [] : ['operation']),
+        ...(value.actionId === undefined ? [] : ['actionId']),
+      ]) ||
+      (value.capabilityBinding !== undefined && !isSha256Digest(value.capabilityBinding)) ||
+      (value.actionId !== undefined && value.operation !== 'action') ||
+      (value.operation !== undefined && routingDecision !== undefined) ||
+      (value.operation !== undefined && value.operation !== 'action') ||
+      (value.actionId !== undefined &&
+        (typeof value.actionId !== 'string' || !isSafeId(value.actionId))) ||
+      !isSha256Digest(value.inputDigest)
+    ) {
       throw new Error('Invalid root execution descriptor');
     }
     return Object.freeze({
       kind: 'workhub_coordination',
+      ...(value.operation === 'action' ? { operation: 'action' as const } : {}),
       inputDigest: value.inputDigest,
+      ...(isSha256Digest(value.capabilityBinding)
+        ? { capabilityBinding: value.capabilityBinding }
+        : {}),
+      ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
+      ...(routingDecision ? { routingDecision } : {}),
     });
   }
   if (value.kind === 'regenerate') {
@@ -2151,6 +2246,46 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     agentName: value.agentName,
     sourceRunId: value.sourceRunId as string,
   });
+}
+
+function normalizeWorkHubRoutingDecision(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value) || typeof value.kind !== 'string') {
+    throw new Error('Invalid WorkHub routing decision');
+  }
+  if (
+    value.kind === 'routing' &&
+    (value.disposition === 'answer_here' ||
+      value.disposition === 'create_new' ||
+      value.disposition === 'clarify') &&
+    hasExactKeys(value, ['kind', 'disposition'])
+  ) {
+    return Object.freeze({ kind: 'routing' as const, disposition: value.disposition });
+  }
+  if (
+    value.kind === 'routing' &&
+    value.disposition === 'delegate_existing' &&
+    typeof value.candidateSetId === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(value.candidateSetId) &&
+    typeof value.candidateRef === 'string' &&
+    isSafeId(value.candidateRef) &&
+    hasExactKeys(value, ['kind', 'disposition', 'candidateSetId', 'candidateRef'])
+  ) {
+    return Object.freeze({
+      kind: 'routing' as const,
+      disposition: 'delegate_existing' as const,
+      candidateSetId: value.candidateSetId,
+      candidateRef: value.candidateRef,
+    });
+  }
+  if (
+    value.kind === 'linked' &&
+    (value.operation === 'correct' || value.operation === 'stop' || value.operation === 'resume') &&
+    hasExactKeys(value, ['kind', 'operation'])
+  ) {
+    return Object.freeze({ kind: 'linked' as const, operation: value.operation });
+  }
+  throw new Error('Invalid WorkHub routing decision');
 }
 
 function deepFreezeRootTurnMessageContent(content: MessageContent): void {

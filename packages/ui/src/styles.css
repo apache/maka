@@ -19,8 +19,26 @@
 
 @import 'katex/dist/katex.min.css';
 
+.maka-model-wheel { position: relative; width: min(264px, 55vw); max-width: 100%; }
+.maka-model-wheel::before { content: ''; position: absolute; inset: 44px 0; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
+.maka-model-wheel-viewport { position: relative; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; mask-image: linear-gradient(transparent, black 32%, black 68%, transparent); outline: none; }
+.maka-model-wheel-viewport:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+.maka-model-wheel-viewport[data-dragging='true'] { scroll-snap-type: none; cursor: grabbing; }
+.maka-model-wheel-viewport[data-dragging='true'] .maka-model-wheel-option { cursor: grabbing; }
+.maka-model-wheel-option { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 0 28px 0 12px; scroll-snap-align: center; scroll-snap-stop: always; cursor: pointer; user-select: none; }
+.maka-model-wheel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted-foreground); transform: scale(0.96); transform-origin: left center; transition: transform 180ms ease-out, color 180ms ease-out; }
+.maka-model-wheel-option[data-active='true'] .maka-model-wheel-label { font-weight: 600; color: var(--foreground); transform: scale(1); }
+.maka-model-wheel-viewport[aria-disabled='true'] { opacity: 0.5; overflow-y: hidden; }
+@media (prefers-reduced-motion: reduce) { .maka-model-wheel-label { transition: none; } }
+.maka-model-wheel-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--muted-foreground); }
+.maka-model-wheel-check { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--muted-foreground); }
+
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
+
+/* Retained tool evidence is not proof of current execution. Hide activity via
+   Astryx's public spinner target without inventing a completed/failed tool. */
+.maka-tool-activity-card[data-activity-observed='false'] .astryx-spinner { display: none; }
 
 /* An Item row draws a focus ring for ITS OWN tab stop, never for a control
    that already draws one.
@@ -175,37 +193,31 @@
   margin: 0;
 }
 
-/* The meta row holds two different kinds of thing, so it gets two different
-   rules. The time is content — a fact about the message — and stays put; gating
-   it on hover is what hid it from touch and from assistive tech. The actions are
-   chrome and only surface on hover or focus. Astryx already splits these into a
-   `timestamp` and a `footer` slot; the gate belongs on the slot, not on the row
-   that contains both.
-
-   The `· ` between the two slots is Astryx's own separator, rendered whenever
-   the timestamp has something to be separated FROM. It is dropped rather than
-   gated: the two slots already read as separate at rest, since one is text and
-   the other a row of controls that fades in beside it, so the bullet adds a mark
-   without adding a distinction. The slots carry no class of their own, so it is
-   addressed positionally — the timestamp is the first child span and the
-   separator the one right after it (the footer's own children are buttons).
-
-   A transparent action still takes clicks, here and on the assistant footer.
-   `pointer-events: none` looks like the fix and is not obviously safe: it makes
-   the pointer fall through to the ancestor whose `:hover` is what restores the
-   button, so being clickable again depends on the browser redoing hit-testing
-   on a later mouse event. Continuous movement gets there; a jump that lands and
-   stops was not something this surface could be made to reproduce. Left as-is
-   rather than traded for a failure mode that could not be demonstrated. */
-.maka-message-meta > span + span {
-  display: none;
+.maka-message-delivery {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
 }
-.maka-message-meta .maka-turn-footer-action {
+
+/* Under both senders, the time and delivery status are content and stay put;
+   the actions and the turn meta are chrome and surface on hover or focus of
+   the message they belong to. A live footer shows its activity row outright.
+
+   A transparent action still takes clicks. `pointer-events: none` looks like
+   the fix and is not obviously safe: it makes the pointer fall through to the
+   ancestor whose `:hover` is what restores the button, so being clickable
+   again depends on the browser redoing hit-testing on a later mouse event. */
+.maka-turn-footer-action,
+.maka-turn-footer-meta {
   opacity: 0;
   transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
-.maka-user-message:hover .maka-message-meta .maka-turn-footer-action,
-.maka-user-message:focus-within .maka-message-meta .maka-turn-footer-action {
+.maka-chat-message:hover .maka-turn-footer-action,
+.maka-chat-message:focus-within .maka-turn-footer-action,
+.maka-chat-message:hover .maka-turn-footer-meta,
+.maka-chat-message:focus-within .maka-turn-footer-meta {
   opacity: 1;
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
@@ -219,7 +231,6 @@
 .maka-subagent-session-label { width: 100%; min-width: 0; }
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
-.maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status {
   font: var(--maka-text-body);
@@ -234,7 +245,9 @@
 .maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
-.maka-turn-elapsed { font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed:empty { display: none; }
+.maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
    Product CSS keeps only what is layout: it is a block-level note under the
@@ -804,6 +817,26 @@
 
 /* Astryx `Banner` paints the failed-turn surface; this only sets the block
    rhythm between it and the timeline entry above it. */
+.maka-turn-failure-unavailable { display: block; }
+/* Keep Banner's immediate height change and built-in chevron rotation.
+   Animating height repeatedly lays out the transcript and triggers its
+   ResizeObserver-driven scroll following; that cost grows with history.
+   Only fade the newly mounted detail, without delaying layout or removal. */
+.maka-turn-failure-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--foreground);
+  animation: maka-turn-failure-enter var(--duration-fast) var(--ease-standard);
+}
+@keyframes maka-turn-failure-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-turn-failure-detail { animation: none; }
+}
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
@@ -842,29 +875,12 @@
 }
 
 .maka-turn-footer {
+  min-height: var(--size-element-sm, 28px);
   margin-top: var(--space-0-5);
-  padding: 0;
-  opacity: 0;
-  transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
 
-.maka-assistant-answer:hover .maka-turn-footer,
-.maka-turn-footer:focus-within { opacity: 1; }
-
-.maka-turn-footer-action {
-  border: 0;
-  border-radius: var(--radius-surface);
-  color: var(--muted-foreground);
-}
-
-.maka-turn-footer-action[data-pending="true"] {
-  cursor: progress;
-  opacity: 0.78;
-}
-
-.maka-turn-footer-action[aria-disabled="true"][data-pending="true"] { opacity: 0.78; }
-.maka-turn-footer-action[data-copy-feedback="copied"] { color: var(--link); }
-.maka-turn-footer-action[data-copy-feedback="failed"] { color: var(--destructive); }
+.maka-turn-footer .maka-turn-processing,
+.maka-turn-footer .maka-turn-provider-retry { margin-top: 0; }
 
 .maka-overlay-preview {
   font: var(--maka-text-supporting);

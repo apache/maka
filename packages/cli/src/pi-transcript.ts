@@ -31,6 +31,7 @@ import type {
 } from '@maka/core/events';
 import {
   deriveTurnRecords,
+  isRuntimeSystemNoteKind,
   STEP_LIMIT_NOTICE_TEXT,
   type StoredMessage,
   type SystemNoteMessage,
@@ -1344,14 +1345,10 @@ function tokenDelta(before: number | undefined, after: number | undefined): numb
 }
 
 function systemNoteText(message: SystemNoteMessage): string | undefined {
+  // Retired kinds are still decoded off legacy transcript rows, and none of
+  // them ever had a line here worth reading.
+  if (!isRuntimeSystemNoteKind(message.kind)) return undefined;
   switch (message.kind) {
-    case 'session_start':
-    case 'session_resume':
-      return undefined;
-    case 'mode_change':
-      return 'Permission mode changed.';
-    case 'model_change':
-      return 'Model changed.';
     case 'context_compacted':
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
@@ -1408,10 +1405,6 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     }
     case 'step_limit':
       return STEP_LIMIT_NOTICE_TEXT;
-    case 'error':
-      return 'Session recorded an error.';
-    case 'abort':
-      return 'Session was stopped.';
   }
 }
 

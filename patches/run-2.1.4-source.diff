@@ -1,0 +1,366 @@
+diff --git a/packages/run/package.json b/packages/run/package.json
+index b205c66..c5aad28 100644
+--- a/packages/run/package.json
++++ b/packages/run/package.json
+@@ -62,16 +62,8 @@
+     "ultracite": "7.3.2",
+     "vitest": "^4.1.6"
+   },
+-  "peerDependencies": {
+-    "typescript": ">=5.1.6 <7"
+-  },
+-  "peerDependenciesMeta": {
+-    "typescript": {
+-      "optional": true
+-    }
+-  },
+   "engines": {
+-    "node": ">=20.19.0"
++    "node": ">=22.19.0"
+   },
+   "publishConfig": {
+     "access": "public"
+diff --git a/packages/run/src/resource-hardening.test.ts b/packages/run/src/resource-hardening.test.ts
+index 60cf6a4..b499b1f 100644
+--- a/packages/run/src/resource-hardening.test.ts
++++ b/packages/run/src/resource-hardening.test.ts
+@@ -60,7 +60,9 @@ describe('resource and lifecycle hardening', () => {
+       LIMIT_NAMES.map(name => [name, MAX_LIMIT_VALUE]),
+     ) as RunLimits;
+ 
+-    expect(Object.values(normalizeOptions(limits))).toEqual(
++    const { timeoutMode, ...numericLimits } = normalizeOptions(limits);
++    expect(timeoutMode).toBe('wall');
++    expect(Object.values(numericLimits)).toEqual(
+       Array.from({ length: LIMIT_NAMES.length }, () => MAX_LIMIT_VALUE),
+     );
+   });
+diff --git a/packages/run/src/runtime/guest-sources.ts b/packages/run/src/runtime/guest-sources.ts
+index 1f526a7..dbbcbd3 100644
+--- a/packages/run/src/runtime/guest-sources.ts
++++ b/packages/run/src/runtime/guest-sources.ts
+@@ -640,7 +640,7 @@ return Object.freeze({
+ };
+ 
+ export const wrapUserCode = (js: string): string => `
+-globalThis.__runResult = (async () => {
++(async () => {
+ ${js}
+ })();
+ `;
+diff --git a/packages/run/src/runtime/manager.ts b/packages/run/src/runtime/manager.ts
+index 94a79fa..169fc51 100644
+--- a/packages/run/src/runtime/manager.ts
++++ b/packages/run/src/runtime/manager.ts
+@@ -365,6 +365,9 @@ export async function runManaged(input: InternalRunInput): Promise<RunResult> {
+   }
+   const needsSyncBridge =
+     input.moduleLoader !== undefined || input.syncHostFunctionManifest.size > 0;
++  if (normalizedOptions.timeoutMode === 'execution' && needsSyncBridge) {
++    throw new TypeError('Execution time budgets require asynchronous host functions.');
++  }
+   const syncBridgeBytes = needsSyncBridge
+     ? getSyncBridgeBufferBytes(
+         normalizedOptions.maxHostFunctionInputBytes,
+@@ -434,7 +437,9 @@ export async function runManaged(input: InternalRunInput): Promise<RunResult> {
+     }
+     const workerOptions = {
+       ...normalizedOptions,
+-      timeoutMs: Math.max(1, deadlineMs - Date.now()),
++      timeoutMs: normalizedOptions.timeoutMode === 'execution'
++        ? normalizedOptions.timeoutMs
++        : Math.max(1, deadlineMs - Date.now()),
+     };
+     const run = startWorkerRun({
+       ...input,
+@@ -729,12 +734,12 @@ function startWorkerRun({
+     failTerminal(new RunAbortedError());
+   });
+ 
+-  const timeoutHandle = setTimeout(
++  const timeoutHandle = normalizedOptions.timeoutMode === 'wall' ? setTimeout(
+     bindInvocationContext(() => {
+       failTerminal(new RunTimeoutError(timeoutErrorMs));
+     }),
+     normalizedOptions.timeoutMs,
+-  );
++  ) : undefined;
+ 
+   const onMessage = bindInvocationContext((value: unknown) => {
+     try {
+@@ -893,9 +898,10 @@ function startWorkerRun({
+     invocationId,
+     moduleLoader: moduleLoader !== undefined,
+     options: {
+-      executionTimeoutMs: getWorkerExecutionTimeoutMs(
+-        normalizedOptions.timeoutMs,
+-      ),
++      executionTimeoutMs: normalizedOptions.timeoutMode === 'execution'
++        ? normalizedOptions.timeoutMs
++        : getWorkerExecutionTimeoutMs(normalizedOptions.timeoutMs),
++      timeoutMode: normalizedOptions.timeoutMode,
+       maxConsoleOutputBytes: normalizedOptions.maxConsoleOutputBytes,
+       maxHostFunctionInputBytes: normalizedOptions.maxHostFunctionInputBytes,
+       maxResultBytes: normalizedOptions.maxResultBytes,
+@@ -1546,7 +1552,7 @@ function startWorkerRun({
+             context,
+           ),
+         outerAbortSignal,
+-        deadlineMs,
++        normalizedOptions.timeoutMode === 'execution' ? Date.now() + timeoutErrorMs : deadlineMs,
+         timeoutErrorMs,
+       );
+       assertContinuationTokenSize(
+diff --git a/packages/run/src/runtime/protocol-validation.ts b/packages/run/src/runtime/protocol-validation.ts
+index 958b7bb..d43d80e 100644
+--- a/packages/run/src/runtime/protocol-validation.ts
++++ b/packages/run/src/runtime/protocol-validation.ts
+@@ -58,12 +58,15 @@ const isRunOptions = (value: unknown): boolean => {
+       'maxStackSizeBytes',
+       'memoryLimitBytes',
+       'timeoutMs',
++      'timeoutMode',
+     ]);
+   } catch {
+     return false;
+   }
+-  return Object.values(value).every(
+-    item => Number.isSafeInteger(item) && (item as number) > 0,
++  return Object.entries(value).every(
++    ([key, item]) => key === 'timeoutMode'
++      ? item === 'wall' || item === 'execution'
++      : Number.isSafeInteger(item) && (item as number) > 0,
+   );
+ };
+ 
+diff --git a/packages/run/src/runtime/protocol.test.ts b/packages/run/src/runtime/protocol.test.ts
+index 7b9ef6b..57b0ff2 100644
+--- a/packages/run/src/runtime/protocol.test.ts
++++ b/packages/run/src/runtime/protocol.test.ts
+@@ -5,6 +5,7 @@ import {
+ } from './protocol-validation.js';
+ 
+ const WORKER_OPTIONS = {
++  timeoutMode: 'wall',
+   executionTimeoutMs: 950,
+   maxConsoleOutputBytes: 64 * 1024,
+   maxHostFunctionInputBytes: 1024 * 1024,
+diff --git a/packages/run/src/runtime/protocol.ts b/packages/run/src/runtime/protocol.ts
+index 03b47c5..6ce42a4 100644
+--- a/packages/run/src/runtime/protocol.ts
++++ b/packages/run/src/runtime/protocol.ts
+@@ -17,6 +17,7 @@ export interface WorkerRunMessage {
+   options: Pick<
+     NormalizedRunOptions,
+     | 'timeoutMs'
++    | 'timeoutMode'
+     | 'memoryLimitBytes'
+     | 'maxStackSizeBytes'
+     | 'maxResultBytes'
+diff --git a/packages/run/src/runtime/worker-message.test.ts b/packages/run/src/runtime/worker-message.test.ts
+index 4aa91e1..f2763a7 100644
+--- a/packages/run/src/runtime/worker-message.test.ts
++++ b/packages/run/src/runtime/worker-message.test.ts
+@@ -17,6 +17,7 @@ const createRunMessage = (
+   invocationId,
+   moduleLoader: false,
+   options: {
++    timeoutMode: 'wall',
+     executionTimeoutMs: 950,
+     maxConsoleOutputBytes: 64 * 1024,
+     maxHostFunctionInputBytes: 1024 * 1024,
+diff --git a/packages/run/src/runtime/worker.ts b/packages/run/src/runtime/worker.ts
+index 49e93c6..a100f5f 100644
+--- a/packages/run/src/runtime/worker.ts
++++ b/packages/run/src/runtime/worker.ts
+@@ -195,10 +195,17 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+   let interruptChecks = 0;
+   let cancelled = false;
+   let executionTimedOut = false;
++  const cancellation = createPromiseWithResolvers<never>();
++  void cancellation.promise.catch(() => undefined);
++  let executedMs = 0;
++  let executingSince: number | undefined;
++  const executionOnly = message.options.timeoutMode === 'execution';
+   const quickJSOptions: Parameters<typeof createQuickJSContext>[0] = {
+     interruptHandler: () => {
+       interruptChecks += 1;
+-      const timedOut = interruptChecks > 10_000 || Date.now() > deadline;
++      const timedOut = interruptChecks > 10_000 || (executionOnly
++        ? executedMs + (executingSince === undefined ? 0 : performance.now() - executingSince) > message.options.executionTimeoutMs
++        : Date.now() > deadline);
+       executionTimedOut ||= timedOut;
+       return cancelled || timedOut;
+     },
+@@ -213,6 +220,40 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+     };
+   }
+   const context = await createQuickJSContext(quickJSOptions);
++  if (executionOnly) {
++    // Only synchronous entries into QuickJS consume the shared budget. Reentrant
++    // calls (e.g. console formatting) are already inside the outer entry.
++    const measure = <T>(operation: () => T): T => {
++      if (executingSince !== undefined) return operation();
++      if (executionTimedOut) throw new RunTimeoutError(message.options.timeoutMs);
++      executingSince = performance.now();
++      let result: T;
++      try {
++        result = operation();
++      } catch (error) {
++        if (executionTimedOut) throw new RunTimeoutError(message.options.timeoutMs);
++        throw error;
++      } finally {
++        executedMs += performance.now() - executingSince;
++        executingSince = undefined;
++        executionTimedOut ||= executedMs > message.options.executionTimeoutMs;
++      }
++      if (executionTimedOut) throw new RunTimeoutError(message.options.timeoutMs);
++      return result;
++    };
++    const evalCode = context.evalCode.bind(context);
++    context.evalCode = (...args) => measure(() => evalCode(...args));
++    const callFunction = context.callFunction.bind(context);
++    context.callFunction = (...args) => measure(() => callFunction(...args));
++    const executePendingJobs = context.executePendingJobs.bind(context);
++    context.executePendingJobs = (...args) => measure(() => executePendingJobs(...args));
++    const dump = context.dump.bind(context);
++    context.dump = (...args) => measure(() => dump(...args));
++    const setProp = context.setProp.bind(context);
++    context.setProp = (...args) => measure(() => setProp(...args));
++    const resolvePromise = context.resolvePromise.bind(context);
++    context.resolvePromise = (...args) => measure(() => resolvePromise(...args));
++  }
+   let bridgeFunctions:
+     | {
+         invokeHostFunction: JSValueHandle;
+@@ -231,10 +272,12 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+   activeCancellation = {
+     cancel: () => {
+       cancelled = true;
++      cancellation.reject(new Error('Worker execution cancelled by host'));
+     },
+     fail: error => {
+       executionFailure ??= { error };
+       cancelled = true;
++      cancellation.reject(error);
+     },
+     invocationId: message.invocationId,
+     isCancelled: () => cancelled,
+@@ -280,6 +323,7 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+           throw new Error('Worker execution cancelled by host');
+         }
+       },
++      cancellation.promise,
+     );
+     const completedFailure = getExecutionFailure();
+     if (completedFailure !== undefined) {
+@@ -380,6 +424,7 @@ async function evaluateUserSource(
+   serializeJsonPayload: JSValueHandle,
+   getTrustedErrorCode: JSValueHandle,
+   assertActive: () => void,
++  cancellation: Promise<never>,
+ ): Promise<string> {
+   if (message.sourceType === 'module') {
+     let modulePromise: JSValueHandle;
+@@ -396,6 +441,7 @@ async function evaluateUserSource(
+       context,
+       modulePromise,
+       assertActive,
++      cancellation,
+     );
+     if (!modulePromise.disposed) {
+       modulePromise.dispose();
+@@ -422,17 +468,18 @@ async function evaluateUserSource(
+     );
+   }
+   const wrapped = wrapUserCode(message.source);
++  let promiseHandle: JSValueHandle;
+   try {
+-    context.evalCode(wrapped, 'run.js').dispose();
++    promiseHandle = context.evalCode(wrapped, 'run.js');
+   } catch (error) {
+     throw toUserSourceError(dumpQuickJSError(context, error), message.source);
+   }
+ 
+-  const promiseHandle = context.global.getProp('__runResult');
+   const resolvedResult = await resolveQuickJSPromise(
+     context,
+     promiseHandle,
+     assertActive,
++    cancellation,
+   );
+   if (!promiseHandle.disposed) {
+     promiseHandle.dispose();
+@@ -1005,21 +1052,16 @@ async function resolveQuickJSPromise(
+   context: QuickJS,
+   promiseHandle: JSValueHandle,
+   assertActive: () => void,
++  cancellation: Promise<never>,
+ ) {
+   const resolved = context.resolvePromise(promiseHandle);
+-  const notSettled = Symbol('not-settled');
+-  for (;;) {
+-    assertActive();
+-    drainPendingJobs(context);
+-    const nextTurn = createPromiseWithResolvers<typeof notSettled>();
+-    setTimeout(() => nextTurn.resolve(notSettled), 0);
+-    const result = await Promise.race([resolved, nextTurn.promise]);
+-    if (result !== notSettled) {
+-      assertActive();
+-      drainPendingJobs(context);
+-      return result;
+-    }
+-  }
++  assertActive();
++  drainPendingJobs(context);
++  // Bridge responses drain newly runnable jobs. An idle VM needs no polling.
++  const result = await Promise.race([resolved, cancellation]);
++  assertActive();
++  drainPendingJobs(context);
++  return result;
+ }
+ 
+ function toError(
+diff --git a/packages/run/src/types.ts b/packages/run/src/types.ts
+index 352b1dd..983fdb3 100644
+--- a/packages/run/src/types.ts
++++ b/packages/run/src/types.ts
+@@ -63,6 +63,8 @@ export type HostFunctionManifest = ReadonlyMap<string, ReadonlySet<string>>;
+ 
+ /** Resource limits applied to one sandbox invocation. */
+ export interface RunLimits {
++  /** Count elapsed invocation time (default), or synchronous VM execution only. */
++  timeoutMode?: 'wall' | 'execution';
+   /** @default `30_000` */
+   timeoutMs?: number;
+   /** @default `64 * 1024 * 1024` */
+@@ -284,6 +286,7 @@ export interface InternalRunInput extends RunInput<unknown> {
+ 
+ /** @internal */
+ export interface NormalizedRunOptions {
++  timeoutMode: 'wall' | 'execution';
+   timeoutMs: number;
+   memoryLimitBytes: number;
+   maxStackSizeBytes: number;
+diff --git a/packages/run/src/utils/options.ts b/packages/run/src/utils/options.ts
+index 7606a03..4ad4871 100644
+--- a/packages/run/src/utils/options.ts
++++ b/packages/run/src/utils/options.ts
+@@ -29,9 +29,17 @@ const positiveInteger = (
+   return resolved;
+ };
+ 
++const normalizeTimeoutMode = (mode: RunLimits['timeoutMode']) => {
++  if (mode !== undefined && mode !== 'wall' && mode !== 'execution') {
++    throw new TypeError('limits.timeoutMode must be wall or execution.');
++  }
++  return mode ?? 'wall';
++};
++
+ export const normalizeOptions = (
+   limits: RunLimits = {},
+ ): NormalizedRunOptions => ({
++  timeoutMode: normalizeTimeoutMode(limits.timeoutMode),
+   maxBridgeRequests: positiveInteger(
+     limits.maxBridgeRequests,
+     DEFAULT_MAX_BRIDGE_REQUESTS,

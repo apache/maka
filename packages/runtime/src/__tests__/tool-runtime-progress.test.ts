@@ -34,7 +34,6 @@ test('ToolRuntime emits only valid progress through the shared codec', async () 
     header: testHeader(),
     connection: testConnection(),
     modelId: 'test-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

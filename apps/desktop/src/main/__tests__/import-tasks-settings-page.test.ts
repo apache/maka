@@ -20,11 +20,16 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
+import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
+import {
+  SessionBundleServicesProvider,
+  SessionBundleTasks,
+} from '../../renderer/features/session-bundle/index.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 
@@ -104,6 +109,52 @@ describe('ImportTasksSettingsPage durable import state', () => {
       { operation: 'import', host: TEST_RUNTIME_HOST },
       { operation: 'list', host: TEST_RUNTIME_HOST },
     ]);
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('shows an actionable banner and does not re-read the catalog when no model is usable', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession()),
+      importResult: { ok: false, reason: 'no_model' },
+    });
+
+    const importButton = buttonWithText(harness.container, 'Import');
+    assert.ok(importButton);
+    await act(async () => {
+      importButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /No usable model connection/);
+    // A clean model failure is not a maybe-landed task: no recovery re-read, and
+    // none of the unknown-outcome copy.
+    assert.doesNotMatch(harness.container.textContent, /Check the import result/);
+    assert.deepEqual(harness.hostCalls(), [
+      { operation: 'listSources', host: TEST_RUNTIME_HOST },
+      { operation: 'list', host: TEST_RUNTIME_HOST },
+      { operation: 'import', host: TEST_RUNTIME_HOST },
+    ]);
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('shows a source-unreadable banner when the conversation cannot be converted', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession()),
+      importResult: { ok: false, reason: 'source_unreadable' },
+    });
+
+    const importButton = buttonWithText(harness.container, 'Import');
+    assert.ok(importButton);
+    await act(async () => {
+      importButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /could not be read or converted/);
 
     await act(async () => harness.root.unmount());
   });
@@ -1202,15 +1253,16 @@ async function renderPage(options: {
   adapterIds?: string[];
   bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
-    | { ok: false; reason: 'commit_outcome_unknown' }
-    | Promise<{ ok: false; reason: 'commit_outcome_unknown' }>;
+    | { ok: false; reason: ExternalSessionImportFailureReason }
+    | Promise<{ ok: false; reason: ExternalSessionImportFailureReason }>;
   /**
    * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
    * answering, `throw` is a rejection. Keyed by source session id, because a
    * batch is exactly the case where the ids must not share one answer.
    */
-  importBySource?: Record<string, 'ok' | 'unknown' | 'throw'>;
+  importBySource?: Record<string, 'ok' | 'unknown' | 'throw' | 'no_model' | 'source_unreadable'>;
   onOpenImported?: (sessionId: string) => void;
+  offersBundleSource?: boolean;
   locale?: 'en' | 'zh-CN';
 }): Promise<{
   container: HTMLElement;
@@ -1288,6 +1340,9 @@ async function renderPage(options: {
         const perSource = options.importBySource?.[sourceSessionId];
         if (perSource === 'throw') throw new Error(`import-failed:${sourceSessionId}`);
         if (perSource === 'unknown') return { ok: false, reason: 'commit_outcome_unknown' };
+        if (perSource === 'no_model' || perSource === 'source_unreadable') {
+          return { ok: false, reason: perSource };
+        }
         if (perSource === 'ok') {
           return { ok: true, session: { id: `imported-${sourceSessionId}` } };
         }
@@ -1303,13 +1358,37 @@ async function renderPage(options: {
     const pageProps = {
       onImported: () => undefined,
       onOpenImported: options.onOpenImported ?? (() => undefined),
+      ...(options.offersBundleSource === undefined
+        ? {}
+        : { offersBundleSource: options.offersBundleSource }),
     };
-    const page = createElement(ImportTasksSettingsPage, pageProps);
+    const bare = createElement(ImportTasksSettingsPage, pageProps);
+    // Composed the way the settings surface composes it. The page's bundle
+    // source renders a panel the feature provides, so a page rendered on its
+    // own is a composition production never has.
+    const page = createElement(SessionBundleTasks, {
+      isLocalTarget: options.offersBundleSource === true,
+      sessions: [],
+      renderSection: ({ children }: { children: ReactNode }) =>
+        createElement('div', null, children),
+      children: bare,
+    });
     const targeted = createElement(RuntimeHostSettingsTarget, {
       host: TEST_RUNTIME_HOST,
       children: page,
     });
-    const localized = createElement(AstryxLocaleProvider, { children: targeted });
+    // The page asks for a confirmation before exporting a subtree, and a
+    // confirmation is a toast. The app has always provided one; the harness did
+    // not, which made every case fail on the provider rather than the case.
+    const withServices = createElement(SessionBundleServicesProvider, {
+      services: {
+        exportBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+        importBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+      },
+      children: targeted,
+    });
+    const withToasts = createElement(ToastProvider, { children: withServices });
+    const localized = createElement(AstryxLocaleProvider, { children: withToasts });
     root.render(
       createElement(LocaleProvider, { locale: options.locale ?? 'en', children: localized }),
     );
@@ -1498,6 +1577,44 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
   });
 
+  it('counts code-classified batch failures as failed, not unconfirmed, and raises the model banner', async () => {
+    // Before the fix, no_model / source_unreadable were swept into the
+    // maybe-landed "unconfirmed" bucket alongside commit_outcome_unknown: no
+    // actionable banner, the recovery/retry path offered, and the summary could
+    // read as success. They are definite failures — counted as failed, never
+    // offered recovery. no_model additionally raises its actionable banner.
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'blocked', name: 'Blocked' }),
+          externalSession({ id: 'unreadable', name: 'Unreadable' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { blocked: 'no_model', unreadable: 'source_unreadable' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const text = container.textContent ?? '';
+    // Both are definite failures: the summary counts them, none imported.
+    assert.match(text, /No conversation was imported/);
+    assert.match(text, /2 more could not be imported/);
+    // Not the maybe-landed path: no unconfirmed/recovery banner is offered.
+    assert.doesNotMatch(text, /Check the import result/);
+    // The one globally-actionable reason surfaces its banner.
+    assert.match(text, /No usable model connection/);
+  });
+
   it('spins only the conversion in flight, not every queued row', async () => {
     // A spinner claims something is happening now. Marking every selected row
     // would put one on rows the batch has not reached, and on rows it already
@@ -1547,5 +1664,33 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.equal(run.disabled, true);
     await tick(rows(container)[0]!, true);
     assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+  });
+});
+
+describe('ImportTasksSettingsPage bundle source', () => {
+  it('does not offer the bundle source where the feature is not mounted', async () => {
+    // An adapter is present so the switch renders at all; the question is
+    // whether the bundle joins it. Beside a Remote target it must not: the
+    // panel needs services this page does not have, and picking the source
+    // there would name a Local action on a Remote-scoped page.
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: false });
+    assert.match(harness.container.textContent, /Codex/);
+    assert.doesNotMatch(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('offers it where the feature is mounted', async () => {
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: true });
+    assert.match(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('says so when neither an agent nor the bundle source is available', async () => {
+    // Beside a Remote target with no agent installed there is nothing to pick,
+    // nothing to filter and nothing to list. Empty controls would be worse than
+    // the sentence that says why.
+    const harness = await renderPage({ adapterIds: [], offersBundleSource: false });
+    assert.match(harness.container.textContent, /No supported Agent detected/);
+    await act(async () => harness.root.unmount());
   });
 });

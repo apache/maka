@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { getAgentGraphPanelCopy } from '../../renderer/agent-graph-panel.js';
+import { getAgentGraphPanelCopy } from '../../renderer/locales/agent-graph-copy.js';
 
 test('Traditional Chinese Agent Graph copy does not use Simplified fallbacks', () => {
   const copy = getAgentGraphPanelCopy('zh-TW');

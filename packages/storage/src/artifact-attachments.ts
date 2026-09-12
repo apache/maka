@@ -31,11 +31,7 @@ import {
 import { createHash } from 'node:crypto';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
-import type {
-  ArtifactAuthorityStore,
-  ArtifactStore,
-  DurableArtifactAttachmentReader,
-} from './artifact-store.js';
+import type { ArtifactAuthorityStore, DurableArtifactAttachmentReader } from './artifact-store.js';
 import { sanitizeArtifactName } from './artifact-store.js';
 
 export interface ArtifactAttachmentResourceReader {
@@ -48,9 +44,7 @@ export interface ArtifactAttachmentResourceReader {
 
 /** Read a user-uploaded Artifact without exposing its storage path. */
 export function createArtifactAttachmentResourceReader(input: {
-  artifactStore:
-    | Pick<ArtifactAuthorityStore, 'getInSession' | 'readTextInSession'>
-    | Pick<ArtifactStore, 'get' | 'readText'>;
+  artifactStore: Pick<ArtifactAuthorityStore, 'getInSession' | 'readTextInSession'>;
 }): ArtifactAttachmentResourceReader {
   return Object.freeze({
     async readAttachmentResource(
@@ -59,11 +53,8 @@ export function createArtifactAttachmentResourceReader(input: {
       abortSignal: AbortSignal,
     ): Promise<ToolResultContent> {
       abortSignal.throwIfAborted();
-      const record =
-        'getInSession' in input.artifactStore
-          ? (await input.artifactStore.getInSession(sessionId, artifactId)).record
-          : await input.artifactStore.get(artifactId);
-      if (!record || record.status !== 'live' || record.source !== 'user_upload') {
+      const record = (await input.artifactStore.getInSession(sessionId, artifactId)).record;
+      if (!record || record.source !== 'user_upload') {
         throw new Error('Attachment was not found in this Session');
       }
       if (record.sessionId !== sessionId) {
@@ -80,10 +71,7 @@ export function createArtifactAttachmentResourceReader(input: {
       if (record.kind === 'pdf') {
         throw new Error('PDF attachments cannot be decoded by Read');
       }
-      const read =
-        'readTextInSession' in input.artifactStore
-          ? await input.artifactStore.readTextInSession(sessionId, artifactId)
-          : await input.artifactStore.readText(artifactId);
+      const read = await input.artifactStore.readTextInSession(sessionId, artifactId);
       abortSignal.throwIfAborted();
       if (!read.ok) throw new Error(`Attachment could not be read: ${read.reason}`);
       return { kind: 'text', text: read.text };
@@ -137,36 +125,11 @@ interface ReadImageSnapshotInput {
 export interface ReadImageSnapshotPlan {
   ref: Extract<StorageRef, { kind: 'session_file' }>;
   persist(): Promise<void>;
-  /**
-   * Undo a publication whose projection was never admitted (#4283).
-   *
-   * A Tool Result projection carrying several images publishes them one at a
-   * time; if a later one fails, the projection is rejected and the earlier
-   * publications become artifacts no durable record will ever name. Retracting
-   * them is best-effort by design: failing to retract only delays reclamation,
-   * while failing to reject would put an unreferenced artifact in front of the
-   * user as if the tool had produced it.
-   */
-  retract(): Promise<void>;
 }
 
-export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactStore, 'create'> {
-  /** Create with a receipt saying whether this call published the artifact. */
-  createOwned?: (input: Parameters<ArtifactStore['create']>[0]) => Promise<{
-    record: Awaited<ReturnType<ArtifactStore['create']>>;
-    publishedByThisCall: boolean;
-  }>;
-}
+export type ReadImageSnapshotArtifactStore = Pick<ArtifactAuthorityStore, 'create'>;
 
-export function createReadImageSnapshotPlanner(
-  artifactStore: ReadImageSnapshotArtifactStore,
-  /**
-   * Narrow reclaim for a `tool_result_projection` artifact this planner
-   * published. Optional so callers that cannot reclaim still get the planner;
-   * without it `retract()` is a no-op and reclamation waits for reachability.
-   */
-  retractPublished?: (sessionId: string, artifactId: string) => Promise<void>,
-) {
+export function createReadImageSnapshotPlanner(artifactStore: ReadImageSnapshotArtifactStore) {
   return (input: ReadImageSnapshotInput): ReadImageSnapshotPlan => {
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
@@ -199,11 +162,8 @@ export function createReadImageSnapshotPlanner(
       .update(accepted.bytes)
       .digest('hex')}`;
     let publication: Promise<void> | undefined;
-    // Ownership, not success. The id is derived from the bytes, so a create for
-    // an image an earlier projection already published succeeds by replaying
-    // that record — and reclaiming it would delete content that is still in
-    // use. Only a create that actually published may be retracted.
-    let owned = false;
+    // Content-derived identities are shared within the Turn. Their bytes live
+    // until Session cleanup, regardless of which individual projection succeeds.
     const ref = Object.freeze({
       kind: 'session_file' as const,
       sessionId: accepted.sessionId,
@@ -222,30 +182,16 @@ export function createReadImageSnapshotPlanner(
           mimeType: accepted.mimeType,
           source: 'tool_result_projection' as const,
         };
-        publication ??= (
-          artifactStore.createOwned
-            ? artifactStore.createOwned(input)
-            : artifactStore.create(input).then((record) => ({
-                record,
-                publishedByThisCall: false,
-              }))
-        ).then(({ record, publishedByThisCall }) => {
+        publication ??= artifactStore.create(input).then((record) => {
           if (record.id !== id) throw new Error('Artifact publication changed its planned id');
-          owned = publishedByThisCall;
         });
         return publication;
-      },
-      async retract() {
-        if (!owned || !retractPublished) return;
-        owned = false;
-        publication = undefined;
-        await retractPublished(accepted.sessionId, id).catch(() => undefined);
       },
     });
   };
 }
 
-export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
+export function createReadImageSnapshotter(artifactStore: Pick<ArtifactAuthorityStore, 'create'>) {
   const planSnapshot = createReadImageSnapshotPlanner(artifactStore);
   return async (
     input: ReadImageSnapshotInput,

@@ -18,6 +18,13 @@
  */
 
 import type { ReactNode } from 'react';
+import { WorkHubServicesProvider } from '../features/workhub';
+import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
+import { ConversationServicesProvider } from '../features/conversation';
+import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
+import { AppUpdateServicesProvider } from '../features/app-update/index.js';
+import { ExternalAgentSettingsServicesProvider } from '../features/external-agent-settings/index.js';
+import { createDesktopExternalAgentSettingsServices } from '../platform/desktop/create-external-agent-settings-services.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
@@ -27,24 +34,38 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
 import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/create-runtime-host-management-services';
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
+import { SessionBundleServicesProvider } from '../features/session-bundle';
+import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
+import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
+
+if (import.meta.env.DEV) {
+  const stopObserving = observeReactPerformanceMeasures();
+  import.meta.hot?.dispose(stopObserving);
+}
 
 export function createDesktopFeatureServices() {
   return {
+    appUpdate: createDesktopAppUpdateServices(),
+    workHub: createDesktopWorkHubServices(),
+    conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
+    externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
+    sessionBundle: createDesktopSessionBundleServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
@@ -56,24 +77,34 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
-    <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
-      <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
-        <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
-        <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
-          <SessionSettingsServicesProvider services={props.services.sessionSettings}>
-            <TaskEntryServicesProvider services={props.services.taskEntry}>
-              <ModuleHubServicesProvider services={props.services.moduleHub}>
-                <GoalServicesProvider services={props.services.goal}>
-                  <WorkbarServicesProvider services={props.services.workbar}>
-                    {props.children}
-                  </WorkbarServicesProvider>
-                </GoalServicesProvider>
-              </ModuleHubServicesProvider>
-            </TaskEntryServicesProvider>
-          </SessionSettingsServicesProvider>
-        </SessionNavigationServicesProvider>
-        </SessionCollaborationServicesProvider>
-      </RuntimeHostManagementServicesProvider>
-    </ConnectionSettingsServicesProvider>
+    <AppUpdateServicesProvider services={props.services.appUpdate}>
+      <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
+      <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
+        <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
+          <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
+            <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
+              <SessionSettingsServicesProvider services={props.services.sessionSettings}>
+                <TaskEntryServicesProvider services={props.services.taskEntry}>
+                  <ModuleHubServicesProvider services={props.services.moduleHub}>
+                    <GoalServicesProvider services={props.services.goal}>
+                      <WorkbarServicesProvider services={props.services.workbar}>
+                        <ConversationServicesProvider services={props.services.conversation}>
+                          <WorkHubServicesProvider services={props.services.workHub}>
+                            <SessionBundleServicesProvider services={props.services.sessionBundle}>
+                              {props.children}
+                            </SessionBundleServicesProvider>
+                          </WorkHubServicesProvider>
+                        </ConversationServicesProvider>
+                      </WorkbarServicesProvider>
+                    </GoalServicesProvider>
+                  </ModuleHubServicesProvider>
+                </TaskEntryServicesProvider>
+              </SessionSettingsServicesProvider>
+            </SessionNavigationServicesProvider>
+          </SessionCollaborationServicesProvider>
+        </RuntimeHostManagementServicesProvider>
+      </ExternalAgentSettingsServicesProvider>
+      </ConnectionSettingsServicesProvider>
+    </AppUpdateServicesProvider>
   );
 }

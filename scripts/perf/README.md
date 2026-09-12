@@ -19,6 +19,8 @@
 
 # Renderer performance probes
 
+For the two manual CI lanes, raw reports, fixtures and their coverage limits, see [CI.md](./CI.md). Those lanes verify DOM events and consumer state; they do not use the legacy native-input helpers below.
+
 Measuring what a session switch costs in the running Desktop app, over CDP. The
 findings in #4109 were produced with these; they live here so the next
 measurement is a command rather than a rebuild.

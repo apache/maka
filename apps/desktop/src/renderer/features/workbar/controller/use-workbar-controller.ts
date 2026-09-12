@@ -90,6 +90,8 @@ export interface WorkbarControllerSelectors {
 export interface UseWorkbarControllerInput {
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
+  /** Local selection owns layout even while Host creation is pending. */
+  layoutSessionId: string | undefined;
   activeSession: SessionSummary | undefined;
   projectId: string | null | undefined;
   projectAliases: readonly string[];
@@ -168,7 +170,8 @@ export function useWorkbarController(
   const locale = useUiLocale();
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal } = useWorkbarServices();
-  const layout = useWorkbarLayoutState();
+  const activeSessionId = input.activeSession?.id;
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -183,7 +186,6 @@ export function useWorkbarController(
   >(() => new Set());
   const [, setLiveBrowserSessionIds] = useState<readonly string[]>([]);
 
-  const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
@@ -449,6 +451,7 @@ export function useWorkbarController(
     (
       placement: SessionWorkbarPlacement,
       tabs: readonly SessionWorkbarTab[],
+      options?: { preserveVisibility?: boolean },
     ) => {
       if (tabs.length === 0) return;
       for (const tab of tabs) {
@@ -458,6 +461,7 @@ export function useWorkbarController(
       layout.closeWorkbarTabs(
         placement,
         tabs.map((tab) => tab.id),
+        options,
       );
       const panelIds = new Set(
         tabs
@@ -540,6 +544,7 @@ export function useWorkbarController(
         stale
           .filter((candidate) => candidate.placement === placement)
           .map((candidate) => candidate.tab),
+        { preserveVisibility: true },
       );
     }
   }, [
@@ -566,12 +571,14 @@ export function useWorkbarController(
       )
         ? 'right'
         : 'bottom';
-      layout.closeWorkbarTab(placement, tabId);
+      layout.closeWorkbarTabs(placement, [tabId], {
+        preserveVisibility: true,
+      });
     }
     sideConversations.removePanels(staleIds);
   }, [
     activeSessionId,
-    layout.closeWorkbarTab,
+    layout.closeWorkbarTabs,
     layout.workbarPanelsState,
     sideConversations.panels,
     sideConversations.removePanels,
@@ -721,10 +728,6 @@ export function useWorkbarController(
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,
-      onReorderTab: layout.reorderWorkbarTab,
-      onMoveTab: layout.moveWorkbarTab,
-      onMoveTabToPanel: layout.moveWorkbarTabToPanel,
-      onPinTab: layout.pinWorkbarTab,
       onOpenLauncher: (placement) => {
         layout.openWorkbarLauncher(placement);
         revealPlacement(placement);

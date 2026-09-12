@@ -153,7 +153,10 @@ export interface OperationalStateDatabaseOptions {
 export class OperationalStateMigrationBlockedError extends Error {
   readonly code = 'operational_state_migration_blocked';
 
-  constructor(cause: unknown) {
+  constructor(
+    cause: unknown,
+    readonly reason: 'requires_host_migration' | 'blocked' = 'blocked',
+  ) {
     super(cause instanceof Error ? cause.message : 'Operational state migration is blocked', {
       cause,
     });
@@ -202,6 +205,7 @@ class OperationalStateDatabaseOwner {
     if (options.schemaMigration === 'require_current' && !existsSync(databasePath)) {
       throw new OperationalStateMigrationBlockedError(
         new Error('Operational state has not been initialized by its Runtime Host'),
+        'requires_host_migration',
       );
     }
     mkdirSync(dirname(databasePath), { recursive: true });
@@ -291,7 +295,10 @@ function requireCurrentOperationalState(database: DatabaseSync): void {
   try {
     const inspection = inspectOperationalStateSchema(database);
     if (inspection.status === 'current' && isCurrentOperationalTargetSchema(database)) return;
-    throw new Error('Operational state requires migration by its Runtime Host');
+    throw new OperationalStateMigrationBlockedError(
+      new Error('Operational state requires migration by its Runtime Host'),
+      'requires_host_migration',
+    );
   } catch (error) {
     if (isSqliteEnvironmentError(error)) throw error;
     if (error instanceof OperationalStateMigrationBlockedError) throw error;

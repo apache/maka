@@ -127,10 +127,12 @@ export async function main(argv = process.argv) {
   }
   lines.push('};', '');
   lines.push(
-    `export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<${providerTypeUnion}, Record<string, { npm: string; api?: string }>> = {`,
+    `export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<${providerTypeUnion}, Record<string, { adapter: import('./provider-registry.js').ProviderRuntimeAdapter; baseUrl?: string }>> = {`,
   );
   for (const [provider, overrides] of Object.entries(generatedModelProviderOverrides)) {
-    lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(overrides)},`);
+    lines.push(
+      `  ${JSON.stringify(provider)}: ${JSON.stringify(normalizeRuntimeOverrides(overrides))},`,
+    );
   }
   lines.push('};', '');
   lines.push(
@@ -527,7 +529,12 @@ async function assertGeneratedOutputs(metadataPath, pricingPath, source) {
   );
   assert.deepEqual(
     metadataModule.GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
-    source.projection.providerOverrides,
+    Object.fromEntries(
+      Object.entries(source.projection.providerOverrides).map(([provider, overrides]) => [
+        provider,
+        normalizeRuntimeOverrides(overrides),
+      ]),
+    ),
     `${metadataPath} is stale; run npm run sync:model-metadata`,
   );
   assert.deepEqual(
@@ -567,10 +574,27 @@ function toModelProviderOverride(providerId, modelId, override) {
       `models.dev model ${providerId}/${modelId} has an unsupported provider override`,
     );
   }
-  return {
-    npm: override.npm,
-    ...(override.api ? { api: override.api } : {}),
+  return { npm: override.npm, ...(override.api ? { api: override.api } : {}) };
+}
+
+function normalizeRuntimeOverrides(overrides) {
+  const adapters = {
+    '@ai-sdk/anthropic': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+    '@ai-sdk/google': { kind: 'google', normalizeBaseUrl: false },
+    '@ai-sdk/openai': { kind: 'openai' },
+    '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
   };
+  return Object.fromEntries(
+    Object.entries(overrides).map(([modelId, override]) => {
+      if (!Object.hasOwn(adapters, override.npm)) {
+        throw new Error(`models.dev model ${modelId} uses unsupported SDK ${override.npm}`);
+      }
+      return [
+        modelId,
+        { adapter: adapters[override.npm], ...(override.api ? { baseUrl: override.api } : {}) },
+      ];
+    }),
+  );
 }
 
 export function toPricing(providerType, modelId, model) {

@@ -18,7 +18,6 @@
  */
 
 export {
-  getRuntimeHostPeerMeshCopy,
   RuntimeHostPeerMeshDialog,
 } from './ui/runtime-host-peer-mesh-dialog.js';
 export { PeerMeshPeerIdButton } from './ui/peer-mesh-peer-id-button.js';

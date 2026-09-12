@@ -26,6 +26,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import { z } from 'zod';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
@@ -139,6 +140,9 @@ interface ReactiveFixtureOptions {
   withoutContextWindow?: boolean;
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
+  /** Two settled physical predecessors of the same logical Turn. */
+  handoff?: boolean;
+  anchorAuthor?: 'user' | 'host';
   bigPriors?: boolean;
   /** Leave same-route and cross-route signed thinking in a reduced pre-turn tail. */
   reasoningReplayTail?: boolean;
@@ -208,6 +212,7 @@ interface ReactiveFixture {
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
   priorInvocations: RuntimeInvocationRecord[];
+  continuation?: RuntimeContinuationMetadata;
   events: SessionEvent[];
   messages: unknown[];
   llmCalls: ReactiveLlmCall[];
@@ -506,6 +511,8 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     : [];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
+    ...(options.anchorAuthor ? { author: options.anchorAuthor } : {}),
+    ...(options.handoff ? { runId: 'run-original', invocationId: 'run-original' } : {}),
     ...(options.currentImage
       ? {
           content: {
@@ -529,7 +536,49 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
   };
 
-  const ledger: RuntimeEvent[] = [anchor];
+  if (options.handoff) {
+    priorEvents.push(anchor);
+    for (const runId of ['run-original', 'run-intermediate']) {
+      const base = {
+        ...runtimeTextEvent(`${runId}-call`, 'turn-1', 'model', ''),
+        runId,
+        invocationId: runId,
+      };
+      priorEvents.push(
+        {
+          ...base,
+          content: {
+            kind: 'function_call',
+            id: `${runId}-tool`,
+            name: 'Read',
+            args: { path: `${runId}.md` },
+          },
+        },
+        {
+          ...base,
+          id: `${runId}-result`,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: `${runId}-tool`,
+            name: 'Read',
+            isError: false,
+            result: { body: `${runId}:${RAW_SPAN_ONE.repeat(3)}` },
+          },
+        },
+      );
+    }
+    priorEvents.push({
+      ...runtimeTextEvent('handoff-tail', 'turn-1', 'user', 'HANDOFF_TAIL_SENTINEL'),
+      runId: 'run-intermediate',
+      invocationId: 'run-intermediate',
+      content: { kind: 'text', text: 'HANDOFF_TAIL_SENTINEL', steering: true },
+    });
+  }
+  // The successor's reader must never return predecessor events or the old
+  // user anchor: those already belong to its authenticated replay prefix.
+  const ledger: RuntimeEvent[] = options.handoff ? [] : [anchor];
   const ledgerCtx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId: 'run-1',
@@ -586,6 +635,17 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       messages.push(message);
       if (!options.slowAppendMessage) return;
       for (let i = 0; i < 5; i += 1) await flushMacrotask();
+    },
+    // A note is a runtime event now. The fixture records it in the shape the
+    // read model projects back, so these assertions still read the row a
+    // transcript would show.
+    recordSystemNote: async (kind, turnId, data) => {
+      messages.push({
+        type: 'system_note',
+        kind,
+        turnId,
+        ...(data !== undefined ? { data } : {}),
+      });
     },
     connection: {
       ...connection(),
@@ -717,6 +777,16 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     anchor,
     priorEvents,
     priorInvocations,
+    ...(options.handoff
+      ? {
+          continuation: {
+            sourceInvocationId: 'run-intermediate',
+            sourceRunId: 'run-intermediate',
+            sourceTurnId: 'turn-1',
+            sourceRuntimeEventHighWater: 3,
+          },
+        }
+      : {}),
     events,
     messages,
     llmCalls,
@@ -740,6 +810,7 @@ async function runTurn(
     context: [],
     runtimeContext: [...fixture.priorEvents],
     runtimeContextInvocations: [...fixture.priorInvocations],
+    ...(fixture.continuation ? { continuation: fixture.continuation } : {}),
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -778,6 +849,43 @@ function complete(
 }
 
 describe('reactive overflow recovery in the streaming backend', () => {
+  for (const anchorAuthor of ['user', 'host'] as const) {
+    test(`a handoff successor compacts its same-turn predecessors with a ${anchorAuthor} anchor without replaying effects or duplicating history`, async () => {
+      const fixture = buildReactiveFixture({
+        script: ['overflow', 'tool', 'done'],
+        withoutPriorTurns: true,
+        handoff: true,
+        anchorAuthor,
+      });
+      await runTurn(fixture);
+
+      assert.equal(complete(fixture)?.stopReason, 'end_turn');
+      assert.equal(fixture.model.doStreamCalls.length, 3);
+      assert.deepEqual(fixture.toolExecutions, ['one.md']);
+      assert.equal(fixture.recorded.length, 1);
+      assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+      const covered = JSON.parse(fixture.summarizedSources[0]!) as RuntimeEvent[];
+      assert.deepEqual(
+        covered.map((event) => event.id),
+        [
+          'anchor-1',
+          'run-original-call',
+          'run-original-result',
+          'run-intermediate-call',
+          'run-intermediate-result',
+        ],
+      );
+      for (const call of fixture.model.doStreamCalls.slice(1)) {
+        const prompt = JSON.stringify(call.prompt);
+        assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
+        assert.equal(prompt.split(ANCHOR_TEXT).length - 1, 1);
+        assert.equal(prompt.split('HANDOFF_TAIL_SENTINEL').length - 1, 1);
+        assert.equal(prompt.includes('run-original.md'), false);
+        assert.equal(prompt.includes('run-intermediate.md'), false);
+      }
+    });
+  }
+
   test('a request-level context-length 400 ends as a real error, never a fake end_turn', async () => {
     // The latent bug: a provider that rejects the request (doStream throws) is
     // surfaced as a stream error chunk while finishReason rejects. The old
@@ -1285,6 +1393,33 @@ describe('reactive overflow recovery in the streaming backend', () => {
     ]);
   });
 
+  test('a passive replay of a held checkpoint writes no context_compacted note (#3587)', async () => {
+    // Explicit compaction writes its own `context_compacted` note on the
+    // compaction turn (the kernel). A later normal send passively replays that
+    // checkpoint — `priorReplay / replaced`, re-emitted on every matching send —
+    // and must NOT re-note it, or the row duplicates once per send after a
+    // compaction. The compaction turn's own note is the single retained row.
+    let carried: HistoryCompactCheckpoint | undefined;
+    const fixture = buildReactiveFixture({
+      script: ['done'],
+      midTurnEnabled: false,
+      bigPriors: true,
+      loadCheckpoint: () => carried,
+    });
+    carried = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: sectionedSummary('EARLIER_TURN_SUMMARY'),
+    });
+    await runTurn(fixture);
+    const compactedNotes = fixture.messages.filter(
+      (message) =>
+        (message as { type?: string }).type === 'system_note' &&
+        (message as { kind?: string }).kind === 'context_compacted',
+    );
+    assert.equal(compactedNotes.length, 0, 'a passive replay must not re-note the checkpoint');
+  });
+
   test('a loaded checkpoint the projection refused is not reported as the boundary', async () => {
     // The difference between the checkpoint a session HOLDS and the one a
     // prompt was BUILT from. This one covers an event the ledger does not
@@ -1673,7 +1808,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
       true,
     );
     assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'ContextLength');
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
   test('no recovery seam means a context-length overflow ends as a real error', async () => {

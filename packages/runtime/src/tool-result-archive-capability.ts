@@ -38,6 +38,7 @@ import type { ArchivedToolResultReason } from './tool-result-archive.js';
 import type { ToolResultArchiveReader } from './tool-result-archive.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import type { MakaTool } from './tool-runtime.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 export { ARCHIVE_READ_TOOL_NAME };
 
@@ -63,14 +64,26 @@ export interface ToolResultArchiveRecorderInput {
   originalEstimatedTokens: number;
   rewriteVersion: number;
   reason: ArchivedToolResultReason;
+  sourceProjectionDigest?: `sha256:${string}`;
+  previousTransitionId?: string;
 }
+export type ToolResultArchiveLocation =
+  | { artifactId: string; ledger?: never }
+  | {
+      ledger: true;
+      artifactId?: never;
+      commitTransition?: (
+        transition: ModelProjectionTransition,
+        persist: (transition: ModelProjectionTransition) => Promise<void>,
+      ) => Promise<boolean>;
+    };
 export type ToolResultArchiveRecorder = (
   input: ToolResultArchiveRecorderInput,
-) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
+) => Promise<ToolResultArchiveLocation | void> | ToolResultArchiveLocation | void;
 
 /** Host-owned storage for one archive authority. */
 export interface ToolResultArchiveServices {
-  /** Durably archives a pruned tool result body. */
+  /** Persists legacy bytes or verifies ledger reconstruction before the transition commit. */
   archiveToolResult: ToolResultArchiveRecorder;
   /** Replay hydration, addressed by the originating runtime event. */
   readToolResultArchive: ToolResultArchiveReader;

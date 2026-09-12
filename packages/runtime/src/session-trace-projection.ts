@@ -25,6 +25,7 @@ import {
 import { TERMINAL_RUNTIME_EVENT_STATUSES, type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   SESSION_TRACE_SCHEMA_VERSION,
+  MODEL_ATTEMPT_SHAPE,
   traceTurnIdentityKey,
   type SessionTrace,
   type SessionTraceCoverage,
@@ -35,6 +36,7 @@ import {
   type TraceStep,
   type TurnTrace,
 } from '@maka/core/session-trace';
+import { pickShape } from '@maka/core/record-schema';
 
 /**
  * Builds the per-session causal trace the Inspector renders (#1625).
@@ -270,35 +272,7 @@ function projectModelCallSteps(attempts: readonly ModelCallAttempt[]): TraceMode
 }
 
 function toTraceAttempt(attempt: ModelCallAttempt): TraceModelAttempt {
-  return {
-    attemptId: attempt.attemptId,
-    attempt: attempt.attempt,
-    status: attempt.status,
-    startedAt: attempt.startedAt,
-    completedAt: attempt.completedAt,
-    latencyMs: attempt.latencyMs,
-    ...(attempt.timeToFirstTokenMs !== undefined
-      ? { timeToFirstTokenMs: attempt.timeToFirstTokenMs }
-      : {}),
-    ...(attempt.finishReason !== undefined ? { finishReason: attempt.finishReason } : {}),
-    ...(attempt.errorClass !== undefined ? { errorClass: attempt.errorClass } : {}),
-    ...(attempt.httpStatus !== undefined ? { httpStatus: attempt.httpStatus } : {}),
-    ...(attempt.providerCode !== undefined ? { providerCode: attempt.providerCode } : {}),
-    ...(attempt.providerRequestId !== undefined
-      ? { providerRequestId: attempt.providerRequestId }
-      : {}),
-    ...(attempt.retryable !== undefined ? { retryable: attempt.retryable } : {}),
-    ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
-    ...(attempt.outputTokens !== undefined ? { outputTokens: attempt.outputTokens } : {}),
-    ...(attempt.cacheReadInputTokens !== undefined
-      ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
-      : {}),
-    ...(attempt.reasoningTokens !== undefined ? { reasoningTokens: attempt.reasoningTokens } : {}),
-    ...(attempt.contextWindow !== undefined ? { contextWindow: attempt.contextWindow } : {}),
-    ...(attempt.costUsd !== undefined ? { costUsd: attempt.costUsd } : {}),
-    costBasis: attempt.costBasis,
-    usageBasis: attempt.usageBasis,
-  };
+  return pickShape<TraceModelAttempt>(attempt, MODEL_ATTEMPT_SHAPE);
 }
 
 /** Prefix the runtime gives a written history-compaction boundary. */
@@ -309,6 +283,15 @@ function projectEventSteps(events: readonly RuntimeEvent[]): TraceStep[] {
   const steps: TraceStep[] = [];
   const toolStarts = new Map<string, { id: string; startedAt: number }>();
   const toolStepsByOperation = new Map<string, TraceStep & { kind: 'tool' }>();
+  // A normal tool execution carries both a model function_call and the richer
+  // durable dispatch fact. Only calls with no dispatch anywhere in this turn
+  // belong to the generic lane; otherwise the Inspector would show duplicates.
+  const dispatchedToolCallIds = new Set(
+    events.flatMap((event) => {
+      const dispatch = event.actions?.toolDispatch;
+      return dispatch ? [dispatch.providerToolCallId] : [];
+    }),
+  );
 
   for (const event of events) {
     // A written compaction boundary, which is not the same fact as the
@@ -337,6 +320,22 @@ function projectEventSteps(events: readonly RuntimeEvent[]): TraceStep[] {
           reasonCode: recovery.payload.reasonCode,
         };
       }
+      continue;
+    }
+
+    const genericCall = event.content?.kind === 'function_call' ? event.content : undefined;
+    if (genericCall && !dispatchedToolCallIds.has(genericCall.id)) {
+      toolStarts.set(genericCall.id, { id: event.id, startedAt: event.ts });
+      steps.push({
+        kind: 'tool',
+        id: event.id,
+        turnId: event.turnId,
+        runId: event.runId,
+        startedAt: event.ts,
+        toolName: genericCall.name,
+        toolCallId: genericCall.id,
+        status: 'in_flight',
+      });
       continue;
     }
 

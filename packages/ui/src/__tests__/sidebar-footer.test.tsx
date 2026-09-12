@@ -29,6 +29,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { LocaleProvider } from '../locale-context.js';
 import { SessionRailProvider, type SessionRailChrome } from '../session-rail-context.js';
 import { SessionSidebarFooter } from '../session-sidebar-nav.js';
+import { SidebarUpdateProjectionProvider } from '../sidebar-update-projection-context.js';
 
 function renderFooter(
   updateReminder?: { state: 'downloaded' | 'error'; latestVersion: string },
@@ -45,14 +46,19 @@ function renderFooter(
     onSelect: () => undefined,
     onNew: () => undefined,
     onOpenSettings: () => undefined,
-    onOpenUpdate: () => undefined,
-    updateReminder,
   };
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionRailProvider data={{ sessions: [], groupVariant: 'conversation', onSelectSession: () => undefined }} chrome={chrome}>
-        <SessionSidebarFooter />
-      </SessionRailProvider>
+      <SidebarUpdateProjectionProvider
+        value={{
+          reminder: updateReminder,
+          onOpenUpdate: updateReminder ? () => undefined : undefined,
+        }}
+      >
+        <SessionRailProvider data={{ sessions: [], groupVariant: 'conversation', onSelectSession: () => undefined }} chrome={chrome}>
+          <SessionSidebarFooter />
+        </SessionRailProvider>
+      </SidebarUpdateProjectionProvider>
     </LocaleProvider>,
   );
 }

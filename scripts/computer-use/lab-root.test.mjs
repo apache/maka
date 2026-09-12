@@ -131,3 +131,10 @@ test('Lab-backed entry points require the configured root', async () => {
     );
   }
 });
+
+test('real AX harness supplies every explicit runtime permission authority', async () => {
+  const source = await readFile(new URL('real-ax-harness.mjs', import.meta.url), 'utf8');
+
+  assert.match(source, /readExecutionBoundary:\s*async \(\) =>/);
+  assert.match(source, /readPermissionMode:\s*async \(\) => 'bypass'/);
+});

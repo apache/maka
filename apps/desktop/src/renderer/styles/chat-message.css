@@ -42,14 +42,20 @@
   width: 100%;
 }
 
-/* Inserting earlier turns above the reader must not move what they are
-   reading. The browser's scroll anchoring does exactly that, so state the
-   dependency on the scroller that runs it rather than inheriting the `auto`
-   default: Maka reads no geometry and restores no position of its own. The
-   one case anchoring declines is a scroller sitting at zero, compensated in
-   useChatScroll after the turns land. */
+/* Native anchoring handles ordinary content growth. The scroll authority
+   disables it during following and atomic range replacement, when it owns
+   the position write itself. */
 [data-chat-scroll-container='true'] {
   overflow-anchor: auto;
+}
+
+/* These rows mount and unmount around the reader without being anything the
+   reader is reading, so anchoring on one moves the transcript for no content:
+   a send that is not durable yet, the placeholder held until the live Turn
+   exists. */
+[data-transient-message-id],
+.maka-turn[data-live-streaming='true']:not([data-turn-id]) {
+  overflow-anchor: none;
 }
 
 .maka-transcript-turn {
@@ -57,8 +63,8 @@
   width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 280px;
+  /* Resident Turns contribute their real size before the first scroll. */
+  contain: layout style paint;
 }
 
 .maka-chat-message-loading {
@@ -112,8 +118,13 @@
   white-space: pre-wrap;
 }
 
+/* The ghost bubble has no fill or border, so its inherited 28px radius paints
+   nothing. It is also a transcript boundary below, and paint containment clips
+   to the rounded padding box, so the invisible corners became clip arcs that
+   shaved the first glyph of the first line and the last. Square it. */
 .maka-chat-message-bubble-assistant {
   padding: var(--space-0-5) 0 0;
+  border-radius: 0;
 }
 
 .maka-processing-sequence {
@@ -123,45 +134,30 @@
   gap: var(--space-1);
 }
 
-/* Expanded activity headers stay reachable while their own detail is being
-   read. Native sticky positioning keeps the header in the transcript flow,
-   so it leaves naturally at the card boundary and does not disturb ChatLayout
-   scroll anchoring while reasoning or tool output continues to stream. */
-.maka-turn :is(.maka-deep-thinking, .maka-tool-activity-card) {
-  --maka-activity-sticky-top: var(--space-2);
-  --maka-activity-header-height: var(--h-control-sm);
+/* Keep containment without skipping layout: first visibility must not replace
+   an estimate and change the scroll range. Window membership bounds residency. */
+.maka-chat-message-list [data-maka-transcript-boundary] {
+  contain: layout style paint;
 }
 
-.maka-turn .maka-activity-card-header[aria-expanded="true"],
-.maka-turn .maka-tool-activity-card [role="button"][aria-expanded="true"] {
+/* An expanded reasoning header stays reachable while its own detail is being
+   read. Tool-call disclosures remain in normal flow: pinning both the group
+   header and an expanded call row creates a floating two-tier stack that
+   visually detaches from the transcript around adjacent messages. */
+.maka-turn .maka-deep-thinking .maka-activity-card-header[aria-expanded="true"] {
   position: sticky;
-  top: var(--maka-activity-sticky-top);
+  top: var(--space-2);
   z-index: var(--z-sticky);
   background: var(--surface-raised);
   border-radius: var(--radius-element);
   box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
 }
 
-/* A call detail inside an expanded tool group forms a second, bounded sticky
-   tier. The group remains available to collapse the whole run; the lower row
-   collapses only the detail currently being read.
-   Stock ChatToolCalls uses role=button on call rows (no data-slot patch). */
-.maka-turn
-  .maka-tool-activity-card
-  > [role="button"][aria-expanded="true"]
-  ~ div
-  [role="button"][aria-expanded="true"] {
-  top: calc(var(--maka-activity-sticky-top) + var(--maka-activity-header-height));
-}
-
-/* Astryx clips the animated group body with overflow:hidden. `clip` preserves
-   that visual boundary without becoming a scroll ancestor that captures the
-   nested sticky row. The inner wrapper is also a grid item: without an explicit
-   zero minimum its long, nowrap call preview becomes the track's minimum size
-   and stretches every expanded row past the turn instead of ellipsizing it. */
+/* The inner wrapper is a grid item: without an explicit zero minimum its long,
+   nowrap call preview becomes the track's minimum size and stretches every
+   expanded row past the turn instead of ellipsizing it. */
 .maka-turn .maka-tool-activity-card > [role="button"] + div > div {
   min-width: 0;
-  overflow: clip;
 }
 
 /* Cursor for tool/reasoning disclosure triggers is owned by
@@ -327,8 +323,4 @@
   background: var(--color-accent-muted);
   color: var(--foreground);
   padding: var(--space-0-5) var(--space-1-5);
-}
-.maka-transcript-history-controls {
-  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
-  margin: var(--space-2) auto 0;
 }

@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import {
   dailyReviewArchiveId,
   localDayBoundsAt,
@@ -34,6 +35,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostDailyReviewCoordinator } from '../server/daily-review-coordinator.js';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 
 const CONTEXT: ConnectionContext = {
   hostEpoch: 'host-epoch',
@@ -41,6 +43,187 @@ const CONTEXT: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('Daily Review shutdown during summary reads prevents model admission and publication', async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let modelCalls = 0;
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const running = coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: 0,
+          modelKeyOverride: '',
+          replaceExisting: true,
+        },
+        CONTEXT,
+      );
+      await entered.promise;
+      const closing = coordinator.close();
+      release.resolve();
+      const result = await running;
+      await closing;
+      assert.equal(modelCalls, 0);
+      assert.deepEqual(result, {
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      });
+      assert.equal(
+        await store.getArchive(dailyReviewArchiveId(localDayBoundsAt(Date.now(), 0), 1)),
+        null,
+      );
+    },
+    {
+      generate: async () => {
+        modelCalls++;
+        return { ok: false, errorClass: 'configuration' };
+      },
+    },
+    true,
+    {
+      list: async () => {
+        entered.resolve();
+        await release.promise;
+        return [
+          {
+            id: 'session',
+            name: 'Today',
+            lastMessageAt: Date.now(),
+            isFlagged: false,
+            isArchived: false,
+            labels: [],
+            hasUnread: false,
+            status: 'active',
+            backend: 'fake',
+            llmConnectionSlug: '',
+            connectionLocked: false,
+            model: '',
+            permissionMode: 'ask',
+          },
+        ];
+      },
+    },
+  );
+});
+
+test('Daily Review handoff fences an admitted timer tick and cancellation resumes a due review', async () => {
+  let now = new Date(2026, 8, 9, 12).getTime();
+  const timers = new Set<() => void>();
+  const residencies = new HostResidencyRegistry();
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const snapshot = await store.readConfig();
+      await store.updateConfig(snapshot.revision, {
+        enabled: true,
+        executeTime: '13:00',
+        modelKey: '',
+      });
+      await coordinator.recover();
+      assert.equal(timers.size, 1);
+      assert.equal(residencies.activeCount, 1);
+      assert.equal(residencies.drainCount, 0);
+      const tick = [...timers][0]!;
+      now = new Date(2026, 8, 9, 13).getTime();
+      tick(); // The config read has started, but has not returned yet.
+      const hold = coordinator.holdForHandoff();
+      assert.ok(hold);
+      assert.equal(coordinator.holdForHandoff(), undefined);
+      assert.equal(timers.size, 0);
+      tick(); // A callback already queued before clearInterval must also be fenced.
+      await hold.settled();
+      const archiveId = dailyReviewArchiveId(localDayBoundsAt(now, -1), 1);
+      assert.equal(await store.getArchive(archiveId), null);
+      const proof = hold.residencies();
+      assert.ok(proof);
+      assert.equal(residencies.hasDrainResidenciesExcept(proof), false);
+      hold.release();
+      hold.release();
+      assert.equal(timers.size, 1);
+      await waitFor(async () => (await store.getArchive(archiveId)) !== null);
+      assert.equal((await store.getArchive(archiveId))?.trigger, 'cron');
+      assert.equal((await store.readConfig()).config.enabled, true);
+      const next = coordinator.holdForHandoff();
+      assert.ok(next);
+      await next.settled();
+      coordinator.beginDrain();
+      next.release();
+      assert.equal(timers.size, 0);
+      assert.equal(residencies.drainCount, 0);
+    },
+    undefined,
+    false,
+    undefined,
+    {
+      now: () => now,
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
+      setInterval: (callback) => {
+        timers.add(callback);
+        return callback;
+      },
+      clearInterval: (timer) => {
+        timers.delete(timer as () => void);
+      },
+    },
+  );
+});
+
+test('Daily Review handoff waits for an active analysis to publish without interrupting it', async () => {
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const residencies = new HostResidencyRegistry();
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const running = coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: 0,
+          modelKeyOverride: '',
+          replaceExisting: false,
+        },
+        CONTEXT,
+      );
+      await entered.promise;
+      assert.equal(residencies.drainCount, 1);
+      const hold = coordinator.holdForHandoff();
+      assert.ok(hold);
+      try {
+        assert.equal(hold.residencies(), undefined);
+        let settled = false;
+        const waiting = hold.settled().then(() => {
+          settled = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+        finish.resolve();
+        const result = await running;
+        await waiting;
+        assert.equal(result.ok, true);
+        assert.ok(hold.residencies());
+        assert.equal(residencies.drainCount, 0);
+        assert.equal((await store.listArchivePage(null, 1)).archives.length, 1);
+      } finally {
+        finish.resolve();
+        hold.release();
+        await running;
+      }
+    },
+    undefined,
+    true,
+    {
+      list: async () => {
+        entered.resolve();
+        await finish.promise;
+        return [];
+      },
+    },
+    {
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
+    },
+  );
+});
 
 test('Daily Review refuses to archive an incomplete canonical Usage projection', async () => {
   await withCoordinator(async ({ coordinator, store, root, drainCount }) => {
@@ -401,6 +584,12 @@ async function withCoordinator(
   sessions: ConstructorParameters<typeof HostDailyReviewCoordinator>[0]['sessions'] = {
     list: async () => [],
   },
+  lifecycle: Partial<
+    Pick<
+      ConstructorParameters<typeof HostDailyReviewCoordinator>[0],
+      'now' | 'acquireResidency' | 'setInterval' | 'clearInterval'
+    >
+  > = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-coordinator-'));
   const root = join(base, 'interactive');
@@ -423,6 +612,7 @@ async function withCoordinator(
     requestDrain: () => {
       drains += 1;
     },
+    ...lifecycle,
   });
   try {
     if (recoverBeforeRun) await coordinator.recover();

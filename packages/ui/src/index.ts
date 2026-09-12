@@ -52,9 +52,11 @@ export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
 export * from './materialize.js';
 export * from './live-turn-projection.js';
+export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
+export * from './model-wheel-picker.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
@@ -62,12 +64,12 @@ export * from './form-interaction-prompt.js';
 export * from './form-interaction-prompt-state.js';
 export * from './redact.js';
 export * from './thinking-stream.js';
-export * from './session-todo-panel.js';
 export * from './toast.js';
 export * from './tool-output-stream.js';
 export * from './ui.js';
 export * from './utils.js';
 export * from './platform-shortcut-text.js';
+export * from './transcript-viewport-navigation.js';
 
 // Maka-owned product assets and compositions remain public only where they do
 // not duplicate a published Astryx component authority.
@@ -188,3 +190,5 @@ export {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+
+export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';

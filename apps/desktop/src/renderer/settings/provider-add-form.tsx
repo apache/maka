@@ -39,7 +39,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
   FormLayout,
-  Selector,
+  ModelWheelPicker,
   TextInput,
   useMountedRef,
   useUiLocale,
@@ -179,11 +179,7 @@ export function AddProviderForm(props: {
   // a locale in the assertion.
   function issueMessage(issue: AddProviderIssue): string {
     if (issue.field === 'slug') {
-      return issue.reason === 'duplicate'
-        ? copy.duplicateSlug
-        : locale === 'zh-CN'
-          ? issue.detail
-          : copy.invalidSlug;
+      return issue.reason === 'duplicate' ? copy.duplicateSlug : copy.slugIssues[issue.detail];
     }
     if (issue.field === 'apiKey') return copy.keyRequired(display.name);
     if (issue.field === 'accountId') return copy.cloudflareAccount;
@@ -588,16 +584,19 @@ export function AddProviderForm(props: {
             ))}
           </CheckboxList>
         )}
-        <Selector
-          label={copy.onboardingDefaultModel}
-          description={copy.onboardingDefaultModelHelp}
-          options={selectedOptions}
-          value={managedPhase.defaultId}
-          onChange={(defaultId: string) => setManagedPhase({ ...managedPhase, defaultId })}
-          isDisabled={busy || selectedOptions.length === 0}
-          placeholder={copy.onboardingSelectModel}
-          width="100%"
-        />
+        <VStack gap={1}>
+          <Text weight="semibold">{copy.onboardingDefaultModel}</Text>
+          <Text type="supporting" color="secondary">{copy.onboardingDefaultModelHelp}</Text>
+          <ModelWheelPicker
+            ariaLabel={copy.onboardingDefaultModel}
+            label={selectedOptions.find((option) => option.value === managedPhase.defaultId)?.label ?? copy.onboardingSelectModel}
+            options={selectedOptions}
+            value={managedPhase.defaultId}
+            onValueChange={(defaultId) => setManagedPhase({ ...managedPhase, defaultId })}
+            disabled={busy || selectedOptions.length === 0}
+            size="md"
+          />
+        </VStack>
         <div role="status" aria-live="polite">
           {busy ? <Text type="supporting">{copy.saving}</Text> : null}
         </div>

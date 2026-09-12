@@ -51,6 +51,7 @@ export function resolveHostedWebSearchCapability(
   providerType: ProviderType,
   models: readonly ModelInfo[] | undefined,
   modelId: string,
+  effectiveWire?: string,
 ): HostedWebSearchCapability | null {
   const id = modelId.trim();
   if (!id) return null;
@@ -59,10 +60,11 @@ export function resolveHostedWebSearchCapability(
 
   const adapter = providerHostedWebSearchAdapter(providerType);
   if (!adapter) return null;
+  const wire = effectiveWire ?? stored?.apiProtocol;
   if (
-    stored?.apiProtocol !== undefined &&
-    ((adapter.adapter === 'openai-responses' && stored.apiProtocol !== 'openai-responses') ||
-      (adapter.adapter === 'anthropic-messages' && stored.apiProtocol !== 'anthropic-messages'))
+    wire !== undefined &&
+    ((adapter.adapter === 'openai-responses' && wire !== 'openai-responses') ||
+      (adapter.adapter === 'anthropic-messages' && wire !== 'anthropic-messages'))
   ) {
     return null;
   }

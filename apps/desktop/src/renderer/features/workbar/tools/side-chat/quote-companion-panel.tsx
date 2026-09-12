@@ -36,7 +36,8 @@ import {
 import type { SessionSummary } from '@maka/core/session';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
-import { useComposerAttachments } from '../../../../use-composer-attachments';
+import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
+import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
@@ -55,28 +56,6 @@ import type {
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
 import { useWorkbarServices } from '../../services-context.js';
-
-const RUNNING_STATUS_DELAY_MS = 200;
-
-/**
- * A boolean that turns true only after `condition` has held for `delayMs`, and
- * false the moment it drops — the rising-edge delay that keeps a fast turn from
- * flashing the running-status line. A feature-local copy of the shell's
- * useDelayedFlag: the renderer-legacy original is walled off from feature code
- * by the architecture budget, and this is only a few lines of timer plumbing.
- */
-function useDelayedFlag(condition: boolean, delayMs: number): boolean {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!condition) {
-      setVisible(false);
-      return;
-    }
-    const handle = window.setTimeout(() => setVisible(true), delayMs);
-    return () => window.clearTimeout(handle);
-  }, [condition, delayMs]);
-  return visible;
-}
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
@@ -137,6 +116,8 @@ export function QuoteCompanionPanel(props: {
     removeAttachment,
     clearSubmittedAttachments,
   } = useComposerAttachments({
+    copy: getDesktopConversationCopy(locale).actions,
+    formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
     draftKey,
     toastApi: toast,
     service: attachments,
@@ -188,30 +169,10 @@ export function QuoteCompanionPanel(props: {
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
-  // The transcript's running-status line ("正在琢磨… · Ns"). Like the main chat
-  // (useShellLiveTurn → showRunningStatus) it rides the whole active turn, not
-  // just the pre-first-token wait, with the same rising-edge delay so a fast
-  // turn never flashes it. The companion's `processing` only covers the wait
-  // window, which is why the side panel used to show almost no progress cue.
-  // `transientMessages` covers the first-send window BEFORE the fork commits and
-  // the admission is armed: the optimistic bubble is on screen but `streaming`
-  // is still false, and the cue must already be up (the admission is deliberately
-  // armed late so the Stop button never appears before `stop()` can act on it).
-  const showRunningStatus = useDelayedFlag(
-    companion.streaming || companion.transientMessages.length > 0,
-    RUNNING_STATUS_DELAY_MS,
-  );
+  const active = Boolean(companion.activeTurn) || companion.processing;
   useEffect(() => {
-    props.onActivityStateChange?.(
-      props.panelId,
-      companion.streaming || companion.processing,
-    );
-  }, [
-    companion.processing,
-    companion.streaming,
-    props.onActivityStateChange,
-    props.panelId,
-  ]);
+    props.onActivityStateChange?.(props.panelId, active);
+  }, [active, props.onActivityStateChange, props.panelId]);
   useEffect(() => {
     if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
@@ -298,7 +259,6 @@ export function QuoteCompanionPanel(props: {
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
-        scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
@@ -339,19 +299,21 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={(text) =>
+              onSend={(text, metadata) =>
                 dispatchQuoteCompanionInput({
                   text,
                   streaming: companion.streaming,
+                  followUpMode: metadata?.followUpMode,
                   compact: companion.compact,
+                  queue: companion.queue,
                   steer: companion.steer,
                   send: async () => {
                     try {
-                      preflightAttachmentItems(pendingAttachments, locale);
+                      preflightAttachmentItems(pendingAttachments);
                     } catch (error) {
                       toast.error(
                         copy.errors.sendRejected,
-                        error instanceof Error ? error.message : String(error),
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
                       );
                       return false;
                     }
@@ -373,6 +335,13 @@ export function QuoteCompanionPanel(props: {
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
+              queuedMessages={companion.queuedMessages}
+              pendingMessages={companion.transientMessages}
+              queuedMessageRevision={companion.queuedMessageRevision}
+              onPromoteQueuedEntry={companion.promoteQueuedEntry}
+              onUpdateQueuedEntry={companion.updateQueuedEntry}
+              onDeleteQueuedEntry={companion.deleteQueuedEntry}
+              onReorderQueuedEntries={companion.reorderQueuedEntries}
               draftKey={draftKey}
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
@@ -413,8 +382,8 @@ export function QuoteCompanionPanel(props: {
           messages={companion.messages}
           transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
-          liveTurn={companion.liveTurn}
-          runningStatus={showRunningStatus}
+          liveTurns={companion.liveTurns}
+          activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}

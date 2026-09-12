@@ -22,49 +22,36 @@
  * Tool execution and settlement remain owned by AiSdkTurn and ToolRuntime.
  */
 
-import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
+import type { ToolMode } from '@maka/core/tool-mode';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
 
 import type { ModelToolSet } from './model-protocol.js';
-import { toolSchemaCharsForDiagnostics } from './request-shape.js';
+import { requestCompositionToolSchemas } from './request-shape.js';
 import { INVALID_TOOL_NAME } from './ai-sdk-tool-repair.js';
 import type { MakaTool } from './tool-runtime.js';
 import type { ToolAvailabilityPlan } from './tool-availability.js';
 
 export interface ToolSchemaPlan {
-  toolMode: ToolMode;
   availability: ToolAvailabilityPlan;
   providerTools: MakaTool[];
   modelTools: ModelToolSet;
 }
 
 export function buildToolSchemaPlan(input: {
-  boundTools: readonly MakaTool[];
   availability: ToolAvailabilityPlan;
-  requestedToolMode: unknown;
+  toolMode: ToolMode;
   codeModeExecTool: MakaTool;
+  nestedTools: ReadonlyMap<string, MakaTool>;
 }): ToolSchemaPlan {
-  const requestedToolMode =
-    input.requestedToolMode === undefined ? DEFAULT_TOOL_MODE : input.requestedToolMode;
-  if (!isToolMode(requestedToolMode)) {
-    throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
-  }
-  if (
-    requestedToolMode === 'code_mode' &&
-    input.boundTools.some((tool) => tool.name === input.codeModeExecTool.name)
-  ) {
-    throw new Error(`Tool name "${input.codeModeExecTool.name}" is reserved for Code Mode.`);
-  }
-
   const availability = projectToolModePlan(
     input.availability,
-    requestedToolMode,
+    input.toolMode,
     input.codeModeExecTool,
+    input.nestedTools,
   );
   return {
-    toolMode: requestedToolMode,
     availability,
     providerTools: availability.providerTools,
     modelTools: bindModelTools(availability.providerTools),
@@ -130,44 +117,31 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
+  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const withExec = (names: readonly string[]): string[] =>
-    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
-  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
-  const visible = [
-    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
-    execTool,
-  ].sort((a, b) => a.name.localeCompare(b.name));
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  const projectedExec = {
+    ...execTool,
+    description: [
+      execTool.description,
+      'This is the only callable tool. Call the following tools from inside exec.',
+      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+      JSON.stringify(catalog),
+    ].join('\n'),
+  };
   return {
     ...plan,
-    providerTools: [...visible, ...invalid],
-    activeTools: withExec(plan.activeTools),
+    providerTools: [
+      projectedExec,
+      ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
+    ],
+    activeTools: [execTool.name],
     ...(plan.projectActiveTools
-      ? {
-          projectActiveTools: (options) => ({
-            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
-          }),
-        }
+      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
       : {}),
-    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
-    diagnostics: (activeTools, visibleToolSchemaChars) => {
-      const baseActive = activeTools.filter((name) => name !== execTool.name);
-      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
-      const diagnostic = plan.diagnostics(baseActive, baseChars);
-      if (!diagnostic) return undefined;
-      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
-      return {
-        ...diagnostic,
-        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
-        fullToolCount:
-          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
-        visibleToolSchemaChars,
-        fullToolSchemaChars:
-          (diagnostic.fullToolSchemaChars ??
-            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
-      };
-    },
+    currentRepairToolNames: () => [execTool.name],
+    diagnostics: () => undefined,
   };
 }
 

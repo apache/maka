@@ -294,6 +294,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'OpenCode Free', description: '免費匿名 OpenCode Zen 模型，無需金鑰，按 IP 限速', badge: 'Free' },
     en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
   },
+  commandcode: {
+    'zh-CN': { name: 'Command Code', description: '使用 Command Code 套餐额度，连接后自动获取模型。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code', description: '使用 Command Code 方案額度，連線後自動取得模型。', badge: 'Coding' },
+    en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
+  },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },
     'zh-TW': { name: 'Groq', description: 'LPU 高速推理託管開源模型', badge: 'API' },

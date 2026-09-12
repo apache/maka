@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -28,6 +26,12 @@ import { type SettingsSection } from '@maka/core/settings';
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type GoalStatus } from '@maka/core/goal';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  unexpectedOperationFallback,
+} from '@maka/core/redaction';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -148,6 +152,7 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
+    backToWorkHub: string;
   };
   actions: {
     retry: string;
@@ -344,6 +349,7 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingFailedTitle: string;
@@ -476,15 +482,6 @@ type ShellCopy = {
     resizeConversationList: string;
     skipErrorTitle: string;
     tryAgainLater: string;
-    updateInstallFailedTitle: string;
-    updateInstallFailedFallback: string;
-    updateInstallManualFallback: string;
-    updateActiveTasksTitle: string;
-    updateActiveTasksDescription: string;
-    updateActiveTasksConfirm: string;
-    updateActiveTasksCancel: string;
-    updateRetryFailedTitle: string;
-    updateRetryFailedFallback: string;
     loading: string;
     goToModels: string;
     boundaryUnreadableTitle: string;
@@ -724,10 +721,11 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: '外观',
   projects: '工作区',
   models: '模型',
+  'external-agents': '外部 Agent',
   subagents: '子 Agent',
   usage: '使用统计',
   'archived-tasks': '已归档任务',
-  'import-tasks': '导入任务',
+  'import-tasks': '导入/导出任务',
   memory: '记忆',
   'daily-review': '每日回顾',
   'bot-chat': '远程接入',
@@ -743,10 +741,11 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: 'Appearance',
   projects: 'Workspace',
   models: 'Models',
+  'external-agents': 'External Agents',
   subagents: 'Subagents',
   usage: 'Usage',
   'archived-tasks': 'Archived tasks',
-  'import-tasks': 'Import tasks',
+  'import-tasks': 'Import/export tasks',
   memory: 'Memory',
   'daily-review': 'Daily Review',
   'bot-chat': 'Remote Access',
@@ -759,7 +758,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
-    navigation: { settings: '设置' },
+    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
@@ -1005,6 +1004,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      attachmentIngestBlocked: {
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        total_size_exceeded: '附件总量超出大小限制。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingFailedTitle: '切换思考级别失败',
@@ -1214,15 +1221,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '调整任务列表宽度',
       skipErrorTitle: '跳过失败',
       tryAgainLater: '请稍后重试。',
-      updateInstallFailedTitle: '无法安装更新',
-      updateInstallFailedFallback: '请稍后重试。',
-      updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
-      updateActiveTasksTitle: '仍有任务正在运行',
-      updateActiveTasksDescription: '仍有任务正在运行。更新会中断这些任务，是否继续？',
-      updateActiveTasksConfirm: '仍然更新',
-      updateActiveTasksCancel: '取消',
-      updateRetryFailedTitle: '无法重新下载更新',
-      updateRetryFailedFallback: '请稍后重试，或手动下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暂时读不到这个任务的权限',
@@ -1261,7 +1259,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
-    navigation: { settings: '設定' },
+    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
@@ -1507,6 +1505,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      attachmentIngestBlocked: {
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        total_size_exceeded: '附件總量超出大小限制。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
       modelFailedTitle: '切換模型失敗',
       modelFallback: '模型暫時無法切換，請稍後重試。',
       thinkingFailedTitle: '切換思考級別失敗',
@@ -1716,15 +1722,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '調整任務列表寬度',
       skipErrorTitle: '跳過失敗',
       tryAgainLater: '請稍後重試。',
-      updateInstallFailedTitle: '無法安裝更新',
-      updateInstallFailedFallback: '請稍後重試。',
-      updateInstallManualFallback: '請稍後重試，或手動下載最新版本。',
-      updateActiveTasksTitle: '仍有任務正在執行',
-      updateActiveTasksDescription: '仍有任務正在執行。更新會中斷這些任務，是否繼續？',
-      updateActiveTasksConfirm: '仍然更新',
-      updateActiveTasksCancel: '取消',
-      updateRetryFailedTitle: '無法重新下載更新',
-      updateRetryFailedFallback: '請稍後重試，或手動下載最新版本。',
       loading: '載入中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
@@ -1763,7 +1760,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   en: {
-    navigation: { settings: 'Settings' },
+    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
@@ -2015,6 +2012,14 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      attachmentIngestBlocked: {
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        total_size_exceeded: 'The total attachment size exceeds the limit.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingFailedTitle: 'Could not change thinking level',
@@ -2264,15 +2269,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: 'Resize task list',
       skipErrorTitle: 'Could not skip onboarding',
       tryAgainLater: 'Try again later.',
-      updateInstallFailedTitle: 'Could not install update',
-      updateInstallFailedFallback: 'Try again later.',
-      updateInstallManualFallback: 'Try again later, or download the latest version manually.',
-      updateActiveTasksTitle: 'Tasks are still running',
-      updateActiveTasksDescription: 'Tasks are still running. Updating will interrupt them. Continue?',
-      updateActiveTasksConfirm: 'Update anyway',
-      updateActiveTasksCancel: 'Cancel',
-      updateRetryFailedTitle: 'Could not retry update download',
-      updateRetryFailedFallback: 'Try again later, or download the latest version manually.',
       loading: 'Loading',
       goToModels: 'Go to Models',
       boundaryUnreadableTitle: 'Could not read this task’s permissions',
@@ -2320,7 +2316,22 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  // The reason token survives the Electron IPC wrapper and is always the
+  // message tail: a bare `attachment_ingest:<code>` from the preload probe or
+  // the IPC-wrapped error line. End-anchored so an unrelated path that merely
+  // contains the substring never matches.
+  const blocked = lookupCopy(
+    maps.attachmentIngestBlocked,
+    message.match(/(?:^|[ :"'])attachment_ingest:([a-z_]+)$/u)?.[1],
+  );
+  if (blocked) return blocked;
+  // A classified failure (timeout / rate limit / auth / provider / network)
+  // is expected; only an unrecognized one lands the redacted diagnostic.
+  return classifyGeneralizedError(error)
+    ? generalizedErrorMessageForLocale(error, fallback, locale)
+    : unexpectedOperationFallback(error, fallback, 'desktop');
 }
 
 export function sessionSettingFailureCopy(

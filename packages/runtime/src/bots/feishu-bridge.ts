@@ -17,15 +17,9 @@
  * under the License.
  */
 
-import {
-  Domain,
-  LoggerLevel,
-  createLarkChannel,
-  type LarkChannel,
-  type NormalizedMessage,
-} from '@larksuiteoapi/node-sdk';
+import { createRequire } from 'node:module';
+import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
 
@@ -93,43 +87,47 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
     const appId = this.settings.appId?.trim() ?? '';
     const appSecret = this.settings.appSecret?.trim() || this.settings.token.trim();
     if (!appId || !appSecret) {
-      this.reason = 'missing-feishu-credentials';
+      this.reason = 'feishu_credentials_missing';
       this.readiness = 'scaffolded';
       this.emitStatusChange();
       return;
     }
 
     this.explicitlyStopped = false;
-    const isLark = this.settings.domain?.trim() === 'larksuite.com';
-    const channel = createLarkChannel({
-      appId,
-      appSecret,
-      domain: isLark ? Domain.Lark : Domain.Feishu,
-      transport: 'websocket',
-      source: 'maka',
-      loggerLevel: LoggerLevel.error,
-      handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
-      policy: {
-        dmMode: this.settings.allowedUserIds?.length ? 'allowlist' : 'open',
-        dmAllowlist: [...(this.settings.allowedUserIds ?? [])],
-        requireMention: false,
-      },
-    });
-    this.channel = channel;
-    this.wire(channel, appId);
-
+    let channel: LarkChannel | undefined;
     try {
+      // Keep lazy loading synchronous so stop() cannot race a module-loading await.
+      const { Domain, LoggerLevel, createLarkChannel } = createRequire(import.meta.url)(
+        '@larksuiteoapi/node-sdk',
+      ) as typeof import('@larksuiteoapi/node-sdk');
+      const isLark = this.settings.domain?.trim() === 'larksuite.com';
+      channel = createLarkChannel({
+        appId,
+        appSecret,
+        domain: isLark ? Domain.Lark : Domain.Feishu,
+        transport: 'websocket',
+        source: 'maka',
+        loggerLevel: LoggerLevel.error,
+        handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+        policy: {
+          dmMode: this.settings.allowedUserIds?.length ? 'allowlist' : 'open',
+          dmAllowlist: [...(this.settings.allowedUserIds ?? [])],
+          requireMention: false,
+        },
+      });
+      this.channel = channel;
+      this.wire(channel, appId);
       await channel.connect();
       if (this.explicitlyStopped || this.channel !== channel) return;
       this.startedAt = Date.now();
       this.markConnected(channel, appId);
     } catch (error) {
-      if (this.explicitlyStopped || this.channel !== channel) return;
+      if (this.explicitlyStopped || (channel && this.channel !== channel)) return;
       this.running = false;
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
-      await this.disconnectChannel(channel);
+      if (channel) await this.disconnectChannel(channel);
     }
   }
 
@@ -165,7 +163,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
       return result.messageId;
     } catch (error) {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }
@@ -206,7 +204,7 @@ export class FeishuBotBridge extends BaseBotAdapter implements SendCapable {
       }),
       channel.on('error', (error) => {
         if (this.channel !== channel || this.explicitlyStopped) return;
-        this.reason = generalizedErrorMessage(error);
+        this.recordFailure(error);
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
         this.emitStatusChange();
       }),

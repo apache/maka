@@ -160,6 +160,20 @@ if (!devUrl) {
   process.exit(1);
 }
 
+// Let Vite finish the initial dependency crawl + optimizer commit before the
+// window loads (issue #4775). `warmupRequest` on the renderer entry kicks the
+// recursive pre-transform of the static import graph (which registers every
+// reachable dep with the optimizer), and `waitForRequestsIdle` resolves at
+// crawl end — the same signal the dep optimizer waits on before committing
+// node_modules/.vite/deps. Loading Electron before that commit let the page
+// execute chunks from a previous optimizer generation alongside fresh ones —
+// two React instances, a null hook dispatcher, and a renderer crash on the
+// first lazy component. warmupRequest swallows transform errors itself, so
+// this can never abort the launch; it only reorders the startup race away.
+log('vite', 'warming renderer entry and waiting for the dep crawl to settle...');
+await server.environments.client.warmupRequest('/main.tsx');
+await server.environments.client.waitForRequestsIdle();
+
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 
 // Created before launch so signals during codesign/preparation are durable.

@@ -57,6 +57,10 @@ const IMPORT_ERRORS = [
   'not_found',
   'operation_conflict',
   'commit_outcome_unknown',
+  // Distinct, stable reasons the import page renders as specific banners, so the
+  // shell classifies by code rather than by the redacted error message.
+  'model_unavailable',
+  'source_unreadable',
 ] as const;
 
 export type ExternalSessionSourceQueryInput = Record<never, never>;

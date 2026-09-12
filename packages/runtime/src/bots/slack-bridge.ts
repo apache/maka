@@ -17,10 +17,10 @@
  * under the License.
  */
 
+import { createRequire } from 'node:module';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
-import { SocketModeClient } from '@slack/socket-mode';
-import { WebClient } from '@slack/web-api';
+import type { SocketModeClient } from '@slack/socket-mode';
+import type { WebClient } from '@slack/web-api';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, SendCapable } from './types.js';
 
@@ -82,13 +82,17 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
     if (!botToken || !appToken) {
       this.running = false;
       this.readiness = botReadinessFromSettings(this.settings);
-      this.reason = 'missing-slack-tokens';
+      this.reason = 'slack_tokens_missing';
       this.emitStatusChange();
       return;
     }
 
-    this.web = new WebClient(botToken);
     try {
+      const require = createRequire(import.meta.url);
+      const { WebClient } = require('@slack/web-api') as typeof import('@slack/web-api');
+      const { SocketModeClient } =
+        require('@slack/socket-mode') as typeof import('@slack/socket-mode');
+      this.web = new WebClient(botToken);
       const identity = await this.web.auth.test();
       if (!identity.ok) throw new Error(identity.error ?? 'Slack auth.test failed');
       this.identity = {
@@ -130,7 +134,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
     } catch (error) {
       this.running = false;
       this.readiness = 'degraded';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.emitStatusChange();
       await this.stopTransport();
       throw error;
@@ -160,7 +164,7 @@ export class SlackBotBridge extends BaseBotAdapter implements SendCapable {
       return typeof result.ts === 'string' ? result.ts : null;
     } catch (error) {
       this.readiness = 'degraded';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }

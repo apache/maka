@@ -164,7 +164,18 @@ export type InteractiveOAuthLoginProvider = Extract<
 >;
 
 export type InteractiveOAuthLoginTarget =
-  | { readonly kind: 'create'; readonly providerType: InteractiveOAuthLoginProvider }
+  | {
+      readonly kind: 'create';
+      readonly providerType: 'openai-codex';
+      readonly slug?: string;
+      readonly name?: string;
+    }
+  | {
+      readonly kind: 'create';
+      readonly providerType: Exclude<InteractiveOAuthLoginProvider, 'openai-codex'>;
+      readonly slug?: never;
+      readonly name?: never;
+    }
   | { readonly kind: 'existing'; readonly connectionId: string };
 
 export interface InteractiveOAuthLoginInput {
@@ -194,6 +205,7 @@ export type BeginInteractiveOAuthLoginResult =
   | { readonly kind: 'connection_not_found' }
   | { readonly kind: 'connection_disabled' }
   | { readonly kind: 'catalog_full' }
+  | { readonly kind: 'slug_taken' }
   | { readonly kind: 'attempt_conflict' }
   | { readonly kind: 'provider_action_unavailable' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
@@ -216,6 +228,7 @@ export type InteractiveOAuthLoginCompletionResult =
       readonly revision: number;
       readonly connection: InteractiveOAuthConnectionIdentity;
     }
+  | { readonly kind: 'slug_taken' }
   | {
       readonly kind: 'superseded';
       readonly changed: readonly Extract<
