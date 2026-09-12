@@ -1134,6 +1134,7 @@ export async function createExecutionRuntimeHostComposition(
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy,
+          permissionMode: header.permissionMode,
           shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
           memory: requireMemory(memory),
@@ -1199,6 +1200,7 @@ export async function createExecutionRuntimeHostComposition(
           });
           return createInteractiveRunComposer({
             runtimePolicy,
+            permissionMode,
             shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
             skills,
             memory: requireMemory(memory),
@@ -1260,6 +1262,7 @@ export async function createExecutionRuntimeHostComposition(
       );
       const childTools = createHostChildAgentToolComposition({
         builtinTools: { ...builtinTools, shell },
+        permissionMode: header.permissionMode,
         hostTools,
         worktreePatchWriteBackAvailable: true,
       }).childTools;

@@ -72,6 +72,7 @@ import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinat
 import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
+import { MacosSeatbeltBackend, SandboxCommandError, SandboxManager } from '@maka/runtime/sandbox';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
 import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
@@ -4297,6 +4298,133 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
   const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
   assert.match(capturedBash?.description ?? '', /captured child shell/);
   assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
+});
+
+test('child Bash boundary declarations follow the child permission mode', () => {
+  const expected = {
+    bypass: {
+      bashKeys: ['command', 'timeout_ms', 'run_in_background', 'pty'],
+      declaresBoundary: false,
+    },
+    ask: {
+      bashKeys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      declaresBoundary: true,
+    },
+    explore: {
+      bashKeys: [
+        'command',
+        'timeout_ms',
+        'run_in_background',
+        'pty',
+        'boundary_intent',
+        'required_boundary',
+      ],
+      declaresBoundary: true,
+    },
+  } as const;
+
+  const shellRuns = {
+    runForegroundBash: () => Promise.reject(new Error('not used')),
+    runBackgroundBash: () => Promise.reject(new Error('not used')),
+  };
+
+  for (const permissionMode of ['bypass', 'ask', 'explore'] as const) {
+    const composition = createHostChildAgentToolComposition({
+      builtinTools: { shellRuns },
+      permissionMode,
+      worktreePatchWriteBackAvailable: true,
+    });
+    const bash = composition.childTools.find((tool) => tool.name === 'Bash');
+    assert.ok(bash, `expected child Bash under ${permissionMode}`);
+    assert.deepEqual(
+      Object.keys(z.toJSONSchema(bash.parameters as z.ZodTypeAny).properties ?? {}),
+      expected[permissionMode].bashKeys,
+      permissionMode,
+    );
+    assert.equal(
+      composition.childTools.some(({ name }) => name === 'request_sandbox_boundary'),
+      false,
+      permissionMode,
+    );
+    assert.equal(
+      bash.description.includes('Enforced by the current session sandbox boundary.'),
+      expected[permissionMode].declaresBoundary,
+      permissionMode,
+    );
+  }
+});
+
+test('projected child Bash reaches managed enforcement without requesting expansion', async () => {
+  const permissionProfile = createWorkspaceWritePermissionProfile();
+  let boundaryRequests = 0;
+  let shellInput: unknown;
+  const composition = createHostChildAgentToolComposition({
+    builtinTools: {
+      permissionProfile,
+      sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+      sandboxPlatform: 'darwin',
+      shellRuns: {
+        async runForegroundBash(input) {
+          shellInput = input;
+          throw new SandboxCommandError({
+            domain: 'command',
+            stage: 'operation',
+            reason: 'sandbox_denial',
+            backend: 'macos-seatbelt',
+            recoverable: true,
+          });
+        },
+        async runBackgroundBash() {
+          throw new Error('background execution was not requested');
+        },
+      },
+    },
+    permissionMode: 'bypass',
+    worktreePatchWriteBackAvailable: true,
+  });
+  const bash = composition.childTools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<Record<string, unknown>, unknown>
+    | undefined;
+  assert.ok(bash);
+  const parameters = bash.parameters as z.ZodTypeAny;
+  assert.deepEqual(Object.keys(z.toJSONSchema(parameters).properties ?? {}), [
+    'command',
+    'timeout_ms',
+    'run_in_background',
+    'pty',
+  ]);
+  const args = parameters.parse({ command: 'cat /private/denied' }) as Record<string, unknown>;
+
+  await assert.rejects(
+    async () =>
+      await bash.impl(args, {
+        sessionId: 'child-session',
+        turnId: 'child-turn',
+        cwd: process.cwd(),
+        permissionMode: 'bypass',
+        executionBoundary: createManagedExecutionBoundary(permissionProfile, 0),
+        toolCallId: 'child-bash',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        requestSandboxBoundary: async () => {
+          boundaryRequests += 1;
+          throw new Error('boundary expansion must not be requested');
+        },
+      }),
+    (error: unknown) => error instanceof SandboxCommandError && error.reason === 'sandbox_denial',
+  );
+  assert.equal(boundaryRequests, 0);
+  assert.equal(
+    (shellInput as { argv?: readonly string[] } | undefined)?.argv?.[0],
+    '/usr/bin/sandbox-exec',
+  );
 });
 
 test('child execution Bash carries the configured shell guidance and spawn plan', async () => {

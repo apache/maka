@@ -107,6 +107,17 @@ export function preprocessBashBoundaryDeclaration<T extends z.ZodType>(schema: T
   return z.preprocess(dropInactiveBashBoundaryDeclaration, schema);
 }
 
+/** Removes declaration-only fields from a Bash call whose active schema omits them. */
+export function stripHistoricalBashBoundaryFields(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const {
+    boundary_intent: _intent,
+    required_boundary: _boundary,
+    ...fields
+  } = value as Record<string, unknown>;
+  return fields;
+}
+
 function dropInactiveBashBoundaryDeclaration(value: unknown): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
   const input = value as Record<string, unknown>;

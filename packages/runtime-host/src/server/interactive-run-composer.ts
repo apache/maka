@@ -65,6 +65,7 @@ import type { PluginSkillService } from '@maka/runtime/plugin-skill-service';
 import type { ScannedSkill } from '@maka/runtime/skills';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
 import { resolveTurnShellPlan, type TurnShellPlan } from '@maka/runtime/shell-detect';
+import { projectBuiltinToolsForPermissionMode } from './builtin-tool-permission-projection.js';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -95,6 +96,7 @@ const CHILD_INSTRUCTION_BOUNDARY = [
 
 export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
+  readonly permissionMode?: PermissionMode;
   readonly skills: HostSkillCatalogCoordinator;
   readonly pluginSkills?: PluginSkillService;
   readonly memory: HostMemoryCoordinator;
@@ -144,6 +146,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     input.builtinTools && input.shell
       ? { ...input.builtinTools, shell: input.shell }
       : input.builtinTools;
+  const effectivePermissionMode = input.permissionMode ?? input.plan?.permissionMode;
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(
     input.skills,
     input.pluginSkills,
@@ -164,6 +167,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
+        effectivePermissionMode,
         input.plan,
         input.deepResearch?.tools,
       );
@@ -187,7 +191,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
           mode: input.plan.mode,
           tools: candidateTools,
           hasActiveExecution: activeExecution !== undefined,
-          fullAccess: input.plan.permissionMode === 'bypass',
+          fullAccess: effectivePermissionMode === 'bypass',
         })
       : candidateTools;
     // A bound tool list is an exact child/local activation ceiling. Dynamic
@@ -260,7 +264,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               workspaceInstructions,
               promptState.memory,
               input.plan?.mode === 'plan'
-                ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
+                ? renderPlanModePrompt({ fullAccess: effectivePermissionMode === 'bypass' })
                 : undefined,
               input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
@@ -451,6 +455,7 @@ export function createInteractiveRunComposerFactory(
       const { hostTools, boundTools, parentAgentTools } = toolSurface;
       const composer = createInteractiveRunComposer({
         runtimePolicy,
+        permissionMode: backendContext.header.permissionMode,
         skills: input.skills,
         ...(input.pluginSkills ? { pluginSkills: input.pluginSkills } : {}),
         memory: input.memory,
@@ -545,12 +550,17 @@ function buildDefaultHostTools(
   scheduledTaskTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
+  permissionMode?: PermissionMode,
   plan?: InteractiveRunComposerInput['plan'],
   deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
-  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
+  const projectedBuiltinOptions = builtinOptions
+    ? projectBuiltinToolsForPermissionMode(builtinOptions, permissionMode)
+    : undefined;
+  const builtins = projectedBuiltinOptions ? buildBuiltinTools(projectedBuiltinOptions) : [];
   const question = buildAskUserQuestionTool();
-  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const sandboxBoundaryTools =
+    permissionMode === 'bypass' ? [] : [buildRequestSandboxBoundaryTool()];
   const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -570,7 +580,7 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
-    sandboxBoundary.name,
+    ...sandboxBoundaryTools.map((tool) => tool.name),
     'Skill',
     'SkillSearch',
     ...todoTools.map((tool) => tool.name),
@@ -586,7 +596,7 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
-    sandboxBoundary,
+    ...sandboxBoundaryTools,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...todoTools,
