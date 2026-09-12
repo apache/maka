@@ -286,7 +286,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // This schedules no scroll and uses no time-based ignore window.
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (gesture !== ended || ended.top !== top || pointer !== undefined || touchHeld) return;
-          pinned = ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX;
+          // Input that can scroll and observed reader movement already release
+          // the pin. Settling an unmoved edge gesture must not release it too.
+          pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
           flushCommit();
           publish();
