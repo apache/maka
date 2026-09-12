@@ -77,6 +77,7 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 ## Reading paths
 
 - Host ownership, admission, observation, Client isolation and lifecycle: [Runtime Host architecture](./docs/architecture/runtime-host-architecture.md).
+- Proposed Desktop conversation projection design (Chinese; not yet implemented): [Host-owned conversation lifecycle](./docs/architecture/desktop-conversation-host-projection.zh-CN.md).
 - Network identity, membership, path selection and stream recovery: [Peer Mesh architecture](./docs/architecture/peer-mesh-architecture.md).
 - Runtime facts and projections: [Runtime core](./docs/architecture/runtime-core-architecture-draft.md) and [compaction](./docs/architecture/llm-compaction-events-log-projection-draft.md).
 - Crash recovery and continuation: [Runtime resume](./docs/architecture/runtime-resume-architecture.md).
