@@ -59,11 +59,6 @@ export function isUsableOpencodeSessionId(id: string): boolean {
   return SESSION_ID_PATTERN.test(id);
 }
 
-/** The one OpenCode database file, named by the adapter alone. */
-export function opencodeDatabasePath(opencodeHome: string): string {
-  return join(opencodeHome, 'opencode.db');
-}
-
 export interface OpenCodeSessionAdapterOptions {
   /** Overrides `~/.local/share/opencode`. */
   opencodeHome?: string;
@@ -252,43 +247,58 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
       // selected import either carries what the session recorded or fails.
       // Bounded reads (digest) stop at the budget instead, and report the
       // cut: that caller consumes a capped projection, not the import.
-      let bytesRead = 0;
-      let truncated = false;
-      const messages: MessageRow[] = [];
-      const messageRows = db
-        .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
-        .all(sessionId);
-      for (const [index, row] of messageRows.entries()) {
-        const data =
-          typeof (row as { data?: unknown }).data === 'string'
-            ? (row as { data: string }).data.length
-            : 0;
-        if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
-          truncated = true;
-          break;
-        }
-        bytesRead += data;
-        messages.push(requireRow(toMessageRow(row), 'message', index));
+      if (maxReadBytes === undefined) {
+        const messageRows = db
+          .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
+          .all(sessionId);
+        const partRows = db
+          .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
+          .all(sessionId);
+        return {
+          messages: messageRows.map((row, index) => requireRow(toMessageRow(row), 'message', index)),
+          parts: partRows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
+          truncated: false,
+        };
       }
-      // Ordered by the message they belong to and then by their own id, which
-      // is how the writer orders them; `time_created` ties within one step.
-      const partRows = db
-        .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
-        .all(sessionId);
-      const parts: PartRow[] = [];
-      for (const [index, row] of partRows.entries()) {
-        const data =
-          typeof (row as { data?: unknown }).data === 'string'
-            ? (row as { data: string }).data.length
-            : 0;
-        if (maxReadBytes !== undefined && bytesRead + data > maxReadBytes) {
-          truncated = true;
-          break;
+      // The budget is written in UTF-8 bytes, so the sizes come from SQLite:
+      // `length(CAST(data AS BLOB))` counts bytes while the JS `data.length`
+      // this loop used before counts UTF-16 code units and under-counts CJK
+      // payloads by the encoding ratio (#5125 review). Sizing first also means
+      // only the fitting prefix is ever fetched — `.all()` on the payload
+      // columns materialized every oversized row just to drop it. One budget
+      // spans both tables: parts draw on what messages leave unspent.
+      const fitPrefix = (
+        selectSizes: string,
+        selectRows: string,
+        budget: number,
+      ): { rows: unknown[]; used: number; truncated: boolean } => {
+        const sizes = db.prepare(selectSizes).all(sessionId) as Array<{ bytes?: unknown }>;
+        let used = 0;
+        let count = 0;
+        for (const row of sizes) {
+          const size = numberOf(row.bytes) ?? 0;
+          if (used + size > budget) break;
+          used += size;
+          count += 1;
         }
-        bytesRead += data;
-        parts.push(requireRow(toPartRow(row), 'part', index));
-      }
-      return { messages, parts, truncated };
+        const rows = count === 0 ? [] : db.prepare(selectRows).all(sessionId, count);
+        return { rows, used, truncated: count < sizes.length };
+      };
+      const fitMessages = fitPrefix(
+        'SELECT length(CAST(data AS BLOB)) AS bytes FROM message WHERE session_id = ? ORDER BY rowid',
+        'SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY rowid LIMIT ?',
+        maxReadBytes,
+      );
+      const fitParts = fitPrefix(
+        'SELECT length(CAST(data AS BLOB)) AS bytes FROM part WHERE session_id = ? ORDER BY time_created, id',
+        'SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id LIMIT ?',
+        maxReadBytes - fitMessages.used,
+      );
+      return {
+        messages: fitMessages.rows.map((row, index) => requireRow(toMessageRow(row), 'message', index)),
+        parts: fitParts.rows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
+        truncated: fitMessages.truncated || fitParts.truncated,
+      };
     });
   }
 }

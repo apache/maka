@@ -877,6 +877,52 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
     );
     assert.equal(digest.userMessages.length, 1, 'the prompt read before the cut survives');
   });
+
+  it('counts CJK payload bytes, not UTF-16 units, when bounding the opencode digest (#5125 review)', async () => {
+    const home = await tempHome();
+    // 2,000,000 CJK characters are 6,000,000 UTF-8 bytes — well past the
+    // 2 MiB budget — while their UTF-16 `data.length` is 2,000,000, under it.
+    // A bound counted in code units read this payload whole and reported no
+    // truncation; the byte-accurate cut warns instead (#5125 review).
+    const oversized = '中'.repeat(2_000_000);
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_cjk', directory: '/repo', title: 'cjk', timeUpdated: NOW },
+      {
+        messages: [
+          { id: 'msg_u', timeCreated: 1, data: { role: 'user', time: { created: 1 } } },
+          {
+            id: 'msg_a1',
+            timeCreated: 2,
+            data: { role: 'assistant', time: { created: 2 }, finish: 'tool-calls', modelID: 'm' },
+          },
+        ],
+        parts: [
+          { id: 'p_u1', messageId: 'msg_u', timeCreated: 1, data: { type: 'text', text: 'hi' } },
+          {
+            id: 'p_a1',
+            messageId: 'msg_a1',
+            timeCreated: 2,
+            data: {
+              type: 'tool',
+              callID: 'c1',
+              tool: 'bash',
+              state: { status: 'completed', input: {}, output: oversized },
+            },
+          },
+        ],
+      },
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(
+      digest.warnings.some((w) => w.includes('bytes were read')),
+      JSON.stringify(digest.warnings),
+    );
+    assert.equal(digest.userMessages.length, 1, 'the prompt read before the cut survives');
+  });
 });
 
 describe('foreign session store — digest', () => {

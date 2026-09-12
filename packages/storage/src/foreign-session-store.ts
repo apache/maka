@@ -43,7 +43,6 @@
  * rollout-file directory walk as fallback.
  */
 
-import { existsSync } from 'node:fs';
 import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
@@ -84,7 +83,6 @@ import type { ExternalSessionSummary } from '@maka/core/external-session';
 import {
   isUsableOpencodeSessionId,
   OpenCodeSessionAdapter,
-  opencodeDatabasePath,
 } from './opencode-session-adapter.js';
 
 export interface ForeignSessionScanOptions {

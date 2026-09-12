@@ -442,6 +442,59 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('a bounded read truncates on UTF-8 bytes and fetches only the fitting prefix', async () => {
+    await withOpenCodeHome(async (home) => {
+      // One CJK tool output: 3,000 UTF-8 bytes but only 1,000 UTF-16 code
+      // units. The 2,000-byte budget is exceeded in UTF-8 terms while the
+      // `data.length` check the loop used before counts UTF-16 units and read
+      // on — and `.all()` materialized the oversized row just to drop it.
+      // Both are the failure shapes this test pins (#5125 review).
+      const cjk = '中'.repeat(1_000);
+      const fixture = await seed(home, (f) => {
+        f.messages = [
+          { id: 'm_user', time_created: 1, data: { role: 'user', time: { created: 1 } } },
+          {
+            id: 'm_assistant',
+            time_created: 2,
+            data: { role: 'assistant', time: { created: 2 }, finish: 'stop', modelID: 'm' },
+          },
+        ];
+        f.parts = [
+          { id: 'p_1', message_id: 'm_user', time_created: 1, data: { type: 'text', text: 'prompt' } },
+          {
+            id: 'p_2',
+            message_id: 'm_assistant',
+            time_created: 2,
+            data: {
+              type: 'tool',
+              callID: 'c1',
+              tool: 'bash',
+              state: { status: 'completed', input: {}, output: cjk },
+            },
+          },
+          { id: 'p_3', message_id: 'm_assistant', time_created: 3, data: { type: 'text', text: 'tail' } },
+        ];
+        return f;
+      });
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      const { session, truncated } = await adapter.readSessionBounded(
+        fixture.session.id,
+        2_000,
+      );
+
+      // The CJK payload alone outgrows the budget, so it and the rows behind
+      // it are cut — and none of that payload is fetched into the result.
+      assert.equal(truncated, true);
+      const rendered = JSON.stringify(session);
+      assert.ok(!rendered.includes('tail'), 'rows behind the cut are not returned');
+      assert.ok(!rendered.includes('中'), 'the oversized payload is not returned');
+      assert.ok(
+        session.messages.some((message) => message.type === 'user' && message.text === 'prompt'),
+        'the rows that fit the budget survive the cut',
+      );
+    });
+  });
+
   test('the registry exposes the adapter under its own id', async () => {
     const registry = createExternalSessionAdapterRegistry();
     const adapter = registry.get(OPENCODE_SESSION_ADAPTER_ID);
