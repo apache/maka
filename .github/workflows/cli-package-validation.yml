@@ -131,7 +131,7 @@ jobs:
             echo "RUSTC_WRAPPER=kache"
           } >> "$GITHUB_ENV"
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2
         with:
           tool: kache@0.16.0
       - id: kache-cache
@@ -149,7 +149,7 @@ jobs:
           version: 0.16.0
       - name: Install cargo-zigbuild
         if: startsWith(matrix.target, 'linux-')
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2
         with:
           tool: cargo-zigbuild@0.23.2
       - name: Build the release addon
@@ -221,7 +221,7 @@ jobs:
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2
         with:
           tool: cargo-deny@0.20.2
       - name: Download Runtime Host native artifacts
