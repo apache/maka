@@ -183,6 +183,40 @@ describe('countDiffLineStats', () => {
     assert.deepEqual(countDiffLineStats(diff), { additions: 2, deletions: 0 });
   });
 
+  test('counts without materializing display rows or splitting the full diff', () => {
+    const diff = '--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n kept\n-old\n+new\n';
+    const originalPush = Array.prototype.push;
+    const originalSplit = String.prototype.split;
+    let displayRows = 0;
+    let fullLineSplits = 0;
+    let stats: ReturnType<typeof countDiffLineStats>;
+
+    // Probe only the synchronous call, restoring globals before assertions or
+    // test-runner work. This catches the original allocation regression without
+    // depending on machine-specific timing or heap thresholds.
+    try {
+      Array.prototype.push = function (this: unknown[], ...items: unknown[]): number {
+        for (const item of items) {
+          if (item && typeof item === 'object' && 'kind' in item && 'text' in item) {
+            displayRows += 1;
+          }
+        }
+        return Reflect.apply(originalPush, this, items);
+      };
+      String.prototype.split = function (this: string, ...args: unknown[]): string[] {
+        if (this === diff && args[0] === '\n') fullLineSplits += 1;
+        return Reflect.apply(originalSplit, this, args);
+      };
+      stats = countDiffLineStats(diff);
+    } finally {
+      Array.prototype.push = originalPush;
+      String.prototype.split = originalSplit;
+    }
+
+    assert.deepEqual(stats, { additions: 1, deletions: 1 });
+    assert.deepEqual({ displayRows, fullLineSplits }, { displayRows: 0, fullLineSplits: 0 });
+  });
+
   test('counts actual hunk content, including truncated and zero-count hunks', () => {
     const cases = [
       { diff: '', additions: 0, deletions: 0 },
