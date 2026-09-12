@@ -166,7 +166,6 @@
     "src/renderer/settings/provider-oauth-section.tsx",
     "src/renderer/settings/providers-panel.tsx",
     "src/renderer/settings/relay-profile-draft.ts",
-    "src/renderer/settings/relay-thinking-bulk.ts",
     "src/renderer/settings/request-customization-editor.tsx",
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
@@ -3061,7 +3060,6 @@
           "./provider-add-model-dialog": 1,
           "./provider-display": 1,
           "./provider-endpoint-presentation": 1,
-          "./relay-thinking-bulk": 1,
           "./request-customization-editor": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-expandable-row": 1,
@@ -3189,15 +3187,6 @@
         "dependencyPaths": {
           "@maka/core/model-thinking": 1
         }
-      },
-      "src/renderer/settings/relay-thinking-bulk.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/settings/request-customization-editor.tsx": {
         "bridgePaths": {},
@@ -3779,7 +3768,6 @@
           "./connection-name-draft.js": 1,
           "./provider-connection-status": 1,
           "./relay-profile-draft": 1,
-          "./relay-thinking-bulk": 1,
           "./runtime-host-settings-target.js": 1,
           "./use-action-guard": 1,
           "@maka/core/llm-connections": 2,

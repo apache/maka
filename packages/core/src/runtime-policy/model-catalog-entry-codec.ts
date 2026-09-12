@@ -39,6 +39,7 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'canUseAsChatDefault',
       'isDefault',
       'supportsVision',
+      'defaultSupportsVision',
       'thinkingLevels',
       'contextWindow',
       'knowledgeCutoff',
@@ -65,6 +66,14 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
     canUseAsChatDefault: booleanValue(item.canUseAsChatDefault, 'entry chat default eligibility'),
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     supportsVision: booleanValue(item.supportsVision, 'entry vision support'),
+    ...(item.defaultSupportsVision !== undefined
+      ? {
+          defaultSupportsVision: booleanValue(
+            item.defaultSupportsVision,
+            'entry default vision support',
+          ),
+        }
+      : {}),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
     describedByMetadata: booleanValue(item.describedByMetadata, 'entry metadata coverage'),
   };

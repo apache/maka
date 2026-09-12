@@ -476,6 +476,24 @@ test('no provider resolves past the wire bound at the storage maxima', () => {
   assert.equal(largest, CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION);
 });
 
+test('catalog preserves the image default through overrides and the wire', () => {
+  for (const reported of [undefined, false, true]) {
+    for (const declared of [undefined, false, true]) {
+      const [entry] = resolveConnectionModelCatalog({
+        slug: 'relay',
+        providerType: 'openai-compatible',
+        defaultModel: 'custom-vision',
+        modelSource: 'fetched',
+        models: [{ id: 'custom-vision', capabilities: { vision: reported } }],
+        relayModelProfiles: { 'custom-vision': { vision: declared } },
+      });
+      const decoded = decodeModelCatalogEntry(JSON.parse(JSON.stringify(entry)));
+      assert.equal(decoded.defaultSupportsVision, reported ?? false);
+      assert.equal(decoded.supportsVision, declared ?? reported ?? false);
+    }
+  }
+});
+
 test('describedByMetadata reports whether resolved metadata covers a model, and rides the wire (#4496)', () => {
   // A model the bundled catalog knows: the Host's entry can describe it, so the
   // renderer trusts the catalog and shows no hand-entry row. The value is the

@@ -70,6 +70,8 @@ export interface ModelCatalogEntry {
   isDefault: boolean;
   /** Exact capability projection used by model-facing attachment composition. */
   supportsVision: boolean;
+  /** Host-resolved image support before the user's per-model override. */
+  defaultSupportsVision?: boolean;
   /**
    * Reasoning levels this model offers on this connection, in display order;
    * empty for a non-reasoning model. Part of the entry rather than a second
@@ -463,14 +465,14 @@ function makeEntry(
     providerType: input.providerType,
     ...(input.relayModelProfiles ? { relayModelProfiles: input.relayModelProfiles } : {}),
   };
+  const defaultSupportsVision = resolveModelVisionSupport(
+    input.providerType,
+    [normalizedModel],
+    normalizedModel.id,
+  );
   const capabilities = {
     ...mergeCapabilities(normalizedModel.capabilities, metadata.capabilities),
-    vision: resolveModelVisionSupport(
-      input.providerType,
-      [normalizedModel],
-      normalizedModel.id,
-      relayModelProfile(thinkingContext, normalizedModel.id)?.vision,
-    ),
+    vision: relayModelProfile(thinkingContext, normalizedModel.id)?.vision ?? defaultSupportsVision,
   };
   // `modalities` too, not just `capabilities`: both are merged from the
   // provider row and the bundled metadata a few lines up, and the chat guard
@@ -498,6 +500,7 @@ function makeEntry(
     canUseAsChatDefault,
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     supportsVision: capabilities.vision === true,
+    defaultSupportsVision,
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
     // Whether metadata describes this id at all — the same question
     // `hasModelMetadata` answers, decided here on the Host's catalog so a client

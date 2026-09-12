@@ -48,7 +48,6 @@ import {
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
-import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
 import type {
   OAuthAccountFlowBridge,
@@ -469,28 +468,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     });
   }
 
-  // One shape for all three fields: the field setter pins or removes its key,
-  // and an entry with no keys left IS the undeclared state — storing it would
-  // keep the row looking edited after the user emptied every field. The rule
-  // lives in relay-thinking-bulk so the row setter and the bulk control
-  // cannot drift on what an emptied declaration collapses to.
   function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => relayProfileWithThinkingLevels(current, levels));
-  }
-
-  // The same edit across every enabled model, applied and saved as ONE gesture:
-  // the bulk menu has no Save of its own, so a tick there is a commit. The
-  // table is computed once and handed straight to the save so the write cannot
-  // race a re-render of the draft state.
-  async function saveThinkingLevelForAll(
-    modelIds: readonly string[],
-    level: ThinkingLevel,
-    checked: boolean,
-  ): Promise<boolean> {
-    const next = applyBulkThinkingLevel(modelIds, relayProfileDrafts, level, checked);
-    setRelayProfilesDirty(true);
-    setRelayProfileDrafts(next);
-    return saveRelayProfiles(next);
+    updateRelayProfileDraft(modelId, (current) => {
+      if (!levels?.length) {
+        if (!current) return current;
+        const { thinkingLevels: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), thinkingLevels: [...levels] };
+    });
   }
 
   // Put one model's draft back to what is saved — a per-row Cancel. The other
@@ -586,9 +572,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.slug, connection.name]);
 
-  async function saveRelayProfiles(
-    drafts: Readonly<Record<string, RelayModelProfile>> = relayProfileDrafts,
-  ): Promise<boolean> {
+  async function saveRelayProfiles(): Promise<boolean> {
     // Refuse while the draft still belongs to the previous connection: in the
     // window between the slug switch rendering and the reseed effect
     // flushing, 保存 must not hand B this draft.
@@ -603,7 +587,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // same way a saved document would.
       await props.bridge.update(connectionIdentity, {
         relayModelProfiles:
-          normalizeRelayModelProfiles(pruneRelayModelProfiles(drafts, enabledModelIds) ?? {}) ?? null,
+          normalizeRelayModelProfiles(pruneRelayModelProfiles(relayProfileDrafts, enabledModelIds) ?? {}) ?? null,
       });
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setRelayProfilesDirty(false);
@@ -897,7 +881,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     relayProfilesDirty,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
-    saveThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,

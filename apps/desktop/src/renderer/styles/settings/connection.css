@@ -17,6 +17,30 @@
  * under the License.
  */
 
-/* Astryx convergence: connection-list / Claude card chrome moved to Banner,
-   Card, StatusDot, ProgressBar. File kept as an import seam so settings.css
-   does not thrash while the last hand-rolled helpers are retired. */
+.providerCapabilityFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: var(--space-5) var(--space-6);
+  padding-block: var(--space-2);
+}
+
+.providerCapabilityField {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--space-2);
+}
+
+.providerCapabilityField > button {
+  width: 100%;
+}
+
+.providerCapabilityFields:has(> :nth-child(4)) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container settings-rows (max-width: 520px) {
+  .providerCapabilityFields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

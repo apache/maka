@@ -23,7 +23,7 @@ import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
-import { ToastProvider } from '@maka/ui';
+import { ToastProvider, useUiLocale } from '@maka/ui';
 import type {
   ConnectionTestResult,
   IdentifiedLlmConnection,
@@ -172,12 +172,7 @@ const staticCatalogConnections = [
   },
 ];
 
-// A custom relay fronting one model family. Capability declarations are a
-// relay-only surface — a built-in provider's thinking support comes from
-// bundled metadata — and the family shares one `reasoning_effort` vocabulary,
-// which is the case the bulk control exists for. `deepseek-r2` already
-// declares two levels so the story shows partial coverage, not just the
-// all-or-nothing ends.
+// A relay with independent capability declarations for each enabled model.
 const relayConnections = [
   {
     ...makeConnection({
@@ -262,7 +257,10 @@ function createBridge(input: {
   failLoad?: boolean;
   loading?: boolean;
 }): StoryConnectionsBridge {
-  let connections = [...(input.connections ?? [])];
+  let connections: ProjectedLlmConnection[] = (input.connections ?? []).map((connection) => ({
+    ...connection,
+    catalogEntries: resolveConnectionModelCatalog(connection),
+  }));
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
@@ -299,7 +297,7 @@ function createBridge(input: {
     async update(identity, patch) {
       const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
-      const updated: ProjectedLlmConnection = {
+      const nextConnection = {
         ...current,
         ...patch,
         // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);
@@ -313,6 +311,10 @@ function createBridge(input: {
             ? current.requestBodyOverlay
             : (patch.requestBodyOverlay ?? undefined),
         updatedAt: NOW,
+      };
+      const updated: ProjectedLlmConnection = {
+        ...nextConnection,
+        catalogEntries: resolveConnectionModelCatalog(nextConnection),
       };
       connections = connections.map((connection) => connection.connectionId === identity.connectionId ? updated : connection);
       return updated;
@@ -583,6 +585,7 @@ function ProviderStoryFrame(props: {
   autoOpen?: AutoOpenTarget;
   onOAuthComplete?: () => void;
 }) {
+  const copy = getProviderSettingsCopy(useUiLocale());
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
 
@@ -609,7 +612,7 @@ function ProviderStoryFrame(props: {
         data-maka-e2e-fixture="true"
         style={{
           gridTemplateColumns: 'minmax(0, 1fr)',
-          height: 700,
+          height: '100dvh',
           margin: '0 auto',
           maxWidth: 1040,
           minHeight: 0,
@@ -630,7 +633,7 @@ function ProviderStoryFrame(props: {
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">
                   <div className="settingsPageHeaderTitleStack">
-                    <h2>模型</h2>
+                    <h2>{copy.detail.modelManagement}</h2>
                   </div>
                 </div>
               </LayoutHeader>
@@ -821,11 +824,7 @@ export const StaticCatalogConnectionDetail: Story = {
   },
 };
 
-// Real path: 设置 → 模型 → click a custom relay — several enabled models, each
-// with a 配置参数 editor, and 批量设置思考档位 in the section's action cluster
-// writing into all of them at once. Opening its menu shows each level's
-// coverage across the table: `low` and `high` on 1 of 4, everything else on
-// none.
+// Settings → Models → a relay with several independently configured models.
 export const RelayConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -833,35 +832,10 @@ export const RelayConnectionDetail: Story = {
       autoOpen="detail-relay"
     />
   ),
-  // Opens the batch menu and asserts that partial coverage reaches assistive
-  // technology, not only the eye. The item carries its own `aria-label`, which
-  // replaces the accessible name the visible description would otherwise have
-  // joined — and the menu item does not wire `description` to
-  // `aria-describedby`. Without an explicit description, "1/4 个模型" and
-  // "全部未声明" both reach a screen reader as an unchecked box with the same
-  // name, which is exactly the state the count exists to distinguish.
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body);
-    const trigger = await body.findByRole('button', { name: /批量设置思考档位/ });
-    await userEvent.click(trigger);
-
-    // `low` is declared by one of the four models; `minimal` by none.
-    const partial = await body.findByRole('menuitemcheckbox', {
-      name: '批量设置思考档位 low',
-    });
-    const none = await body.findByRole('menuitemcheckbox', {
-      name: '批量设置思考档位 minimal',
-    });
-
-    // Both are unchecked — coverage is the only thing separating them.
-    await expect(partial).toHaveAttribute('aria-checked', 'false');
-    await expect(none).toHaveAttribute('aria-checked', 'false');
-    await expect(partial).toHaveAttribute('aria-description', '1/4 个模型');
-    await expect(none).toHaveAttribute('aria-description', '全部未声明');
-
-    await userEvent.keyboard('{Escape}');
     await userEvent.click(
-      body.getByRole('button', {
+      await body.findByRole('button', {
         name: `${detailCopy.edit}: ${detailCopy.requestHeaders}`,
       }),
     );
@@ -882,6 +856,23 @@ export const RelayConnectionDetail: Story = {
     expect(cell.getBoundingClientRect().height).toBeLessThanOrEqual(
       field.getBoundingClientRect().height + 1,
     );
+  },
+};
+
+// Settings → Models → relay → configure one enabled model.
+export const ModelCapabilities: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*deepseek-r2/i });
+    configure.click();
+    await waitFor(() => expect(canvasElement.querySelector('.providerCapabilityFields')).not.toBeNull());
+    const pane = canvasElement.querySelector('.settingsMainPane');
+    if (pane) pane.scrollTop = 0;
   },
 };
 

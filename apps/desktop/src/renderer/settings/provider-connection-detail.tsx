@@ -77,7 +77,6 @@ import {
   savedRequestHeaderDrafts,
   type RequestHeaderDraft,
 } from './request-customization-editor';
-import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 /** Past this many model rows the list needs a filter to be usable. */
@@ -197,7 +196,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     relayProfileDraft,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
-    saveThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,
@@ -236,10 +234,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     return entry !== undefined && !entry.describedByMetadata;
   });
   const declaringModelIds = new Set(capabilityModelIds);
-  // The bulk control edits the relay-only thinking declaration and needs
-  // repetition to be worth a control at all: with one row it would be a second
-  // widget doing what the row under it already does.
-  const showsThinkingBulk = isRelay && capabilityModelIds.length > 1;
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
@@ -658,63 +652,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 <Button variant="secondary" size="sm" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
               )}
               <Button variant="secondary" size="sm" isDisabled={allActionsBusy} onClick={() => openRow('add-model')} label={copy.addModel} />
-              {/* One control for the whole table. A relay usually fronts one
-                  model family that accepts the same reasoning_effort values,
-                  and declaring that per row was models × levels clicks for a
-                  single fact. A tick here saves at once — there is no editor
-                  open to hold a draft — so it waits while a row's editor is
-                  open rather than committing that row's half-typed draft. */}
-              {showsThinkingBulk && (
-                <DropdownMenu
-                  button={{
-                    variant: 'secondary',
-                    size: 'sm',
-                    label: copy.thinkingBulk,
-                    'aria-label': copy.thinkingBulk,
-                    isDisabled: allActionsBusy || editingModelId !== null,
-                  }}
-                  hasChevron
-                  menuWidth={240}
-                >
-                  {/* The declarable vocabulary, which is the whole of what a
-                      draft can hold: the seed sanitizes through
-                      `normalizeRelayModelProfiles`, so `off` — a disable wire
-                      no generic relay is presumed to speak — cannot reach a
-                      row here either. */}
-                  {bulkThinkingLevelStates(
-                    capabilityModelIds,
-                    relayProfileDraft,
-                    DECLARABLE_RELAY_THINKING_LEVELS,
-                  ).map((state) => (
-                    <DropdownMenuCheckboxItem
-                      key={state.level}
-                      label={state.level}
-                      /* The box only ticks at full coverage, so the count is
-                         the sole place partial coverage is legible — without
-                         it "3 of 5 declare high" and "none do" present as the
-                         same empty box. */
-                      description={copy.thinkingBulkCoverage(state.declaredCount, state.total)}
-                      aria-label={`${copy.thinkingBulk} ${state.level}`}
-                      /* The item's `description` is visible text only — the
-                         component does not wire it to `aria-describedby`, and
-                         this item's own `aria-label` replaces the name the
-                         description would otherwise have joined. Without this,
-                         "1/4 个模型" and "全部未声明" both reach a screen reader
-                         as an unchecked box with the same name, which is
-                         exactly the partial state the count exists to show. */
-                      aria-description={copy.thinkingBulkCoverage(
-                        state.declaredCount,
-                        state.total,
-                      )}
-                      value={state.checked}
-                      onChange={(checked) => {
-                        void saveThinkingLevelForAll(capabilityModelIds, state.level, checked);
-                      }}
-                      isDisabled={allActionsBusy}
-                    />
-                  ))}
-                </DropdownMenu>
-              )}
             </HStack>
           )}
         >
@@ -753,11 +690,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             const label = entry?.displayName?.trim() || id;
             const declared: RelayModelProfile | undefined = relayProfileDraft[id];
             const declares = declaringModelIds.has(id);
-            // The table as saved, not the draft: the entry below was resolved
-            // against the saved declarations, so its vision answers "what does
-            // 默认 give" only while none is saved. A saved one IS the answer,
-            // and the control shows it without help.
-            const savedVision = connection.relayModelProfiles?.[id]?.vision;
             // One supporting line, the facts separated by dots: the id when it
             // differs from the name, then what the model can do. Plain text,
             // not a token per fact — three pills under a name and a badge read
@@ -817,7 +749,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   disabled={allActionsBusy}
                   showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
                   reportedContextWindow={connection.models?.find((model) => model.id === id)?.contextWindow}
-                  defaultVision={savedVision === undefined ? entry?.supportsVision : undefined}
+                  defaultVision={connection.catalogEntries.find((model) => model.id === id)?.defaultSupportsVision}
                   onThinkingLevels={(levels) => setDraftThinkingLevels(id, levels)}
                   onVision={(vision) => setDraftVision(id, vision)}
                   onContextWindowInput={(input) => changeContextWindow(id, input)}
@@ -934,11 +866,6 @@ function formatTokenCount(value: number): string {
   return `${Math.round(value / 1000)}k`;
 }
 
-/**
- * The declaration editor for one model, inside its expanded row: each fact
- * as a label + one sentence on the left and one compact control on the right.
- * Edits land in the hook's per-model draft; the row's 保存 commits the table.
- */
 function CapabilityEditor(props: {
   copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
   modelId: string;
@@ -950,12 +877,6 @@ function CapabilityEditor(props: {
   showsFastMode: boolean;
   /** The window the provider's model list reports, offered as a one-click fill while nothing is declared. */
   reportedContextWindow: number | undefined;
-  /**
-   * What 「默认」resolves to for this model, and only while nothing is declared.
-   * Absent means the answer is not knowable here — see the caller, which reads
-   * it off the resolved entry so the verdict comes from the Host's catalog
-   * rather than this build's bundled table.
-   */
   defaultVision: boolean | undefined;
   onThinkingLevels(levels: ThinkingLevel[] | undefined): void;
   onVision(vision: boolean | undefined): void;
@@ -963,12 +884,6 @@ function CapabilityEditor(props: {
   onServiceTier(tier: 'fast' | undefined): void;
 }) {
   const { copy, modelId, declared } = props;
-  // Vision resolves to one of three states: absent (Default), true (Enabled),
-  // false (explicitly Disabled). Only Default is ever ambiguous — the verdict
-  // comes from the provider's report and the metadata chain, and a provider
-  // that reports neither resolves to "no". So while Default is selected the
-  // field states the verdict, the way the context window field states the
-  // window the provider reported.
   const visionValue =
     declared?.vision === true ? 'enabled' : declared?.vision === false ? 'disabled' : 'auto';
   const draftLevels = declared?.thinkingLevels ?? [];
@@ -982,11 +897,59 @@ function CapabilityEditor(props: {
       draftLevels.includes(level),
   );
   return (
-    <VStack gap={3}>
-      {/* Relay-only, like 快速模式 below: a declared level encodes into
-          `reasoning_effort`, a wire field only the OpenAI-compatible relays
-          accept. The catalog codec refuses to persist one elsewhere, so
-          offering the control would promise an edit that cannot be saved. */}
+    <div className="providerCapabilityFields">
+      <CapabilityField label={copy.visionInput} description={copy.visionInputHelp}>
+          <Selector
+            label={`${copy.visionInput} — ${modelId}`}
+            isLabelHidden
+            size="sm"
+            width="100%"
+            options={[
+              { value: 'auto', label: copy.visionDefaultOption(props.defaultVision) },
+              { value: 'enabled', label: copy.visionEnabledOption },
+              { value: 'disabled', label: copy.visionDisabledOption },
+            ]}
+            value={visionValue}
+            onChange={(value) => props.onVision(value === 'auto' ? undefined : value === 'enabled')}
+            isDisabled={props.disabled}
+          />
+      </CapabilityField>
+      <CapabilityField label={copy.contextWindow} description={copy.contextWindowHelp}>
+        <VStack gap={1}>
+          <TextInput
+            size="sm"
+            width="100%"
+            value={props.contextWindowInput}
+            isDisabled={props.disabled}
+            /* Named per model, like the controls around it: the visible label
+               is the field's, but the control's own name is all a screen reader
+               gets, and every open row carries the same one. */
+            label={`${copy.contextWindow} — ${modelId}`}
+            isLabelHidden
+            hasClear
+            placeholder="128000 / 128K / 1M"
+            onChange={props.onContextWindowInput}
+            status={props.contextWindowInputInvalid
+              ? { type: 'error', message: copy.contextWindowInputInvalid }
+              : undefined}
+          />
+          {declared?.contextWindow === undefined && props.reportedContextWindow !== undefined && (
+            <HStack gap={1} vAlign="center">
+              <Text size="sm" type="supporting" color="secondary">
+                {copy.contextWindowHint(props.reportedContextWindow)}
+              </Text>
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.contextWindowApplyHint}
+                isDisabled={props.disabled}
+                onClick={() => props.onContextWindowInput(String(props.reportedContextWindow ?? ''))}
+              />
+            </HStack>
+          )}
+        </VStack>
+      </CapabilityField>
+      {/* Only relays accept a reasoning_effort declaration. */}
       {props.isRelay && (
         <CapabilityField label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
           {/* DropdownMenu, not MultiSelector: levels have a canonical order
@@ -1026,71 +989,13 @@ function CapabilityEditor(props: {
           </DropdownMenu>
         </CapabilityField>
       )}
-      <CapabilityField label={copy.visionInput} description={copy.visionInputHelp}>
-        <VStack gap={1} hAlign="start">
-          <Selector
-            label={`${copy.visionInput} — ${modelId}`}
-            isLabelHidden
-            size="sm"
-            width={132}
-            options={[
-              { value: 'auto', label: copy.visionAuto },
-              { value: 'enabled', label: copy.visionEnabledOption },
-              { value: 'disabled', label: copy.visionDisabledOption },
-            ]}
-            value={visionValue}
-            onChange={(value) => props.onVision(value === 'auto' ? undefined : value === 'enabled')}
-            isDisabled={props.disabled}
-          />
-          {visionValue === 'auto' && props.defaultVision !== undefined && (
-            <Text size="sm" type="supporting" color="secondary">
-              {copy.visionResolvedHint(props.defaultVision)}
-            </Text>
-          )}
-        </VStack>
-      </CapabilityField>
-      <CapabilityField label={copy.contextWindow} description={copy.contextWindowHelp}>
-        <VStack gap={1} hAlign="start">
-          <TextInput
-            size="sm"
-            width={200}
-            value={props.contextWindowInput}
-            isDisabled={props.disabled}
-            /* Named per model, like the controls around it: the visible label
-               is the field's, but the control's own name is all a screen reader
-               gets, and every open row carries the same one. */
-            label={`${copy.contextWindow} — ${modelId}`}
-            isLabelHidden
-            hasClear
-            placeholder="128000 / 128K / 1M"
-            onChange={props.onContextWindowInput}
-            status={props.contextWindowInputInvalid
-              ? { type: 'error', message: copy.contextWindowInputInvalid }
-              : undefined}
-          />
-          {declared?.contextWindow === undefined && props.reportedContextWindow !== undefined && (
-            <HStack gap={1} vAlign="center">
-              <Text size="sm" type="supporting" color="secondary">
-                {copy.contextWindowHint(props.reportedContextWindow)}
-              </Text>
-              <Button
-                variant="ghost"
-                size="sm"
-                label={copy.contextWindowApplyHint}
-                isDisabled={props.disabled}
-                onClick={() => props.onContextWindowInput(String(props.reportedContextWindow ?? ''))}
-              />
-            </HStack>
-          )}
-        </VStack>
-      </CapabilityField>
       {props.showsFastMode && (
         <CapabilityField label={copy.fastMode} description={copy.fastModeHelp}>
           <Selector
             label={`${copy.fastMode} — ${modelId}`}
             isLabelHidden
             size="sm"
-            width={132}
+            width="100%"
             options={[
               { value: 'auto', label: copy.fastAuto },
               { value: 'fast', label: copy.fastEnabled },
@@ -1101,20 +1006,17 @@ function CapabilityEditor(props: {
           />
         </CapabilityField>
       )}
-    </VStack>
+    </div>
   );
 }
 
-/** Label + what it does on the left, one compact control on the right. */
 function CapabilityField(props: { label: string; description: string; children: ReactNode }) {
   return (
-    <HStack gap={4} justify="between" vAlign="start">
-      <VStack gap={1} maxWidth={380}>
-        <Text size="sm">{props.label}</Text>
-        <Text type="supporting" color="secondary">{props.description}</Text>
-      </VStack>
+    <div className="providerCapabilityField">
+      <Text>{props.label}</Text>
       {props.children}
-    </HStack>
+      <Text type="supporting" color="secondary">{props.description}</Text>
+    </div>
   );
 }
 

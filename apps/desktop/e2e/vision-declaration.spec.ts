@@ -23,44 +23,54 @@ import { getProviderSettingsCopy } from '../src/renderer/features/connection-set
 const copy = getProviderSettingsCopy('zh-CN').detail;
 const MODEL_ID = 'custom-vision';
 
-test('the vision field states its verdict until a declaration replaces it', async ({
+test('a saved vision override can return to the Host-resolved default', async ({
   requestHeaderRowWindow: page,
 }) => {
   await page.locator('[data-connection-slug="no-models"] button').first().click();
   await page.getByRole('button', { name: copy.addModel }).click();
   await page.getByRole('textbox', { name: copy.addModelIdField }).fill(MODEL_ID);
-  await page.getByRole('spinbutton', { name: copy.addModelContextWindow }).fill('128000');
+  await page.getByRole('textbox', { name: copy.addModelContextWindow }).fill('128K');
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
   await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
 
-  // This provider reports nothing about the id and no metadata describes it, so
-  // 默认 resolves to "no". The field says so rather than leaving the user to
-  // read an absent capability as a decision Maka reached.
   const vision = page.getByRole('combobox', { name: `${copy.visionInput} — ${MODEL_ID}` });
-  await expect(vision).toHaveText(copy.visionAuto);
-  await expect(page.getByText(copy.visionResolvedHint(false))).toBeVisible();
+  await expect(vision).toHaveText(copy.visionDefaultOption(false));
 
-  // Declaring one replaces the verdict: the control now carries the answer, and
-  // the field stops speaking for Maka.
   await vision.click();
   await page
     .getByRole('listbox')
     .getByRole('option', { name: copy.visionEnabledOption })
     .click();
-  await expect(page.getByText(copy.visionResolvedHint(false))).toBeHidden();
+  await page.getByRole('button', { name: `${copy.thinkingEffort} — ${MODEL_ID}` }).click();
+  await page.getByRole('menuitemcheckbox', { name: `${MODEL_ID} low` }).click();
+  await page.getByRole('button', { name: `${copy.thinkingEffort} — ${MODEL_ID}` }).press('Escape');
   await page.getByRole('button', { name: copy.save, exact: true }).click();
 
   await expect
     .poll(async () =>
       page.evaluate(async (modelId) => {
         const snapshot = await window.maka.connections.getSnapshot();
-        return snapshot.connections
-          .find((connection) => connection.slug === 'no-models')
-          ?.relayModelProfiles?.[modelId]?.vision;
+        return snapshot.connections.find((connection) => connection.slug === 'no-models')
+          ?.catalogEntries.find((entry) => entry.id === modelId)?.supportsVision;
       }, MODEL_ID),
     )
     .toBe(true);
-  // Read back from the Host, so what the row reports is the Host's resolution of
-  // the saved table rather than a renderer-side guess.
-  await expect(page.getByText(copy.visionResolvedHint(false))).toBeHidden();
+  await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
+  await expect(vision).toHaveText(copy.visionEnabledOption);
+  await vision.click();
+  await page.getByRole('listbox').getByRole('option', { name: copy.visionDefaultOption(false) }).click();
+  await expect(vision).toHaveText(copy.visionDefaultOption(false));
+  await page.getByRole('button', { name: copy.save, exact: true }).click();
+  await expect.poll(async () => page.evaluate(async (modelId) => {
+    const snapshot = await window.maka.connections.getSnapshot();
+    const connection = snapshot.connections.find((item) => item.slug === 'no-models');
+    return {
+      declared: connection?.relayModelProfiles?.[modelId]?.vision ?? null,
+      resolved: connection?.catalogEntries.find((entry) => entry.id === modelId)?.supportsVision,
+      thinking: connection?.relayModelProfiles?.[modelId]?.thinkingLevels,
+      contextWindow: connection?.relayModelProfiles?.[modelId]?.contextWindow,
+    };
+  }, MODEL_ID)).toEqual({ declared: null, resolved: false, thinking: ['low'], contextWindow: 128000 });
+  await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
+  await expect(vision).toHaveText(copy.visionDefaultOption(false));
 });
