@@ -81,7 +81,7 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
  * Merely mounting the editor does not mean target selection has finished.
  */
 export async function awaitSendReady(page: Page): Promise<void> {
-  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
+  await expect(page.locator('.maka-composer button[type="submit"]')).toBeEnabled({
     timeout: 20_000,
   });
 }

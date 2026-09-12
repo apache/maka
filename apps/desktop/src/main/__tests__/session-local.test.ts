@@ -123,8 +123,10 @@ test('local acceptance survives restart with attachment bytes and an immutable d
   const db = await database(t);
   const record = db.store.enqueue('authority-1', intent());
   assert.equal(record.state, 'saved');
-  // Windows reports synthetic mode bits; chmod permissions are a POSIX assertion.
-  if (process.platform !== 'win32') assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  // POSIX permission bits do not describe Windows ACLs.
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  }
   db.store.update({
     ...record,
     state: 'sending',

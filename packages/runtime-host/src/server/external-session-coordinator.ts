@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import type {
   ExternalSessionAdapter,
   ExternalSessionAdapterRegistry,
@@ -362,14 +364,13 @@ function boundedCatalogPage(
   totalCount: number,
 ): ExternalSessionCatalogItem[] {
   const page: ExternalSessionCatalogItem[] = [];
+  const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
+    sessions: [],
+    nextCursor: null,
+  });
   for (const candidate of candidates) {
-    const nextPage = [...page, candidate];
-    const nextOffset = offset + nextPage.length;
-    const result = {
-      sessions: nextPage,
-      nextCursor: nextOffset < totalCount ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > EXTERNAL_SESSION_RESULT_MAX_BYTES) {
+    const nextOffset = offset + page.length + 1;
+    if (!budget.tryAppend(candidate, nextOffset < totalCount ? String(nextOffset) : null)) {
       break;
     }
     page.push(candidate);

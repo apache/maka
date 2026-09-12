@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { parseLocalMemoryMarkdown, type LocalMemoryEntryPreview } from '@maka/core/local-memory';
 import type {
   MemoryBackupSnapshot,
@@ -157,31 +159,29 @@ function entriesPage(
   offset: number,
 ): MemoryEntriesPage {
   const items: MemoryEntryProjection[] = [];
+  const page: MemoryEntriesPage = {
+    kind: 'entries_page',
+    view,
+    revision,
+    items,
+    nextCursor: null,
+  };
+  const budget = new JsonArrayPageBudget(MEMORY_RESULT_MAX_BYTES, page);
   const limit = Math.min(source.length, offset + MEMORY_ENTRY_PAGE_MAX_ITEMS);
   for (let index = offset; index < limit; index += 1) {
     const entry = source[index];
     if (!entry) break;
-    const candidate = [...items, projectEntry(entry)];
-    const nextOffset = offset + candidate.length;
-    const page = {
-      kind: 'entries_page' as const,
-      view,
-      revision,
-      items: candidate,
-      nextCursor: nextOffset < source.length ? nextOffset : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(page), 'utf8') > MEMORY_RESULT_MAX_BYTES) break;
-    items.push(candidate.at(-1)!);
+    const projected = projectEntry(entry);
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(projected, nextOffset < source.length ? nextOffset : null)) break;
+    items.push(projected);
   }
   if (items.length === 0 && offset < source.length) {
     throw new Error('A legal Memory entry exceeded the page result byte limit');
   }
   const nextOffset = offset + items.length;
   return {
-    kind: 'entries_page',
-    view,
-    revision,
-    items,
+    ...page,
     nextCursor: nextOffset < source.length ? nextOffset : null,
   };
 }

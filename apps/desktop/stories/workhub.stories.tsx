@@ -50,12 +50,20 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
   let updateSessions: (() => void) | undefined;
   const publish = () => updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true });
   return {
+    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
+    updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
+    enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
     listSessions: async () => [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    delegationFeedback: async (references) => references.map(({ id }) => ({
+      id,
+      state: 'completed' as const,
+      resultPreview: '重复投递测试已通过，支付回调保持同一响应。',
+    })),
     attachments: { pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }), previewApproval: async () => ({ ok: false, reason: 'not-image' }) },
     readAttachmentBytes: async () => { throw new Error('Not an image'); },
     prepareAttachments: async (id, items) => { writes.upload(id, items); return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }]; },
@@ -70,8 +78,8 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: () => () => {},
-    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
-    stop: async () => {},
+    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, prefetchHistory: async () => false, retain: () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
+    stop: async () => [],
   };
 }
 function Surface({ failFirst = false, history = false }: { failFirst?: boolean; history?: boolean }) {
@@ -85,8 +93,12 @@ type Story = StoryObj<typeof meta>;
 export const FullConversationAndWorkIdentity: Story = {
   render: () => <Surface history />,
   play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('重复投递测试已通过，支付回调保持同一响应。')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: '打开结果' }));
+    await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
     await expect(canvasElement.querySelector('.workhub-message-identity')).toHaveAttribute('data-work-session-id', targetId);
     const navigation = canvasElement.querySelector('.workhub-navigation-item') as HTMLElement;
     await userEvent.hover(navigation);
@@ -101,8 +113,12 @@ export const StandardComposer: Story = {
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('menuitemradio', { name: 'model-b' }));
+    const wheel = canvas.getByRole('listbox', { name: /切换当前任务模型/ });
+    await expect(within(wheel).getByRole('option', { name: /model-a/, selected: true })).toBeInTheDocument();
+    await userEvent.keyboard('{End}');
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await waitFor(() => expect(within(wheel).getByRole('option', { name: /model-b/, selected: true })).toBeInTheDocument());
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;

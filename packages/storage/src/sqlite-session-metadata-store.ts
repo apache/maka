@@ -23,6 +23,7 @@ import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
@@ -2558,7 +2559,11 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+  async reorderMessageAdmissions(
+    sessionId: string,
+    messageIds: readonly string[],
+    disposition: 'steering' | 'followup' = 'followup',
+  ): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const unique = [...new Set(messageIds)];
@@ -2574,15 +2579,15 @@ export class SqliteSessionMetadataStore {
           `
           SELECT message_id
           FROM message_admissions
-          WHERE session_id = ? AND disposition = 'followup'
+          WHERE session_id = ? AND disposition = ?
           ORDER BY queue_order, sequence
         `,
         )
-        .all(sessionId) as Array<{ message_id?: unknown }>;
+        .all(sessionId, disposition) as Array<{ message_id: string }>;
       const current = rows.map((row) => row.message_id);
       const currentIds = new Set(current);
       if (
-        current.length !== unique.length ||
+        (disposition === 'followup' && current.length !== unique.length) ||
         unique.some((messageId) => !currentIds.has(messageId))
       ) {
         throw new SessionMetadataConflictError('Message admission reorder identity conflict');
@@ -2594,7 +2599,14 @@ export class SqliteSessionMetadataStore {
         WHERE session_id = ? AND message_id = ?
       `,
       );
-      unique.forEach((messageId, index) => update.run(index, sessionId, messageId));
+      // Older steering may already be in flight. Keep those entries in their
+      // slots so recovery never interleaves them with a newly reordered batch.
+      const selected = new Set(unique);
+      let next = 0;
+      current.forEach((messageId, index) => {
+        const orderedId = selected.has(messageId) ? unique[next++]! : messageId;
+        update.run(index, sessionId, orderedId);
+      });
     });
   }
 
@@ -4564,7 +4576,7 @@ export class SqliteSessionMetadataStore {
           `Managed sandbox boundary history is invalid: ${sessionId}`,
         );
       }
-      if (!isCanonicalReadOnlySandboxProfile(boundary.profile)) return boundary.profile;
+      if (!isCanonicalReadOnlyPermissionProfile(boundary.profile)) return boundary.profile;
     }
     return requireManagedProfile(createGenesisExecutionBoundary('ask'));
   }
@@ -4827,7 +4839,7 @@ export class SqliteSessionMetadataStore {
       kind === 'managed'
         ? projectedMode === 'explore'
           ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
-          : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
+          : current.kind === 'managed' && !isCanonicalReadOnlyPermissionProfile(current.profile)
             ? current.profile
             : this.readLatestAutoSandboxProfileSync(sessionId)
         : undefined;
@@ -6251,16 +6263,6 @@ function requireManagedProfile(
 ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
   if (boundary.kind !== 'managed') throw new Error('Expected a managed execution boundary');
   return boundary.profile;
-}
-
-function isCanonicalReadOnlySandboxProfile(
-  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
-): boolean {
-  const { name: _profileName, ...profilePolicy } = profile;
-  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
-    createGenesisExecutionBoundary('explore'),
-  );
-  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
 }
 
 function assertGraphLookupIdentity(value: string, name: string): void {

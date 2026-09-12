@@ -129,7 +129,7 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
-import { ComposerMessageQueue } from './composer-message-queue.js';
+import { ComposerMessageQueue, projectComposerMessageQueue } from './composer-message-queue.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -283,6 +283,7 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
+    pendingMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
     queuedMessages?: readonly MessageQueueEntryProjection[];
     queuedMessageRevision?: number;
     /** Promote a queued follow-up into the active Turn (调整方向). */
@@ -351,8 +352,6 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    /** Inline browsing for compact windows that cannot fit a popup menu. */
-    modelPickerPresentation?: 'menu' | 'wheel';
     /** Maximum input height in the upstream editor's row units. */
     maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
@@ -544,7 +543,7 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id, props.modelPickerPresentation]);
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1483,9 +1482,10 @@ export const Composer = forwardRef<
   // that window: Esc interrupts from the input, which is where the hands already
   // are.
   const stopShown = props.streaming === true && (!text.trim() || props.sendBlocked === true);
-  // The pending plate renders the follow-up queue only: steering entries are
-  // already handed to the active Turn and leave the plate at that moment.
-  const queueCount = props.queuedMessages?.length ?? 0;
+  // A Host receipt is not model consumption. Keep steering above the composer
+  // until the host surface retires its transient on steering_message.
+  const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
+  const queueCount = queuedMessages.length;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1689,7 +1689,7 @@ export const Composer = forwardRef<
       )}
       {!props.hidden && queueCount > 0 ? (
           <ComposerMessageQueue
-            queuedMessages={props.queuedMessages!}
+            queuedMessages={queuedMessages}
             queueRevision={props.queuedMessageRevision}
           copy={copy}
           onPromoteEntry={props.onPromoteQueuedEntry}
@@ -2113,7 +2113,6 @@ export const Composer = forwardRef<
               <div className="maka-model-selection-controls">
                 {props.activeSession ? (
                   <ChatModelSwitcher
-                    presentation={props.modelPickerPresentation}
                     activeSession={props.activeSession}
                     activeModelConnectionId={props.activeModelConnectionId}
                     activeModelConnectionSlug={props.activeModelConnectionSlug}

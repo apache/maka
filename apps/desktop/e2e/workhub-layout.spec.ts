@@ -62,7 +62,13 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
-  await mainWindow.evaluate((window, bounds) => window.setBounds(bounds), originalBounds);
+  const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
+    window.setBounds(bounds);
+    return window.getContentSize()[0];
+  }, originalBounds);
+  await expect.poll(() => page.evaluate(() => innerWidth)).toBe(restoredContentWidth);
+  const restoredDockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
+  await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
   const anchors = workhub.locator('.workhub-anchors');
   const draftBeforeOverlays = 'Draft survives main-window overlays and dragging.';
   await workhub.locator(COMPOSER_INPUT).fill(draftBeforeOverlays);
@@ -180,20 +186,33 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   const wheel = workhub.getByRole('listbox');
   await expect(wheel).toBeVisible();
   await expect(wheel.getByRole('option')).toHaveCount(3);
+  const modelChoices = await workhub.evaluate(async (id) => (await window.maka.connections.getSnapshot(id)).chatModelChoices, sessionId);
+  await expect(wheel.locator('.maka-model-wheel-label')).toHaveText(modelChoices.map((choice) => choice.label));
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
-  const modelBeforeBrowsing = await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId);
-  const selectedBeforeBrowsing = await wheel.getByRole('option', { selected: true }).getAttribute('id');
+  const expectSnappedSelection = async (index: number) => {
+    const choice = modelChoices[index]!;
+    const option = wheel.getByRole('option').nth(index);
+    await expect(option).toHaveAttribute('data-active', 'true');
+    await expect(option).toHaveAttribute('aria-selected', 'true');
+    await expect(wheel).toHaveAttribute('aria-busy', 'false');
+    await expect.poll(() => workhub.evaluate(async (id) => {
+      const session = await window.maka.workHub.getSession(id);
+      return { connectionId: session.llmConnectionId, model: session.model };
+    }, sessionId)).toEqual({ connectionId: choice.connectionId, model: choice.model });
+    return choice;
+  };
+  const initialIndex = Math.round(await wheel.evaluate((element) => element.scrollTop) / 44);
+  const scrollDirection = initialIndex < modelChoices.length - 1 ? 1 : -1;
   await wheel.hover();
-  await workhub.mouse.wheel(0, 30);
+  await workhub.mouse.wheel(0, scrollDirection * 30);
+  await expectSnappedSelection(initialIndex + scrollDirection);
   await expect.poll(() => wheel.evaluate((element) => {
     const selected = document.getElementById(element.getAttribute('aria-activedescendant')!)!.getBoundingClientRect();
     const viewport = element.getBoundingClientRect();
     return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
   })).toBeLessThanOrEqual(1);
-  await expect(wheel.getByRole('option', { selected: true })).toHaveAttribute('id', selectedBeforeBrowsing!);
-  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
   await wheel.press('Escape');
   await model.click();
   await expect(wheel.getByRole('option')).toHaveCount(3);
@@ -210,16 +229,18 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.mouse.up();
   await expect(wheel).toBeVisible();
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(Math.round((dragInitialTop - dragDistance) / 44) * 44);
-  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
+  const draggedIndex = Math.round((dragInitialTop - dragDistance) / 44);
+  await expectSnappedSelection(draggedIndex);
   await wheel.press('ArrowDown');
+  await expectSnappedSelection(Math.min(draggedIndex + 1, modelChoices.length - 1));
   await wheel.press('Escape');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
   await model.click();
   const options = wheel.getByRole('option');
-  await wheel.press(await options.first().getAttribute('aria-selected') === 'true' ? 'End' : 'Home');
-  await expect(wheel.locator('[data-active="true"]')).toHaveAttribute('aria-selected', 'false');
-  const previewLabel = await wheel.locator('[data-active="true"] .maka-model-wheel-label').innerText();
+  const chooseLast = await options.first().getAttribute('aria-selected') === 'true';
+  await wheel.press(chooseLast ? 'End' : 'Home');
+  const selectedChoice = await expectSnappedSelection(chooseLast ? modelChoices.length - 1 : 0);
   const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
   for (const theme of ['light', 'dark'] as const) {
     await page.evaluate((theme) => window.maka.settings.updateClient({ appearance: { theme } }), theme);
@@ -232,9 +253,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.press('Enter');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).not.toBe(modelBeforeBrowsing);
+  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(selectedChoice.model);
   await model.click();
-  await expect(wheel.getByRole('option', { selected: true })).toContainText(previewLabel);
+  await expect(wheel.getByRole('option', { selected: true })).toContainText(selectedChoice.label);
   await wheel.press('Escape');
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
@@ -252,13 +273,43 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await workhub.evaluate(() => innerHeight)).toBe(longInputHeight);
   await editor.fill('Keep this draft while folding the conversation.');
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
-  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  // Sample the real native resize, including repeated folds. The composer
+  // must stay inside the window while its original 12px gutter interpolates.
+  for (const expanded of [true, false, true]) {
+    const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number; height: number; inset: number }[]>((resolve) => {
+      const frames: { bottom: number; left: number; height: number; inset: number }[] = [];
+      const started = performance.now();
+      const sample = () => {
+        const rect = document.querySelector('.workHubComposerSurface')!.getBoundingClientRect();
+        const inset = parseFloat(getComputedStyle(document.querySelector('.workHubLive')!).getPropertyValue('--workhub-viewport-inset'));
+        frames.push({ bottom: innerHeight - rect.bottom, left: rect.left, height: innerHeight, inset });
+        if (performance.now() - started < 500) requestAnimationFrame(sample);
+        else resolve(frames);
+      };
+      (button as HTMLButtonElement).click();
+      requestAnimationFrame(sample);
+    }));
+    expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
+    expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
+    expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
+    expect(new Set(motion.map(({ height }) => height)).size).toBeLessThanOrEqual(2);
+    expect(motion.some(({ inset }) => inset > 0)).toBe(true);
+    expect(motion.at(-1)!.inset).toBe(0);
+  }
+  const keptEditor = await workhub.evaluate(async () => {
+    const editor = document.querySelector('.maka-composer-editor [contenteditable]');
+    (document.querySelector('.workHubWindowActions [aria-expanded="true"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    (document.querySelector('.workHubExpandButton') as HTMLButtonElement).click();
+    return document.querySelector('.maka-composer-editor [contenteditable]') === editor;
+  });
+  expect(keptEditor).toBe(true);
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBe(expandedHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop)).toBe(scrollTop);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
-  await expect(model).toHaveAttribute('aria-haspopup', 'menu');
+  await expect(model).toHaveAttribute('aria-haspopup', 'listbox');
 });
 
 
@@ -313,8 +364,45 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
+  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
+  await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
+  await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
+  await expect(followups).toHaveText([queuedTexts[0]]);
+  await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[1]);
+  // Queue projection can arrive before the previous send IPC releases admission.
+  // Keyboard submission must wait for the same readiness as clicking Send.
+  await awaitSendReady(workhub);
+  await workhub.locator(COMPOSER_INPUT).press('Enter');
+  await expect(followups).toHaveText(queuedTexts);
+  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
+  await expect(shortcuts).toHaveCount(1);
+  await shortcuts.hover();
+  const shortcutHint = workhub.getByRole('tooltip');
+  await expect(shortcutHint).toHaveText('Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）');
+  await expect.poll(() => shortcutHint.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
+  })).toBe(true);
+  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
+  for (const text of queuedTexts) {
+    await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
+  }
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
+  await awaitSendReady(workhub);
+  await workhub.locator(COMPOSER_INPUT).press('Shift+Enter');
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
+  await expect(steered).toHaveCount(1);
+  // A queued message is only ever durable at the tail, so sending one has to
+  // take the window and the reader there.
+  await expect(steered).toBeInViewport();
+  await expect(followups).toHaveText(queuedTexts);
+  await expect(stop).toBeVisible();
   await stop.click();
   await expect(stop).toHaveCount(0);
+  await expect(followups).toHaveCount(0);
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
   await expect(prompt).toHaveCount(1);
   await expect(prompt).toBeInViewport();

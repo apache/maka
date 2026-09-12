@@ -265,6 +265,7 @@ export async function startRuntimeHostDesktopManager(
     ) => Promise<RuntimeHostLocalReplacement | undefined>;
     recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
     resolveStartupRepair?: (error: Error, signal: AbortSignal) => Promise<HostHandoffBlocker | undefined>;
+    resolveWslHostHandoff?: (profile: Extract<ResolvedRuntimeHostProfile['profile'], { kind: 'environment' }>, error: RuntimeHostRemoteCompatibilityError, signal: AbortSignal) => Promise<HostHandoffBlocker>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     pairingFinalizationTimeoutMs?: number;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
@@ -283,6 +284,7 @@ export async function startRuntimeHostDesktopManager(
     options.resolveLocalHostReplacement,
     options.recoverLocalHost,
     options.resolveStartupRepair,
+    options.resolveWslHostHandoff,
     options.reconnectBackoff,
     options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
     options.onTargetStateChanged,
@@ -334,6 +336,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     private readonly resolveStartupRepair:
       | ((error: Error, signal: AbortSignal) => Promise<HostHandoffBlocker | undefined>)
       | undefined,
+    private readonly resolveWslHostHandoff: ((profile: Extract<ResolvedRuntimeHostProfile['profile'], { kind: 'environment' }>, error: RuntimeHostRemoteCompatibilityError, signal: AbortSignal) => Promise<HostHandoffBlocker>) | undefined,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
     private readonly pairingFinalizationTimeoutMs: number,
     private readonly onTargetStateChanged:
@@ -1157,12 +1160,25 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       } catch (error) {
         signal.throwIfAborted();
         if (target.input.profileTarget && error instanceof RuntimeHostRemoteCompatibilityError) {
+          if (target.target.profile.kind === 'environment' && this.resolveWslHostHandoff) {
+            try {
+              return { kind: 'blocked', blocker: await this.resolveWslHostHandoff(target.target.profile, error, signal) };
+            } catch (managementError) {
+              signal.throwIfAborted();
+              return { kind: 'blocked', blocker: {
+                identity: JSON.stringify([target.epoch, error.hostEpoch, 'management-unavailable']),
+                target: { name: target.target.profile.name, location: 'remote', rootId: target.target.profile.rootId, hostEpoch: error.hostEpoch },
+                reason: 'unavailable', mayExitNaturally: false, manualRecheck: true,
+                diagnostic: managementError instanceof Error ? managementError.message : String(managementError),
+              } };
+            }
+          }
           return { kind: 'blocked', blocker: {
             identity: JSON.stringify([target.epoch, error.hostEpoch, error.details]),
             target: { name: target.target.profile.name, location: 'remote',
               ...(target.target.profile.kind === 'local' ? {} : { rootId: target.target.profile.rootId }),
               hostEpoch: error.hostEpoch },
-            reason: 'upgrade', mayExitNaturally: false, diagnostic: error.message,
+            reason: 'upgrade', mayExitNaturally: false, manualRecheck: true, diagnostic: error.message,
           } };
         }
         if (await tryRecoverLocalHost()) continue;

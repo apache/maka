@@ -34,6 +34,8 @@ import {
 } from '@maka/runtime/plugin-runtime';
 import type { ExtensionPackageManifest } from './extension-package-manifest.js';
 import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
+import type { PluginSystemPromptInspection } from '@maka/runtime/plugin-system-prompt-service';
+import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
 import { validateExtensionConfiguration } from './extension-package-manifest.js';
 import { recoverExtensionBundleImports } from './extension-bundle.js';
 import { loadPluginCompositionPatch } from './plugin-composition-patch.js';
@@ -76,6 +78,10 @@ export interface HostPluginPlatformOptions {
   readonly packageLoader?: TrustedPluginPackageLoader;
   readonly store?: HostPluginCompositionStore;
   readonly tools?: { inspect(rootId?: MakaPluginRootId): readonly PluginToolInspection[] };
+  readonly systemPrompt?: {
+    inspect(rootId?: MakaPluginRootId): readonly PluginSystemPromptInspection[];
+  };
+  readonly commands?: { inspect(rootId?: MakaPluginRootId): readonly PluginCommandInspection[] };
 }
 
 export interface HostPluginPlatformFailure {
@@ -112,6 +118,8 @@ export class HostPluginPlatform {
   readonly #packageLoader: TrustedPluginPackageLoader;
   readonly #store: HostPluginCompositionStore;
   readonly #tools?: HostPluginPlatformOptions['tools'];
+  readonly #systemPrompt?: HostPluginPlatformOptions['systemPrompt'];
+  readonly #commands?: HostPluginPlatformOptions['commands'];
 
   #authority: PersistedPluginComposition = emptyCompositionAuthority();
   #desired: MakaCompositionState = emptyCompositionState();
@@ -137,6 +145,8 @@ export class HostPluginPlatform {
       options.packageLoader ?? new TrustedPluginPackageLoader(controlDirectory, this.#packages);
     this.#store = options.store ?? new HostPluginCompositionStore(controlDirectory);
     this.#tools = options.tools;
+    this.#systemPrompt = options.systemPrompt;
+    this.#commands = options.commands;
   }
 
   async recover(): Promise<void> {
@@ -477,6 +487,16 @@ export class HostPluginPlatform {
   inspectTools(rootId?: MakaPluginRootId): readonly PluginToolInspection[] {
     this.#assertReadable();
     return this.#tools?.inspect(rootId) ?? Object.freeze([]);
+  }
+
+  inspectSystemPrompt(rootId?: MakaPluginRootId): readonly PluginSystemPromptInspection[] {
+    this.#assertReadable();
+    return this.#systemPrompt?.inspect(rootId) ?? Object.freeze([]);
+  }
+
+  inspectCommands(rootId?: MakaPluginRootId): readonly PluginCommandInspection[] {
+    this.#assertReadable();
+    return this.#commands?.inspect(rootId) ?? Object.freeze([]);
   }
 
   async status(): Promise<{

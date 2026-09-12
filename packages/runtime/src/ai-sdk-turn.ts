@@ -424,44 +424,31 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
+  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const withExec = (names: readonly string[]): string[] =>
-    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
-  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
-  const visible = [
-    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
-    execTool,
-  ].sort((a, b) => a.name.localeCompare(b.name));
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  const projectedExec = {
+    ...execTool,
+    description: [
+      execTool.description,
+      'This is the only callable tool. Call the following tools from inside exec.',
+      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+      JSON.stringify(catalog),
+    ].join('\n'),
+  };
   return {
     ...plan,
-    providerTools: [...visible, ...invalid],
-    activeTools: withExec(plan.activeTools),
+    providerTools: [
+      projectedExec,
+      ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
+    ],
+    activeTools: [execTool.name],
     ...(plan.projectActiveTools
-      ? {
-          projectActiveTools: (options) => ({
-            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
-          }),
-        }
+      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
       : {}),
-    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
-    diagnostics: (activeTools, visibleToolSchemaChars) => {
-      const baseActive = activeTools.filter((name) => name !== execTool.name);
-      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
-      const diagnostic = plan.diagnostics(baseActive, baseChars);
-      if (!diagnostic) return undefined;
-      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
-      return {
-        ...diagnostic,
-        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
-        fullToolCount:
-          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
-        visibleToolSchemaChars,
-        fullToolSchemaChars:
-          (diagnostic.fullToolSchemaChars ??
-            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
-      };
-    },
+    currentRepairToolNames: () => [execTool.name],
+    diagnostics: () => undefined,
   };
 }
 
@@ -846,7 +833,9 @@ export class AiSdkTurn {
       : { disposition: 'policy_denied', dispatch: false };
   }
 
-  private createCodeModeExecTool(eventSink: DurableSessionEventSink): MakaTool<{ code: string }> {
+  private createCodeModeExecTool(
+    eventSink: AsyncEventQueue<SessionEvent>,
+  ): MakaTool<{ code: string }> {
     return {
       name: 'exec',
       description: [
@@ -1117,7 +1106,7 @@ export class AiSdkTurn {
             ])
           : new Set<string>();
     const requestedToolMode: unknown =
-      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
+      input.toolMode ?? this.deps.backend.header.toolMode ?? DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
@@ -1127,10 +1116,17 @@ export class AiSdkTurn {
       if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
         throw new Error('Tool name "exec" is reserved for Code Mode.');
       }
+      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
+      const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
       const plan = projectToolModePlan(
-        snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools),
+        basePlan,
         toolMode,
         codeModeExecTool,
+        toolRuntime.hasSandboxBoundaryDenial()
+          ? new Map(
+              [...nestedTools].filter(([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME),
+            )
+          : nestedTools,
       );
       const modelTools: ModelToolSet = {};
       for (const tool of plan.providerTools) {
@@ -1139,9 +1135,9 @@ export class AiSdkTurn {
           : { kind: 'function', description: tool.description, inputSchema: tool.parameters };
       }
       toolRuntime.setGating(plan.gating);
-      return { plan, providerTools: plan.providerTools, modelTools };
+      return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
     };
-    let { plan, providerTools, modelTools } = snapshotStepTools();
+    let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
@@ -1462,7 +1458,7 @@ export class AiSdkTurn {
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
-          ({ plan, providerTools, modelTools } = snapshotStepTools());
+          ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
           resolvedSystemPrompt = await this.resolveSystemPrompt();
           systemPrompt = joinPromptFragments([
             resolvedSystemPrompt.text,
@@ -1514,16 +1510,23 @@ export class AiSdkTurn {
                 ? []
                 : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
           });
+          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
+            ({ text }) => ({ role: 'user', content: text }),
+          );
+          const contextualRequestMessages =
+            dynamicContextMessages.length === 0
+              ? requestMessages
+              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: requestMessages,
+                messages: contextualRequestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? requestMessages;
+          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
@@ -1589,13 +1592,9 @@ export class AiSdkTurn {
             // no longer sees it as a direct tool, but a nested retry must still
             // reach ToolRuntime's denial latch instead of becoming an endlessly
             // variable unknown-tool error inside `exec`.
-            const codeModeActiveTools =
-              toolRuntime.hasSandboxBoundaryDenial() && activeToolsForRequest.includes('exec')
-                ? [...activeToolsForRequest, REQUEST_SANDBOX_BOUNDARY_TOOL_NAME]
-                : activeToolsForRequest;
             this.codeModeTools =
-              toolMode === 'code_mode'
-                ? nestableToolSnapshot(providerTools, codeModeActiveTools)
+              toolMode === 'code_mode' && activeToolsForRequest.includes('exec')
+                ? nestedTools
                 : undefined;
             const requestWatchdog = watchdogState.current;
             // Read here, beside the messages it describes: `attemptMessages` is
@@ -2335,14 +2334,11 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.map((outcome) => {
-              // A rejected settlement was handled above, so preserving the
-              // original array shape also preserves tool-call identity by index.
+            settlementOutcomes.forEach((outcome, index) => {
+              // All settlements completed and rejection was checked above;
+              // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
-              return outcome.value;
-            });
-            for (let index = 0; index < settlements.length; index += 1) {
-              const settlement = settlements[index]!;
+              const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2354,7 +2350,10 @@ export class AiSdkTurn {
               ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
-            }
+            });
+            // Continuation reads durable events, not raw results. Do not retain
+            // an entire completed batch across the next provider request.
+            settlementOutcomes.length = 0;
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
@@ -2703,7 +2702,7 @@ export class AiSdkTurn {
   }
 
   private async executeCodeModeCell(
-    eventSink: DurableSessionEventSink,
+    eventSink: AsyncEventQueue<SessionEvent>,
     code: string,
     context: MakaToolContext,
   ): Promise<unknown> {
@@ -2727,15 +2726,9 @@ export class AiSdkTurn {
       },
       pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
     };
-    // A permit is held across the cell's complete lifecycle, not just its
-    // sandbox run: `executeCodeCell` settles only once the cell's host
-    // operations have drained, so releasing on settlement covers the drain.
-    // The sandbox worker cap cannot serve this purpose — on cancellation
-    // `runCodeMode` releases its worker and rejects at once, by design, while
-    // host operations started by the cell may still be running with durable
-    // side effects. Only the Runtime waits for those, so only the Runtime can
-    // bound them; releasing when the worker is released would let repeated
-    // cancellation accumulate host work without bound.
+    // Admission covers the whole cell, including host waits. executeCodeCell
+    // waits for every started host call
+    // on both success and cancellation, so settlement is the release boundary.
     //
     // One cell may wait; the next is turned away rather than queued, which is
     // what the Code Mode adapter did before this moved to the side that owns
@@ -2758,6 +2751,8 @@ export class AiSdkTurn {
         })),
         isFatalToolError: isRuntimeCommitBoundaryError,
         callTool: async (name, input, signal) => {
+          if (this.loopStopRequested)
+            throw new Error('The turn has yielded; no further tools may run.');
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
@@ -2765,6 +2760,7 @@ export class AiSdkTurn {
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.deps.newId()}`,
+            stepId: `${context.toolCallId}:nested`,
             input: parsedInput,
             abortSignal: signal,
             eventSink: nestedEventSink,
@@ -2778,6 +2774,14 @@ export class AiSdkTurn {
           }
           if (nestedOutputLimitExceeded) {
             throw new Error('Code Mode nested output byte limit exceeded');
+          }
+          if (isPlanToolResult(settlement.result))
+            this.handlePlanToolResult(settlement.result, eventSink);
+          if (
+            name === YIELD_AGENT_GRAPH_TOOL_NAME &&
+            isAgentGraphYieldToolResult(settlement.result)
+          ) {
+            this.handleAgentGraphYieldToolResult(settlement.result);
           }
           return settlement.result;
         },
@@ -3077,7 +3081,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;

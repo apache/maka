@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { SessionEvent } from "@maka/core/events";
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
@@ -28,19 +27,20 @@ import type {
 import type {
   DesktopTranscriptOpenResult,
   DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 
-type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & {
-  observe(...args: Parameters<RuntimeHostSessionObserver['observe']>): Promise<readonly SessionEvent[] | void>;
-} &
+type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'> &
   Partial<
     Pick<
       RuntimeHostSessionObserver,
       | 'acknowledgeTranscript'
+      | 'acknowledgeTranscriptTail'
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
       | 'loadTranscriptAfter'
+      | 'loadTranscriptLatest'
       | 'openTranscript'
     >
   >;
@@ -48,10 +48,12 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & 
 type TranscriptSource = Required<
   Pick<
     RuntimeHostSessionObserver,
+    | 'acknowledgeTranscriptTail'
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'openTranscript'
   >
 >;
@@ -60,10 +62,14 @@ type ObservationTargetBinding = <Payload>(
   target: RuntimeHostRendererTarget<Payload>,
 ) => RuntimeHostRendererTarget<Payload>;
 
-interface ObservationReadiness<T = void> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
+interface ObservationReadiness {
+  readonly promise: Promise<void>;
+  resolve(): void;
   reject(error: Error): void;
+}
+
+export class RuntimeHostObservationCancelledError extends Error {
+  readonly name = 'RuntimeHostObservationCancelledError';
 }
 
 function requireTranscriptSource(
@@ -71,9 +77,11 @@ function requireTranscriptSource(
 ): SessionObservationSource & TranscriptSource {
   if (
     !source?.openTranscript ||
+    !source.acknowledgeTranscriptTail ||
     !source.loadTranscriptBefore ||
     !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
+    !source.loadTranscriptLatest ||
     !source.closeTranscript
   ) {
     throw new Error('Runtime Host transcript source is unavailable');
@@ -95,25 +103,12 @@ function isMissingRuntimeHostSessionError(error: unknown): boolean {
   return error.code === "not_found";
 }
 
-function recoveredTranscriptRequest(
-  request: DesktopTranscriptRangeRequest,
-  hostEpoch: string,
-): DesktopTranscriptRangeRequest {
-  return {
-    ...request, preserveRange: false,
-    ...(request.hostEpoch === hostEpoch ? {} : {
-      hostEpoch, anchorSequence: null,
-      ...(request.readingTurnId === undefined ? { intent: 'followTail' as const } : {}),
-    }),
-  };
-}
-
 interface SessionObservationRegistration {
   readonly sessionId: string;
   readonly messageAdmissions: boolean;
   readonly target: RuntimeHostSessionObserverTarget;
   readonly destroyedListener: () => void;
-  readonly ready: ObservationReadiness<readonly SessionEvent[]>;
+  readonly ready: ObservationReadiness;
   lifecycle: "pending" | "active";
 }
 
@@ -124,14 +119,7 @@ interface TranscriptRegistration {
   readonly ready: TranscriptReadiness;
   restore: ObservationReadiness | undefined;
   restoreOpened: boolean;
-  hostEpoch?: string;
-  recoveredIdentity?: {
-    readonly source: SessionObservationSource;
-    readonly previousHostEpoch: string;
-    readonly hostEpoch: string;
-  };
   lifecycle: 'pending' | 'active';
-  navigation?: { readonly request: DesktopTranscriptRangeRequest };
 }
 
 interface TranscriptReadiness {
@@ -140,10 +128,10 @@ interface TranscriptReadiness {
   reject(error: Error): void;
 }
 
-function observationReadiness<T = void>(): ObservationReadiness<T> {
-  let resolve!: (value: T) => void;
+function observationReadiness(): ObservationReadiness {
+  let resolve!: () => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
@@ -199,7 +187,7 @@ export class RuntimeHostSessionObservationRegistry {
     const restored = await Promise.all(
       [...this.#registrations].map(async ([observerId, registration]) => {
         try {
-          const seed = await source.observe(
+          await source.observe(
             registration.sessionId,
             observerId,
             bindTarget(registration.target),
@@ -212,7 +200,7 @@ export class RuntimeHostSessionObservationRegistry {
             return undefined;
           }
           registration.lifecycle = "active";
-          registration.ready.resolve(seed ?? []);
+          registration.ready.resolve();
           return registration.sessionId;
         } catch (error) {
           if (
@@ -290,7 +278,7 @@ export class RuntimeHostSessionObservationRegistry {
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
-  ): Promise<readonly SessionEvent[]> {
+  ): Promise<void> {
     this.#assertOpen();
     const previous = this.#registrations.get(observerId);
     if (previous) {
@@ -307,7 +295,7 @@ export class RuntimeHostSessionObservationRegistry {
     const destroyedListener = () => {
       void this.#remove(observerId).catch(this.#onError);
     };
-    const ready = observationReadiness<readonly SessionEvent[]>();
+    const ready = observationReadiness();
     void ready.promise.catch(() => undefined);
     const registration: SessionObservationRegistration = {
       sessionId,
@@ -323,7 +311,7 @@ export class RuntimeHostSessionObservationRegistry {
     const source = this.#source;
     if (!source) return registration.ready.promise;
     try {
-      const seed = await source.observe(
+      await source.observe(
         sessionId,
         observerId,
         this.#bindTarget(target),
@@ -334,7 +322,7 @@ export class RuntimeHostSessionObservationRegistry {
         this.#registrations.get(observerId) === registration
       ) {
         registration.lifecycle = "active";
-        registration.ready.resolve(seed ?? []);
+        registration.ready.resolve();
       }
     } catch (error) {
       if (
@@ -380,16 +368,15 @@ export class RuntimeHostSessionObservationRegistry {
     target.once('destroyed', destroyedListener);
     const source = this.#source;
     if (!source) return ready.promise;
-    const transcriptSource = requireTranscriptSource(source);
     try {
+      const transcriptSource = requireTranscriptSource(source);
       const result = await transcriptSource.openTranscript(
         sessionId,
         consumerId,
-        this.#bindTranscriptTarget(target),
+        this.#bindTarget(target),
       );
       if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
         registration.lifecycle = 'active';
-        registration.hostEpoch = result.hostEpoch;
         registration.ready.resolve(result);
       } else {
         await transcriptSource.closeTranscript(consumerId);
@@ -408,10 +395,8 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      accepted === request
-        ? source.loadTranscriptBefore(accepted, targetId)
-        : source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptBefore(request, targetId),
     );
   }
 
@@ -419,8 +404,8 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptAround(request, targetId),
     );
   }
 
@@ -428,11 +413,27 @@ export class RuntimeHostSessionObservationRegistry {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptOperation(request, (source, accepted) =>
-      accepted === request
-        ? source.loadTranscriptAfter(accepted, targetId)
-        : source.loadTranscriptAround(accepted, targetId),
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptAfter(request, targetId),
     );
+  }
+
+  async loadTranscriptLatest(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request, (source) =>
+      source.loadTranscriptLatest(request, targetId),
+    );
+  }
+
+  async acknowledgeTranscriptTail(
+    request: DesktopTranscriptTailAcknowledgement,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request, async (source) => {
+      source.acknowledgeTranscriptTail(request, targetId);
+    });
   }
 
   acknowledgeTranscript(
@@ -465,7 +466,7 @@ export class RuntimeHostSessionObservationRegistry {
     if (targetId !== undefined && registration.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
-    this.#deleteTranscript(consumerId, registration);
+    this.#cancelTranscript(consumerId, registration);
     await this.#source?.closeTranscript?.(consumerId, targetId);
   }
 
@@ -477,12 +478,8 @@ export class RuntimeHostSessionObservationRegistry {
     this.#bindTarget = (target) => target;
     const registrations = [...this.#registrations];
     const transcripts = [...this.#transcripts];
-    this.#registrations.clear();
-    for (const [, registration] of registrations) {
-      registration.target.off("destroyed", registration.destroyedListener);
-      registration.ready.reject(
-        new Error("Session observation ended before it became ready"),
-      );
+    for (const [observerId, registration] of registrations) {
+      this.#deleteRegistration(observerId, registration);
     }
     for (const [consumerId, registration] of transcripts) {
       this.#deleteTranscript(consumerId, registration);
@@ -498,68 +495,55 @@ export class RuntimeHostSessionObservationRegistry {
   async #remove(observerId: string): Promise<void> {
     const registration = this.#registrations.get(observerId);
     if (!registration) return;
-    // Explicit unsubscribe and renderer destruction retire the consumer, even
-    // if its first seed is still pending. Complete that abandoned IPC without
-    // reporting cancellation as a read failure. Source failures still reject.
-    registration.ready.resolve([]);
-    this.#deleteRegistration(observerId, registration);
+    this.#cancelRegistration(observerId, registration);
     await this.#source?.unobserve(observerId);
+  }
+
+  #cancelRegistration(
+    observerId: string,
+    registration: SessionObservationRegistration,
+  ): void {
+    this.#deleteRegistration(
+      observerId,
+      registration,
+      new RuntimeHostObservationCancelledError(
+        "Session observation was cancelled before it became ready",
+      ),
+    );
   }
 
   #deleteRegistration(
     observerId: string,
     registration: SessionObservationRegistration,
+    error = new Error("Session observation ended before it became ready"),
   ): void {
     if (this.#registrations.get(observerId) !== registration) return;
     this.#registrations.delete(observerId);
     registration.target.off("destroyed", registration.destroyedListener);
-    registration.ready.reject(
-      new Error("Session observation ended before it became ready"),
-    );
+    registration.ready.reject(error);
   }
 
   async #runTranscriptOperation(
-    request: DesktopTranscriptRangeRequest,
-    operation: (
-      source: SessionObservationSource & TranscriptSource,
-      accepted: DesktopTranscriptRangeRequest,
-    ) => Promise<void>,
+    request: { readonly consumerId: string },
+    operation: (source: SessionObservationSource & TranscriptSource) => Promise<void>,
   ): Promise<void> {
     const consumerId = request.consumerId;
     const registration = this.#transcripts.get(consumerId);
     if (!registration) {
       throw new Error('Desktop transcript consumer does not exist');
     }
-    if ((request.navigationVersion ?? 0) < (registration.navigation?.request.navigationVersion ?? 0)) return;
-    const navigation = { request };
-    registration.navigation = navigation;
     const source = requireTranscriptSource(this.#source);
     try {
       const restore = registration.restore;
       if (restore && !registration.restoreOpened) await restore.promise;
-      if (
-        this.#source !== source ||
-        this.#transcripts.get(consumerId) !== registration ||
-        registration.navigation !== navigation
-      ) {
+      if (this.#source !== source || this.#transcripts.get(consumerId) !== registration) {
         return;
       }
-      const recovered = registration.recoveredIdentity;
-      if (recovered?.source === source && request.hostEpoch === recovered.previousHostEpoch) {
-        // A successful open proves this consumer moved to this source. Its
-        // preload may still await the replay snapshot before learning the new
-        // epoch; admit a newer intent without accepting arbitrary stale epochs.
-        navigation.request = recoveredTranscriptRequest(request, recovered.hostEpoch);
-      }
-      await operation(source, navigation.request);
+      await operation(source);
     } catch (error) {
       // Once either owner changes, this rejection belongs to stale work and
       // must not escape as a failure of the current renderer intent.
-      if (
-        this.#source !== source ||
-        this.#transcripts.get(consumerId) !== registration ||
-        registration.navigation !== navigation
-      ) {
+      if (this.#source !== source || this.#transcripts.get(consumerId) !== registration) {
         return;
       }
       throw error;
@@ -588,30 +572,14 @@ export class RuntimeHostSessionObservationRegistry {
       const result = await transcriptSource.openTranscript(
         registration.sessionId,
         consumerId,
-        this.#bindTranscriptTarget(registration.target),
+        this.#bindTarget(registration.target),
       );
       if (
         this.#source === source &&
         this.#transcripts.get(consumerId) === registration &&
         registration.restore === restore
       ) {
-        const previousHostEpoch = registration.hostEpoch;
-        if (previousHostEpoch && previousHostEpoch !== result.hostEpoch) {
-          registration.recoveredIdentity = { source, previousHostEpoch, hostEpoch: result.hostEpoch };
-        }
-        registration.hostEpoch = result.hostEpoch;
         registration.restoreOpened = true;
-        // Reconnection owns no new navigation intent. Reapply only the latest
-        // command admitted while the old source was alive or recovery waited.
-        const navigation = registration.navigation;
-        if (navigation) {
-          const request = recoveredTranscriptRequest(navigation.request, result.hostEpoch);
-          await transcriptSource.loadTranscriptAround(request, registration.target.id);
-          if (this.#source !== source || registration.restore !== restore) {
-            restore.resolve();
-            return;
-          }
-        }
         registration.lifecycle = 'active';
         registration.ready.resolve(result);
         registration.restore = undefined;
@@ -638,16 +606,26 @@ export class RuntimeHostSessionObservationRegistry {
     }
   }
 
-  #deleteTranscript(consumerId: string, registration: TranscriptRegistration): void {
+  #cancelTranscript(consumerId: string, registration: TranscriptRegistration): void {
+    this.#deleteTranscript(
+      consumerId,
+      registration,
+      new RuntimeHostObservationCancelledError(
+        'Transcript observation was cancelled before it became ready',
+      ),
+    );
+  }
+
+  #deleteTranscript(
+    consumerId: string,
+    registration: TranscriptRegistration,
+    error = new Error('Transcript observation ended before it became ready'),
+  ): void {
     if (this.#transcripts.get(consumerId) !== registration) return;
     this.#transcripts.delete(consumerId);
     registration.restore?.resolve();
     registration.target.off('destroyed', registration.destroyedListener);
-    registration.ready.reject(new Error('Transcript observation ended before it became ready'));
-  }
-
-  #bindTranscriptTarget(target: RuntimeHostTranscriptTarget): RuntimeHostTranscriptTarget {
-    return this.#bindTarget(target);
+    registration.ready.reject(error);
   }
 
   #assertOpen(): void {

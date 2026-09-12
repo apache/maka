@@ -1,3 +1,15 @@
+---
+doc_id: computer-use-ui-coverage
+title: "Computer Use Semantic UI Coverage"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -35,7 +47,7 @@ are not measured here; they require separate accessibility testing.
 
 | Surface | Runtime states | Semantic actions and effects |
 |---|---|---|
-| Settings | Every current top-level navigation entry is enumerated from the running UI; provider list/detail/catalog/add, subagent editor, memory populated, permission diagnostics, import empty/ready, usage variants, Daily Review selector and narrow states are in Storybook | Navigation exposes `aria-current`; focused nested stories exercise dialogs, disclosures, selectors and editors |
+| Settings | Top-level navigation entries are covered through the Storybook settings-pages stories; provider list/detail/catalog/add, subagent editor, memory populated, permission diagnostics, import empty/ready, usage variants, Daily Review selector and narrow states are in Storybook (the Electron-side dynamic enumeration was retired by #4803) | Navigation exposes `aria-current`; focused nested stories exercise dialogs, disclosures, selectors and editors |
 | Extensions | Skills empty/installed/bundled/update/disabled/narrow/inspector; MCP setup/marketplace/configured/inspector/editor/failure/narrow | Page selection, inspector/editor opening and actionable-node identity |
 | Scheduled work | Empty/configured/long/narrow/task inspector; Daily Review loading/error/refreshing/report | Task selection, dialog focus, selector state and report actions |
 | Conversation shell | New task, settled conversation, streaming, permission wait, native conversation, modes, context and inline completion | Composer submit effect, unique per-task and per-turn actions, current regions and workbar selection |
@@ -46,9 +58,11 @@ are not measured here; they require separate accessibility testing.
 
 The Storybook catalog is exhaustive for its source-defined entries and the
 smoke runner carries a required Computer Use story manifest for critical
-runtime boundaries. The Electron accessibility test dynamically enumerates
-settings navigation, then covers modules, global overlays, conversations and
-all workbar entry points.
+runtime boundaries. The Electron-side broad route inventory (a spec that
+dynamically enumerated settings navigation, then modules, global overlays,
+conversations and all workbar entry points) was retired by #4803 rather than
+relocated; the surviving Electron journeys cover revision, WorkHub and
+draft-focus boundaries only.
 
 ## AX completion gates
 
@@ -65,10 +79,11 @@ Every measured final state fails on:
 - focus inside an inert or `aria-hidden` surface;
 - a visible modal dialog that does not own focus.
 
-Critical stories and Electron journeys additionally assert action-specific
-effects. Overlay journeys wait for the specifically named prior dialog to
-close before opening and auditing the next one. Transport success or a generic
-dialog match alone is not accepted.
+Critical stories additionally assert action-specific effects. (An Electron
+variant that waited for the specifically named prior dialog to close before
+auditing the next one was part of the retired route-inventory spec; the
+surviving journeys do not carry it.) Transport success or a generic dialog
+match alone is not accepted.
 
 Repeated message and answer actions use a bounded excerpt of visible text plus
 a stable human-readable timestamp. Opaque storage IDs remain machine data and

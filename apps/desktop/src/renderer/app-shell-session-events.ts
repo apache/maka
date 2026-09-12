@@ -21,26 +21,19 @@ import type { ContextCompactionOutcome, SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
-  applyLiveTurnEvent,
-  clearInteractions,
+  applyLiveTurnBufferEvent,
   reduceInteractionQueues,
-  reconcileTerminalLiveTurn,
-  settleLiveTurnStep,
+  reconcileLiveTurnBuffer,
+  settleLiveTurnBufferStep,
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  type LiveTurnProjection,
-  type InteractionQueues,
-  type TransientUserMessageProjection,
 } from '@maka/ui';
+import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
-import {
-  isNoRealConnectionEvent,
-  noRealConnectionReasonFromEvent,
-  noRealConnectionSetupDescription,
-  sessionEventErrorMessage,
-} from './model-connection-errors.js';
+import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';
 
 type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -80,16 +73,12 @@ export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
+  liveTurnBySessionRef: RefBox<Record<string, LiveTurnBuffer>>;
   refreshMessages: (sessionId: string, options?: RefreshMessagesOptions) => Promise<boolean>;
   refreshSessions: () => Promise<unknown>;
-  setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
+  setLiveTurnBySession: StateUpdater<Record<string, LiveTurnBuffer>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
-  projectQueuedTransientMessages?: (
-    sessionId: string,
-    messages: readonly TransientUserMessageProjection[],
-  ) => void;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -118,7 +107,6 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
-    projectQueuedTransientMessages,
     removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -127,35 +115,22 @@ export function createAppShellSessionEventHandlers(options: {
     toastApi,
     notifyRunEnded,
   } = options;
-  const scheduleFrame = options.scheduleFrame ?? (
-    typeof requestAnimationFrame === 'function'
-      ? (callback: () => void) => {
-          let pending = true;
-          const run = () => {
-            if (!pending) return;
-            pending = false;
-            callback();
-          };
-          requestAnimationFrame(run);
-          window.setTimeout(run, 100);
-        }
-      : undefined
-  );
+  const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
   function applyProjectionEvents(
-    projection: LiveTurnProjection | undefined,
+    projection: LiveTurnBuffer | undefined,
     events: readonly SessionEvent[],
-  ): LiveTurnProjection | undefined {
+  ): LiveTurnBuffer | undefined {
     let next = projection;
-    for (const event of events) next = applyLiveTurnEvent(next, event, uiLocale);
+    for (const event of events) next = applyLiveTurnBufferEvent(next, event, uiLocale);
     return next;
   }
 
   function replaceLiveTurns(
-    current: Record<string, LiveTurnProjection>,
+    current: Record<string, LiveTurnBuffer>,
     batches: ReadonlyMap<string, readonly SessionEvent[]>,
-  ): Record<string, LiveTurnProjection> {
+  ): Record<string, LiveTurnBuffer> {
     let next = current;
     for (const [sessionId, events] of batches) {
       const projection = applyProjectionEvents(current[sessionId], events);
@@ -238,7 +213,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession((current) => {
       const projection = current[sessionId];
       if (!projection) return current;
-      const settled = settleLiveTurnStep(projection, stepId);
+      const settled = settleLiveTurnBufferStep(projection, stepId);
       if (settled === projection) return current;
       const next = { ...current };
       if (settled) next[sessionId] = settled;
@@ -258,7 +233,7 @@ export function createAppShellSessionEventHandlers(options: {
   ): Promise<void> {
     const projection = liveTurnBySessionRef.current[sessionId];
     if (!projection || !messageId) return;
-    const step = projection.steps.find((candidate) => candidate.stepId === messageId);
+    const step = projection.flatMap((turn) => turn.steps).find((candidate) => candidate.stepId === messageId);
     if (!step?.text || (requireCompletedLiveText && !step.text.complete)) return;
     const attempts = requireCompletedLiveText ? 1 : TERMINAL_HANDOFF_ATTEMPTS;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -271,7 +246,7 @@ export function createAppShellSessionEventHandlers(options: {
       }
       if (
         attempt + 1 >= attempts ||
-        !liveTurnBySessionRef.current[sessionId]?.steps.some(
+        !liveTurnBySessionRef.current[sessionId]?.flatMap((turn) => turn.steps).some(
           (candidate) => candidate.stepId === messageId,
         )
       ) return;
@@ -286,7 +261,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession((current) => {
       const projection = applyProjectionEvents(current[sessionId], pending);
       if (!projection) return current;
-      const reconciled = reconcileTerminalLiveTurn(projection, messages);
+      const reconciled = reconcileLiveTurnBuffer(projection, messages);
       if (reconciled === current[sessionId]) return current;
       const next = { ...current };
       if (reconciled) next[sessionId] = reconciled;
@@ -296,7 +271,7 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function terminalRefreshOptions(projection: LiveTurnProjection | undefined): RefreshMessagesOptions | undefined {
-    const messageId = [...(projection?.steps ?? [])].reverse().find((step) => step.text)?.stepId;
+    const messageId = projection?.steps.filter((step) => step.text).pop()?.stepId;
     return messageId ? { requiredAssistantMessageId: messageId } : undefined;
   }
 
@@ -317,7 +292,7 @@ export function createAppShellSessionEventHandlers(options: {
       return;
     }
     const pending = takePendingDisplayEvents(sessionId);
-    const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending);
+    const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending)?.find((turn) => turn.turnId === event.turnId);
     updateLiveTurn(sessionId, [...pending, event]);
     setInteractionBySession((current) =>
       reduceInteractionQueues(current, sessionId, event),
@@ -325,26 +300,9 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
-        projectQueuedTransientMessages?.(
-          sessionId,
-          (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
-            .filter((entry) => entry.state === 'queued')
-            .map((entry) => ({
-              id: entry.messageId,
-              transientPlacement: entry.placement,
-              ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
-              ts: event.ts,
-              text: entry.content.displayText ?? entry.content.text,
-              ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
-              ...(entry.content.directoryReferences && {
-                directoryReferences: entry.content.directoryReferences,
-              }),
-              ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
-              ...(entry.content.inlineReferences && {
-                inlineReferences: [...entry.content.inlineReferences],
-              }),
-            })),
-        );
+        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          removeTransientMessage?.(sessionId, entry.messageId);
+        }
         setMessageQueueBySession?.((current) => {
           if (!event.steering.length && !event.followup.length) {
             if (!current[sessionId]) return current;
@@ -369,9 +327,8 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire the renderer-owned tail row and its pending-queue card; a
-        // later nack queue_update will project both again if the Host returns
-        // the message to the queue.
+        // Retire the local submission placeholder; a later nack is represented
+        // by the Host queue alone.
         removeTransientMessage?.(sessionId, event.messageId);
         setMessageQueueBySession?.((current) => {
           const queue = current[sessionId];
@@ -414,10 +371,10 @@ export function createAppShellSessionEventHandlers(options: {
       case 'error':
         onInteractionChanged?.(sessionId);
         if (activeIdRef.current === sessionId) {
-          if (isNoRealConnectionEvent(event)) {
-            const reason = noRealConnectionReasonFromEvent(event);
+          if (modelConnectionErrors.isNoRealConnectionEvent(event)) {
+            const reason = modelConnectionErrors.noRealConnectionReasonFromEvent(event);
             showModelSetupToast(
-              noRealConnectionSetupDescription(reason, uiLocale),
+              modelConnectionErrors.noRealConnectionSetupDescription(reason, uiLocale),
               reason,
               { sessionId },
             );
@@ -425,25 +382,23 @@ export function createAppShellSessionEventHandlers(options: {
             const copy = getDesktopConversationCopy(uiLocale).actions;
             toastApi.error(
               copy.conversationErrorTitle,
-              sessionEventErrorMessage(event, uiLocale),
+              modelConnectionErrors.sessionEventErrorMessage(event, uiLocale),
               sessionEventDiagnosticDetails(sessionId, event),
               { sessionId, turnId: event.turnId, eventId: event.id },
             );
           }
         }
-        notifyRunEnded?.({ kind: 'errored', sessionId, body: sessionEventErrorMessage(event, uiLocale) });
+        notifyRunEnded?.({ kind: 'errored', sessionId, body: modelConnectionErrors.sessionEventErrorMessage(event, uiLocale) });
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'abort':
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {

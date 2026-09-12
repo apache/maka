@@ -40,7 +40,6 @@ import {
 } from '@maka/core/model-thinking';
 import {
   Button,
-  NumberInput,
   RelativeTime,
   Selector,
   TextInput,
@@ -60,6 +59,7 @@ import {
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   getProviderSettingsCopy,
+  parseContextWindowInput,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
@@ -149,7 +149,7 @@ type EditingRow =
   | 'endpoint'
   | 'headers'
   | 'body'
-  | { model: string }
+  | { model: string; contextWindowInput?: string }
   /* The 添加模型 dialog: one thing is open at a time, so it is a row here. */
   | 'add-model'
   | null;
@@ -246,6 +246,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // `save` became per-field — rode along with the next save.
   const [editingRow, setEditingRow] = useState<EditingRow>(null);
   const editingModelId = editingRow !== null && typeof editingRow === 'object' ? editingRow.model : null;
+  const contextWindowInput = editingRow !== null && typeof editingRow === 'object'
+    ? editingRow.contextWindowInput : undefined;
+  const contextWindowInputInvalid = contextWindowInput !== undefined &&
+    contextWindowInput.trim() !== '' && parseContextWindowInput(contextWindowInput) === null;
   const [modelFilter, setModelFilter] = useState('');
   const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
   const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
@@ -304,6 +308,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       setBaseUrl(savedBaseUrl);
     }
     setEditingRow(row);
+  }
+
+  function changeContextWindow(modelId: string, input: string) {
+    setEditingRow({ model: modelId, contextWindowInput: input });
+    const value = parseContextWindowInput(input);
+    // Invalid text stays visible but never replaces a valid declaration.
+    if (value !== null || input.trim() === '') setDraftContextWindow(modelId, value ?? undefined);
   }
 
   async function saveRequestHeaders(): Promise<boolean> {
@@ -780,15 +791,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 value={facts}
                 actionLabel={copy.declareCapabilities}
                 actionAriaLabel={copy.declareCapabilitiesAria(label)}
-                beforeAction={modelEnableSwitch(id, label)}
+                afterAction={modelEnableSwitch(id, label)}
                 isEditing={editingModelId === id}
                 isDisabled={allActionsBusy}
-                canSave={hasRelayProfileChanges}
+                canSave={hasRelayProfileChanges && !contextWindowInputInvalid}
                 saveLabel={copy.save}
                 cancelLabel={copy.cancel}
                 onEdit={() => openRow({ model: id })}
                 onCancel={() => { resetDraftProfile(id); setEditingRow(null); }}
-                onSave={async () => { if (await saveRelayProfiles()) setEditingRow(null); }}
+                onSave={async () => {
+                  if (!contextWindowInputInvalid && await saveRelayProfiles()) setEditingRow(null);
+                }}
               >
                 <Text type="supporting" color="secondary">{copy.capabilitiesHelp}</Text>
                 <CapabilityEditor
@@ -796,12 +809,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   modelId={id}
                   isRelay={isRelay}
                   declared={declared}
+                  contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
+                  contextWindowInputInvalid={contextWindowInputInvalid}
                   disabled={allActionsBusy}
                   showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
                   reportedContextWindow={connection.models?.find((model) => model.id === id)?.contextWindow}
                   onThinkingLevels={(levels) => setDraftThinkingLevels(id, levels)}
                   onVision={(vision) => setDraftVision(id, vision)}
-                  onContextWindow={(value) => setDraftContextWindow(id, value ?? undefined)}
+                  onContextWindowInput={(input) => changeContextWindow(id, input)}
                   onServiceTier={(tier) => setDraftServiceTier(id, tier)}
                 />
               </SettingsExpandableRow>
@@ -925,13 +940,15 @@ function CapabilityEditor(props: {
   modelId: string;
   isRelay: boolean;
   declared: RelayModelProfile | undefined;
+  contextWindowInput: string;
+  contextWindowInputInvalid: boolean;
   disabled: boolean;
   showsFastMode: boolean;
   /** The window the provider's model list reports, offered as a one-click fill while nothing is declared. */
   reportedContextWindow: number | undefined;
   onThinkingLevels(levels: ThinkingLevel[] | undefined): void;
   onVision(vision: boolean | undefined): void;
-  onContextWindow(value: number | null): void;
+  onContextWindowInput(value: string): void;
   onServiceTier(tier: 'fast' | undefined): void;
 }) {
   const { copy, modelId, declared } = props;
@@ -1013,14 +1030,22 @@ function CapabilityEditor(props: {
       </CapabilityField>
       <CapabilityField label={copy.contextWindow} description={copy.contextWindowHelp}>
         <VStack gap={1} hAlign="start">
-          <DeclaredContextWindowField
-            declared={declared?.contextWindow}
-            disabled={props.disabled}
+          <TextInput
+            size="sm"
+            width={200}
+            value={props.contextWindowInput}
+            isDisabled={props.disabled}
             /* Named per model, like the controls around it: the visible label
                is the field's, but the control's own name is all a screen reader
                gets, and every open row carries the same one. */
             label={`${copy.contextWindow} — ${modelId}`}
-            onCommit={props.onContextWindow}
+            isLabelHidden
+            hasClear
+            placeholder="128000 / 128K / 1M"
+            onChange={props.onContextWindowInput}
+            status={props.contextWindowInputInvalid
+              ? { type: 'error', message: copy.contextWindowInputInvalid }
+              : undefined}
           />
           {declared?.contextWindow === undefined && props.reportedContextWindow !== undefined && (
             <HStack gap={1} vAlign="center">
@@ -1032,7 +1057,7 @@ function CapabilityEditor(props: {
                 size="sm"
                 label={copy.contextWindowApplyHint}
                 isDisabled={props.disabled}
-                onClick={() => props.onContextWindow(props.reportedContextWindow ?? null)}
+                onClick={() => props.onContextWindowInput(String(props.reportedContextWindow ?? ''))}
               />
             </HStack>
           )}
@@ -1069,33 +1094,6 @@ function CapabilityField(props: { label: string; description: string; children: 
       </VStack>
       {props.children}
     </HStack>
-  );
-}
-
-// NumberInput already owns the text draft and calls onChange only when the
-// whole value commits on blur/Enter. Forward that commit directly to the
-// row-level draft: adding another local draft here creates a second commit
-// boundary, so the first blur only updates this component and Save can write
-// the previous value.
-function DeclaredContextWindowField(props: {
-  declared: number | undefined;
-  disabled: boolean;
-  label: string;
-  onCommit: (value: number | null) => void;
-}) {
-  return (
-    <NumberInput
-      size="sm"
-      width={200}
-      label={props.label}
-      isLabelHidden
-      value={props.declared ?? null}
-      hasClear
-      isIntegerOnly
-      min={1}
-      onChange={props.onCommit}
-      isDisabled={props.disabled}
-    />
   );
 }
 

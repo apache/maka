@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeMessageContent } from '@maka/core/events';
 import type { SessionConfigurationTransitionRequest } from '@maka/runtime/session-manager';
@@ -40,6 +40,7 @@ import {
   type WorkHubDelegationStopResolvedMessage,
 } from '@maka/core/session';
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
+import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import type {
   OperationOutcome,
   WorkHubCoordinationActResult,
@@ -52,7 +53,11 @@ import type {
   ConnectionContext,
   WorkHubCoordinationOperationHandlerMap,
 } from './operation-dispatcher.js';
-import type { RootTurnCoordinator } from './root-turn-coordinator.js';
+import type {
+  HostWorkHubRoutingDecisionPreparation,
+  RootTurnCoordinator,
+} from './root-turn-coordinator.js';
+import type { HostWorkHubRoutingModel } from './execution-model-authority.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 import {
   SessionOperationFailure,
@@ -82,6 +87,9 @@ const JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE = 6;
 const COORDINATION_SUMMARY_READ_MAX_BYTES =
   JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE * (WORKHUB_COORDINATION_TEXT_MAX_BYTES + 8 * 1024) +
   16 * 1024;
+const WORKHUB_ROUTING_TIMEOUT_MS = 15_000;
+export const WORKHUB_ROUTING_HISTORY_MAX_MESSAGES = 32;
+export const WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES = 64 * 1024;
 
 type CoordinationStores = Pick<
   SessionAuthorityStore,
@@ -103,12 +111,13 @@ type CoordinationStores = Pick<
   | 'readWorkHubStopResolution'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
+  | 'readMessagesAfter'
   | 'updateHeaderVersioned'
 >;
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRequest'
+  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRoutingRequest'
 >;
 
 type WorkHubResumeResult =
@@ -147,6 +156,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly configureModel: (
     input: WorkHubCoordinationConfigureModelInput,
   ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
+  readonly routingModel?: HostWorkHubRoutingModel;
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
@@ -172,10 +182,12 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
   readonly #actionGate: WorkHubCoordinationActionGate;
+  readonly #routingModel: HostWorkHubRoutingModel | undefined;
   readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#configureModel = options.configureModel;
+    this.#routingModel = options.routingModel;
     this.#transitionConfiguration = options.transitionConfiguration;
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
     this.#stores = options.stores;
@@ -528,9 +540,9 @@ export class HostWorkHubCoordinationCoordinator {
     input: WorkHubCoordinationActFromTurnInput,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'workhub.coordination.actFromTurn'>> {
-    let content;
+    let request;
     try {
-      content = await this.#executions.readActiveWorkHubRequest(input.turnId);
+      request = await this.#executions.readActiveWorkHubRoutingRequest(input.turnId);
     } catch {
       return {
         ok: false,
@@ -540,7 +552,7 @@ export class HostWorkHubCoordinationCoordinator {
         },
       };
     }
-    if (!content) {
+    if (!request) {
       return {
         ok: false,
         error: {
@@ -550,19 +562,27 @@ export class HostWorkHubCoordinationCoordinator {
       };
     }
     const { turnId: _turnId, ...action } = input;
+    if (request.decision && !routingDecisionAllowsProposal(request.decision, action)) {
+      return {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub action does not match the routing decision bound to this Turn',
+        },
+      };
+    }
     const carriesAttachments =
-      action.proposal.disposition === 'delegate_existing' ||
-      action.proposal.disposition === 'create_new' ||
-      action.proposal.disposition === 'replace';
+      'disposition' in action.proposal ||
+      ('operation' in action.proposal && action.proposal.operation === 'correct');
     try {
       return {
         ok: true,
         result: await this.#actionGate.act(
           {
             ...action,
-            userText: content.text,
-            ...(carriesAttachments && content.attachments
-              ? { attachments: content.attachments }
+            userText: request.content.text,
+            ...(carriesAttachments && request.content.attachments
+              ? { attachments: request.content.attachments }
               : {}),
           },
           context,
@@ -745,6 +765,63 @@ export class HostWorkHubCoordinationCoordinator {
     return outcome.ok ? { ok: true, result: { turnId: input.turnId } } : outcome;
   }
 
+  async prepareRoutingDecision(
+    input: HostWorkHubRoutingDecisionPreparation,
+  ): Promise<WorkHubRoutingDecision> {
+    try {
+      if (!this.#routingModel) throw new Error('WorkHub routing model is unavailable');
+      const page = await this.#stores.readMessagesAfter(WORKHUB_COORDINATION_SESSION_ID, {
+        beforeSequence: Number.MAX_SAFE_INTEGER,
+        maxMessages: WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+        maxStoredBytes: WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
+      });
+      const transcript = [...page.records]
+        .reverse()
+        .flatMap(({ message }) =>
+          message.type === 'user' || message.type === 'assistant'
+            ? [{ role: message.type, text: message.text } as const]
+            : [],
+        )
+        .slice(-8);
+      return await this.#routingModel.decide({
+        turnId: input.turnId,
+        header: input.header,
+        userText: input.content.text,
+        transcript,
+        resolveCandidates: async () => {
+          const outcome = await this.#candidates();
+          if (!outcome.ok) throw new Error(outcome.error.message);
+          const now = Date.now();
+          return {
+            candidateSetId: outcome.result.candidateSetId,
+            candidates: outcome.result.candidates.map((candidate) => ({
+              candidateRef: candidate.candidateRef,
+              sessionName: candidate.sessionName,
+              workspaceName: basename(candidate.workspace.hostCwd),
+              state: candidate.state,
+              recency:
+                now - candidate.updatedAt < 24 * 60 * 60 * 1_000
+                  ? ('today' as const)
+                  : now - candidate.updatedAt < 7 * 24 * 60 * 60 * 1_000
+                    ? ('this_week' as const)
+                    : ('older' as const),
+            })),
+          };
+        },
+        abortSignal: input.inputClosedSignal
+          ? AbortSignal.any([
+              input.inputClosedSignal,
+              AbortSignal.timeout(WORKHUB_ROUTING_TIMEOUT_MS),
+            ])
+          : AbortSignal.timeout(WORKHUB_ROUTING_TIMEOUT_MS),
+      });
+    } catch {
+      // Invalid output, unavailable candidates, or provider failure cannot
+      // silently become creation or bind an arbitrary existing Session.
+      return { kind: 'routing', disposition: 'clarify' };
+    }
+  }
+
   /** Reads a historical v1 summary to preserve its durable Turn identity. */
   async #readSummaryMessages(turnId: string): Promise<readonly StoredMessage[]> {
     const throughSequence = await this.#stores.readTranscriptHighWaterSnapshot(
@@ -803,6 +880,7 @@ export class HostWorkHubCoordinationCoordinator {
       const configured = await this.#transitionConfiguration({
         expectedRevision: record.revision,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: {
           backend: record.header.backend,
           llmConnectionId: record.header.llmConnectionId,
@@ -874,6 +952,27 @@ function validCoordinationHeader(header: SessionHeader): boolean {
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+function routingDecisionAllowsProposal(
+  decision: WorkHubRoutingDecision,
+  action: Omit<WorkHubCoordinationActFromTurnInput, 'turnId'>,
+): boolean {
+  if (decision.kind === 'linked') {
+    return 'operation' in action.proposal && action.proposal.operation === decision.operation;
+  }
+  if (decision.disposition === 'delegate_existing') {
+    return (
+      'disposition' in action.proposal &&
+      action.proposal.disposition === 'delegate_existing' &&
+      action.proposal.candidateRef === decision.candidateRef &&
+      action.candidateSetId === decision.candidateSetId
+    );
+  }
+  if (decision.disposition === 'create_new') {
+    return 'disposition' in action.proposal && action.proposal.disposition === 'create_new';
+  }
+  return false;
 }
 
 function workHubDestructiveClaimIdentitySuffix(delegationId: string): string {

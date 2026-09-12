@@ -203,15 +203,32 @@
 
 THIRD-PARTY COMPONENTS
 
+Vercel Code Mode and run execution-budget patches
+
+Source: https://www.npmjs.com/package/@ai-sdk/code-mode/v/1.0.56
+        https://www.npmjs.com/package/run/v/2.1.4
+Repository: https://github.com/vercel/ai/tree/main/packages/code-mode
+            https://github.com/vercel-labs/run/tree/run%402.1.4/packages/run
+Dependency patches: patches/@maka+runtime++@ai-sdk+code-mode+1.0.56.patch
+                    patches/run+2.1.4.patch
+Readable source changes: patches/run-2.1.4-source.diff
+Copyright 2023 Vercel, Inc.
+License: Apache-2.0
+
+These patches modify the execution time policy and its SDK forwarding. The
+Apache License, Version 2.0 above applies. The generated run Worker includes
+embedded third-party code; its upstream notices and license texts are retained
+in patches/run-2.1.4-notices.md.
+
 Vercel AI SDK
 
 Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
         https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
-Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.34
+Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.40
 Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
             https://github.com/vercel/ai/tree/main/packages/provider
 Adapted declarations: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
-Dependency patch: patches/@ai-sdk+provider-utils+5.0.34.patch
+Dependency patch: patches/@ai-sdk+provider-utils+5.0.40.patch
 Copyright 2023 Vercel, Inc.
 License: Apache-2.0
 
@@ -223,7 +240,7 @@ License, Version 2.0 above applies to the adapted material.
 The pinned versions are the ones present when the adaptation was made. The
 adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
 @ai-sdk/provider 4.0.7, the versions recorded by the code origin audit. Maka
-also redistributes a patch against @ai-sdk/provider-utils 5.0.34; that patch
+also redistributes a patch against @ai-sdk/provider-utils 5.0.40; that patch
 modifies Apache-2.0 source and is covered by the license reproduced above.
 
 Astryx
@@ -242,6 +259,112 @@ core package. The following MIT License applies to that material:
 MIT License
 
 Copyright (c) 2026 Meta Platforms, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Pi TUI dependency patch
+
+Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.84.4
+Repository: https://github.com/earendil-works/pi/tree/v0.84.4/packages/tui
+Version: 0.84.4
+Dependency patch: patches/@earendil-works+pi-tui+0.84.4.patch
+Copyright (c) 2025 Mario Zechner
+License: MIT
+
+Maka redistributes a source patch that copies mutable editor undo state while
+sharing immutable pasted strings. The following MIT License applies to that
+material:
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Zod dependency patch
+
+Source: https://www.npmjs.com/package/zod/v/4.5.4
+Repository: https://github.com/colinhacks/zod
+Version: 4.5.4
+Dependency patch: patches/zod+4.5.4.patch
+Copyright (c) 2025 Colin McDonnell
+License: MIT
+
+Maka redistributes a source patch that releases recursive parse state after
+completion or failure. The following MIT License applies to that material:
+
+MIT License
+
+Copyright (c) 2025 Colin McDonnell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Model Context Protocol client dependency patch
+
+Source: https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.0.0
+Repository: https://github.com/modelcontextprotocol/typescript-sdk
+Version: 2.0.0
+Dependency patch: patches/@modelcontextprotocol+client+2.0.0.patch
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+Declared package license: MIT
+
+Maka redistributes a source patch that releases settled request observers under
+transport backpressure. The upstream package's LICENSE describes a transition
+from MIT to Apache-2.0: contributions with relicensing consent use Apache-2.0,
+while contributions without that consent retain their original MIT license.
+The Apache License, Version 2.0 is reproduced above. The upstream MIT notice is:
+
+MIT License
+
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

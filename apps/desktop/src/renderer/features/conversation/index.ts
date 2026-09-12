@@ -22,14 +22,13 @@ import {
   transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
+export { TranscriptReadSupersededError } from './controller/transcript-reading-position.js';
+
 export const transcriptReadingPosition = {
   currentRange: currentTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
 };
 
-export type {
-  TranscriptHistoryPending,
-} from './controller/transcript-reading-position.js';
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
@@ -44,7 +43,8 @@ export {
 export * from './model/session-ui-state.js';
 export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
-export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { SessionLocalMessages, localMessageDraftRecovery } from './controller/session-local-messages.js';
+export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
@@ -60,3 +60,7 @@ export {
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
 
 export { composerFollowUp } from './controller/composer-follow-up.js';
+export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';

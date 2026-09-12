@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
-import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
@@ -31,10 +31,8 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  armLiveTurn,
   dequeueInteractionByRequestId,
   type InteractionQueues,
-  type LiveTurnProjection,
   type NavSelection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -48,11 +46,8 @@ import {
 import * as skillFeedback from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
-import {
-  retainedAttachmentRefs,
-  toComposerIngestItems,
-  type PendingAttachment,
-} from './composer-attachments.js';
+import * as Conversation from './features/conversation/index.js';
+import type { PendingAttachment } from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -75,9 +70,6 @@ type ComposerImportOwner = {
 };
 
 type RefBox<T> = { current: T };
-type LiveTurnRecordUpdater = (
-  updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
-) => void;
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
@@ -151,6 +143,7 @@ export interface AppShellChatActions {
 
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
+  getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
@@ -178,7 +171,6 @@ export function createAppShellChatActions(deps: {
   onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
-  setLiveTurnBySession: LiveTurnRecordUpdater;
   setInteractionBySession: InteractionQueueUpdater;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -221,12 +213,9 @@ export function createAppShellChatActions(deps: {
     setActiveId,
     setMessageLoadErrorBySession,
     setMessages,
-    addTransientMessage,
-    updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest,
-    setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -243,84 +232,8 @@ export function createAppShellChatActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  function showTransientUserMessage(
-    sessionId: string,
-    messageId: string,
-    text: string,
-    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
-    options: {
-      placement?: TransientUserMessageProjection['transientPlacement'];
-      hostTurnId?: string;
-      updateOnly?: boolean;
-      directoryReferences?: DirectoryReferences;
-      quotes?: readonly QuoteRef[];
-      inlineReferences?: readonly InlineReference[];
-    } = {},
-  ): void {
-    const directoryReferences = options.directoryReferences;
-    const quotes = options.quotes ?? [];
-    const next: TransientUserMessageProjection = {
-      id: messageId,
-      ts: Date.now(),
-      text,
-      ...copiedArray('attachments', attachments),
-      ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
-      inlineReferences: [...(options.inlineReferences ?? [])],
-      transientPlacement: options.placement ?? 'current_turn',
-      ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
-    };
-    if (options.updateOnly) updateTransientMessage(sessionId, next);
-    else addTransientMessage(sessionId, next);
-    if (activeIdRef.current !== sessionId) return;
-    setMessageLoadErrorBySession((current) => {
-      if (!current[sessionId]) return current;
-      const cleared = { ...current };
-      delete cleared[sessionId];
-      return cleared;
-    });
-  }
-
   function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
     removeTransientMessage(sessionId, turnId);
-  }
-
-  // Explicit orchestration reserves an exact Turn identity before IPC, so its
-  // renderer command surface keeps the existing first-token wait. Ordinary
-  // messages never call this path: LocalIntent presents the message and the
-  // Host subscription alone introduces the actual Turn.
-  function armTurnActive(sessionId: string, turnId: string): void {
-    setLiveTurnBySession((current) => {
-      const active = current[sessionId];
-      if (active?.turnId === turnId && active.phase === 'waiting') return current;
-      return { ...current, [sessionId]: armLiveTurn(turnId) };
-    });
-  }
-
-  /**
-   * The arm was placed under the client's Message identity because that is all
-   * the client had; Runtime Host answers with the Turn identity every later
-   * event will carry. Adopt it, but only while the arm is still the one this
-   * send placed and still waiting — once the authority has said anything about
-   * a Turn here, that Turn is the one on screen and renaming it would retire
-   * the wrong claim.
-   */
-  function rebindTurnActive(sessionId: string, fromTurnId: string, toTurnId: string): void {
-    if (fromTurnId === toTurnId) return;
-    setLiveTurnBySession((current) => {
-      const active = current[sessionId];
-      if (active?.turnId !== fromTurnId || !active.unconfirmed) return current;
-      return { ...current, [sessionId]: { ...active, turnId: toTurnId } };
-    });
-  }
-
-  function disarmTurnActive(sessionId: string, turnId: string): void {
-    setLiveTurnBySession((current) => {
-      if (current[sessionId]?.turnId !== turnId) return current;
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
   }
 
   /**
@@ -351,7 +264,7 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    exactTurn?: boolean;
+    pendingSteering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
@@ -367,31 +280,17 @@ export function createAppShellChatActions(deps: {
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
         // The Message may well have been admitted, so its row stays for
-        // canonical transcript to settle. The Turn arm is a different claim:
-        // nothing proves a Turn opened under this identity, and no event
-        // carrying it will ever arrive to retire it.
-        if (input.exactTurn) disarmTurnActive(sessionId, messageId);
+        // canonical transcript to settle.
         return { kind: 'unreconciled' };
       }
       removeOptimisticUserMessage(sessionId, messageId);
-      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       if (surfaceVisible) {
         skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
       }
       return { kind: 'refused', skillInvocation: result.skillInvocation };
     }
     if (result.disposition === 'locally_saved') {
-      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       return { kind: 'projected', skillInvocation: result.skillInvocation };
-    }
-    if (input.exactTurn) {
-      if (result.disposition === 'turn_started' && result.turnId) {
-        rebindTurnActive(sessionId, messageId, result.turnId);
-      } else {
-        // Host admitted the Message into a Turn this send did not open, so the
-        // arm placed for an exact Turn describes nothing.
-        disarmTurnActive(sessionId, messageId);
-      }
     }
     if (surfaceVisible) {
       skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
@@ -399,21 +298,17 @@ export function createAppShellChatActions(deps: {
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
     // they come back to it.
-    showTransientUserMessage(
-      sessionId,
-      messageId,
-      input.displayText ??
-        skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
-      result.attachments,
-      {
-        updateOnly: true,
-        placement,
-        ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...copiedArray('directoryReferences', directoryReferences),
-        ...copiedArray('quotes', quotes),
-        inlineReferences: result.inlineReferences ?? [],
-      },
-    );
+    publishTransientUserMessage(sessionId, {
+      id: messageId,
+      text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
+      attachments: [...result.attachments],
+      transientPlacement: placement,
+      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
+      inlineReferences: [...(result.inlineReferences ?? [])],
+    }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
@@ -467,14 +362,13 @@ export function createAppShellChatActions(deps: {
     try {
       const messageId = crypto.randomUUID();
       async function submitIntoSession(sessionId: string, messageId: string) {
-        if (exactTurn) armTurnActive(sessionId, messageId);
         const attachmentItems =
           pending?.length
-            ? toComposerIngestItems(pending)
+            ? Conversation.toComposerIngestItems(pending)
             : undefined;
         const retainedAttachments =
           pending?.length
-            ? retainedAttachmentRefs(pending)
+            ? Conversation.retainedAttachmentRefs(pending)
             : undefined;
         const sendCommand = {
           text,
@@ -488,14 +382,14 @@ export function createAppShellChatActions(deps: {
         return submitAndProject({
           sessionId,
           messageId,
-          placement: 'current_turn',
+          placement: exactTurn ? 'current_turn' : 'next_turn',
           command: {
             ...sendCommand,
             ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
-          exactTurn,
+          pendingSteering: false,
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -524,17 +418,12 @@ export function createAppShellChatActions(deps: {
         // session-owned transient in the same state transition that replaces
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
-        showTransientUserMessage(
-          session.id,
-          messageId,
-          options.displayText ?? text,
-          [],
-          {
-            ...copiedArray('directoryReferences', directoryReferences),
-            ...copiedArray('quotes', quotes),
-            inlineReferences: [],
-          },
-        );
+        publishTransientUserMessage(session.id, {
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          inlineReferences: [],
+        });
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
@@ -562,17 +451,12 @@ export function createAppShellChatActions(deps: {
       if (!await onFollowLatest(sessionId)) return false;
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
-      showTransientUserMessage(
-        sessionId,
-        messageId,
-        options.displayText ?? text,
-        [],
-        {
-          ...copiedArray('directoryReferences', directoryReferences),
-          ...copiedArray('quotes', quotes),
-          inlineReferences: [],
-        },
-      );
+      publishTransientUserMessage(sessionId, {
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
+        inlineReferences: [],
+      });
       const submitted = await submitIntoSession(sessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
@@ -596,13 +480,6 @@ export function createAppShellChatActions(deps: {
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
-      }
-      // The turn never reached the runtime — close the model-wait window so the
-      // "正在处理…" indicator doesn't hang after a failed send. Nothing else has
-      // to be undone: the arm was the only claim the send made, and no
-      // subscribeChanges event would reconcile a turn that never started.
-      if (exactTurn && optimisticSessionId && optimisticMessageId) {
-        disarmTurnActive(optimisticSessionId, optimisticMessageId);
       }
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
@@ -646,21 +523,26 @@ export function createAppShellChatActions(deps: {
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
-    showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
-      placement,
+    publishTransientUserMessage(sessionId, {
+      id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
+      pendingSteering: placement === 'current_turn',
+      ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
+      transientPlacement: placement,
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
-      const attachmentItems = pending?.length ? toComposerIngestItems(pending) : [];
-      const retainedAttachments = pending?.length ? retainedAttachmentRefs(pending) : [];
+      const attachmentItems = pending?.length ? Conversation.toComposerIngestItems(pending) : [];
+      const retainedAttachments = pending?.length ? Conversation.retainedAttachmentRefs(pending) : [];
       const submitted = await submitAndProject({
         sessionId,
         messageId,
         placement,
+        pendingSteering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),
@@ -768,6 +650,21 @@ export function createAppShellChatActions(deps: {
     } finally {
       messageRetryPending.release(sessionId);
     }
+  }
+
+  function publishTransientUserMessage(
+    sessionId: string,
+    message: Omit<TransientUserMessageProjection, 'ts'>,
+    updateOnly = false,
+  ): void {
+    (updateOnly ? deps.updateTransientMessage : deps.addTransientMessage)(sessionId, { ...message, ts: Date.now() });
+    if (activeIdRef.current !== sessionId) return;
+    setMessageLoadErrorBySession((current) => {
+      if (!current[sessionId]) return current;
+      const cleared = { ...current };
+      delete cleared[sessionId];
+      return cleared;
+    });
   }
 
   return {

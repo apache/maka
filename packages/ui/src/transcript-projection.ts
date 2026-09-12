@@ -62,7 +62,7 @@ export interface TranscriptProjectionInput {
   sessionId?: string;
   locale: UiLocale;
   messages: readonly StoredMessage[];
-  liveTurn?: LiveTurnProjection;
+  liveTurns?: readonly LiveTurnProjection[];
   shellRunUpdates?: readonly ShellRunUpdate[];
 }
 
@@ -80,7 +80,7 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Stage inputs, remembered so a stage only reruns when its own input moved.
   let lastMessages: readonly StoredMessage[] | undefined;
   let lastLocale: UiLocale | undefined;
-  let lastLiveTurn: LiveTurnProjection | undefined;
+  let lastLiveTurn: readonly LiveTurnProjection[] | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
 
   // Stage outputs.
@@ -121,6 +121,10 @@ export function createTranscriptProjection(): TranscriptProjection {
     const updatesMoved = lastUpdates === undefined
       || lastUpdates.length !== updates.length
       || updates.some((update, index) => update !== lastUpdates![index]);
+    const buffersMoved = input.liveTurns !== lastLiveTurn && (
+      input.liveTurns?.length !== lastLiveTurn?.length
+      || input.liveTurns?.some((turn, index) => turn !== lastLiveTurn?.[index]) === true
+    );
 
     // Same inputs, same answer, without advancing any owned state — which is
     // what makes projecting during render safe under double invocation.
@@ -128,7 +132,7 @@ export function createTranscriptProjection(): TranscriptProjection {
       hasProjected
       && input.messages === lastMessages
       && input.locale === lastLocale
-      && input.liveTurn === lastLiveTurn
+      && !buffersMoved
       && !updatesMoved
     ) {
       return lastTurns;
@@ -144,12 +148,12 @@ export function createTranscriptProjection(): TranscriptProjection {
     }
     if (
       liveTurnsFrom !== settledTurns ||
-      input.liveTurn !== lastLiveTurn ||
+      buffersMoved ||
       input.locale !== lastOverlayLocale
     ) {
-      liveTurns = overlayLiveTurn(settledTurns, input.liveTurn, input.locale);
+      liveTurns = (input.liveTurns ?? []).reduce<readonly TurnViewModel[]>((turns, live) => overlayLiveTurn(turns, live, input.locale), settledTurns);
       liveTurnsFrom = settledTurns;
-      lastLiveTurn = input.liveTurn;
+      lastLiveTurn = input.liveTurns;
       lastOverlayLocale = input.locale;
     }
     if (updatesMoved) {

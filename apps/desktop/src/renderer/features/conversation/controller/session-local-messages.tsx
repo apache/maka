@@ -25,6 +25,29 @@ import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
 import { useConversationServices } from '../services.js';
 import { localMessagePresentation } from './local-message-presentation.js';
 
+/** Reuse the current composer owner for both admission checks and draft restoration. */
+export function localMessageDraftRecovery(
+  sessionId: string | undefined,
+  hostId: string | undefined,
+  composer: { readonly current: null | {
+    getText(): string;
+    setText(text: string, references: DesktopLocalMessageDraft['inlineReferences']): void;
+  } },
+  available: boolean,
+  restoreContext: (owner: string, hostId: string | undefined, draft: DesktopLocalMessageDraft) => void,
+  restoreQuotes: (owner: string, quotes: DesktopLocalMessageDraft['quotes']) => void,
+) {
+  return {
+    canRestoreDraft: () => Boolean(sessionId && available && composer.current && !composer.current.getText()),
+    restoreDraft: (draft: DesktopLocalMessageDraft) => {
+      if (!sessionId || !composer.current) return;
+      restoreContext(sessionId, hostId, draft);
+      restoreQuotes(sessionId, draft.quotes);
+      composer.current.setText(draft.text, draft.inlineReferences);
+    },
+  };
+}
+
 export function SessionLocalMessages(props: {
   readonly sessionId?: string;
   readonly queue?: readonly MessageQueueEntryProjection[];
@@ -69,6 +92,11 @@ export function SessionLocalMessages(props: {
     if (!sessionId || snapshot?.sessionId !== sessionId) return;
     const copy = getSessionLocalCopy(locale);
     for (const message of snapshot.messages) {
+      if (message.state === 'accepted' && !message.turnId) {
+        // The Host queue owns accepted steering and follow-ups, including withdrawal.
+        retire(sessionId, message.messageId);
+        continue;
+      }
       const key = `${sessionId}:${message.messageId}`;
       const run = (operation: () => Promise<void>) => () => {
         if (pending.current) return;
@@ -116,7 +144,7 @@ export function SessionLocalMessages(props: {
       published.current.ids.add(message.messageId);
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
-        transientPlacement: message.placement, attachments: message.attachments,
+        transientPlacement: message.turnId ? 'current_turn' : message.placement, attachments: message.attachments,
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
         deliveryStatus: presentation.status,

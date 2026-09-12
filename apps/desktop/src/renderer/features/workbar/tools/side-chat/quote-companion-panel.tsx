@@ -57,28 +57,6 @@ import type { CompanionForkVisibilityEvent } from './quote-companion-visibility'
 import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
 import { useWorkbarServices } from '../../services-context.js';
 
-const RUNNING_STATUS_DELAY_MS = 200;
-
-/**
- * A boolean that turns true only after `condition` has held for `delayMs`, and
- * false the moment it drops — the rising-edge delay that keeps a fast turn from
- * flashing the running-status line. A feature-local copy of the shell's
- * useDelayedFlag: the renderer-legacy original is walled off from feature code
- * by the architecture budget, and this is only a few lines of timer plumbing.
- */
-function useDelayedFlag(condition: boolean, delayMs: number): boolean {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!condition) {
-      setVisible(false);
-      return;
-    }
-    const handle = window.setTimeout(() => setVisible(true), delayMs);
-    return () => window.clearTimeout(handle);
-  }, [condition, delayMs]);
-  return visible;
-}
-
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
  * It renders with the SAME surface as the main conversation — the real
@@ -191,30 +169,10 @@ export function QuoteCompanionPanel(props: {
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
-  // The transcript's running-status line ("正在琢磨… · Ns"). Like the main chat
-  // (useShellLiveTurn → showRunningStatus) it rides the whole active turn, not
-  // just the pre-first-token wait, with the same rising-edge delay so a fast
-  // turn never flashes it. The companion's `processing` only covers the wait
-  // window, which is why the side panel used to show almost no progress cue.
-  // `transientMessages` covers the first-send window BEFORE the fork commits and
-  // the admission is armed: the optimistic bubble is on screen but `streaming`
-  // is still false, and the cue must already be up (the admission is deliberately
-  // armed late so the Stop button never appears before `stop()` can act on it).
-  const showRunningStatus = useDelayedFlag(
-    companion.streaming || companion.transientMessages.length > 0,
-    RUNNING_STATUS_DELAY_MS,
-  );
+  const active = Boolean(companion.activeTurn) || companion.processing;
   useEffect(() => {
-    props.onActivityStateChange?.(
-      props.panelId,
-      companion.streaming || companion.processing,
-    );
-  }, [
-    companion.processing,
-    companion.streaming,
-    props.onActivityStateChange,
-    props.panelId,
-  ]);
+    props.onActivityStateChange?.(props.panelId, active);
+  }, [active, props.onActivityStateChange, props.panelId]);
   useEffect(() => {
     if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
@@ -415,8 +373,8 @@ export function QuoteCompanionPanel(props: {
           messages={companion.messages}
           transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
-          liveTurn={companion.liveTurn}
-          runningStatus={showRunningStatus}
+          liveTurns={companion.liveTurns}
+          activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}

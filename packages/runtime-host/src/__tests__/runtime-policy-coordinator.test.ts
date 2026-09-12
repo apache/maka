@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -1230,6 +1232,27 @@ test('reconstructs a large catalog with revision-pinned pages and rejects stale 
       pages.flatMap((page) => page.items),
       expectedCatalogItems(snapshot),
     );
+
+    const expectedItems = expectedCatalogItems(snapshot);
+    assertMaximalJsonPages(pages, expectedItems, {
+      maxBytes: CONNECTION_CATALOG_PAGE_MAX_BYTES,
+      maxItems: CONNECTION_CATALOG_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => {
+        const next = expectedItems[end];
+        const nextCursor =
+          next === undefined
+            ? null
+            : next.kind === 'connection'
+              ? { connectionIndex: next.connectionIndex, part: 'connection' }
+              : {
+                  connectionIndex: next.connectionIndex,
+                  part: next.kind,
+                  itemIndex: next.itemIndex,
+                };
+        return { ...page, items, nextCursor };
+      },
+    });
 
     const staleCursor = first.result.nextCursor;
     assert.ok(staleCursor);

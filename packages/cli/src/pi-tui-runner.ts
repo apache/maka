@@ -34,11 +34,7 @@ import {
 import type { PermissionMode } from '@maka/core/permission';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  deriveConnectionSlug,
-  type ModelInfo,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -79,7 +75,6 @@ import type {
   MakaPiTuiTurnActivitySurface,
   MakaPiTuiHostControl,
   ModelChoice,
-  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -175,6 +170,7 @@ import {
   getTuiPickerCopy,
   modelPickerItems,
   onboardingFailureMessage,
+  onboardingOAuthFailureMessage,
   permissionModePickerItems,
   skillPickerItems,
   thinkingLevelPickerItems,
@@ -375,6 +371,9 @@ interface TuiRewindCopy {
   readonly doneKeptDraft: string;
   readonly noTargets: string;
   readonly busy: string;
+  readonly unsupportedQuotes: string;
+  readonly unsupportedAttachments: string;
+  readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
 }
 
@@ -1344,9 +1343,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     })().catch(reportError);
   };
 
-  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search
-  // → API key → model curation, keeping every prompt/verifying/failure/saving/
-  // success notice beside the input field instead of the transcript entry flow.
+  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
+  // authentication, model curation, and success without transcript notices.
   let wizardOverlay: OverlayHandle | undefined;
   let wizard: OnboardingWizard | undefined;
   // The user's supplied key from the key step ('' reuses the stored secret for an
@@ -1359,11 +1357,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
   let wizardTarget: OnboardingProviderEntry['target'] | undefined;
-  // The identity step's answer for a create target. Null halves keep the wire
-  // target bare so any Host vintage accepts it; an edited slug/name rides on
-  // the target and gets `slug_taken` back when it loses.
-  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
-  let wizardModels: readonly ModelInfo[] = [];
+  let wizardOAuthAbort: AbortController | undefined;
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
   // available — the single source the picker and connection/model lookups read.
@@ -2120,7 +2114,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId);
+      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+        // The driver refuses rewind with a machine code when the selected
+        // turn carries structured context the TUI cannot restore (#5109).
+        // Render the localized catalog copy for that code instead of the
+        // driver's English fallback.
+        const code = (error as { code?: unknown })?.code;
+        if (
+          code === 'rewind_unsupported_quotes' ||
+          code === 'rewind_unsupported_attachments' ||
+          code === 'rewind_unsupported_directory_references'
+        ) {
+          const localized =
+            code === 'rewind_unsupported_quotes'
+              ? TUI_REWIND_COPY[locale].unsupportedQuotes
+              : code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+          throw new Error(localized);
+        }
+        throw error;
+      });
       await applySwitchResult(result);
       await discardCurrentSidePair();
       // Record the discarded turn's prompt in the editor history before
@@ -2416,6 +2430,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const closeWizard = (): void => {
+    wizardOAuthAbort?.abort();
+    wizardOAuthAbort = undefined;
     wizardAttempt += 1; // drop any in-flight verify/save before clearing the slots
     wizardOverlay?.hide();
     wizardOverlay = undefined;
@@ -2423,8 +2439,110 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardApiKey = '';
     wizardBaseUrl = '';
     wizardTarget = undefined;
-    wizardIdentity = { slug: null, name: null };
-    wizardModels = [];
+  };
+
+  const discoverWizardOAuthModels = (
+    targetWizard: OnboardingWizard,
+    attempt: number,
+    target: Extract<OnboardingProviderEntry['target'], { readonly kind: 'existing' }>,
+  ): void => {
+    if (!input.onboarding) return;
+    void input.onboarding.verify({ target }).then(
+      (result) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        if (result.kind !== 'ok') {
+          targetWizard.setOAuthModelError(onboardingFailureMessage(result, locale));
+          requestRender();
+          return;
+        }
+        targetWizard.setModels(result.models);
+        requestRender();
+      },
+      () => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        targetWizard.setOAuthModelError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
+        requestRender();
+      },
+    );
+  };
+
+  const startWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!target || !targetWizard) return;
+    if (!input.onboarding?.loginOAuth) {
+      targetWizard.setOAuthError(pickerCopy.onboardingUnavailable);
+      requestRender();
+      return;
+    }
+    wizardOAuthAbort?.abort();
+    const abort = new AbortController();
+    wizardOAuthAbort = abort;
+    const attempt = ++wizardAttempt;
+    requestRender();
+    void input.onboarding
+      .loginOAuth({
+        target,
+        signal: abort.signal,
+        onPresentation: (presentation) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthPresentation(presentation);
+          requestRender();
+        },
+      })
+      .then(
+        (result) => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'unconfirmed') {
+            targetWizard.setOAuthUnconfirmed();
+            requestRender();
+            return;
+          }
+          if (result.kind === 'cancelled') {
+            targetWizard.setOAuthCancelled();
+            wizardAttempt += 1;
+            requestRender();
+            return;
+          }
+          if (result.kind === 'failed') {
+            const message = onboardingOAuthFailureMessage(result.reason, locale);
+            if (result.reason === 'slug_taken' && target.kind === 'create') {
+              targetWizard.setIdentityError(message);
+            } else {
+              targetWizard.setOAuthError(message);
+            }
+            requestRender();
+            return;
+          }
+          const existingTarget = {
+            kind: 'existing' as const,
+            connectionId: result.connection.connectionId,
+          };
+          // Authentication is the durable create/reauthorize commit point. All
+          // later work addresses that exact Connection and never repeats OAuth.
+          wizardTarget = existingTarget;
+          targetWizard.setOAuthAuthenticated();
+          requestRender();
+          discoverWizardOAuthModels(targetWizard, attempt, existingTarget);
+        },
+        () => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthError(onboardingOAuthFailureMessage('unavailable', locale));
+          requestRender();
+        },
+      );
+  };
+
+  const continueWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!targetWizard || target?.kind !== 'existing') return;
+    const attempt = ++wizardAttempt;
+    targetWizard.setOAuthAuthenticated();
+    requestRender();
+    discoverWizardOAuthModels(targetWizard, attempt, target);
   };
 
   // Key submit from the wizard. Slash commands route as commands (so /exit
@@ -2461,7 +2579,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        wizardModels = result.models;
         wizard.setModels(result.models); // advance to the models step
         requestRender();
       },
@@ -2586,15 +2703,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // reselects the same catalog row. A late save may converge only the
         // exact target object captured by its own submit.
         wizardTarget = { ...provider.target };
-        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
-        wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
         requestRender();
       },
       onSubmitIdentity: (identity) => {
-        wizardIdentity = identity;
         if (wizardTarget?.kind === 'create') {
           wizardTarget = {
             kind: 'create',
@@ -2610,6 +2724,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onSubmitKey: submitWizardKey,
+      onStartOAuth: startWizardOAuth,
+      onCancelOAuth: () => {
+        wizard?.setOAuthCancelling();
+        wizardOAuthAbort?.abort();
+        requestRender();
+      },
+      onContinueOAuth: continueWizardOAuth,
+      onReturnToProviders: () => {
+        const targetWizard = wizard;
+        const attempt = ++wizardAttempt;
+        requestRender();
+        if (!targetWizard || !input.onboarding) return;
+        void input.onboarding.listProviders().then(
+          (providers) => {
+            if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+            targetWizard.setProviders(providers);
+            requestRender();
+          },
+          () => {
+            // Keep the cached list usable if refreshing the saved account fails.
+          },
+        );
+      },
       onSubmitModels: submitWizardModels,
       onCancel: () => {
         closeWizard();

@@ -23,7 +23,6 @@ import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
   reconcileTransientMessages,
 } from '../../renderer/transient-message-projection.js';
 
@@ -117,29 +116,6 @@ test('keeps a transient message out of a sparse historical range', () => {
   assert.equal(pending.has('message-live'), true);
 });
 
-test('uses the Host queue snapshot order for already-present transient messages', () => {
-  const localSecond = {
-    ...transient,
-    id: 'message-2',
-    turnId: 'message-2',
-    text: 'second',
-  };
-  const remoteFirst = {
-    ...transient,
-    id: 'message-1',
-    turnId: 'message-1',
-    text: 'first',
-  };
-  const pending = new Map([[localSecond.id, localSecond]]);
-
-  projectQueuedTransientMessages(pending, [remoteFirst, localSecond]);
-
-  assert.deepEqual(
-    reconcileTransientMessages(pending, []).map((message) => message.id),
-    ['message-1', 'message-2'],
-  );
-});
-
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {
   const hostBound = { ...transient, id: 'message-current', hostTurnId: 'host-turn' };
   const lateIpcUpdate = { ...transient, id: 'message-current', text: 'uploaded content' };
@@ -151,14 +127,14 @@ test('keeps a Host-bound current Turn when a later IPC result has no Turn identi
 });
 
 
-test('queue and late IPC projections preserve local delivery controls until canonical handoff', () => {
+test('late IPC projections preserve local delivery controls until canonical handoff', () => {
   const local = {
     ...transient, deliveryStatus: 'Checking delivery', deliveryTone: 'warning' as const,
     deliveryDiagnostic: 'lost acknowledgement', deliveryDiagnosticLabel: 'Delivery details',
     deliveryActions: [{ label: 'Check delivery', disabled: true, onClick() {} }],
   };
-  const pending = new Map([[local.id, local]]);
-  projectQueuedTransientMessages(pending, [{ ...transient, text: 'Host content' }]);
+  const pending = new Map<string, TransientUserMessageProjection>([[local.id, local]]);
+  pending.set(local.id, mergeTransientMessageProjection(local, { ...transient, text: 'Host content' }));
   const queued = pending.get(local.id)!;
   assert.equal(queued.text, 'Host content');
   assert.equal(queued.deliveryStatus, local.deliveryStatus);

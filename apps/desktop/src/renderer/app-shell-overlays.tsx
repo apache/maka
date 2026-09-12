@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { lazy, Suspense, useLayoutEffect, useRef } from 'react';
+import { lazy, Suspense, useLayoutEffect, useRef, type ReactNode } from 'react';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -32,15 +32,7 @@ import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import type { UiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
-const SettingsModal = lazy(async () => {
-  const e2eLatch = (
-    window as typeof window & {
-      makaE2eLatch?: { wait(key: 'settings.chunk'): Promise<void> };
-    }
-  ).makaE2eLatch;
-  await e2eLatch?.wait('settings.chunk');
-  return import('./settings/settings-modal');
-});
+const SettingsModal = lazy(() => import('./settings/settings-modal'));
 
 type SearchModalProps = Parameters<typeof SearchModal>[0];
 
@@ -59,6 +51,30 @@ function SettingsModalFallback() {
       </div>
     </div>
   );
+}
+
+// Own dismissal outside the lazy chunk, including its Suspense fallback.
+export function SettingsOverlay({ onClose, children }: {
+  onClose(): void;
+  children: ReactNode;
+}) {
+  const closeRef = useRef(onClose);
+  useLayoutEffect(() => {
+    closeRef.current = onClose;
+  });
+  useLayoutEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.key.toLowerCase() !== 'escape' || event.defaultPrevented ||
+        event.ctrlKey || event.metaKey || event.altKey
+      ) return;
+      event.preventDefault();
+      closeRef.current();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+  return <Suspense fallback={<SettingsModalFallback />}>{children}</Suspense>;
 }
 
 export function AppShellOverlays(props: {
@@ -126,36 +142,6 @@ export function AppShellOverlays(props: {
     onExternalSessionImported,
   } = props;
 
-  const closeSettingsRef = useRef(closeSettings);
-  useLayoutEffect(() => {
-    closeSettingsRef.current = closeSettings;
-  });
-
-  // The overlay boundary, rather than the lazy Settings chunk, owns Escape.
-  // That keeps one owner installed before paint for both the Suspense loading
-  // surface and the resolved Settings surface. Keep the listener stable while
-  // Settings is open, but read the latest shell callback after every commit.
-  useLayoutEffect(() => {
-    if (!settingsOpen) return;
-
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (
-        event.key.toLowerCase() !== 'escape' ||
-        event.defaultPrevented ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey
-      ) {
-        return;
-      }
-      event.preventDefault();
-      closeSettingsRef.current();
-    }
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [settingsOpen]);
-
   // #1045: base commands freeze per open/close; session rows stay live on
   // visibleSessions/activeId. run() closures read latest options via ref.
   const commands = useAppShellCommands(paletteOpen, commandOptions);
@@ -169,7 +155,7 @@ export function AppShellOverlays(props: {
   return (
     <>
       {settingsOpen && (
-        <Suspense fallback={<SettingsModalFallback />}>
+        <SettingsOverlay onClose={closeSettings}>
           <SettingsModal
             onClose={closeSettings}
             themePref={themePref}
@@ -192,7 +178,7 @@ export function AppShellOverlays(props: {
             onRemoteHostAdded={props.onRemoteHostAdded}
             onSelectedRuntimeHostProfileIdChange={props.onSelectedRuntimeHostProfileIdChange}
           />
-        </Suspense>
+        </SettingsOverlay>
       )}
       <KeyboardHelpModal
         isOpen={helpOpen}

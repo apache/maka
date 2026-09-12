@@ -104,9 +104,12 @@ function requireMinimumInteger(value: number, label: string, minimum: number): n
 }
 
 function truncateCodePoints(value: string, maximum: number): string {
-  const codePoints = [...value];
-  if (codePoints.length <= maximum) return value;
-  return `${codePoints.slice(0, maximum).join('')}\n<log entry truncated>`;
+  const codePoints: string[] = [];
+  for (const point of value) {
+    if (codePoints.length === maximum) return `${codePoints.join('')}\n<log entry truncated>`;
+    codePoints.push(point);
+  }
+  return value;
 }
 
 function truncateEncodedString(value: string, maximumBytes: number): string {
@@ -127,9 +130,18 @@ function truncateEncodedString(value: string, maximumBytes: number): string {
 
 export function truncateUtf8(value: string, maximumBytes: number, marker = ''): string {
   requirePositiveInteger(maximumBytes, 'maximumBytes');
-  if (new TextEncoder().encode(value).byteLength <= maximumBytes) return value;
-  const suffix = new TextEncoder().encode(marker).byteLength <= maximumBytes ? marker : '';
-  const codePoints = [...value];
+  if (value.length <= maximumBytes && new TextEncoder().encode(value).byteLength <= maximumBytes)
+    return value;
+  const suffix =
+    marker.length <= maximumBytes && new TextEncoder().encode(marker).byteLength <= maximumBytes
+      ? marker
+      : '';
+  // Every code point requires at least one UTF-8 byte, so only this prefix can fit.
+  const codePoints: string[] = [];
+  for (const point of value) {
+    if (codePoints.length === maximumBytes) break;
+    codePoints.push(point);
+  }
   let low = 0;
   let high = codePoints.length;
   while (low < high) {

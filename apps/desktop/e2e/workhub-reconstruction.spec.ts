@@ -93,14 +93,16 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
   const capabilities = await app.evaluate(({ BrowserWindow }) => {
     const floating = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!;
-    return { maximizable: floating.isMaximizable(), fullscreenable: floating.isFullScreenable() };
+    return { maximizable: floating.isMaximizable(), fullscreenable: floating.isFullScreenable(), resizable: floating.isResizable() };
   });
   expect(capabilities.fullscreenable).toBe(false);
+  expect(capabilities.resizable).toBe(false);
   if (process.platform !== 'linux') expect(capabilities.maximizable).toBe(false);
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => Math.abs(innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBeLessThanOrEqual(1);
   await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.isResizable())).toBe(true);
   await workhub.getByRole('button', { name: /^(Hide|隐藏|隱藏)$/ }).click();
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked', floatingVisible: false });
   await expect(page.locator('.workHubDockPlaceholder')).toBeHidden();

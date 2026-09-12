@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
+  type RuntimeResourceQueryInput,
+  type RuntimeResourceQueryResult,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
@@ -1054,3 +1061,56 @@ function pipeOutput(stdout: string): Extract<ShellRunSnapshotResult['output'], {
 function shellRef(index: number): string {
   return `maka://runtime/background-tasks/shell-${index}`;
 }
+
+test('Runtime Resource pages include output projections and their Session header in the byte budget', async () => {
+  const harness = createHarness();
+  harness.updates = Array.from({ length: 20 }, (_, index) =>
+    resourceUpdate(index, {
+      result: pipeSnapshot(index, '文"\\🙂'.repeat(600)),
+    }),
+  );
+  const expected = [];
+  for (const update of harness.updates) {
+    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'get', sessionId: SESSION_ID, ref: update.result.ref },
+      connection('connection-1'),
+    );
+    assert.ok(outcome.ok && outcome.result.kind === 'resource' && outcome.result.resource);
+    expected.push(outcome.result.resource);
+  }
+  expected.sort((a, b) => a.result.ref.localeCompare(b.result.ref));
+  const pages: Extract<RuntimeResourceQueryResult, { kind: 'page' }>[] = [];
+  let input: RuntimeResourceQueryInput = { kind: 'list_start', sessionId: SESSION_ID };
+  let end = 0;
+  do {
+    const outcome = await harness.coordinator.handlers['runtime.resource.query'](
+      input,
+      connection('connection-1'),
+    );
+    assert.ok(outcome.ok && outcome.result.kind === 'page');
+    const page = outcome.result;
+    assert.ok(page.resources.length > 0);
+    pages.push(page);
+    end += page.resources.length;
+    assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+    if (page.nextCursor === null) break;
+    input = {
+      kind: 'list_continue',
+      sessionId: SESSION_ID,
+      revision: page.revision,
+      cursor: page.nextCursor,
+    };
+  } while (end < expected.length);
+  assert.ok(pages.length > 1);
+  assert.ok(pages[0]!.resources.length < RUNTIME_RESOURCE_PAGE_MAX_ITEMS);
+  assertMaximalJsonPages(pages, expected, {
+    maxBytes: RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    maxItems: RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
+    items: (page) => page.resources,
+    candidate: (page, resources, end) => ({
+      ...page,
+      resources,
+      nextCursor: end < expected.length ? String(end) : null,
+    }),
+  });
+});
