@@ -154,6 +154,7 @@ import {
   createHostMemoryExtractionModel,
   createHostPluginModel,
   createHostSessionEffectModel,
+  type HostSessionEffectModel,
   type HostWorkHubRoutingModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -285,6 +286,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly primaryBackendFactory?: BackendFactory;
+  readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
@@ -1235,13 +1237,17 @@ export async function createExecutionRuntimeHostComposition(
       runtimeEventStore: stores.runtimeEventStore,
       canonicalPermissionOutcomes,
     });
+    const sessionEffectModel = createHostSessionEffectModel({
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      usage: openedUsageStores,
+      requestDrain: context.requestDrain,
+    });
     const sessionEffectCoordinator = new HostSessionEffectCoordinator({
-      model: createHostSessionEffectModel({
-        runtimePolicy: runtimePolicyStores,
-        oauthCredentials,
-        usage: openedUsageStores,
-        requestDrain: context.requestDrain,
-      }),
+      model: {
+        ...sessionEffectModel,
+        generateTitle: dependencies.generateSessionTitle ?? sessionEffectModel.generateTitle,
+      },
       readModel: {
         getSessionView: async (sessionId) => {
           // A Session whose transcript predates the ledger projects an empty

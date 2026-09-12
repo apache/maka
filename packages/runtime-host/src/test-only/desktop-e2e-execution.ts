@@ -95,6 +95,9 @@ export function createDesktopE2eExecutionCandidateDependencies(): ExecutionRunti
         },
         {
           primaryBackendFactory: (backendContext) => new DesktopE2eBackend(backendContext),
+          // The fake primary reply must not race a real auxiliary title request.
+          // Keep Host-owned naming/persistence, using its deterministic fallback.
+          generateSessionTitle: async () => undefined,
           oauthAuthorization: DESKTOP_E2E_OAUTH_AUTHORIZATION,
         },
       ),
