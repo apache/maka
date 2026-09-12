@@ -385,6 +385,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [modelDraft, setModelDraft] = useState<{
     connectionId: string;
     modelId: string;
+    expected: ModelOverride | null;
     value: ModelOverride;
   } | null>(null);
   const activeDraft = modelDraft?.connectionId === connection.connectionId ? modelDraft : null;
@@ -397,12 +398,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     modelId: string,
     next: (current: ModelOverride | undefined) => ModelOverride | undefined,
   ): void {
-    setModelDraft((current) => ({
+    setModelDraft((current) => {
+      const previous = current?.connectionId === connection.connectionId && current.modelId === modelId ? current : null;
+      return {
       connectionId: connection.connectionId,
       modelId,
-      value: next(current?.connectionId === connection.connectionId && current.modelId === modelId
-        ? current.value : connection.modelOverrides?.[modelId]) ?? {},
-    }));
+      expected: previous ? previous.expected : connection.modelOverrides?.[modelId] ?? null,
+      value: next(previous ? previous.value : connection.modelOverrides?.[modelId]) ?? {},
+      };
+    });
   }
 
   function resetDraftProfile(_modelId: string): void {
@@ -438,7 +442,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(connectionIdentity, {
-        modelOverride: { modelId: activeDraft.modelId, value: activeDraft.value },
+        modelOverride: { modelId: activeDraft.modelId, expected: activeDraft.expected, value: activeDraft.value },
       });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
@@ -473,7 +477,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(connectionIdentity, {
-        modelOverride: { modelId, value: profile, enable: true },
+        modelOverride: { modelId, expected: null, value: profile, enable: true },
       });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return saved;

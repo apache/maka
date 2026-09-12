@@ -584,11 +584,15 @@ function normalizeUpdateInput(
 ): UpdateConnectionInput {
   const patch = normalizeConnectionPatchSecretsForIpc(value);
   if (patch.modelOverride !== undefined) {
-    const { modelId, value: override, enable } = patch.modelOverride;
+    const { modelId, expected, value: override, enable } = patch.modelOverride;
     if (typeof modelId !== 'string' || !modelId.trim() || modelId !== modelId.trim() ||
       typeof override !== 'object' || override === null || Array.isArray(override) ||
       (enable !== undefined && typeof enable !== 'boolean') || patch.modelOverrides !== undefined) {
       throw new Error('Invalid model override');
+    }
+    const normalize = (value: unknown) => normalizeModelOverrides({ model: value })?.model ?? null;
+    if (expected === undefined || JSON.stringify(normalize(expected)) !== JSON.stringify(normalize(current.modelOverrides?.[modelId]))) {
+      throw new Error('Model parameters changed. Reopen the editor before saving again.');
     }
     patch.modelOverrides = { ...current.modelOverrides, [modelId]: override };
     if (enable) patch.enabledModelIds = [...new Set([...current.enabledModelIds, modelId])];

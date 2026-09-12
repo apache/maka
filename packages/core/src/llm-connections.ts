@@ -767,7 +767,12 @@ export interface CreateConnectionInput {
 }
 
 export interface UpdateConnectionInput {
-  modelOverride?: { modelId: string; value: ModelOverride; enable?: boolean };
+  modelOverride?: {
+    modelId: string;
+    expected: ModelOverride | null;
+    value: ModelOverride;
+    enable?: boolean;
+  };
   name?: string;
   baseUrl?: string;
   defaultModel?: string;

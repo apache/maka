@@ -641,11 +641,13 @@ test('adding and editing a model merge into the latest connection in one Host wr
     emitConnectionListChanged() {},
   });
   const update = handlers.get('connections:update')!;
-  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', value: {}, enable: true } });
+  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', expected: null, value: {}, enable: true } });
   assert.equal(writes.length, 1);
   assert.deepEqual(snapshot.connections[0]?.enabledModelIds, ['model-1', 'model-2', 'manual']);
   assert.deepEqual(snapshot.connections[0]?.modelOverrides, { 'model-2': { vision: true }, manual: {} });
-  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', value: { compactionThreshold: 64000 } } });
+  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', expected: {}, value: { compactionThreshold: 64000 } } });
   assert.equal(writes.length, 2);
   assert.deepEqual(snapshot.connections[0]?.modelOverrides, { 'model-2': { vision: true }, manual: { compactionThreshold: 64000 } });
+  await assert.rejects(() => update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', expected: {}, value: { vision: false } } }) as Promise<unknown>, /Model parameters changed/);
+  assert.equal(writes.length, 2);
 });

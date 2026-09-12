@@ -56,7 +56,7 @@
 - Moved Read image snapshots into the durable context-offload store with Runtime-owned
   lifecycle identity, exact branch and revision copying, recovery-safe cleanup, and bounded
   physical garbage collection after Session retirement.
-- Redesigned per-model parameter editing with responsive fields and an image-input default resolved by the Host, including when clearing a saved override. Removed bulk thinking-level edits; each model keeps its own declaration.
+- Unified manual model registration and parameter overrides in the connection catalog, isolated by connection and saved atomically. Model capacity and automatic compaction now use separate fields. Redesigned the shared add/edit form, kept disabled models configurable, and removed bulk thinking edits and client catalog rebuilding. Legacy declarations migrate on the next save; Clients and Hosts must update together.
 
 ## 0.1.11 - 2026-08-18
 
