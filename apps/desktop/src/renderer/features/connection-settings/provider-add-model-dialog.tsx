@@ -20,7 +20,7 @@
 import { useId, useState, type ReactNode } from 'react';
 import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connections';
 import { supportsRelayFastServiceTier, type ModelOverride } from '@maka/core/model-thinking';
-import { CapabilityEditor } from './provider-capability-editor';
+import { CapabilityEditor } from './provider-capability-editor.js';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, HStack, TextInput, useUiLocale } from '@maka/ui';
