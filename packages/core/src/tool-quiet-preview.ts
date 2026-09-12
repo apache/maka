@@ -531,7 +531,7 @@ export function formatSavedToolJson(value: unknown): string {
         if (!record) return raw;
         return Object.fromEntries(
           Object.entries(record).map(([key, entry]) => [
-            maskSensitiveKeyPayload(key),
+            redactSecrets(maskSensitiveKeyPayload(key)),
             maskSensitiveValue(key, entry),
           ]),
         );

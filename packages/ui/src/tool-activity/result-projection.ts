@@ -26,7 +26,7 @@ import { getToolActivityCopy } from './copy.js';
 import { redactSecrets } from '../redact.js';
 import { countTextLines, formatBytes, readResultText, webFetchReference } from './preview-utils.js';
 
-function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
+export function isSuccessReceipt(result: ToolActivityItem['result']): boolean {
   if (result?.kind !== 'json' || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return false;
   const record = result.value as Record<string, unknown>;
   const keys = Object.keys(record);
@@ -58,11 +58,8 @@ export function toolResultStats(item: ToolActivityItem, locale: UiLocale): strin
   const result = item.result;
   if (result?.kind === 'file_write') return formatBytes(result.bytes);
   if (isSuccessReceipt(result)) return copy.result.success;
-  if (item.toolName === 'WebFetch') return webFetchReference(
-    result?.kind === 'text' ? result.text : '',
-    item.args,
-    result?.kind === 'text' ? result.sourceUrl : undefined,
-  ).title;
+  if (item.toolName === 'WebFetch' && result?.kind === 'text')
+    return webFetchReference(result.text, item.args, result.sourceUrl).title;
   if (item.toolName === 'Read' && item.args && typeof item.args === 'object' && 'path' in item.args && typeof item.args.path === 'string') {
     const name = redactSecrets(item.args.path.split(/[\\/]/).pop() ?? item.args.path);
     const text = readResultText(result);
@@ -85,7 +82,7 @@ export function extractErrorText(result: ToolActivityItem['result'], locale: UiL
   if (!result) return '';
   switch (result.kind) {
     case 'text':
-      return result.text;
+      return typeof result.text === 'string' ? result.text : '';
     case 'json': {
       // Same quiet formatter as the panel — never dump escaped JSON braces.
       const quiet = formatQuietJsonValue(result.value, locale);

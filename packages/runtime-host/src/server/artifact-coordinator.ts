@@ -70,6 +70,8 @@ interface ArchiveTransfer {
   readonly sessionId: string;
   readonly sizeBytes: number;
   readonly expiresAt: number;
+  settled: boolean;
+  reserved: boolean;
   readonly body: Promise<
     { ok: true; bytes: Buffer } | { ok: false; reason: ToolResultArchiveReadFailureReason }
   >;
@@ -106,6 +108,7 @@ export class HostArtifactCoordinator {
   readonly #uploads: ConnectionBoundChunkUploads<ArtifactUploadMetadata>;
   readonly #archiveTransfers = new Map<string, ArchiveTransfer>();
   #archiveTransferBytes = 0;
+  #archiveTransferCount = 0;
   readonly #now: () => number;
   readonly #readArchive:
     | ToolResultArchiveResourceReader['readArchivedToolResultResource']
@@ -148,19 +151,40 @@ export class HostArtifactCoordinator {
     const current = this.#archiveTransfers.get(key);
     if (!current || (expected && current !== expected)) return;
     this.#archiveTransfers.delete(key);
-    this.#archiveTransferBytes -= current.sizeBytes;
+    if (current.settled) this.#releaseArchiveTransferReservation(current);
+  }
+
+  #releaseArchiveTransferReservation(transfer: ArchiveTransfer): void {
+    if (!transfer.reserved) return;
+    transfer.reserved = false;
+    this.#archiveTransferBytes -= transfer.sizeBytes;
+    this.#archiveTransferCount -= 1;
+  }
+
+  #settleArchiveTransfer(key: string, transfer: ArchiveTransfer): void {
+    transfer.settled = true;
+    if (this.#archiveTransfers.get(key) !== transfer) {
+      this.#releaseArchiveTransferReservation(transfer);
+    }
+  }
+
+  #makeArchiveTransferRoom(sizeBytes: number): boolean {
+    while (
+      this.#archiveTransferCount >= MAX_ARCHIVE_TRANSFERS ||
+      this.#archiveTransferBytes + sizeBytes > MAX_ARCHIVE_TRANSFER_BYTES
+    ) {
+      const settled = Array.from(this.#archiveTransfers).find(([, transfer]) => transfer.settled);
+      if (!settled) return false;
+      this.#removeArchiveTransfer(settled[0], settled[1]);
+    }
+    return true;
   }
 
   #storeArchiveTransfer(key: string, transfer: ArchiveTransfer): void {
-    while (
-      this.#archiveTransfers.size > 0 &&
-      (this.#archiveTransfers.size >= MAX_ARCHIVE_TRANSFERS ||
-        this.#archiveTransferBytes + transfer.sizeBytes > MAX_ARCHIVE_TRANSFER_BYTES)
-    ) {
-      this.#removeArchiveTransfer(this.#archiveTransfers.keys().next().value!);
-    }
     this.#archiveTransfers.set(key, transfer);
     this.#archiveTransferBytes += transfer.sizeBytes;
+    this.#archiveTransferCount += 1;
+    transfer.reserved = true;
   }
 
   async validateTurnAttachments(
@@ -416,11 +440,16 @@ export class HostArtifactCoordinator {
           this.#archiveTransfers.delete(key);
           this.#archiveTransfers.set(key, transfer);
         } else {
+          if (!this.#makeArchiveTransferRoom(identity.originalBytes))
+            return unavailable('read_failed');
+          let created!: ArchiveTransfer;
           transfer = {
             connectionId: context.connectionId,
             sessionId: input.sessionId,
             sizeBytes: identity.originalBytes,
             expiresAt: now + ARCHIVE_TRANSFER_TTL_MS,
+            settled: false,
+            reserved: false,
             body: Promise.resolve()
               .then(() =>
                 this.#readArchive!({
@@ -431,8 +460,10 @@ export class HostArtifactCoordinator {
               )
               .then((read) =>
                 read.ok ? { ok: true as const, bytes: Buffer.from(read.serializedResult) } : read,
-              ),
+              )
+              .finally(() => this.#settleArchiveTransfer(key, created)),
           };
+          created = transfer;
           this.#storeArchiveTransfer(key, transfer);
         }
         const release = () => {

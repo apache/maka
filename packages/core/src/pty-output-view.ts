@@ -23,8 +23,7 @@ export function ptyHumanTerminalText(output: PtyShellOutput): string {
   const current = output.alternateScreen
     ? output.screen
     : joinNonEmpty(output.scrollback, output.screen);
-  const text = current.trim().length > 0 ? current : (output.lastAlternateScreen ?? '');
-  return text;
+  return current.trim().length > 0 ? current : (output.lastAlternateScreen ?? '');
 }
 
 export function ptyTuiTerminalRows(output: PtyShellOutput, maxRows = 6): string[] {

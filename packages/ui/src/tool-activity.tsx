@@ -53,6 +53,7 @@ import {
 } from './tool-activity/computer-action-label.js';
 import {
   extractErrorText,
+  isSuccessReceipt,
   toolHasDetail,
   toolResultStats,
   isCancelledToolResult,
@@ -198,6 +199,7 @@ export function ToolCallDetail({
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = activityObserved && isInFlightToolStatus(toolActivityPresentationStatus(item));
+  const successReceipt = item.status === 'completed' && isSuccessReceipt(item.result);
   const outputActionIdentity = [
     computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     item.intent ? formatToolIntent(item.intent) : undefined,
@@ -205,7 +207,7 @@ export function ToolCallDetail({
     .filter((value): value is string => Boolean(value))
     .join(' · ');
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  const ownsPanel = resultOwnsOwnPanel(item) || requiresBypass;
+  const ownsPanel = (resultOwnsOwnPanel(item) && !successReceipt) || requiresBypass;
   // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
   const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
   // Skip invocation when the owned panel already prints the command.
@@ -217,7 +219,10 @@ export function ToolCallDetail({
     && item.outputChunks.length > 0
     && !ownsPanel
     && (running || !item.result);
-  const showResult = !!item.result && !permissionDenied && !requiresBypass;
+  const showResult = !!item.result
+    && !permissionDenied
+    && !requiresBypass
+    && !successReceipt;
   const displayResult = showResult && item.result
     ? withLiveStreamFallback(item.result, item.outputChunks, {
       truncated: item.outputTruncated === true,
@@ -225,7 +230,7 @@ export function ToolCallDetail({
     })
     : undefined;
   const hasSharedPanelContent = !ownsPanel && !showLiveStream && (
-    invocationLine !== undefined || showResult || (!!item.args && !permissionDenied)
+    invocationLine !== undefined || showResult || (item.args !== undefined && item.args !== null && !permissionDenied)
   );
 
   return (
@@ -569,7 +574,7 @@ function collapsedToolTarget(
 
 function semanticInternalRef(ref: string | undefined, locale: UiLocale): string | undefined {
   if (!ref?.startsWith('maka://')) return ref;
-  return ref.startsWith('maka://archive/')
+  return ref.startsWith('maka://archive/') || ref.startsWith('maka://archive-ledger/')
     ? getToolActivityCopy(locale).detail.archivedResult
     : undefined;
 }

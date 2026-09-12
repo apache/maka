@@ -28,6 +28,7 @@ import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
+import { SessionToolResultProvider, ToolResultHostProvider } from '../tool-activity/tool-result-context.js';
 import { getToolActivityCopy } from '../tool-activity/copy.js';
 import {
   computerActionLabel,
@@ -54,6 +55,8 @@ describe('tool activity presentation', () => {
     assert.match(rowText(running('Read', { path: '/repo/a/index.ts', offset: 20, limit: 10 })), /index\.ts · L20\+10/);
     assert.doesNotMatch(rowText(running('Read', { path: '/repo/a/index.ts' })), /\/repo\/a/);
     assert.match(rowText(running('Read', { ref: `maka:\/\/archive\/artifact\/${'a'.repeat(64)}\/42` })), /Archived result/);
+    assert.match(rowText(running('ArchiveRead', { ref: 'maka://archive-ledger/v1/evidence' })), /Archived result/);
+    assert.doesNotMatch(rowText(running('ArchiveRead', { ref: 'maka://archive-ledger/v1/evidence' })), /maka:\/\//);
     assert.doesNotMatch(rowText(running('Read', { ref: 'maka://runtime/background-tasks/task-1' })), /maka:\/\//);
     assert.match(rowText(running('Grep', { pattern: 'needle', path: '/repo/src', glob: '*.ts' })), /needle in \/repo\/src \(\*\.ts\)/);
     assert.match(rowText(running('WebFetch', { url: 'https://example.com/docs' })), /https:\/\/example\.com\/docs/);
@@ -119,6 +122,17 @@ describe('tool activity presentation', () => {
       args: { entries: ['buy milk', 'call bob'], notebook: 'personal' },
     });
     assert.equal(argsOnly.getAttribute('aria-expanded'), 'false');
+    const argsDetail = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: { ...item, args: ['alpha', 'beta'] },
+    }), 'en');
+    assert.match(argsDetail, /alpha/);
+    assert.match(argsDetail, /beta/);
+    assert.doesNotMatch(argsDetail, /ok: true/);
+    const connectorDetail = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: { ...item, toolName: 'load_tools', args: ['calendar'] },
+    }), 'en');
+    assert.match(connectorDetail, /calendar/);
+    assert.doesNotMatch(connectorDetail, /ok: true/);
     const diagnostic = row({ ...item, result: { kind: 'json', value: { ok: true, warning: 'Partial update' } } });
     assert.equal(diagnostic.getAttribute('aria-expanded'), 'false');
     assert.equal(row({ ...item, status: 'running', result: undefined }).getAttribute('aria-expanded'), 'false');
@@ -157,6 +171,37 @@ describe('tool activity presentation', () => {
     }), 'en');
     assert.match(failed, /HTTP 403/);
     assert.doesNotMatch(failed, /Open full output/);
+
+    const archived = renderToStaticMarkup(
+      createElement(ToolResultHostProvider, {
+        value: () => undefined,
+        children: createElement(SessionToolResultProvider, {
+          value: 'session-1',
+          children: createElement(ToolResultPreview, {
+            toolName: 'WebFetch',
+            args: { url: 'https://requested.example/docs' },
+            content: {
+              kind: 'archived_tool_result', status: 'not_loaded',
+              resourceRef: 'maka://archive-ledger/v1/evidence', bodySha256: '0'.repeat(64),
+              originalBytes: 42, originalEstimatedTokens: 10, runtimeEventId: 'event',
+              toolCallId: 'fetch', toolName: 'WebFetch', rewriteVersion: 2,
+              reason: 'stale_tool_result_pruned_before_compact',
+            },
+          }),
+        }),
+      }),
+      'en',
+    );
+    assert.match(archived, /Open full output/);
+    assert.doesNotMatch(archived, /requested\.example/);
+  });
+
+  it('does not truncate exactly 500 logical lines ending in a newline', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: { kind: 'text', text: 'line\n'.repeat(500) },
+    }), 'en');
+    assert.doesNotMatch(markup, /Preview truncated/);
+    assert.doesNotMatch(markup, /Open full output/);
   });
 
   it('bounds ordinary JSON and fallback previews while retaining diagnostics', () => {
@@ -680,6 +725,15 @@ describe('collapsed tool row target', () => {
       assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolTrow, { items: [item] }), 'en'));
       assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolCallDetail, { item }), 'en'));
     }
+    const erroredText = {
+      toolUseId: 'malformed-errored-text',
+      toolName: 'Inspect',
+      status: 'errored',
+      args: {},
+      result: { kind: 'text' } as unknown as NonNullable<ToolActivityItem['result']>,
+    } satisfies ToolActivityItem;
+    assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolTrow, { items: [erroredText] }), 'en'));
+    assert.doesNotThrow(() => renderToStaticMarkup(createElement(ToolCallDetail, { item: erroredText }), 'en'));
   });
 
   it('keeps ordinary commands intact and retains a generous DOM safety cap', async () => {

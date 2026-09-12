@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 import {
   formatAsKeyValueLines,
   formatBoundedQuietJsonValue,
+  formatSavedToolJson,
   formatQuietJsonValue,
   formatToolInvocationLine,
   projectToolArgsPreview,
@@ -43,6 +44,17 @@ describe('tool quiet preview', () => {
     const key = formatAsKeyValueLines({ 'password=secret': true }, 0, 'en');
     assert.doesNotMatch(key, /secret/);
     assert.match(key, /redacted/i);
+  });
+
+  it('redacts token-like keys in the complete JSON view', () => {
+    const saved = formatSavedToolJson({
+      'sk-abcdefgh12345678': true,
+      password: 'correct-horse',
+      safe: 'visible',
+    });
+    assert.doesNotMatch(saved, /sk-abcdefgh12345678|correct-horse/);
+    assert.match(saved, /redacted/i);
+    assert.match(saved, /"safe": "visible"/);
   });
 });
 

@@ -308,6 +308,150 @@ test('archive transfer byte accounting survives repeated release and evicts the 
   }
 });
 
+test('pending archive reads retain byte and entry reservations until they settle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-pending-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const serializedResult = 'x'.repeat(4 * 1024 * 1024);
+    const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
+    const refs = Array.from({ length: 5 }, (_, index) =>
+      buildToolResultArchiveResourceRef({
+        artifactId: `pending-archive-${index}`,
+        bodySha256,
+        originalBytes: serializedResult.length,
+      }),
+    );
+    let reads = 0;
+    let markFourReadsStarted!: () => void;
+    const fourReadsStarted = new Promise<void>((resolve) => {
+      markFourReadsStarted = resolve;
+    });
+    const releases: Array<() => void> = [];
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('read must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      async () => {
+        reads += 1;
+        if (reads <= 4) {
+          if (reads === 4) markFourReadsStarted();
+          await new Promise<void>((resolve) => releases.push(resolve));
+        }
+        return { ok: true, serializedResult };
+      },
+    );
+    const read = (index: number) =>
+      coordinator.handlers['artifact.query'](
+        {
+          kind: 'read_archive_chunk',
+          sessionId: `pending-session-${index}`,
+          ref: refs[index]!,
+          offset: 0,
+        },
+        { ...connectionContext, connectionId: `pending-connection-${index}` },
+      );
+
+    const pending = Array.from({ length: 4 }, (_, index) => read(index));
+    await fourReadsStarted;
+    const rejected = await read(4);
+    assert.ok(rejected.ok && rejected.result.kind === 'archive_unavailable');
+    assert.equal(rejected.result.reason, 'read_failed');
+    assert.equal(reads, 4, 'capacity rejection must not start another archive read');
+
+    releases.shift()!();
+    await pending[0];
+    const admitted = await read(4);
+    assert.ok(admitted.ok && admitted.result.kind === 'archive_chunk');
+    assert.equal(reads, 5, 'a settled cache entry can be evicted to admit the retry');
+
+    for (const release of releases) release();
+    await Promise.all(pending.slice(1));
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
+
+test('pending archive reads retain entry reservations until they settle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-pending-entries-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const serializedResult = 'x';
+    const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
+    const refs = Array.from({ length: 129 }, (_, index) =>
+      buildToolResultArchiveResourceRef({
+        artifactId: `pending-entry-${index}`,
+        bodySha256,
+        originalBytes: serializedResult.length,
+      }),
+    );
+    let reads = 0;
+    let markCapacityReached!: () => void;
+    const capacityReached = new Promise<void>((resolve) => {
+      markCapacityReached = resolve;
+    });
+    let releaseReads!: () => void;
+    const readBarrier = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('read must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      async () => {
+        reads += 1;
+        if (reads === 128) markCapacityReached();
+        if (reads <= 128) await readBarrier;
+        return { ok: true, serializedResult };
+      },
+    );
+    const read = (index: number) =>
+      coordinator.handlers['artifact.query'](
+        {
+          kind: 'read_archive_chunk',
+          sessionId: `pending-entry-session-${index}`,
+          ref: refs[index]!,
+          offset: 0,
+        },
+        { ...connectionContext, connectionId: `pending-entry-connection-${index}` },
+      );
+
+    const pending = Array.from({ length: 128 }, (_, index) => read(index));
+    await capacityReached;
+    const rejected = await read(128);
+    assert.ok(rejected.ok && rejected.result.kind === 'archive_unavailable');
+    assert.equal(rejected.result.reason, 'read_failed');
+    assert.equal(reads, 128, 'entry-cap rejection must not start another archive read');
+
+    releaseReads();
+    await Promise.all(pending);
+    const admitted = await read(128);
+    assert.ok(admitted.ok && admitted.result.kind === 'archive_chunk');
+    assert.equal(reads, 129);
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
+
 test('Artifact ingest is connection-bound, replay-safe, and commits one durable AttachmentRef', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-ingest-'));
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });

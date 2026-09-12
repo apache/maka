@@ -45,9 +45,10 @@ export function capLines(
   options: { lines?: number; chars?: number } = {},
 ): { body: string; capped: number; hiddenChars: number } {
   const limit = options.lines ?? TOOL_LINE_CAP;
-  const lines = text.split('\n');
+  const endsWithNewline = text.endsWith('\n');
+  const lines = endsWithNewline ? text.slice(0, -1).split('\n') : text.split('\n');
   const kept = lines.slice(0, limit);
-  const joined = kept.join('\n');
+  const joined = `${kept.join('\n')}${endsWithNewline && kept.length === lines.length ? '\n' : ''}`;
   const chars = options.chars ?? Number.POSITIVE_INFINITY;
   let body = joined.slice(0, chars);
   if (body.length < text.length) {
@@ -57,7 +58,7 @@ export function capLines(
   }
   // Never leave half a surrogate at a display boundary.
   if (/[\uD800-\uDBFF]$/.test(body)) body = body.slice(0, -1);
-  return { body, capped: Math.max(0, lines.length - body.split('\n').length), hiddenChars: text.length - body.length };
+  return { body, capped: Math.max(0, lines.length - limit), hiddenChars: text.length - body.length };
 }
 
 export function formatBytes(bytes: number): string {

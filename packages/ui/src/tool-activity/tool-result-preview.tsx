@@ -143,28 +143,25 @@ export function ToolOutputSurface(props: {
 }
 
 function WebFetchPreview(props: {
-  content: Extract<ToolResultContent, { kind: 'text' | 'archived_tool_result' }>;
+  content: Extract<ToolResultContent, { kind: 'text' }>;
   args?: unknown;
 }) {
   const copy = getToolActivityCopy(useUiLocale());
-  const text = props.content.kind === 'text' && typeof props.content.text === 'string'
+  const text = typeof props.content.text === 'string'
     ? props.content.text
     : undefined;
-  const bytes = props.content.kind === 'archived_tool_result'
-    ? props.content.originalBytes
-    : new TextEncoder().encode(text ?? '').byteLength;
-  const truncated = props.content.kind === 'text' && props.content.truncated;
+  const bytes = new TextEncoder().encode(text ?? '').byteLength;
   const reference = webFetchReference(
     text ?? '',
     props.args,
-    props.content.kind === 'text' ? props.content.sourceUrl : undefined,
+    props.content.sourceUrl,
   );
   return <div data-kind="web_fetch" className="maka-tool-output-stack">
     <strong className="maka-tool-web-fetch-title">{reference.title}</strong>
     {reference.href && <Link href={reference.href} isExternalLink>{reference.location}</Link>}
     <p className={TOOL_OUTPUT_NOTE_CLASS}>
       {formatBytes(bytes)}{text !== undefined && ` · ${copy.detail.lines(countTextLines(text))}`}
-      {truncated && ` · ${copy.result.outputTruncated}`}
+      {props.content.truncated && ` · ${copy.result.outputTruncated}`}
     </p>
   </div>;
 }
@@ -189,9 +186,6 @@ export function ToolResultPreview(props: {
   const sessionId = useContext(ToolResultSessionContext);
 
   if (content.kind === 'archived_tool_result') {
-    if (props.toolName === 'WebFetch' && !props.failed) {
-      return <WebFetchPreview content={content} args={props.args} />;
-    }
     const copy = getToolActivityCopy(locale).detail;
     if (content.status !== 'not_loaded' || (!content.resourceRef && !content.artifactId) || !content.bodySha256 || !openOutput || !sessionId) {
       return <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.unavailable}</p>;
@@ -296,7 +290,7 @@ export function ToolResultPreview(props: {
           // No heading: the collapsed row above already carries the invocation,
           // and it can be an archive ref — repeating it here wraps a raw URI
           // across the block's title slot.
-          text={formatUserVisibleToolText(redactSecrets(content.text), locale)}
+          text={formatUserVisibleToolText(content.text, locale)}
           savedText={content.text}
           actionIdentity={props.actionIdentity}
         />
