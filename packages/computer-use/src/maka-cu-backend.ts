@@ -33,12 +33,12 @@
 // not exist as a signed artifact yet, so nothing may fall back to it silently.
 //
 // What the protocol declares and Maka's own types cannot yet carry: per-element
-// `truncated`, `actions`, `placeholder`, `focused` and per-snapshot
-// `selectedText`. They are read and validated here — a missing declared field is
-// version skew the host must catch — but only the truncation flags reach
-// anywhere, through `onTrace`. Giving them a model-facing home means new fields
-// on `CuObservedElement`/`CuObservation`, which this change deliberately does
-// not make.
+// `truncated`, `actions`, `placeholder` and `focused`. They are read and
+// validated here — a missing declared field is version skew the host must catch
+// — but only the truncation flags reach anywhere, through `onTrace`. Giving
+// them a model-facing home means new fields on `CuObservedElement`, which this
+// file does not add. Snapshot `selectedText` is on `CuObservation` and is
+// rendered for the model.
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
