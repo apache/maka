@@ -329,7 +329,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3648
+        "nonTriviaTokens": 3646
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -496,7 +496,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3736
+        "nonTriviaTokens": 3718
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
@@ -729,8 +729,6 @@
           "window.maka.settings.subscribeClientChanged": 1
         },
         "environmentCapabilities": {
-          "document.querySelector": 1,
-          "requestAnimationFrame": 1,
           "window.clearTimeout": 1,
           "window.requestAnimationFrame": 4,
           "window.setTimeout": 1
@@ -865,7 +863,7 @@
           "react": 1
         },
         "importSpecifiers": 104,
-        "nonTriviaTokens": 13519
+        "nonTriviaTokens": 13447
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -930,23 +928,23 @@
         "nonTriviaTokens": 135
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
-        "importDeclarations": 8,
+        "importDeclarations": 7,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
           "useAppShellSessionList": 1,
           "useAppShellSessionUiState": 1,
           "useExternalStoreSelector": 1,
-          "useRef": 7,
+          "useRef": 5,
           "useSessionCatalogController": 1,
-          "useState": 3
+          "useState": 2
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./app-shell-session-ui-state.js": 1,
           "./bootstrap-selection-lease.js": 1,
+          "./features/conversation/index.js": 1,
           "./new-task-reload-intent.js": 1,
           "./session-catalog-state.js": 1,
           "./session-workspace-actions.js": 1,
@@ -954,8 +952,8 @@
           "./use-external-store-selector.js": 1,
           "react": 1
         },
-        "importSpecifiers": 10,
-        "nonTriviaTokens": 466
+        "importSpecifiers": 9,
+        "nonTriviaTokens": 464
       }
     },
     "closure": {
