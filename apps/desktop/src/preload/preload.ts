@@ -18,6 +18,7 @@
  */
 
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
+import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
 import { contextBridge, ipcRenderer } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
 import { workHubPresentationBridge } from './workhub-presentation.js';
@@ -2294,7 +2295,7 @@ const makaBridge = {
         // same-named Session channel.
         unsubscribeEvents = subscribeEveryRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
-          (scope, event: SessionEvent | import('../shared/session-execution-projection.js').SessionObservationMessage) => {
+          (scope, event: SessionEvent | SessionObservationMessage) => {
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (event.type === 'host_execution') {
               lastExecution = { ...event, rootTurn: event.rootTurn ? { ...event.rootTurn, sessionId } : null };

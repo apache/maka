@@ -18,6 +18,7 @@
  */
 
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
 import type { SessionChangedReason, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
@@ -77,7 +78,7 @@ export interface RuntimeHostRendererTarget<Payload> {
   off(event: "destroyed", listener: () => void): void;
 }
 
-export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent | import('../shared/session-execution-projection.js').SessionObservationMessage>;
+export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent | SessionObservationMessage>;
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { chatTurnActivity } from '../../../../application/contracts/session-execution.js';
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
@@ -170,17 +169,10 @@ export function QuoteCompanionPanel(props: {
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
+  const active = Boolean(companion.activeTurn) || companion.processing;
   useEffect(() => {
-    props.onActivityStateChange?.(
-      props.panelId,
-      companion.streaming || companion.processing,
-    );
-  }, [
-    companion.processing,
-    companion.streaming,
-    props.onActivityStateChange,
-    props.panelId,
-  ]);
+    props.onActivityStateChange?.(props.panelId, active);
+  }, [active, props.onActivityStateChange, props.panelId]);
   useEffect(() => {
     if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
@@ -382,7 +374,7 @@ export function QuoteCompanionPanel(props: {
           transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
           liveTurns={companion.liveTurns}
-          activeTurn={chatTurnActivity(companion.execution)}
+          activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}

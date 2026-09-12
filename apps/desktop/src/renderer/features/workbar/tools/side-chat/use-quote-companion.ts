@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { activeHostTurn, type SessionExecutionProjection } from '../../../../application/contracts/session-execution.js';
+import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../../application/contracts/session-execution.js';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -170,7 +170,7 @@ export interface UseQuoteCompanionResult {
   transientMessages: readonly TransientUserMessageProjection[];
   liveTurn: LiveTurnProjection | undefined;
   liveTurns: LiveTurnBuffer | undefined;
-  execution: SessionExecutionProjection | undefined;
+  activeTurn: ReturnType<typeof chatTurnActivity>;
   streaming: boolean;
   processing: boolean;
   /** Whether the source and any committed companion can execute their exact model. */
@@ -1327,7 +1327,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     transientMessages,
     liveTurn,
     liveTurns,
-    execution,
+    activeTurn: chatTurnActivity(execution),
     streaming,
     processing,
     modelReady: sourceModelReady && companionModelReady,

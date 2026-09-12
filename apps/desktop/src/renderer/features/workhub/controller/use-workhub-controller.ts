@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { activeHostTurn, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -516,7 +516,7 @@ export function useWorkHubController() {
     viewportNavigation,
     liveTurn,
     liveTurns,
-    execution,
+    activeTurn: chatTurnActivity(execution),
     busy,
     sending,
     stopPending,

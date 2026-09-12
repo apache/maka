@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { chatTurnActivity } from '../../../application/contracts/session-execution.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
@@ -238,7 +237,7 @@ export function WorkHubRoot() {
   return (
     <WorkHubHighlightProvider>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
-      {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={busy} onOpen={() => {
+      {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         call(services.presentation.showConversation(presentation.progressRequest));
       }} />}
@@ -329,7 +328,7 @@ export function WorkHubRoot() {
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}
           onStreamingSettled={controller.streamingSettled}
-          activeTurn={chatTurnActivity(controller.execution)}
+          activeTurn={controller.activeTurn}
           messageLoading={!transcript.ready}
           activeSession={session}
           activeModel={session?.model}

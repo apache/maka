@@ -84,8 +84,8 @@ async function mountController(failFirstRead = false) {
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({} as Parameters<IpcHandler>[0], ...args);
 
   const sessionId = JSON.stringify(['host-1', 'workhub-coordination']);
-  function projectExecution() {
-    onExecution?.({ type: 'host_execution', available: true,
+  function projectExecution(available = true) {
+    onExecution?.({ type: 'host_execution', available,
       rootTurn: rootTurn ? { ...rootTurn, sessionId,
         ...(rootTurn.status === 'running' ? { status: 'running' as const } : { status: rootTurn.status, terminalEventId: 'terminal', abortSource: 'user_stop' }) } : null });
   }
@@ -139,12 +139,24 @@ async function mountController(failFirstRead = false) {
     sessionId, requests, get admission() { return admission; }, latestRead, interrupts,
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
     admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; projectExecution(); },
+    loseObservation() { projectExecution(false); },
     get loadLatestCount() { return loadLatestCount; },
     prefetched, retained,
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
   };
 }
+
+test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {
+  const h = await mountController();
+  await act(async () => { h.admit('running-turn'); });
+  assert.equal(h.controller.activeTurn?.turnId, 'running-turn');
+  await act(async () => { h.loseObservation(); });
+  assert.equal(h.controller.activeTurn, undefined);
+  assert.equal(h.controller.busy, true);
+  await act(async () => { await h.controller.stop(); });
+  assert.deepEqual(h.interrupts, [{ sessionId: h.sessionId, turnId: 'running-turn', runId: 'run:running-turn' }]);
+});
 
 test('WorkHub shows the submitted prompt before admission and keeps it until its durable user record arrives', async () => {
   const h = await mountController();

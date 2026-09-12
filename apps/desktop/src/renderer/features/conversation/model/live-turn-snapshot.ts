@@ -37,8 +37,6 @@ import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 export interface LiveTurnSnapshot {
   /** Identity of the content buffer, independent of execution. */
   turnId: string | undefined;
-  /** Turn phase, or undefined when no turn is in flight (incl. a settled one). */
-  phase: LiveTurnProjection['phase'] | undefined;
   /** Whether the active text step has emitted anything yet. */
   hasStreamingText: boolean;
   /** Step id of the settled answer, once complete — the handoff key. Its
@@ -54,7 +52,6 @@ export interface LiveTurnSnapshot {
 
 const NO_LIVE_TURN: LiveTurnSnapshot = {
   turnId: undefined,
-  phase: undefined,
   hasStreamingText: false,
   streamingMessageId: undefined,
   hasThinkingText: false,
@@ -70,7 +67,6 @@ export function deriveLiveTurnSnapshot(projection: LiveTurnProjection | undefine
   const streamingTextComplete = textStep?.text?.complete === true;
   return {
     turnId: projection.turnId,
-    phase: projection.terminal ? undefined : projection.phase,
     hasStreamingText: (textStep?.text?.text.length ?? 0) > 0,
     streamingMessageId: streamingTextComplete ? textStep?.stepId : undefined,
     hasThinkingText: (thinkingStep?.thinking?.text.length ?? 0) > 0,
@@ -82,7 +78,6 @@ export function deriveLiveTurnSnapshot(projection: LiveTurnProjection | undefine
 export function liveTurnSnapshotsEqual(a: LiveTurnSnapshot, b: LiveTurnSnapshot): boolean {
   return (
     a.turnId === b.turnId &&
-    a.phase === b.phase &&
     a.hasStreamingText === b.hasStreamingText &&
     a.streamingMessageId === b.streamingMessageId &&
     a.hasThinkingText === b.hasThinkingText &&

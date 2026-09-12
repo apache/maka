@@ -225,9 +225,9 @@ async function renderOwnershipProbe(
     steer: (text: string) => steer(text),
     stop: () => stop(),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
-    hostTurn(turnId: string | null, status: 'running' | 'completed' = 'running') {
+    hostTurn(turnId: string | null, status: 'running' | 'completed' = 'running', available = true) {
       assert.ok(executionHandler);
-      executionHandler({ type: 'host_execution', available: true,
+      executionHandler({ type: 'host_execution', available,
         rootTurn: turnId ? { sessionId: executionSessionId, turnId, runId: turnId,
           ...(status === 'completed' ? { status, terminalEventId: 'terminal' } : { status }) } : null });
     },
@@ -1532,6 +1532,25 @@ test('keeps the same Side Conversation admission across an observation failure',
   assert.equal(subscriptionCount, 2, 'the next send must reopen observation before dispatch');
 });
 
+test('Side Chat stops presenting execution on observation loss while retaining the Stop target', async () => {
+  const stopped: unknown[] = [];
+  const h = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'running-turn' }),
+    stop: async (_sessionId, target) => { stopped.push(target); },
+  });
+  await act(async () => {
+    assert.equal(await h.send('initial prompt'), true);
+    h.hostTurn('running-turn');
+  });
+  const probe = h.container.firstElementChild!;
+  assert.equal(probe.getAttribute('data-active-turn'), 'running-turn');
+  await act(async () => { h.hostTurn('running-turn', 'running', false); });
+  assert.equal(probe.getAttribute('data-active-turn'), '');
+  assert.equal(probe.getAttribute('data-streaming'), 'true');
+  await act(async () => { await h.stop(); });
+  assert.deepEqual(stopped, [{ kind: 'turn', turnId: 'running-turn' }]);
+});
+
 test('keeps the active Side Conversation streaming when Stop retracts a queued steer', async () => {
   const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
   let admissionId: string | undefined;
@@ -2056,6 +2075,7 @@ function QuoteCompanionOwnershipProbe(props: {
     'data-live-turn-id': companion.liveTurn?.turnId ?? '',
     'data-live-text': companion.liveTurn?.steps.find((step) => step.text)?.text?.text ?? '',
     'data-streaming': String(companion.streaming),
+    'data-active-turn': companion.activeTurn?.turnId ?? '',
     'data-processing': String(companion.processing),
     'data-model-ready': String(companion.modelReady),
     'data-permission-mode': companion.permissionMode ?? '',
