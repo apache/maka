@@ -26,6 +26,7 @@
     "@maka/mcp": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/runtime-host": "0.1.0",
-    "@maka/storage": "0.1.0"
+    "@maka/storage": "0.1.0",
+    "highlight.js": "11.12.0"
   }
 }
