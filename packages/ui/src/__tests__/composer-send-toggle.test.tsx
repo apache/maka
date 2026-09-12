@@ -47,6 +47,15 @@ function sendSlotControls(markup: string): string[] {
   return markup.match(/aria-label="(?:Send|Stop)"/g) ?? [];
 }
 
+/** The Send control's own `aria-disabled` value — asserted directly, not by a
+ * substring that could also hit `data-disabled` or other future attributes. */
+function sendButtonAriaDisabled(markup: string): string | null {
+  const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+  const button = document.querySelector('button[aria-label="Send"]');
+  assert.ok(button, 'the send slot renders Send');
+  return button.getAttribute('aria-disabled');
+}
+
 test('an idle composer offers Send alone', () => {
   const controls = sendSlotControls(renderComposer(false));
   assert.deepEqual(controls, ['aria-label="Send"']);
@@ -81,7 +90,7 @@ test('an opted-in host renders Send (not Stop) for an attachment-only draft (#50
     </LocaleProvider>,
   );
   assert.match(markup, /aria-label="Send"/);
-  assert.doesNotMatch(markup, /<button[^>]*aria-label="Send"[^>]*disabled/);
+  assert.equal(sendButtonAriaDisabled(markup), null);
   // Without the Host opt-in the same staged attachment keeps Send disabled:
   // attachment-only sends stay a per-host decision, not a composer default.
   const optedOut = renderToStaticMarkup(
@@ -93,7 +102,80 @@ test('an opted-in host renders Send (not Stop) for an attachment-only draft (#50
       />
     </LocaleProvider>,
   );
-  assert.match(optedOut, /aria-label="Send"[^>]*disabled/);
+  assert.equal(sendButtonAriaDisabled(optedOut), 'true');
+});
+
+test('a staged quote enables Send without any host opt-in (#4804)', () => {
+  const quotes = [
+    { text: 'the deploy failed at step three', label: 'Assistant', sourceTurnId: 'turn-9' },
+  ];
+  const staged = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer pendingQuotes={quotes} onSend={() => undefined} onStop={() => undefined} />
+    </LocaleProvider>,
+  );
+  // The toggle and the disabled state agree: a quote-only draft is a live
+  // Send, and it needs no per-host decision the way attachments do.
+  assert.deepEqual(sendSlotControls(staged), ['aria-label="Send"']);
+  assert.equal(sendButtonAriaDisabled(staged), null);
+  // The same empty draft with nothing staged is what disabled looks like, so
+  // the assertion above pins the staged quote as the enabling reason.
+  assert.equal(sendButtonAriaDisabled(renderComposer(false)), 'true');
+});
+
+test('the three send gates agree about a staged quote while streaming (#4804)', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const sends: string[] = [];
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          streaming
+          pendingQuotes={[{ text: 'the excerpt', sourceTurnId: 'turn-9' }]}
+          onSend={(text) => {
+            sends.push(text);
+          }}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    // Gate 1 — the send/stop toggle: mid-turn the slot stays on Send because
+    // the staged quote is handable content, not an empty draft.
+    assert.deepEqual(sendSlotControls(container.innerHTML), ['aria-label="Send"']);
+    const button = container.querySelector('button[aria-label="Send"]');
+    assert.ok(button);
+    // Gate 2 — sendDisabled: the control is live.
+    assert.equal(button.getAttribute('aria-disabled'), null);
+    // Gate 3 — sendCurrent's content guard: submitting hands the empty draft
+    // text over, the quote travelling as the message's structured content.
+    // The control is type="submit", so its activation is the form's submit.
+    const form = container.querySelector('form');
+    assert.ok(form);
+    await act(async () => {
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.deepEqual(sends, ['']);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
 });
 
 test('keeps Host order visible until the reordered projection arrives', async () => {
