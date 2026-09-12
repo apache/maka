@@ -41,6 +41,13 @@ describe('project-grouped session hierarchy', () => {
     // the two hover/selected fills start on the same x rather than the 8px
     // nest that used to offset only the session rows. SideNav's default
     // spacing-6 is a fixed child inset, not that alignment.
+    //
+    // These pin the declarations, not the geometry they serve: a StyleX
+    // default, a later equal-or-higher-specificity rule, or a renamed wrapper
+    // class would leave this green while the rail drifts apart. The rendered
+    // half is owned by the ProjectGroups play in
+    // packages/ui/stories/session-list-panel.stories.tsx (session inset within
+    // 1px, title x within 2px).
     assert.match(
       projectChildrenRule[1] ?? '',
       /padding-inline-start:\s*0\s*!important;/,
