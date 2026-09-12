@@ -32,12 +32,17 @@ export function registerExternalAgentSetupIpc(deps: {
   ipcMain: ReconnectableReadIpcMain;
   client: Pick<
     DesktopRuntimeHostClient,
-    'startExternalAgentSetup' | 'queryExternalAgentSetup' | 'cancelExternalAgentSetup'
+    'startExternalAgentSetup' | 'queryExternalAgentSetup' | 'cancelExternalAgentSetup' | 'queryExternalAgentAuthentication'
   >;
   presentation: RuntimeHostOAuthPresentation;
   selectExecutable?: () => Promise<string | undefined>;
 }): void {
   deps.ipcMain.handle('external-agents:select-executable', () => deps.selectExecutable?.());
+  handleReconnectableRead(
+    deps.ipcMain,
+    'external-agents:authentication:query',
+    () => deps.client.queryExternalAgentAuthentication(),
+  );
   let pending: { id: string; expectation: OAuthPresentationExpectation } | undefined;
   const clear = (id: string) => {
     if (pending?.id !== id) return;

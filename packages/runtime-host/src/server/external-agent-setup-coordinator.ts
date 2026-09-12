@@ -21,6 +21,7 @@ import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type {
   ExternalAgentSetupStart,
   ExternalAgentSetupProjection,
+  ExternalAgentAuthenticationProjection,
   OperationOutcome,
 } from '../protocol/index.js';
 import {
@@ -35,16 +36,18 @@ import type {
 } from './operation-dispatcher.js';
 import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { runAntigravitySetup } from './acp/antigravity.js';
-import { AcpSetupError } from './acp/connection.js';
+import { AcpSetupError, AcpSetupCleanupError, type AcpConnectionOwner } from './acp/connection.js';
 
-type Key =
+type SetupKey =
   | 'external_agents.setup.start'
   | 'external_agents.setup.query'
   | 'external_agents.setup.cancel';
+type Key = SetupKey | 'external_agents.authentication.query';
 interface Attempt {
   projection: ExternalAgentSetupProjection;
   readonly owner: string;
   readonly abort: AbortController;
+  readonly configurationGeneration: number;
   done: Promise<void>;
 }
 export class HostExternalAgentSetupCoordinator {
@@ -52,11 +55,17 @@ export class HostExternalAgentSetupCoordinator {
     'external_agents.setup.start': (input, context) => this.start(input, context),
     'external_agents.setup.query': (input, context) => this.query(input.attemptId, context),
     'external_agents.setup.cancel': (input, context) => this.cancel(input.attemptId, context),
+    'external_agents.authentication.query': (_input, context) => this.authentication(context),
   };
   private readonly attempts = new Map<string, Attempt>();
   private active: Attempt | undefined;
   private draining = false;
   private gate: Promise<unknown> = Promise.resolve();
+  private configurationRevision = -1;
+  private configurationGeneration = 0;
+  private executable: string | undefined;
+  private verifiedGeneration: number | undefined;
+  private readonly retainedConnections = new Set<AcpConnectionOwner>();
   constructor(
     private readonly deps: {
       readPolicy(): Promise<RuntimePolicySnapshot>;
@@ -68,16 +77,43 @@ export class HostExternalAgentSetupCoordinator {
         onProgress(phase: 'downloading' | 'installing', percent: number): void;
       }): Promise<string>;
       run?: typeof runAntigravitySetup;
+      resolveEnvironment?(): Promise<NodeJS.ProcessEnv>;
       platform?: string;
       arch?: string;
     },
   ) {}
 
+  /** Observe every committed policy change, including changes while no setup query is running. */
+  observePolicy(snapshot: RuntimePolicySnapshot): void {
+    if (snapshot.revision < this.configurationRevision) return;
+    this.configurationRevision = snapshot.revision;
+    const executable = snapshot.policy.externalAgents.antigravity.executable;
+    if (this.executable === executable) return;
+    this.executable = executable;
+    this.configurationGeneration++;
+    this.verifiedGeneration = undefined;
+  }
+
+  private async authentication(
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'external_agents.authentication.query'>> {
+    if (context.principalKind !== 'local_owner') return failure('unauthorized');
+    if (this.draining) return failure('host_draining');
+    this.observePolicy(await this.deps.readPolicy());
+    if (this.draining) return failure('host_draining');
+    const result: ExternalAgentAuthenticationProjection = {
+      acpAgentId: 'antigravity',
+      executable: this.executable ?? '',
+      status: this.verifiedGeneration === this.configurationGeneration ? 'verified' : 'unverified',
+    };
+    return { ok: true, result };
+  }
+
   private start(
     input: ExternalAgentSetupStart,
     context: ConnectionContext,
-  ): Promise<OperationOutcome<Key>> {
-    const result = this.gate.then(async (): Promise<OperationOutcome<Key>> => {
+  ): Promise<OperationOutcome<SetupKey>> {
+    const result = this.gate.then(async (): Promise<OperationOutcome<SetupKey>> => {
       if (context.principalKind !== 'local_owner') return failure('unauthorized');
       if (this.draining) return failure('host_draining');
       const previous = this.attempts.get(input.attemptId);
@@ -97,9 +133,10 @@ export class HostExternalAgentSetupCoordinator {
       )
         return failure('operation_unavailable');
       const snapshot = await this.deps.readPolicy();
+      this.observePolicy(snapshot);
       if (this.draining) return failure('host_draining');
       if (context.inputClosedSignal?.aborted) return failure('operation_unavailable');
-      const executable = snapshot.policy.externalAgents.antigravity.executable;
+      const executable = this.executable ?? '';
       if ((input.action !== 'install' && !executable) || executable !== input.expectedExecutable)
         return failure('operation_conflict');
       if (input.action === 'install' && !this.deps.install) return failure('operation_unavailable');
@@ -107,10 +144,12 @@ export class HostExternalAgentSetupCoordinator {
         projection: { ...input, phase: input.action === 'install' ? 'downloading' : 'connecting' },
         owner: context.connectionId,
         abort: new AbortController(),
+        configurationGeneration: this.configurationGeneration,
         done: Promise.resolve(),
       };
       const residency = this.deps.acquireResidency();
       this.active = attempt;
+      if (input.action === 'login') this.verifiedGeneration = undefined;
       this.attempts.set(input.attemptId, attempt);
       attempt.done = this.run(attempt, executable, residency);
       return { ok: true, result: attempt.projection };
@@ -119,12 +158,15 @@ export class HostExternalAgentSetupCoordinator {
     return result;
   }
 
-  private async query(id: string, context: ConnectionContext): Promise<OperationOutcome<Key>> {
+  private async query(id: string, context: ConnectionContext): Promise<OperationOutcome<SetupKey>> {
     const attempt = this.attempts.get(id);
     if (!attempt || attempt.owner !== context.connectionId) return failure('not_found');
     return { ok: true, result: attempt.projection };
   }
-  private async cancel(id: string, context: ConnectionContext): Promise<OperationOutcome<Key>> {
+  private async cancel(
+    id: string,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<SetupKey>> {
     const attempt = this.attempts.get(id);
     if (!attempt || attempt.owner !== context.connectionId) return failure('not_found');
     this.cancelAttempt(attempt);
@@ -146,6 +188,16 @@ export class HostExternalAgentSetupCoordinator {
     this.beginDrain();
     await this.gate;
     await this.active?.done;
+    let cleanupFailure: unknown;
+    for (const owner of this.retainedConnections) {
+      try {
+        await owner.dispose();
+        this.retainedConnections.delete(owner);
+      } catch (error) {
+        cleanupFailure ??= error;
+      }
+    }
+    if (cleanupFailure !== undefined) throw cleanupFailure;
   }
   private async run(
     attempt: Attempt,
@@ -162,10 +214,13 @@ export class HostExternalAgentSetupCoordinator {
           },
         });
         attempt.abort.signal.throwIfAborted();
+        const env = await this.deps.resolveEnvironment?.();
+        attempt.abort.signal.throwIfAborted();
         await (this.deps.run ?? runAntigravitySetup)({
           executable: installedExecutable,
           action: 'check',
           signal: attempt.abort.signal,
+          ...(env ? { env } : {}),
           onAuthorizationUrl: async () => {
             throw new AcpSetupError('authentication_unavailable');
           },
@@ -174,10 +229,13 @@ export class HostExternalAgentSetupCoordinator {
         attempt.projection = { ...attempt.projection, phase: 'succeeded', installedExecutable };
         return;
       }
+      const env = await this.deps.resolveEnvironment?.();
+      attempt.abort.signal.throwIfAborted();
       await (this.deps.run ?? runAntigravitySetup)({
         executable,
         action: attempt.projection.action,
         signal: attempt.abort.signal,
+        ...(env ? { env } : {}),
         onAuthorizationUrl: async (url) => {
           attempt.abort.signal.throwIfAborted();
           attempt.projection = { ...attempt.projection, phase: 'awaiting_authorization' };
@@ -196,6 +254,16 @@ export class HostExternalAgentSetupCoordinator {
           }
         },
       });
+      if (attempt.projection.action === 'login' && !attempt.abort.signal.aborted) {
+        // The setup runner resolves only after authenticate and connection cleanup succeed.
+        this.observePolicy(await this.deps.readPolicy());
+        if (
+          !attempt.abort.signal.aborted &&
+          attempt.configurationGeneration === this.configurationGeneration
+        ) {
+          this.verifiedGeneration = attempt.configurationGeneration;
+        }
+      }
       attempt.projection = {
         ...attempt.projection,
         phase: attempt.abort.signal.aborted ? 'cancelled' : 'succeeded',
@@ -203,6 +271,7 @@ export class HostExternalAgentSetupCoordinator {
     } catch (error) {
       const cleanupFailed = error instanceof AcpSetupError && error.failure === 'cleanup_failed';
       if (cleanupFailed) {
+        if (error instanceof AcpSetupCleanupError) this.retainedConnections.add(error.owner);
         this.draining = true;
         this.deps.onCleanupFailure();
       }
@@ -228,6 +297,6 @@ function failure(
     | 'not_found'
     | 'operation_conflict'
     | 'operation_unavailable',
-): OperationOutcome<Key> {
+): Extract<OperationOutcome<Key>, { ok: false }> {
   return { ok: false, error: { code, message: `External agent setup: ${code}` } };
 }

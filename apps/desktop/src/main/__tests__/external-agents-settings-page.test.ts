@@ -28,6 +28,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   ExternalAgentSetupProjection,
   ExternalAgentSetupStart,
+  OperationOutput,
 } from '@maka/runtime-host/protocol';
 import {
   ExternalAgentsSettingsPage,
@@ -64,6 +65,11 @@ async function mount(
     executable?: string;
     remote?: boolean;
     start?: (value: ExternalAgentSetupStart) => Promise<ExternalAgentSetupProjection>;
+    authentication?: (input: {
+      executable: string;
+      hostId: string;
+      read: number;
+    }) => Promise<OperationOutput<'external_agents.authentication.query'>>;
   } = {},
 ) {
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
@@ -103,6 +109,10 @@ async function mount(
     import('@maka/core/settings').RuntimeHostSettingsUpdateGuard | undefined
   > = [];
   const cancels: string[] = [];
+  const authenticationReads: Array<{ executable: string; hostId: string; read: number }> = [];
+  let currentExecutable = input.executable ?? '/agent/agy_acp_server.par';
+  let currentGeneration = 'generation-1';
+  let verifiedExecutable: string | undefined;
   Object.assign(window, {
     maka: {
       app: { info: async () => ({ platform: 'darwin', arch: 'arm64' }) },
@@ -112,10 +122,24 @@ async function mount(
         }),
       },
       externalAgents: {
+        authentication: async (host: { hostId: string }) => {
+          const read = { executable: currentExecutable, hostId: host.hostId, read: authenticationReads.length + 1 };
+          authenticationReads.push(read);
+          return input.authentication ? input.authentication(read) : {
+            acpAgentId: 'antigravity',
+            executable: currentExecutable,
+            status: currentExecutable === verifiedExecutable ? 'verified' : 'unverified',
+          };
+        },
         selectExecutable: async () => '/existing/agy_acp_server.par',
         start: async (value: ExternalAgentSetupStart) => {
+          const generation = currentGeneration;
           starts.push(value);
-          return input.start ? input.start(value) : { ...value, phase: 'succeeded' };
+          const result = input.start ? await input.start(value) : { ...value, phase: 'succeeded' as const };
+          if (value.action === 'login' && result.phase === 'succeeded' &&
+            generation === currentGeneration && value.expectedExecutable === currentExecutable)
+            verifiedExecutable = currentExecutable;
+          return result;
         },
         query: async () => ({ ...starts[0], phase: 'succeeded' }),
         cancel: async (id: string) => {
@@ -132,14 +156,19 @@ async function mount(
   const render = async (
     generation: string,
     executable = settings.externalAgents.antigravity.executable,
+    hostId = 'host-1',
   ) => {
+    if (currentGeneration !== generation || currentExecutable !== executable)
+      verifiedExecutable = undefined;
+    currentExecutable = executable;
+    currentGeneration = generation;
     await act(async () =>
       root!.render(
         createElement(LocaleProvider, {
           locale: input.locale ?? 'en',
           children: createElement(AstryxLocaleProvider, {
             children: createElement(RuntimeHostSettingsTarget, {
-              host: { profileId: 'local', hostId: 'host-1' },
+              host: { profileId: 'local', hostId },
               generation,
               children: createElement(ExternalAgentSettingsServicesProvider, {
                 services,
@@ -177,6 +206,7 @@ async function mount(
     updates,
     updateGuards,
     cancels,
+    authenticationReads,
     render,
     button: (label: string) => {
       const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
@@ -204,7 +234,7 @@ for (const [locale, label] of [
     assert.match(page.document.body.textContent ?? '', /Connection successful|连接成功|連線成功/);
     assert.doesNotMatch(
       page.document.body.textContent ?? '',
-      /Google sign-in verified for this attempt|本次 Google 登录验证成功|本次 Google 登入驗證成功/,
+      /Google sign-in verified|已验证 Google 登录|已驗證 Google 登入/,
     );
   });
 }
@@ -228,7 +258,7 @@ test('Host generation change cancels an in-flight start and ignores its late res
     await pending;
   });
   assert.equal(page.cancels.length, 2, 'cancel again after delayed admission');
-  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified for this attempt/);
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
 });
 test('changing saved configuration clears the previous success', async () => {
   const page = await mount();
@@ -251,7 +281,7 @@ test('browser failure can retry with a fresh attempt and authenticate independen
   assert.equal(page.starts.length, 2);
   assert.notEqual(page.starts[0].attemptId, page.starts[1].attemptId);
   assert.equal(page.starts[1].action, 'login');
-  assert.match(page.document.body.textContent ?? '', /Google sign-in verified for this attempt/);
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
 });
 
 test('clearing the saved configuration disables setup', async () => {
@@ -348,4 +378,139 @@ test('choosing an existing executable saves it without installing', async () => 
   assert.deepEqual(page.updates, ['/existing/agy_acp_server.par']);
   assert.equal(page.document.querySelector('input'), null);
   assert.deepEqual(page.starts, []);
+});
+
+for (const [locale, verified, retry] of [
+  ['en', 'Google sign-in verified.', 'Verify sign-in again'],
+  ['zh-CN', '已验证 Google 登录。', '重新验证登录'],
+  ['zh-TW', '已驗證 Google 登入。', '重新驗證登入'],
+] as const) {
+  test(`${locale}: opening setup reads Host authentication without starting an agent`, async () => {
+    const page = await mount({
+      locale,
+      authentication: async ({ executable }) => ({ acpAgentId: 'antigravity', executable, status: 'verified' }),
+    });
+    assert.ok(page.document.body.textContent?.includes(verified));
+    assert.equal(page.button(retry).disabled, false);
+    assert.equal(page.authenticationReads.length, 1);
+    assert.deepEqual(page.starts, []);
+    assert.deepEqual(page.updates, []);
+    assert.deepEqual(page.cancels, []);
+  });
+}
+
+test('returning to setup restores the Host verification instead of the previous page attempt', async () => {
+  const page = await mount();
+  await act(async () => page.button('Sign in with Google').click());
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
+  const before = page.authenticationReads.length;
+  await act(async () => page.document.querySelector<HTMLButtonElement>('button[aria-label="Back to external agents"]')!.click());
+  await act(async () => [...page.document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('Antigravity'))!.click());
+  assert.equal(page.authenticationReads.length, before + 1);
+  assert.equal(page.starts.length, 1);
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
+});
+
+test('successful login terminal does not replace an unverified Host authentication result', async () => {
+  const page = await mount({
+    authentication: async ({ executable }) => ({ acpAgentId: 'antigravity', executable, status: 'unverified' }),
+  });
+  await act(async () => page.button('Sign in with Google').click());
+  assert.equal(page.authenticationReads.length, 2, 'login completion refreshes Host evidence');
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+  assert.match(page.document.body.textContent ?? '', /Sign-in has not been verified for this program/);
+});
+
+test('connection checks and installation do not establish authentication', async () => {
+  const page = await mount({
+    start: async (input) => ({ ...input, phase: 'succeeded', ...(input.action === 'install' ? { installedExecutable: input.expectedExecutable } : {}) }),
+  });
+  await act(async () => page.button('Check connection').click());
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+  await act(async () => page.button('Reinstall').click());
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+  assert.equal(page.authenticationReads.length, 3);
+});
+
+test('a connection check preserves a previously verified Host sign-in', async () => {
+  const page = await mount({
+    authentication: async ({ executable }) => ({ acpAgentId: 'antigravity', executable, status: 'verified' }),
+  });
+  await act(async () => page.button('Check connection').click());
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Sign-in has not been verified/);
+});
+
+test('old authentication reads cannot overwrite a changed program, including changing away and back', async () => {
+  let complete!: (value: OperationOutput<'external_agents.authentication.query'>) => void;
+  const old = new Promise<OperationOutput<'external_agents.authentication.query'>>((resolve) => { complete = resolve; });
+  const page = await mount({ authentication: async ({ executable, read }) => read === 1
+    ? old
+    : { acpAgentId: 'antigravity', executable, status: 'unverified' } });
+  await page.render('generation-1', '/another/agent');
+  await page.render('generation-1', '/agent/agy_acp_server.par');
+  await act(async () => {
+    complete({ acpAgentId: 'antigravity', executable: '/agent/agy_acp_server.par', status: 'verified' });
+    await old;
+  });
+  assert.equal(page.authenticationReads.length, 3);
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+});
+
+test('a response for a different executable does not mark the displayed program verified', async () => {
+  const page = await mount({ authentication: async () => ({ acpAgentId: 'antigravity', executable: '/another/agent', status: 'verified' }) });
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+});
+
+test('Host replacement discards a pending authentication result from the former Host', async () => {
+  let complete!: (value: OperationOutput<'external_agents.authentication.query'>) => void;
+  const old = new Promise<OperationOutput<'external_agents.authentication.query'>>((resolve) => { complete = resolve; });
+  const page = await mount({ authentication: async ({ executable, hostId }) => hostId === 'host-1'
+    ? old
+    : { acpAgentId: 'antigravity', executable, status: 'unverified' } });
+  await page.render('generation-2', '/agent/agy_acp_server.par', 'host-2');
+  await act(async () => [...page.document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('Antigravity'))!.click());
+  await act(async () => {
+    complete({ acpAgentId: 'antigravity', executable: '/agent/agy_acp_server.par', status: 'verified' });
+    await old;
+  });
+  assert.deepEqual(page.authenticationReads.map((read) => read.hostId), ['host-1', 'host-2']);
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+});
+
+test('a Host restart with the same Host identity clears verification through the existing generation boundary', async () => {
+  const page = await mount();
+  await act(async () => page.button('Sign in with Google').click());
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
+  const readsBeforeRestart = page.authenticationReads.length;
+  await page.render('generation-2');
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
+  await act(async () => [...page.document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('Antigravity'))!.click());
+  assert.equal(page.authenticationReads.length, readsBeforeRestart + 1);
+  assert.ok(page.authenticationReads.every((read) => read.hostId === 'host-1'));
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified|Connection successful/);
+  assert.match(page.document.body.textContent ?? '', /Sign-in has not been verified for this program/);
+  assert.equal(page.starts.length, 1, 'reconnection reads evidence without authenticating again');
+});
+
+test('a failed authentication read offers a read-only retry', async () => {
+  const page = await mount({ authentication: async ({ executable, read }) => {
+    if (read === 1) throw new Error('Host disconnected');
+    return { acpAgentId: 'antigravity', executable, status: 'verified' };
+  } });
+  assert.match(page.document.body.textContent ?? '', /Sign-in verification could not be read/);
+  await act(async () => page.button('Refresh sign-in status').click());
+  assert.match(page.document.body.textContent ?? '', /Google sign-in verified/);
+  assert.deepEqual(page.starts, []);
+  assert.deepEqual(page.cancels, []);
+});
+
+test('network proxy setup failures offer a settings repair without claiming sign-in success', async () => {
+  const page = await mount({ start: async (input) => ({ ...input, phase: 'failed', failure: 'proxy_unsupported' }) });
+  await act(async () => page.button('Sign in with Google').click());
+  assert.match(page.document.body.textContent ?? '', /HTTP or HTTPS proxy in Maka network settings/);
+  assert.doesNotMatch(page.document.body.textContent ?? '', /Google sign-in verified/);
 });

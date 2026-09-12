@@ -194,6 +194,7 @@ import { join } from 'node:path';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import { AcpSetupError } from './acp/connection.js';
 import { installAntigravity } from './acp/antigravity-install.js';
+import { createAntigravityEnvironment } from './acp/antigravity-environment.js';
 import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import { HostExternalAgentSetupCoordinator } from './external-agent-setup-coordinator.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
@@ -1406,6 +1407,15 @@ export async function createExecutionRuntimeHostComposition(
       grants: stores.interactionStore,
     });
     externalAgentSetup = new HostExternalAgentSetupCoordinator({
+      resolveEnvironment: async () => {
+        const proxy = await runtimePolicyStores.operations.resolveNetworkProxyExecution({});
+        if (proxy.kind === 'credential_not_configured')
+          throw new AcpSetupError('proxy_credentials_missing');
+        return createAntigravityEnvironment(
+          process.env,
+          toRuntimePolicyProxy(proxy.networkProxy, proxy.secretMaterial.networkProxy?.secret),
+        );
+      },
       install: async (input) => {
         const proxy = await runtimePolicyStores.operations.resolveNetworkProxyExecution({});
         if (proxy.kind === 'credential_not_configured') throw new AcpSetupError('download_failed');
@@ -1911,6 +1921,8 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
+      // Observe every committed configuration in admission order, including A → B → A.
+      externalAgentSetup?.observePolicy(await runtimePolicyStores.runtimePolicy.getSnapshot());
       try {
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {

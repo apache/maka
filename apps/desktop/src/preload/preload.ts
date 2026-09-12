@@ -3313,6 +3313,7 @@ const makaBridge = {
     },
   },
   externalAgents: {
+    authentication(host) { return invokeSelectedRuntimeHost(host, 'external-agents:authentication:query'); },
     selectExecutable(host) { return invokeSelectedRuntimeHost(host, 'external-agents:select-executable'); },
     start(input, host) { return invokeSelectedRuntimeHost(host, 'external-agents:setup:start', input); },
     query(attemptId, host) { return invokeSelectedRuntimeHost(host, 'external-agents:setup:query', { attemptId }); },

@@ -33,6 +33,10 @@ interface ProcessTreeTerminationOptions {
   hasExited?: () => boolean;
   /** Runs after asynchronous topology discovery and before the first OS action. */
   beforeSignal?: () => boolean | Promise<boolean>;
+  /** Optional strict ownership of observed descendants outside the root process group. */
+  descendants?: RetainedProcessTreeDescendants;
+  /** Retry known descendants after the original group has conclusively disappeared. */
+  onlyRetainedDescendants?: boolean;
 }
 
 interface PosixProcess {
@@ -67,6 +71,10 @@ export async function terminateProcessTree(
   options: ProcessTreeTerminationOptions,
 ): Promise<boolean> {
   const { pid, signal, fallback, hasExited, beforeSignal } = options;
+  if (options.onlyRetainedDescendants) {
+    if (beforeSignal && !(await beforeSignal())) return false;
+    return options.descendants?.terminateRetained() ?? false;
+  }
   if (hasExited?.()) return false;
   if (process.platform === 'win32') {
     if (beforeSignal && !(await beforeSignal())) return false;
@@ -79,7 +87,9 @@ export async function terminateProcessTree(
   if (hasExited?.()) return false;
   if (beforeSignal && !(await beforeSignal())) return false;
 
-  const escapedDescendantSignaled = forceKillEscapedDescendants(pid, processes);
+  const escapedDescendantSignaled = options.descendants
+    ? await options.descendants.terminateEscaped(pid, processes)
+    : forceKillEscapedDescendants(pid, processes);
   if (hasExited?.()) return escapedDescendantSignaled;
   try {
     process.kill(-pid, signal);
@@ -90,17 +100,89 @@ export async function terminateProcessTree(
   }
 }
 
-function forceKillEscapedDescendants(rootPid: number, processes: PosixProcess[]): boolean {
-  const root = processes.find((entry) => entry.pid === rootPid);
-  if (!root) return false;
+/**
+ * Retains escaped descendants across failed termination attempts. Identity must come from
+ * an OS process-lifetime query; a reused PID is never treated as the original process.
+ * Descendants that escape before any ancestry snapshot cannot be recovered here.
+ */
+export class RetainedProcessTreeDescendants {
+  private readonly observed = new Map<number, string | undefined>();
 
+  constructor(private readonly readIdentity: (pid: number) => Promise<string | undefined>) {}
+
+  async terminateEscaped(rootPid: number, processes: readonly PosixProcess[]): Promise<boolean> {
+    for (const descendant of escapedDescendants(rootPid, processes)) {
+      if (!this.observed.has(descendant.pid)) {
+        this.observed.set(descendant.pid, await this.identity(descendant.pid));
+      }
+    }
+    return this.terminateRetained();
+  }
+
+  async terminateRetained(): Promise<boolean> {
+    let signaled = false;
+    for (const [pid, identity] of this.observed) {
+      if (!(await this.isOriginalProcessAlive(pid, identity))) continue;
+      // Unknown identity is retained, but never authorizes a destructive retry by bare PID.
+      if (identity === undefined || (await this.identity(pid)) !== identity) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+        signaled = true;
+      } catch (error) {
+        if (isMissingProcessError(error)) this.observed.delete(pid);
+      }
+    }
+    return signaled;
+  }
+
+  async hasLiveProcesses(): Promise<boolean> {
+    for (const [pid, identity] of this.observed) {
+      await this.isOriginalProcessAlive(pid, identity);
+    }
+    return this.observed.size > 0;
+  }
+
+  private async identity(pid: number): Promise<string | undefined> {
+    try {
+      return await this.readIdentity(pid);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async isOriginalProcessAlive(
+    pid: number,
+    identity: string | undefined,
+  ): Promise<boolean> {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (isMissingProcessError(error)) {
+        this.observed.delete(pid);
+        return false;
+      }
+      return true;
+    }
+    if (identity !== undefined) {
+      const current = await this.identity(pid);
+      if (current !== undefined && current !== identity) {
+        this.observed.delete(pid);
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+function escapedDescendants(rootPid: number, processes: readonly PosixProcess[]): PosixProcess[] {
+  const root = processes.find((entry) => entry.pid === rootPid);
+  if (!root) return [];
   const children = new Map<number, PosixProcess[]>();
   for (const processInfo of processes) {
     const siblings = children.get(processInfo.ppid) ?? [];
     siblings.push(processInfo);
     children.set(processInfo.ppid, siblings);
   }
-
   const descendants: Array<PosixProcess & { depth: number }> = [];
   const seen = new Set([rootPid]);
   const pending: Array<{ pid: number; depth: number }> = [{ pid: rootPid, depth: 0 }];
@@ -115,13 +197,15 @@ function forceKillEscapedDescendants(rootPid: number, processes: PosixProcess[])
       pending.push({ pid: child.pid, depth });
     }
   }
+  return descendants
+    .filter((descendant) => descendant.pgid !== root.pgid)
+    .sort((left, right) => right.depth - left.depth);
+}
 
-  // Descendants already outside the root group must die before their current
-  // ancestry disappears. New daemonization after this snapshot is best-effort.
-  descendants.sort((left, right) => right.depth - left.depth);
+function forceKillEscapedDescendants(rootPid: number, processes: PosixProcess[]): boolean {
+  // Preserve best-effort behavior for callers that do not retain descendant ownership.
   let signaled = false;
-  for (const descendant of descendants) {
-    if (descendant.pgid === root.pgid) continue;
+  for (const descendant of escapedDescendants(rootPid, processes)) {
     try {
       process.kill(descendant.pid, 'SIGKILL');
       signaled = true;
@@ -217,7 +301,9 @@ export function killWindowsTree(pid: number): Promise<boolean> {
       resolve(succeeded);
     };
     try {
-      const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore' });
+      const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+      });
       killer.once('error', () => finish(false));
       killer.once('close', (code) => finish(code === 0));
       timeout = setTimeout(() => {

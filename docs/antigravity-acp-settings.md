@@ -34,3 +34,5 @@ SHA-256 of the verified distribution files:
 agy_acp_server.par    9d900b93031fc42397f88206e14eba4193729bbef631a70b18e7a19631a6dfac
 localharness_external e0a8ef9d80a1ffb178f945159dda33f73d4a5be65516642542352584b834fa2a
 ```
+
+The [2026-09-12 PR2 verification record](archive/antigravity-acp-pr2-evidence.md) observed successful authentication and session creation, followed by a provider rejection during the actual prompt. Login verification is evidence scoped to the current Host and configured program; it does not establish task execution eligibility. The Host now exposes that in-memory evidence to Settings, invalidates it on program configuration changes, and records it only after authentication and process cleanup both succeed.

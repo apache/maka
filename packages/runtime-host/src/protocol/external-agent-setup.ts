@@ -57,6 +57,8 @@ export const EXTERNAL_AGENT_SETUP_FAILURES = [
   'browser_failed',
   'timed_out',
   'cleanup_failed',
+  'proxy_unsupported',
+  'proxy_credentials_missing',
 ] as const;
 export type ExternalAgentSetupFailure = (typeof EXTERNAL_AGENT_SETUP_FAILURES)[number];
 export interface ExternalAgentSetupStart {
@@ -73,6 +75,13 @@ export interface ExternalAgentSetupProjection extends ExternalAgentSetupStart {
   readonly failure?: ExternalAgentSetupFailure;
   readonly installedExecutable?: string;
   readonly downloadPercent?: number;
+}
+export type ExternalAgentAuthenticationQuery = Record<string, never>;
+/** Authentication evidence for this Host and saved program configuration, not execution readiness. */
+export interface ExternalAgentAuthenticationProjection {
+  readonly acpAgentId: 'antigravity';
+  readonly executable: string;
+  readonly status: 'unverified' | 'verified';
 }
 const errors = [
   'host_not_ready',
@@ -93,6 +102,20 @@ const common = {
   },
 };
 export const EXTERNAL_AGENT_SETUP_OPERATION_SPECS = {
+  'external_agents.authentication.query': defineOperation<
+    ExternalAgentAuthenticationQuery,
+    ExternalAgentAuthenticationProjection,
+    (typeof errors)[number]
+  >({
+    availability: 'ready',
+    errors,
+    mode: 'query',
+    decodeInput(value) {
+      requireExactRecord(value, 'external agent authentication query', []);
+      return {};
+    },
+    decodeOutput: decodeExternalAgentAuthenticationProjection,
+  }),
   'external_agents.setup.start': defineOperation<
     ExternalAgentSetupStart,
     ExternalAgentSetupProjection,
@@ -126,6 +149,23 @@ export const EXTERNAL_AGENT_SETUP_OPERATION_SPECS = {
     decodeInput: decodeExternalAgentSetupAttempt,
   }),
 } as const;
+export function decodeExternalAgentAuthenticationProjection(
+  value: unknown,
+): ExternalAgentAuthenticationProjection {
+  const item = requireExactRecord(value, 'external agent authentication', [
+    'acpAgentId',
+    'executable',
+    'status',
+  ]);
+  if (item.acpAgentId !== 'antigravity') throw invalidProtocolFrame('Invalid external agent');
+  if (item.status !== 'unverified' && item.status !== 'verified')
+    throw invalidProtocolFrame('Invalid external agent authentication status');
+  const executable =
+    item.executable === '' ? '' : requireString(item.executable, 'executable', 4096);
+  if (item.status === 'verified' && !executable)
+    throw invalidProtocolFrame('Verified authentication requires a configured executable');
+  return { acpAgentId: 'antigravity', executable, status: item.status };
+}
 export function decodeExternalAgentSetupStart(value: unknown): ExternalAgentSetupStart {
   const item = requireExactRecord(value, 'external agent setup', [
     'attemptId',

@@ -558,6 +558,10 @@ export class DesktopRuntimeHostClient {
     return this.request("external_agents.setup.start", input);
   }
 
+  queryExternalAgentAuthentication(): Promise<OperationOutput<"external_agents.authentication.query">> {
+    return this.request("external_agents.authentication.query", {});
+  }
+
   queryExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.query">> {
     return this.request("external_agents.setup.query", { attemptId });
   }

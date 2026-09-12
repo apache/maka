@@ -19,12 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runAntigravitySetup, createAntigravityStderrHandler } from '../server/acp/antigravity.js';
 import { AcpSetupError, withAcpConnection } from '../server/acp/connection.js';
+import { createAntigravityEnvironment } from '../server/acp/antigravity-environment.js';
 
 async function fixture(scenario: string, run: (executable: string, root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'maka-acp-test-'));
@@ -37,6 +38,7 @@ import {appendFileSync,writeFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 const scenario=${JSON.stringify(scenario)};
 writeFileSync(${JSON.stringify(join(root, 'pid'))}, String(process.pid));
+if(scenario==='environment') writeFileSync(${JSON.stringify(join(root, 'environment'))},JSON.stringify(Object.fromEntries(['HTTP_PROXY','http_proxy','HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy','NO_PROXY','no_proxy','BROWSER','ANTIGRAVITY_HARNESS_PATH'].map(key=>[key,process.env[key]]))));
 process.stderr.write('fixture-ready\\n');
 const log=method=>appendFileSync(${JSON.stringify(join(root, 'calls'))},method+'\\n');
 const app=agent({name:'fixture'}).onRequest(methods.agent.initialize,({params})=>{
@@ -87,6 +89,66 @@ test('check uses official SDK initialization only and releases the process', () 
     assert.equal(await readFile(join(root, 'calls'), 'utf8'), 'initialize\n');
     await assertStopped(root);
   }));
+test('setup passes the admitted proxy to the child and preserves controlled launch values', () =>
+  fixture('environment', async (executable, root) => {
+    const base = {
+      ...process.env,
+      HTTP_PROXY: 'http://stale.invalid:8888',
+      http_proxy: 'http://other.invalid:8888',
+      ALL_PROXY: 'socks5://unwanted.invalid:1080',
+      all_proxy: 'socks5://unwanted.invalid:1080',
+      NO_PROXY: '*',
+      BROWSER: '/unwanted/browser',
+      ANTIGRAVITY_HARNESS_PATH: '/unwanted/helper',
+    };
+    await runAntigravitySetup({
+      executable,
+      action: 'check',
+      signal: new AbortController().signal,
+      env: createAntigravityEnvironment(base, {
+        enabled: true,
+        type: 'http',
+        host: '127.0.0.1',
+        port: 7897,
+        username: 'fixture:user',
+        password: 'fixture@password',
+        bypassList: ['localhost', '127.0.0.1'],
+      }),
+      onAuthorizationUrl: async () => assert.fail('check must not open browser'),
+    });
+    const actual = JSON.parse(await readFile(join(root, 'environment'), 'utf8'));
+    const url = 'http://fixture%3Auser:fixture%40password@127.0.0.1:7897';
+    assert.deepEqual(actual, {
+      HTTP_PROXY: url,
+      http_proxy: url,
+      HTTPS_PROXY: url,
+      https_proxy: url,
+      NO_PROXY: 'localhost,127.0.0.1',
+      no_proxy: 'localhost,127.0.0.1',
+      BROWSER: '/usr/bin/true',
+      ANTIGRAVITY_HARNESS_PATH: await realpath(join(root, 'localharness_external')),
+    });
+    assert.equal(base.HTTP_PROXY, 'http://stale.invalid:8888');
+    assert.equal(base.ALL_PROXY, 'socks5://unwanted.invalid:1080');
+    await assertStopped(root);
+  }));
+test('proxy environment supports IPv6 and rejects SOCKS without exposing credentials', () => {
+  const proxy = {
+    enabled: true,
+    type: 'https' as const,
+    host: '::1',
+    port: 7897,
+    password: 'private fixture secret',
+    bypassList: [],
+  };
+  assert.equal(createAntigravityEnvironment({}, proxy).HTTP_PROXY, 'https://[::1]:7897');
+  assert.throws(() => createAntigravityEnvironment({}, { ...proxy, type: 'socks5' }), {
+    message: 'ACP setup: proxy_unsupported',
+  });
+  const base = { HTTP_PROXY: 'http://existing.invalid:7897' };
+  assert.deepEqual(createAntigravityEnvironment(base, null), base);
+  assert.notEqual(createAntigravityEnvironment(base, null), base);
+});
 test('login consumes a split stderr URL and waits for authenticate completion', () =>
   fixture('login', async (executable, root) => {
     const urls: string[] = [];

@@ -33,6 +33,8 @@ export async function runAntigravitySetup(input: {
   executable: string;
   action: Exclude<ExternalAgentSetupAction, 'install'>;
   signal: AbortSignal;
+  /** Host-admitted process environment, including the configured network proxy. */
+  env?: NodeJS.ProcessEnv;
   onAuthorizationUrl(url: string): Promise<void>;
 }): Promise<void> {
   const localAbort = new AbortController();
@@ -72,7 +74,7 @@ export async function runAntigravitySetup(input: {
         // Verified with official 1.1.1: BROWSER=true suppresses Python's automatic browser launch;
         // the printed link is presented through the existing Desktop capability instead.
         env: {
-          ...process.env,
+          ...(input.env ?? process.env),
           BROWSER: '/usr/bin/true',
           PYTHONUNBUFFERED: '1',
           ANTIGRAVITY_HARNESS_PATH: helper,

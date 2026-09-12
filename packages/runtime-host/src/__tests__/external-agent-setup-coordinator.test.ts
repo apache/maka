@@ -21,11 +21,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { HostExternalAgentSetupCoordinator } from '../server/external-agent-setup-coordinator.js';
-import { AcpSetupError } from '../server/acp/connection.js';
+import {
+  AcpSetupError,
+  AcpSetupCleanupError,
+  type AcpConnectionOwner,
+} from '../server/acp/connection.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
   decodeExternalAgentSetupProjection,
+  decodeExternalAgentAuthenticationProjection,
   type ExternalAgentSetupProjection,
 } from '../protocol/external-agent-setup.js';
 import { operationAllowsRemoteOwner } from '../protocol/operations.js';
@@ -37,6 +42,7 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
 const policy = {
   revision: 1,
   policy: {
@@ -342,3 +348,277 @@ for (const reason of ['cancel', 'disconnect', 'drain'] as const) {
     }
   });
 }
+
+type SetupDependencies = ConstructorParameters<typeof HostExternalAgentSetupCoordinator>[0];
+
+function authenticationHarness(overrides: Partial<SetupDependencies> = {}) {
+  let currentPolicy = structuredClone(policy);
+  const released = deferred();
+  const coordinator = new HostExternalAgentSetupCoordinator({
+    readPolicy: async () => currentPolicy,
+    platform: 'darwin',
+    arch: 'arm64',
+    acquireResidency: () => ({ release: released.resolve }),
+    onCleanupFailure() {},
+    capabilities: { callService: async () => ({ kind: 'presented' }) },
+    run: async () => {},
+    ...overrides,
+  });
+  return {
+    coordinator,
+    released,
+    changeExecutable(executable: string, revision: number) {
+      currentPolicy = {
+        ...currentPolicy,
+        revision,
+        policy: { ...currentPolicy.policy, externalAgents: { antigravity: { executable } } },
+      };
+      coordinator.observePolicy(currentPolicy);
+    },
+  };
+}
+
+async function authentication(coordinator: HostExternalAgentSetupCoordinator) {
+  const result = await coordinator.handlers['external_agents.authentication.query']({}, context);
+  assert.ok(result.ok);
+  return result.result;
+}
+
+test('authentication query is Host-local, read-only and independent of setup attempt ownership', async () => {
+  let reads = 0;
+  const { coordinator } = authenticationHarness({
+    readPolicy: async () => {
+      reads++;
+      return policy;
+    },
+    run: async () => assert.fail('query must not start an ACP process'),
+    acquireResidency: () => assert.fail('query must not hold setup residency'),
+  });
+  assert.deepEqual(await authentication(coordinator), {
+    acpAgentId: 'antigravity',
+    executable: input.expectedExecutable,
+    status: 'unverified',
+  });
+  const otherLocal = await coordinator.handlers['external_agents.authentication.query'](
+    {},
+    {
+      ...context,
+      connectionId: 'another-local-client',
+    },
+  );
+  assert.ok(otherLocal.ok);
+  assert.equal(otherLocal.result.status, 'unverified');
+  const remote = await coordinator.handlers['external_agents.authentication.query'](
+    {},
+    {
+      ...context,
+      principalKind: 'remote_owner',
+    },
+  );
+  assert.ok(!remote.ok && remote.error.code === 'unauthorized');
+  assert.equal(reads, 2);
+  await coordinator.close();
+});
+
+test('login creates authentication evidence only after the runner completes cleanup', async () => {
+  const cleanup = deferred();
+  const { coordinator, released } = authenticationHarness({ run: async () => cleanup.promise });
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  cleanup.resolve();
+  await released.promise;
+  assert.equal((await projection(coordinator)).phase, 'succeeded');
+  assert.equal((await authentication(coordinator)).status, 'verified');
+  const restarted = authenticationHarness();
+  assert.equal((await authentication(restarted.coordinator)).status, 'unverified');
+  await coordinator.close();
+  await restarted.coordinator.close();
+});
+
+for (const action of ['check', 'install'] as const) {
+  test(`${action} success does not create authentication evidence`, async () => {
+    const { coordinator, released } = authenticationHarness({
+      install: async () => '/managed/agy_acp_server.par',
+    });
+    await coordinator.handlers['external_agents.setup.start']({ ...input, action }, context);
+    await released.promise;
+    assert.equal((await projection(coordinator)).phase, 'succeeded');
+    assert.equal((await authentication(coordinator)).status, 'unverified');
+    await coordinator.close();
+  });
+}
+
+test('a changed executable invalidates evidence even when switched back before querying', async () => {
+  const { coordinator, released, changeExecutable } = authenticationHarness();
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  await released.promise;
+  assert.equal((await authentication(coordinator)).status, 'verified');
+  changeExecutable(input.expectedExecutable, 2);
+  assert.equal((await authentication(coordinator)).status, 'verified');
+  changeExecutable('/agent/replacement', 3);
+  changeExecutable(input.expectedExecutable, 4);
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  coordinator.observePolicy({
+    ...policy,
+    revision: 1,
+    policy: { ...policy.policy, externalAgents: { antigravity: { executable: '/stale' } } },
+  });
+  assert.equal((await authentication(coordinator)).executable, input.expectedExecutable);
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  await coordinator.close();
+});
+
+test('late login success cannot authenticate a newer executable generation', async () => {
+  const cleanup = deferred();
+  const { coordinator, released, changeExecutable } = authenticationHarness({
+    run: async () => cleanup.promise,
+  });
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  changeExecutable('/agent/replacement', 2);
+  changeExecutable(input.expectedExecutable, 3);
+  cleanup.resolve();
+  await released.promise;
+  assert.equal((await projection(coordinator)).phase, 'succeeded');
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  await coordinator.close();
+});
+
+test('cancelled and failed login attempts never create authentication evidence', async () => {
+  const cleanup = deferred();
+  const cancelled = authenticationHarness({ run: async () => cleanup.promise });
+  await cancelled.coordinator.handlers['external_agents.setup.start'](input, context);
+  await cancelled.coordinator.handlers['external_agents.setup.cancel'](
+    { attemptId: input.attemptId },
+    context,
+  );
+  cleanup.resolve();
+  await cancelled.released.promise;
+  assert.equal((await projection(cancelled.coordinator)).phase, 'cancelled');
+  assert.equal((await authentication(cancelled.coordinator)).status, 'unverified');
+  await cancelled.coordinator.close();
+
+  const failed = authenticationHarness({
+    run: async () => {
+      throw new AcpSetupError('authentication_failed');
+    },
+  });
+  await failed.coordinator.handlers['external_agents.setup.start'](input, context);
+  await failed.released.promise;
+  assert.equal((await projection(failed.coordinator)).failure, 'authentication_failed');
+  assert.equal((await authentication(failed.coordinator)).status, 'unverified');
+  await failed.coordinator.close();
+});
+
+test('the authentication wire contract does not expose execution or saved credential claims', () => {
+  const query = EXTERNAL_AGENT_SETUP_OPERATION_SPECS['external_agents.authentication.query'];
+  assert.deepEqual(query.decodeInput({}), {});
+  for (const invalid of [null, [], { executable: '/arbitrary' }, { sessionId: 'unused' }])
+    assert.throws(() => query.decodeInput(invalid));
+  const valid = { acpAgentId: 'antigravity', executable: '', status: 'unverified' };
+  assert.deepEqual(decodeExternalAgentAuthenticationProjection(valid), valid);
+  for (const invalid of [
+    { ...valid, status: 'ready' },
+    { ...valid, status: 'verified' },
+    { ...valid, acpAgentId: 'unknown' },
+    { ...valid, model: 'invented-model' },
+    { ...valid, credential: 'secret' },
+    { ...valid, executable: 42 },
+  ])
+    assert.throws(() => decodeExternalAgentAuthenticationProjection(invalid));
+  assert.equal(operationAllowsRemoteOwner('external_agents.authentication.query'), false);
+});
+
+for (const action of ['check', 'login', 'install'] as const) {
+  test(`${action} resolves the current process environment immediately before its ACP run`, async () => {
+    const calls: string[] = [];
+    const expected = { HTTPS_PROXY: 'http://localhost:12345', NO_PROXY: 'localhost' };
+    const { coordinator, released } = authenticationHarness({
+      install: async () => {
+        calls.push('install');
+        return '/managed/agy_acp_server.par';
+      },
+      resolveEnvironment: async () => {
+        calls.push('environment');
+        return expected;
+      },
+      run: async ({ env }) => {
+        calls.push('run');
+        assert.deepEqual(env, expected);
+      },
+    });
+    await coordinator.handlers['external_agents.setup.start']({ ...input, action }, context);
+    await released.promise;
+    assert.deepEqual(
+      calls,
+      action === 'install' ? ['install', 'environment', 'run'] : ['environment', 'run'],
+    );
+    assert.equal((await projection(coordinator)).phase, 'succeeded');
+    await coordinator.close();
+  });
+}
+
+test('environment resolution failure prevents spawning and keeps its actionable setup code', async () => {
+  const { coordinator, released } = authenticationHarness({
+    resolveEnvironment: async () => {
+      throw new AcpSetupError('proxy_unsupported');
+    },
+    run: async () => assert.fail('unsupported proxy must not start a process'),
+  });
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  await released.promise;
+  assert.equal((await projection(coordinator)).failure, 'proxy_unsupported');
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  await coordinator.close();
+});
+
+test('cancellation while resolving environment never starts the agent', async () => {
+  const resolveEnvironment = deferred();
+  const { coordinator, released } = authenticationHarness({
+    resolveEnvironment: async () => {
+      await resolveEnvironment.promise;
+      return {};
+    },
+    run: async () => assert.fail('cancelled setup must not start a process'),
+  });
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  await coordinator.handlers['external_agents.setup.cancel'](
+    { attemptId: input.attemptId },
+    context,
+  );
+  resolveEnvironment.resolve();
+  await released.promise;
+  assert.equal((await projection(coordinator)).phase, 'cancelled');
+  assert.equal((await authentication(coordinator)).status, 'unverified');
+  await coordinator.close();
+});
+
+test('cleanup failure retains its connection owner across failed shutdown retries', async () => {
+  let retries = 0;
+  let fatal = 0;
+  const owner = {
+    async dispose() {
+      retries++;
+      if (retries === 1) throw new AcpSetupError('cleanup_failed');
+    },
+  } as AcpConnectionOwner;
+  const { coordinator, released } = authenticationHarness({
+    run: async () => {
+      throw new AcpSetupCleanupError(owner);
+    },
+    onCleanupFailure: () => {
+      fatal++;
+    },
+  });
+  await coordinator.handlers['external_agents.setup.start'](input, context);
+  await released.promise;
+  assert.equal((await projection(coordinator)).failure, 'cleanup_failed');
+  assert.equal(fatal, 1);
+  const status = await coordinator.handlers['external_agents.authentication.query']({}, context);
+  assert.ok(!status.ok && status.error.code === 'host_draining');
+  await assert.rejects(coordinator.close(), /cleanup_failed/);
+  assert.equal(retries, 1);
+  await coordinator.close();
+  assert.equal(retries, 2);
+  await coordinator.close();
+  assert.equal(retries, 2);
+});

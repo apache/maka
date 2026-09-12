@@ -111,7 +111,7 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
   const copy = getExternalAgentsCopy(useUiLocale());
   const saved = props.settings.externalAgents.antigravity.executable;
   const [connectionVerified, setConnectionVerified] = useState(false);
-  const verifiedPath = useRef<string | undefined>(undefined);
+  const verifiedPath = useRef<{ executable: string; host: typeof host } | undefined>(undefined);
   const [available, setAvailable] = useState<boolean>();
   const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [projection, setProjection] = useState<ExternalAgentSetupProjection>();
@@ -120,14 +120,48 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
   const guard = useActionGuard<string>();
   const attempt = useRef<string | undefined>(undefined);
   const mounted = useRef(false);
-  const configuration = useRef({ executable: saved });
-  if (configuration.current.executable !== saved) configuration.current = { executable: saved };
+  const configuration = useRef({ executable: saved, host });
+  if (configuration.current.executable !== saved || configuration.current.host !== host)
+    configuration.current = { executable: saved, host };
   const attemptBasis = useRef(configuration.current);
+  const [authentication, setAuthentication] = useState<{
+    basis: typeof configuration.current;
+    status: 'unverified' | 'verified' | 'error';
+  }>();
+  const [authenticationRevision, setAuthenticationRevision] = useState(0);
+  const authenticationStatus = authentication?.basis === configuration.current
+    ? authentication.status
+    : undefined;
+  function refreshAuthentication() {
+    setAuthentication(undefined);
+    setAuthenticationRevision((value) => value + 1);
+  }
   useEffect(() => {
-    setConnectionVerified(verifiedPath.current === saved);
+    if (available !== true) return;
+    let retired = false;
+    const basis = configuration.current;
+    setAuthentication(undefined);
+    void services.authentication(host).then(
+      (result) => {
+        if (!retired && configuration.current === basis) {
+          setAuthentication({
+            basis,
+            status: result.executable === basis.executable ? result.status : 'unverified',
+          });
+        }
+      },
+      () => {
+        if (!retired && configuration.current === basis)
+          setAuthentication({ basis, status: 'error' });
+      },
+    );
+    return () => { retired = true; };
+  }, [available, host, saved, services, authenticationRevision]);
+  useEffect(() => {
+    setConnectionVerified(verifiedPath.current?.executable === saved && verifiedPath.current.host === host);
     setProjection(undefined);
     setError(false);
-  }, [saved]);
+  }, [saved, host]);
   useEffect(() => {
     mounted.current = true;
     let retired = false;
@@ -150,7 +184,8 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
       if (id) void services.cancel(id, host).catch(() => undefined);
     };
   }, [host, availabilityRetry, services]);
-  const current = projection?.expectedExecutable === saved ? projection : undefined;
+  const current = attemptBasis.current === configuration.current &&
+    projection?.expectedExecutable === saved ? projection : undefined;
   const isCurrent = (id: string) => mounted.current && attempt.current === id;
   async function selectExisting() {
     if (!available || !guard.begin('select')) return;
@@ -193,7 +228,7 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
           setProjection(result);
           if (result.phase === 'succeeded' || result.phase === 'awaiting_authorization') {
             if (action === 'install' && result.phase === 'succeeded' && result.installedExecutable) {
-              verifiedPath.current = result.installedExecutable;
+              verifiedPath.current = { executable: result.installedExecutable, host };
               const updated = await props.onUpdate(
                 { externalAgents: { antigravity: { executable: result.installedExecutable } } },
                 { expectedExternalAgentExecutable: basis.executable },
@@ -205,7 +240,10 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
             setConnectionVerified(true);
           }
         }
-        if (['succeeded', 'failed', 'cancelled'].includes(result.phase)) break;
+        if (['succeeded', 'failed', 'cancelled'].includes(result.phase)) {
+          if (configuration.current === basis) refreshAuthentication();
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
         if (!isCurrent(id)) break;
         result = await services.query(id, host);
@@ -243,7 +281,7 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
                 ? copy.failures[current.failure!]
                 : current.phase === 'succeeded'
                   ? current.action === 'install' ? copy.installed : current.action === 'login'
-                    ? copy.authenticated
+                    ? authenticationStatus === 'verified' ? copy.authenticated : copy.accountUnchecked
                     : copy.connected
                   : copy[current.phase];
   const canStart = Boolean(available && saved);
@@ -263,11 +301,11 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
     return (
       <Button
         variant={
-          !busy && (action === 'install' ? available && !saved : canStart && (action === 'check' ? !connectionVerified : connectionVerified && current?.phase !== 'succeeded'))
+          !busy && (action === 'install' ? available && !saved : canStart && (action === 'check' ? !connectionVerified : connectionVerified && authenticationStatus !== 'verified'))
             ? 'primary'
             : 'secondary'
         }
-        label={retryAction === action ? copy.retry : action === 'install' ? saved ? copy.reinstall : copy.install : action === 'check' ? copy.check : current?.action === 'login' && current.phase === 'succeeded' ? copy.reverify : copy.login}
+        label={retryAction === action ? copy.retry : action === 'install' ? saved ? copy.reinstall : copy.install : action === 'check' ? copy.check : authenticationStatus === 'verified' ? copy.reverify : copy.login}
         isDisabled={busy || (action === 'install' ? !available : !canStart)}
         onClick={() => void start(action)}
       />
@@ -333,8 +371,24 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
       <SettingsSection title={copy.accountTitle} description={copy.accountDescription}>
         <SettingsRow
           label={copy.googleAccount}
-          description={<span role="status" aria-live="polite">{!saved ? copy.accountBeforeSave : current?.action === 'login' ? status : copy.accountUnchecked}</span>}
-          end={setupAction('login')}
+          description={<span role="status" aria-live="polite">{
+            !saved ? copy.accountBeforeSave
+              : current?.action === 'login' && current.phase !== 'succeeded' ? status
+              : available !== true ? copy.accountUnchecked
+              : authenticationStatus === undefined ? copy.authenticationLoading
+              : authenticationStatus === 'error' ? copy.authenticationReadFailed
+              : authenticationStatus === 'verified' ? copy.authenticated
+              : copy.accountUnchecked
+          }</span>}
+          end={<HStack gap={2} vAlign="center">
+            {authenticationStatus === 'error' && <Button
+              variant="secondary"
+              label={copy.retryAuthenticationRead}
+              isDisabled={busy}
+              onClick={refreshAuthentication}
+            />}
+            {setupAction('login')}
+          </HStack>}
         />
       </SettingsSection>
 

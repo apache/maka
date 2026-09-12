@@ -21,6 +21,7 @@ import { createServicesContext } from '../../application/contracts/feature-servi
 import type {
   ExternalAgentSetupStart,
   ExternalAgentSetupProjection,
+  OperationOutput,
 } from '@maka/runtime-host/protocol';
 export interface ExternalAgentSettingsHost {
   readonly profileId: string;
@@ -28,6 +29,7 @@ export interface ExternalAgentSettingsHost {
 }
 export interface ExternalAgentSettingsServices {
   isAvailable(host: ExternalAgentSettingsHost): Promise<boolean>;
+  authentication(host: ExternalAgentSettingsHost): Promise<OperationOutput<'external_agents.authentication.query'>>;
   createAttemptId(): string;
   selectExecutable(host: ExternalAgentSettingsHost): Promise<string | undefined>;
   start(

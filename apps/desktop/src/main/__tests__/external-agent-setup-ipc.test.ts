@@ -24,6 +24,30 @@ import { registerExternalAgentSetupIpc } from '../external-agent-setup-ipc-main.
 import { RuntimeHostOAuthPresentation } from '../runtime-host-oauth-presentation.js';
 import type { ExternalAgentSetupProjection } from '@maka/runtime-host/protocol';
 
+test('authentication IPC is a reconnectable query without setup or browser side effects', async () => {
+  type Handler = Parameters<Parameters<typeof registerExternalAgentSetupIpc>[0]['ipcMain']['handle']>[1];
+  const reads = new Map<string, Handler>();
+  const authentication = { acpAgentId: 'antigravity' as const, executable: '/agent', status: 'verified' as const };
+  const unexpected = async (): Promise<never> => { throw new Error('Unexpected setup side effect'); };
+  registerExternalAgentSetupIpc({
+    ipcMain: {
+      handle() {},
+      handleReconnectableRead(channel, listener) { reads.set(channel, listener); },
+    },
+    presentation: new RuntimeHostOAuthPresentation(unexpected),
+    selectExecutable: unexpected,
+    client: {
+      queryExternalAgentAuthentication: async () => authentication,
+      startExternalAgentSetup: unexpected,
+      queryExternalAgentSetup: unexpected,
+      cancelExternalAgentSetup: unexpected,
+    },
+  });
+  const read = reads.get('external-agents:authentication:query');
+  assert.ok(read);
+  assert.deepEqual(await read({} as IpcMainInvokeEvent), authentication);
+});
+
 test('external setup shares browser presentation without accepting a stale attempt URL', async () => {
   const opened: string[] = [];
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
@@ -67,6 +91,7 @@ test('setup IPC registers an expectation before start and releases it on termina
     },
     presentation,
     client: {
+      queryExternalAgentAuthentication: async () => ({ acpAgentId: 'antigravity', executable: '/agent', status: 'unverified' }),
       startExternalAgentSetup: async (value) => {
         attempts++;
         await presentation.openExternal(
@@ -112,6 +137,7 @@ test('setup accepts a delayed authorization link and clears terminal, cancelled 
     ipcMain: { handle: (channel, listener) => { handlers.set(channel, listener); } },
     presentation,
     client: {
+      queryExternalAgentAuthentication: async () => ({ acpAgentId: 'antigravity', executable: '/agent', status: 'unverified' }),
       startExternalAgentSetup: async (value) => ({ ...value, phase }),
       queryExternalAgentSetup: async () => ({ ...input, phase }),
       cancelExternalAgentSetup: async () => ({ ...input, phase: 'cancelled' }),

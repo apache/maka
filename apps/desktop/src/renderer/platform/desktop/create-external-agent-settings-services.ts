@@ -24,6 +24,7 @@ export function createDesktopExternalAgentSettingsServices(
     window.maka,
 ): ExternalAgentSettingsServices {
   return {
+    authentication: (host) => bridge().externalAgents.authentication(host),
     selectExecutable: (host) => bridge().externalAgents.selectExecutable(host),
     createAttemptId: () => crypto.randomUUID(),
     async isAvailable(host) {

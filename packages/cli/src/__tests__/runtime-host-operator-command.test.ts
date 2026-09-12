@@ -474,6 +474,7 @@ describe('Runtime Host operator commands', () => {
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
         'collaboration.turn-request.withdraw',
+        'external_agents.authentication.query',
         'external_agents.setup.cancel',
         'external_agents.setup.query',
         'external_agents.setup.start',
