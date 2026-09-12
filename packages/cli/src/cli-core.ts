@@ -137,7 +137,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
-    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (sessions, tools, permissions, forms, stdio MCP)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} session-export --workspace-root <dir> --session <id> --out <file.maka-session>`,

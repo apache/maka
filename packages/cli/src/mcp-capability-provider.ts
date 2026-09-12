@@ -35,6 +35,7 @@ const CAPABILITY_VERSION = '0';
 
 export function createMcpCapabilityProvider(
   manager: Pick<McpClientManager, 'toolSnapshot' | 'callTool'>,
+  options: { readonly admission?: 'mcp' } = {},
 ): ClientCapabilityProvider | undefined {
   const toolSnapshot = manager.toolSnapshot();
   const tools = [...toolSnapshot.tools].sort(
@@ -79,6 +80,7 @@ export function createMcpCapabilityProvider(
       version: CAPABILITY_VERSION,
       affinity: 'session',
       hostPathAccess: 'none',
+      ...(options.admission ? { admission: options.admission } : {}),
       label:
         servers.size === 1
           ? `MCP: ${chunk[0]?.source.descriptor.serverId ?? 'tools'}`.slice(0, 128)
@@ -95,6 +97,7 @@ export function createMcpCapabilityProvider(
   }
   const canonical = decodeClientCapabilityReplaceInput({
     registrationId: '00000000-0000-4000-8000-000000000000',
+    ...(options.admission ? { sessionId: 'mcp-manifest-validation' } : {}),
     offers,
   });
 
