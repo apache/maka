@@ -34,7 +34,7 @@ test('adding and configuring a disabled model preserves its parameters and selec
   await vision.click();
   await page
     .getByRole('listbox')
-    .getByRole('option', { name: copy.visionEnabledOption })
+    .getByRole('option', { name: copy.visionEnabledOption, exact: true })
     .click();
   await page.getByRole('button', { name: copy.thinkingEffort }).click();
   await page.getByRole('menuitemcheckbox', { name: `${MODEL_ID} low` }).click();
