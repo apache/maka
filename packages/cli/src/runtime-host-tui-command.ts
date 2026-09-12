@@ -231,11 +231,14 @@ async function runFirstRunOnboarding(
       connectionSlug: '',
       permissionMode: 'ask',
       firstRun: true,
+      // Anchored above the onboarding key: upstream rewrites the onboarding
+      // line below (surface hoisting), and a spread after it would collide
+      // in the three-way merge. Object literal order is irrelevant here.
+      ...(buildVersion ? { buildVersion } : {}),
       turnActivity: {
         activities: new SessionActivityRegistry(),
       } satisfies MakaPiTuiTurnActivitySurface,
       onboarding: createRuntimeHostOnboardingSurface(connected.connection),
-      ...(buildVersion ? { buildVersion } : {}),
     });
     return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
   } finally {
