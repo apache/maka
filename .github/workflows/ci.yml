@@ -446,7 +446,6 @@ jobs:
       - name: Transcript geometry invariants
         if: steps.plan.outputs.storybook == 'true'
         env:
-          GEOMETRY_MODE: baseline
           GEOMETRY_REPETITIONS: '1'
         run: xvfb-run -a node scripts/perf/geometry-ablation.mjs --assert-stable
 

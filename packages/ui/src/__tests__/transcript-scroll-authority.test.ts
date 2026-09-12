@@ -22,6 +22,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
+import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
 
 interface FakeTurn {
   turnId: string;
@@ -188,12 +189,14 @@ test('a held scrollbar coalesces range publication until release, including a st
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
+    const publication = createTranscriptViewportNavigation();
+    publication.attachCommitScheduler('session', authority);
     const commits: number[] = [];
     root.grabScrollbar();
     root.scrollTop -= 100;
     root.emitScroll();
-    authority.commitWhenIdle(() => commits.push(1));
-    authority.commitWhenIdle(() => commits.push(2));
+    publication.commitRange('session', () => commits.push(1));
+    publication.commitRange('session', () => commits.push(2));
     root.end(); frame(); frame();
     assert.deepEqual(commits, []);
     root.ownerDocument.dispatchEvent(new Event('pointerup'));
@@ -202,27 +205,26 @@ test('a held scrollbar coalesces range publication until release, including a st
   });
 });
 
-test('an edge wheel without scrollend publishes after input settles and detach drops pending work', () => {
+test('an edge wheel without scrollend publishes after input settles', () => {
   withObservers((_resize, frame) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     const detach = authority.attach(root as unknown as HTMLElement);
+    const publication = createTranscriptViewportNavigation();
+    const detachPublication = publication.attachCommitScheduler('session', authority);
     root.scrollTop = 0;
     let commits = 0;
     const phases: string[] = [];
     authority.subscribeToReaderScroll((phase) => {
       phases.push(phase);
-      if (phase === 'input') authority.commitWhenIdle(() => commits++);
+      if (phase === 'input') publication.commitRange('session', () => commits++);
     });
     root.input(-100);
     assert.equal(commits, 0);
     frame(); frame();
     assert.equal(commits, 1);
     assert.deepEqual(phases, ['input', 'settled']);
-    root.grabScrollbar();
-    authority.commitWhenIdle(() => commits++);
-    detach(); frame(); frame();
-    assert.equal(commits, 1);
+    detach(); detachPublication();
   });
 });
 

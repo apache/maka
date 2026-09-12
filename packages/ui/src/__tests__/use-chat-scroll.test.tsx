@@ -397,6 +397,7 @@ test('an older request at offset zero does not move the reader', async () => {
 });
 
 test('idle range admission commits the React DOM before a subsequent input can begin', async () => {
+  const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
   const transcript = createTranscript(document, window, {
@@ -409,19 +410,19 @@ test('idle range admission commits the React DOM before a subsequent input can b
     publish = setValue;
     authority = useTranscriptScrollAuthority();
     const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
-    useChatScroll({ scrollRef, sessionId: 'admission', messages: [], behavior: 'auto' });
+    useChatScroll({ scrollRef, sessionId: 'admission', messages: [], behavior: 'auto', viewportNavigation: navigation });
     return <span>{value}</span>;
   }
   mountedRoot = createRoot(document.querySelector('#mount')!);
   await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
   await act(async () => {
-    authority.commitWhenIdle(() => publish('new'));
+    navigation.commitRange('admission', () => publish('new'));
     await Promise.resolve();
     assert.equal(document.querySelector('#mount')!.textContent, 'new',
       'an admitted update must not remain in React scheduling after its idle check');
   });
   await act(async () => {
-    authority.commitWhenIdle(() => publish('held'));
+    navigation.commitRange('admission', () => publish('held'));
     const down = new window.Event('pointerdown');
     Object.defineProperties(down, {
       button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 1 },
@@ -439,8 +440,38 @@ test('idle range admission commits the React DOM before a subsequent input can b
   assert.equal(document.querySelector('#mount')!.textContent, 'held');
 });
 
+test('a source publication survives viewport unmount without another source update', async () => {
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  installScrollTestEnvironment(document, window);
+  const transcript = createTranscript(document, window, { clientHeight: 400, turnHeight: 400, turnCount: 12 });
+  const navigation = createTranscriptViewportNavigation();
+  let publish!: (value: string) => void;
+  let show!: (value: boolean) => void;
+  function Surface() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({ scrollRef, sessionId: 'session', messages: [], behavior: 'auto', viewportNavigation: navigation });
+    return null;
+  }
+  function Harness() {
+    const [value, setValue] = useState('old');
+    const [visible, setVisible] = useState(true);
+    publish = setValue; show = setVisible;
+    return <><span>{value}</span>{visible && <Surface />}</>;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
+  await act(() => wheel(transcript.scroller, -100));
+  await act(() => navigation.commitRange('session', () => publish('latest')));
+  assert.equal(document.querySelector('#mount')!.textContent, 'old');
+  await act(() => show(false));
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest');
+  await act(() => show(true));
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest');
+});
+
 for (const hasOlder of [false, true]) {
   test(`stationary upward input ${hasOlder ? 'reads available history' : 'keeps following without history'}`, async () => {
+    const navigation = createTranscriptViewportNavigation();
     const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
     const { frames, deliverResizeOf } = installScrollTestEnvironment(document, window);
     const transcript = createTranscript(document, window, {
@@ -452,7 +483,7 @@ for (const hasOlder of [false, true]) {
       authority = useTranscriptScrollAuthority();
       const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
       useChatScroll({
-        scrollRef, sessionId: 'short', messages: [], behavior: 'auto',
+        scrollRef, sessionId: 'short', messages: [], behavior: 'auto', viewportNavigation: navigation,
         hasOlderHistory: hasOlder,
         onPrefetchHistory: () => { requests++; return new Promise<boolean>(() => {}); },
       });
@@ -468,7 +499,7 @@ for (const hasOlder of [false, true]) {
     await frame(); // Initial fill may already be in flight when the reader asks.
     await act(() => wheel(transcript.scroller, -100));
     let publications = 0;
-    await act(() => authority.commitWhenIdle(() => {
+    await act(() => navigation.commitRange('short', () => {
       publications++;
       transcript.setTurnCount(3);
       if (hasOlder) {
@@ -492,6 +523,7 @@ for (const hasOlder of [false, true]) {
 }
 
 test('a held fill publishes before trimming or chaining from the new geometry', async () => {
+  const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
   const transcript = createTranscript(document, window, {
@@ -506,13 +538,13 @@ test('a held fill publishes before trimming or chaining from the new geometry', 
     authority = useTranscriptScrollAuthority();
     const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
     useChatScroll({
-      scrollRef, sessionId: 'held-fill', messages: [], behavior: 'auto',
+      scrollRef, sessionId: 'held-fill', messages: [], behavior: 'auto', viewportNavigation: navigation,
       hasOlderHistory: true,
       onPrefetchHistory: () => {
         requests++;
         return new Promise<boolean>((resolve) => {
           finishRead = () => {
-            authority.commitWhenIdle(() => {
+            navigation.commitRange('held-fill', () => {
               publications++;
               transcript.setTurnCount(14);
               [...transcript.scroller.children].forEach((turn, index) => {

@@ -29,11 +29,13 @@ at commit. Messages and gap metadata form one published view; otherwise gap
 changes alone moved held height by 68px in the native probe. The old 1px input
 nudge and the render-skipping assertion were removed.
 
-Ordinary CI runs the fixed-range driver with `GEOMETRY_MODE=baseline` and
-`--assert-stable`. The former native diagnostic is now
+Ordinary CI runs the production fixed-range driver with `--assert-stable`.
+Historical ablation modes below describe the earlier experiments; the current
+driver no longer injects CSS modes that are equivalent to production layout.
+The former native diagnostic is now
 `apps/desktop/e2e/scroll-geometry.spec.ts`: held height/range, monotonic upward
 movement, release-frame anchor position, and subsequent navigation are strict
-assertions. This implementation targets main, not the unmerged #5170 branch.
+assertions. The implementation is integrated with #5170's bounded window.
 The post-change performance run must be compared using the report commit and
 environment; a successful job is not a statistical non-inferiority result.
 
@@ -145,17 +147,15 @@ npm --workspace @maka/desktop run build-storybook
 node scripts/perf/geometry-ablation.mjs
 ```
 
-Explicit negative control (expected to fail on the measured source):
+Current production geometry gate:
 
 ```sh
-GEOMETRY_REPETITIONS=1 GEOMETRY_MODE=baseline GEOMETRY_SCENE=geometry-mixed-24-turns node scripts/perf/geometry-ablation.mjs --assert-stable
+GEOMETRY_REPETITIONS=1 node scripts/perf/geometry-ablation.mjs --assert-stable
 ```
 
-Intervention with the same strict assertions:
-
-```sh
-GEOMETRY_REPETITIONS=1 GEOMETRY_MODE=no-skip node scripts/perf/geometry-ablation.mjs --assert-stable
-```
+The old baseline/no-skip negative control belongs to measurement commit
+`817a5737d`; run that revision to reproduce the historical intervention.
+Current code has no CSS mode switch. Compare different commits for performance.
 
 For the Host/window diagnostic, build Desktop first, then run from
 `apps/desktop` (the existing fixture resolves its app root from the working

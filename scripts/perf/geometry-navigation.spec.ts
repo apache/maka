@@ -22,10 +22,10 @@ import { withE2eWindow } from '../../apps/desktop/e2e/fixtures';
 import { outputDir, report, summarize } from './report.mjs';
 import path from 'node:path';
 
-test('layout ablation: document mount and older history', async () => {
+test('production layout: document mount and older history', async () => {
   test.setTimeout(180_000);
   const samples: Array<{
-    mode: string;
+    trial: number;
     action: string;
     ms: number;
     taskMs: number;
@@ -49,20 +49,6 @@ test('layout ablation: document mount and older history', async () => {
       await cdp.send('Performance.enable');
       const browser = await cdp.send('Browser.getVersion');
       await page.addInitScript(() => {
-        const style = document.createElement('style');
-        style.textContent =
-          sessionStorage.getItem('geometry-mode') === 'no-skip'
-            ? `.maka-transcript-turn, [data-maka-transcript-boundary], .astryx-codeblock [style*="contain-intrinsic-block-size"] { content-visibility:visible !important; contain:layout style paint !important; }`
-            : '';
-        const append = () => document.documentElement.append(style);
-        if (document.documentElement) append();
-        else
-          new MutationObserver((_, observer) => {
-            if (document.documentElement) {
-              append();
-              observer.disconnect();
-            }
-          }).observe(document, { childList: true });
         const tasks: Array<{ start: number; duration: number }> = [];
         (window as any).__mountTasks = tasks;
         new PerformanceObserver((list) =>
@@ -84,8 +70,7 @@ test('layout ablation: document mount and older history', async () => {
       };
       const metric = (m: { metrics: Array<{ name: string; value: number }> }, name: string) =>
         m.metrics.find((v) => v.name === name)!.value;
-      for (const mode of ['baseline', 'no-skip', 'no-skip', 'baseline', 'baseline', 'no-skip']) {
-        await page.evaluate((mode) => sessionStorage.setItem('geometry-mode', mode), mode);
+      for (let trial = 0; trial < 3; trial++) {
         const measure = async (action: string, run: () => Promise<void>) => {
           const before = await cdp.send('Performance.getMetrics');
           const from = action === 'mount' ? 0 : await page.evaluate(() => performance.now());
@@ -101,7 +86,7 @@ test('layout ablation: document mount and older history', async () => {
             from,
           );
           const sample = {
-            mode,
+            trial,
             action,
             ms,
             // Navigation resets CDP counters; only same-document actions use deltas.
@@ -125,7 +110,7 @@ test('layout ablation: document mount and older history', async () => {
           await page.reload();
           await ready(120);
         });
-        if (mode === 'no-skip') {
+        {
           expect(
             await page
               .locator('[data-chat-scroll-container]')
@@ -142,7 +127,12 @@ test('layout ablation: document mount and older history', async () => {
             .locator('.maka-prompt-rail-tick[data-prompt-turn-id="turn-prompt-rail-1"]')
             .click();
           await ready(1);
-          await expect(page.locator('[data-transcript-gap="newer"]')).toBeVisible();
+          await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(0);
+          await expect(
+            page.getByRole('button', {
+              name: /^(滚动主对话到底部|Scroll main conversation to bottom)$/,
+            }),
+          ).toBeVisible();
         });
         await measure('latest', async () => {
           await page
@@ -178,22 +168,20 @@ test('layout ablation: document mount and older history', async () => {
           samples,
           viewport: '1400x900',
           conditions:
-            'One real Desktop + Host, six fresh renderer documents, baseline/no-skip/no-skip/baseline/baseline/no-skip. Existing 120-turn fixture; three measurements per mode/action.',
+            'One real Desktop + Host, three fresh renderer documents using production layout. Existing 120-turn fixture; three measurements per action.',
           limits:
             'Mount is renderer reload in a warm application, not disk-cold process startup. DOM readiness includes driver polling, fonts and two rendering frames, not screen presentation. Older/latest uses prompt-rail navigation, not wheel-triggered paging. Trace overhead included; no performance threshold imposed.',
         },
-        ['baseline', 'no-skip'].flatMap((mode) =>
-          ['mount', 'older', 'latest'].flatMap((action) => {
-            const group = samples.filter((s) => s.mode === mode && s.action === action);
-            return (['ms', 'taskMs', 'layoutMs', 'maxLongTaskMs', 'longTaskCount'] as const).map(
-              (metric) => ({
-                scenario: `${action}/${mode}`,
-                metric,
-                ...summarize(group.map((s) => s[metric])),
-              }),
-            );
-          }),
-        ),
+        ['mount', 'older', 'latest'].flatMap((action) => {
+          const group = samples.filter((s) => s.action === action);
+          return (['ms', 'taskMs', 'layoutMs', 'maxLongTaskMs', 'longTaskCount'] as const).map(
+            (metric) => ({
+              scenario: action,
+              metric,
+              ...summarize(group.map((s) => s[metric])),
+            }),
+          );
+        }),
       );
     },
   );

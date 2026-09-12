@@ -109,7 +109,7 @@ export function useChatScroll(input: {
   useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
 
   useEffect(() => input.sessionId
-    ? input.viewportNavigation?.attachCommitScheduler(input.sessionId, authority.commitWhenIdle)
+    ? input.viewportNavigation?.attachCommitScheduler(input.sessionId, authority)
     : undefined, [authority, input.sessionId, input.viewportNavigation]);
 
   // A new conversation either resumes a semantic reading position or arrives

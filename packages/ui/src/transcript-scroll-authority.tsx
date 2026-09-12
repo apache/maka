@@ -63,8 +63,9 @@ export interface TranscriptScrollSnapshot {
 export interface TranscriptScrollAuthority {
   /** Whether native input still holds the published geometry. */
   isInputActive(): boolean;
-  /** Publish the newest resident range after the current input operation ends. */
-  commitWhenIdle(commit: () => void): void;
+  /** Synchronously publish and preserve geometry if native input permits it. */
+  commitIfIdle(commit: () => void): boolean;
+  subscribeToIdle(listener: () => void): () => void;
   /** Take the scroller. Returns the detach for the effect that called it. */
   attach(root: HTMLElement | null): () => void;
   /** One-shot: put the tail back under the reader and follow it again. */
@@ -114,7 +115,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
-  let pendingCommit: (() => void) | undefined;
+  const idleListeners = new Set<() => void>();
   let pointer: number | undefined;
   let touchHeld = false;
   const commitRange = (commit: () => void): void => {
@@ -138,11 +139,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       target.style.overflowAnchor = pinned ? 'none' : 'auto';
     }
   };
-  const flushCommit = (): void => {
+  const notifyIdle = (): void => {
     if (gesture || pointer !== undefined || touchHeld) return;
-    const commit = pendingCommit;
-    pendingCommit = undefined;
-    if (commit) commitRange(commit);
+    for (const listener of [...idleListeners]) listener();
   };
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
@@ -183,11 +182,14 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
 
   return {
     isInputActive: () => gesture !== undefined || pointer !== undefined || touchHeld,
-    commitWhenIdle(commit) {
-      pendingCommit = commit;
-      // Callers include React effects. Leave that lifecycle, then admit and
-      // commit synchronously so React cannot carry an idle update into input.
-      queueMicrotask(flushCommit);
+    commitIfIdle(commit) {
+      if (gesture || pointer !== undefined || touchHeld) return false;
+      commitRange(commit);
+      return true;
+    },
+    subscribeToIdle(listener) {
+      idleListeners.add(listener);
+      return () => { idleListeners.delete(listener); };
     },
     attach(next) {
       root = next;
@@ -248,7 +250,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         requestAnimationFrame(() => {
           if (gesture !== pending || pending.direction !== undefined) return;
           gesture = undefined;
-          flushCommit();
+          notifyIdle();
           if (pinned) writeToTail();
         });
       };
@@ -264,7 +266,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         }
         touchY = nextY;
       };
-      const onTouchEnd = (): void => { touchY = undefined; touchHeld = false; onScrollEnd(); flushCommit(); };
+      const onTouchEnd = (): void => { touchY = undefined; touchHeld = false; onScrollEnd(); notifyIdle(); };
       const onScroll = (): void => {
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
         readingTurnId = readTurn();
@@ -305,7 +307,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           // the pin. Settling an unmoved edge gesture must not release it too.
           pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
-          flushCommit();
+          notifyIdle();
           publish();
           if (pinned) writeToTail();
           // An anchor navigation can supersede the last in-flight page while
@@ -374,7 +376,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         gesture = undefined;
         pointer = undefined;
         touchHeld = false;
-        pendingCommit = undefined;
         if (root === target) root = null;
       };
     },
@@ -383,7 +384,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pointer = undefined;
       touchHeld = false;
       pinned = true;
-      queueMicrotask(flushCommit);
+      queueMicrotask(notifyIdle);
       writeToTail();
       publish();
     },
@@ -392,7 +393,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pinned = false;
       // Commands can originate in a React effect. Publish before their next
       // positioning frame, outside React's lifecycle, if a range is pending.
-      if (pendingCommit) queueMicrotask(flushCommit);
+      queueMicrotask(notifyIdle);
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
