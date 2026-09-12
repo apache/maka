@@ -377,6 +377,7 @@ interface TuiRewindCopy {
   readonly busy: string;
   readonly unsupportedQuotes: string;
   readonly unsupportedAttachments: string;
+  readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
 }
 
@@ -2128,11 +2129,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // Render the localized catalog copy for that code instead of the
         // driver's English fallback.
         const code = (error as { code?: unknown })?.code;
-        if (code === 'rewind_unsupported_quotes' || code === 'rewind_unsupported_attachments') {
+        if (
+          code === 'rewind_unsupported_quotes' ||
+          code === 'rewind_unsupported_attachments' ||
+          code === 'rewind_unsupported_directory_references'
+        ) {
           const localized =
             code === 'rewind_unsupported_quotes'
               ? TUI_REWIND_COPY[locale].unsupportedQuotes
-              : TUI_REWIND_COPY[locale].unsupportedAttachments;
+              : code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
           throw new Error(localized);
         }
         throw error;

@@ -2144,6 +2144,10 @@ describe('Runtime Host Maka Session driver', () => {
         ...userMessage('turn-attached', 'Attached prompt'),
         attachments: [attachment],
       },
+      {
+        ...userMessage('turn-directory', 'Directory prompt'),
+        directoryReferences: [{ hostId: 'host-1', path: tmpdir() }],
+      },
     ];
     const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve(messages));
     const current = new FakeSubscription(
@@ -2156,7 +2160,12 @@ describe('Runtime Host Maka Session driver', () => {
       Promise.resolve(messages),
       'subscription-3',
     );
-    const connection = new FakeConnection([attached, current, direct]);
+    const fourth = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(messages),
+      'subscription-4',
+    );
+    const connection = new FakeConnection([attached, current, direct, fourth]);
     // A directory that exists on every platform: the driver rejects a session
     // whose cwd has disappeared, and the catalog projection's default `/tmp`
     // only exists on POSIX.
@@ -2182,6 +2191,17 @@ describe('Runtime Host Maka Session driver', () => {
     await assert.rejects(
       driver.rewindToTurn('turn-attached'),
       /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory'),
+      /carries structured context the TUI cannot restore/,
+    );
+    await assert.rejects(
+      driver.rewindToTurn('turn-directory').catch((error: unknown) => {
+        const code = (error as { code?: unknown }).code;
+        assert.equal(code, 'rewind_unsupported_directory_references');
+        throw error;
+      }),
     );
     assert.equal(
       connection.requests.some(({ operation }) => operation === 'session.revision.create'),

@@ -1132,6 +1132,8 @@ export const TUI_COPY_RESOURCES = {
         'Cannot rewind to this turn: it carries quoted excerpts, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
       unsupportedAttachments:
         'Cannot rewind to this turn: it carries attachments, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
+      unsupportedDirectoryReferences:
+        'Cannot rewind to this turn: it carries directory references, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
       pickerHint:
         'Return to before the selected turn (discards it and later turns; the prompt refills the input box) · enter select / esc cancel',
     },
@@ -1148,6 +1150,8 @@ export const TUI_COPY_RESOURCES = {
         '无法回退到这一轮：它携带引用摘录，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
       unsupportedAttachments:
         '无法回退到这一轮：它携带附件，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
+      unsupportedDirectoryReferences:
+        '无法回退到这一轮：它携带目录引用，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
       pickerHint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
     },
     'zh-TW': {
@@ -1163,6 +1167,8 @@ export const TUI_COPY_RESOURCES = {
         '無法回退到這一輪：它攜帶引用摘錄，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
       unsupportedAttachments:
         '無法回退到這一輪：它攜帶附件，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
+      unsupportedDirectoryReferences:
+        '無法回退到這一輪：它攜帶目錄參照，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
       pickerHint: '回到選定輪次之前（捨棄該輪及之後，prompt 回填輸入框） · enter 選擇 / esc 取消',
     },
   },

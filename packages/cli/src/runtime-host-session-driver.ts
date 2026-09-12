@@ -868,7 +868,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ? 'rewind_unsupported_quotes'
         : (promptMessage.attachments?.length ?? 0) > 0
           ? 'rewind_unsupported_attachments'
-          : null;
+          : (promptMessage.directoryReferences?.length ?? 0) > 0
+            ? 'rewind_unsupported_directory_references'
+            : null;
     if (unsupported) {
       // Refilling only the human-facing text would silently drop the turn's
       // structured context from the replacement submit (#5109). Fail closed
