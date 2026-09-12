@@ -278,17 +278,18 @@ function normalizeOptionalRetainedAttachments(
     : {};
 }
 
-// The wire shape is a `ComposerIngestInput`: an approval-backed descriptor
-// (`approvalId` + `name`, optional `mimeType`) or a live `file` carrier. A
-// bare `{}` or `null` entry used to satisfy the empty-body check while
-// carrying nothing ingestible (#4815 review).
+// The wire shape is the preload's IngestPayload: an approval-backed descriptor
+// (`approvalId` + `name`, optional `mimeType`) or inline `base64` bytes for a
+// dragged/pasted blob — the same shapes prepareIngestItems resolves. A bare
+// `{}` or `null` entry used to satisfy the empty-body check while carrying
+// nothing ingestible (#4815 review).
 function isComposerIngestItem(item: unknown): boolean {
   if (typeof item !== 'object' || item === null) return false;
   const candidate = item as Record<string, unknown>;
-  if ('approvalId' in candidate) {
-    return typeof candidate.approvalId === 'string' && typeof candidate.name === 'string';
+  if (typeof candidate.approvalId === 'string') {
+    return typeof candidate.name === 'string';
   }
-  return 'file' in candidate;
+  return typeof candidate.name === 'string' && typeof candidate.base64 === 'string';
 }
 
 function normalizeOptionalAttachmentItems(input: unknown): { attachmentItems?: unknown[] } {
