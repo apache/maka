@@ -474,6 +474,9 @@ describe('Runtime Host operator commands', () => {
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
         'collaboration.turn-request.withdraw',
+        'external_agents.setup.cancel',
+        'external_agents.setup.query',
+        'external_agents.setup.start',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
@@ -495,6 +498,10 @@ describe('Runtime Host operator commands', () => {
         'plugin.package.uninstall',
         'plugin.platform.query',
         'plugin.platform.reconcile',
+        // Host-path operations: they name a path on the Host's filesystem, and
+        // these presets are `canUseHostPaths: false`.
+        'session-bundle.export',
+        'session-bundle.import',
       ],
     );
   });

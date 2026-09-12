@@ -66,7 +66,8 @@ export function formatHostHandoff(
         activity_unknown:
           '背景服務與目前用戶端不相容，且無法確認有哪些工作仍在執行。停止並繼續會重新啟動服務，可能中斷其他視窗或裝置上的工作。',
         operator_required: `目前無法從這裡更新背景服務。請透過 ${view.target.name} 上管理此服務的應用程式或命令更新，再重試。`,
-        repair_required: '上次啟動或交接未能完成。可以安全重試；若仍失敗，請複製診斷資訊。',
+        repair_required:
+          '上次啟動或交接失敗。請查看下方診斷資訊，修復原因後再重試；如果狀態沒有改變，重複重試通常不會解決問題。',
         retry_required: '服務狀態發生了變化，或交接尚未完成。可以安全重試，不會預設中斷工作。',
       }
     : zh
@@ -77,7 +78,8 @@ export function formatHostHandoff(
           activity_unknown:
             '后台服务与当前客户端不兼容，且无法确认有哪些工作仍在运行。停止并继续会重新启动服务，可能中断其他窗口或设备上的工作。',
           operator_required: `目前无法从这里更新后台服务。请通过 ${view.target.name} 上管理此服务的应用或命令更新，然后重试。`,
-          repair_required: '上次启动或交接未能完成。可以安全重试；若仍失败，请复制诊断信息。',
+          repair_required:
+            '上次启动或交接失败。请查看下方诊断信息，修复原因后再重试；如果状态没有变化，重复重试通常不会解决问题。',
           retry_required: '服务状态发生了变化，或交接尚未完成。可以安全重试，不会默认中断工作。',
         }
       : {
@@ -88,7 +90,7 @@ export function formatHostHandoff(
             'The background service is incompatible with this client, and its active work is unknown. Stop and continue restarts it and may interrupt work in other windows or devices.',
           operator_required: `This client cannot update the background service here. Use its managing app or operator command on ${view.target.name}, then retry.`,
           repair_required:
-            'The last startup or handoff did not finish. Retry safely, or copy diagnostics if it still fails.',
+            'The last startup or handoff failed. Review the diagnostic below, correct the cause, then retry. Repeating the same action without a state change will usually fail again.',
           retry_required:
             'The service changed or the handoff has not finished. A safe retry will not interrupt work by default.',
         };
@@ -97,7 +99,7 @@ export function formatHostHandoff(
       ? tw
         ? {
             managed:
-              '此背景服務由已安裝的管理程式維護。請在服務的管理應用程式中更新，再回到這裡重試。',
+              '此背景服務由安裝它的 Maka 管理。如果由 Desktop 安裝，請在該 Desktop 中開啟此工作區，然後選擇「停止舊服務並繼續」；否則請使用安裝它的 Maka 更新服務，再回到這裡重試。',
             owner: '此背景服務屬於另一個 Maka 安裝。請使用管理它的 Maka 安裝更新，再重試。',
             installation:
               '這次啟動使用暫存安裝，無法接管現有背景服務。請使用已安裝的 Maka 更新服務，再重試。',
@@ -105,7 +107,8 @@ export function formatHostHandoff(
               '無法確認舊背景服務的處理程序身分，因此不能安全停止它。請關閉啟動它的 Maka 或透過其管理程式停止服務，再重試。',
           }
         : {
-            managed: '此后台服务由已安装的管理程序维护。请在服务的管理应用中更新，再回到这里重试。',
+            managed:
+              '此后台服务由安装它的 Maka 管理。如果由 Desktop 安装，请在该 Desktop 中打开此工作区，然后选择“停止旧服务并继续”；否则请使用安装它的 Maka 更新服务，再回到这里重试。',
             owner: '此后台服务属于另一个 Maka 安装。请使用管理它的 Maka 安装更新，然后重试。',
             installation:
               '本次启动使用临时安装，无法接管现有后台服务。请使用已安装的 Maka 更新服务，然后重试。',
@@ -114,7 +117,7 @@ export function formatHostHandoff(
           }
       : {
           managed:
-            'An installed operator manages this background service. Update it through its managing app, then return here and retry.',
+            'This background service is managed by the Maka installation that created it. If Desktop installed it, open this workspace there and choose Stop old service and continue. Otherwise update the service with that Maka installation, then return here and retry.',
           owner:
             'Another Maka installation owns this background service. Update it using that installation, then retry.',
           installation:

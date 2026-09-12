@@ -35,7 +35,6 @@ import {
   createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-  type TranscriptHistoryPending,
 } from '../../renderer/features/conversation/index.js';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -69,18 +68,15 @@ test('preparing a send follows the new prompt and streaming growth, then lets th
   assert.equal(fixture.scroller.scrollTop, 500);
 });
 
-test('reading a live Turn without a durable sequence preserves its Turn identity', async () => {
+test('reading a live Turn without a durable sequence bookmarks its Turn identity', async () => {
   const fixture = viewportFixture();
   const sequenceForTurn = fixture.controller.store.sequenceForTurn;
   fixture.controller.store.sequenceForTurn = (turnId) => turnId === 'latest' ? null : sequenceForTurn(turnId);
-  const readingCalls: Array<{ sequence: number | null; turnId?: string }> = [];
-  fixture.controller.setReadingAnchor = async (sequence, turnId) => { readingCalls.push({ sequence, turnId }); };
   await fixture.render();
   await fixture.readAt(1900);
 
   assert.equal(fixture.pinned(), false);
   assert.deepEqual(fixture.sessionUi.transcriptReadingAnchorBySessionRef.current['session-a'], { turnId: 'latest' });
-  assert.deepEqual(readingCalls, [{ sequence: null, turnId: 'latest' }]);
 });
 
 test('a send is accepted before latest history loads and its old completion cannot move a new Session viewport', async () => {
@@ -102,15 +98,15 @@ test('a send is accepted before latest history loads and its old completion cann
   assert.equal(fixture.scroller.scrollTop, 900);
 });
 
-for (const direction of ['earlier', 'later'] as const) {
-  test(`${direction} history navigation supersedes the background range load of an accepted send`, async () => {
+for (const direction of ['older', 'newer'] as const) {
+  test(`filling the ${direction} edge supersedes the background range load of an accepted send`, async () => {
     const fixture = viewportFixture();
     const latest = deferred<void>();
     fixture.controller.loadLatest = () => latest.promise;
     await fixture.render();
     await fixture.readAt(1000);
     await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-    await fixture.activateHistoryGap(direction);
+    await fixture.fillEdge(direction);
     const readerTop = fixture.scroller.scrollTop;
     await act(async () => { latest.resolve(); });
 
@@ -160,15 +156,12 @@ test('geometry changes from the latest range do not cancel the background load o
   fixture.controller.loadLatest = () => latest.promise;
   await fixture.render();
   await fixture.readAt(1000);
-  const readingCalls: Array<number | null> = [];
-  fixture.controller.setReadingAnchor = async (sequence: number | null) => { readingCalls.push(sequence); };
   await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
 
   await fixture.replaceRangeFromHost();
   await act(async () => { latest.resolve(); });
 
   assert.deepEqual(fixture.visibleTurns(), ['latest-b']);
-  assert.deepEqual(readingCalls, [], 'content geometry must not install a new history reading intent');
   assert.equal(fixture.pinned(), true);
   await fixture.append('new-question', 200);
   assert.equal(fixture.scroller.scrollTop, 400);
@@ -249,11 +242,12 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   addTurn('latest', 1800, 1200);
   let reads = 0;
   const controller = {
-    loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
-    loadLatest: async () => { reads += 1; }, setReadingAnchor: async (_sequence: number | null, _turnId?: string) => {},
+    loadAround: async () => {}, loadBefore: async () => true, loadAfter: async () => true,
+    loadLatest: async () => { reads += 1; },
     store: {
       sessionId: 'session-a',
       range: () => ({ sessionId: 'session-a' }),
+      retain: () => false,
       sequenceForTurn: (turnId: string) => {
         const sequence = messages.findIndex((message) => message.turnId === turnId);
         return sequence < 0 ? null : sequence;
@@ -270,14 +264,11 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     searchTarget: undefined, clearSearchTarget: () => {},
     turnIndex: undefined, setTurnIndex: () => {},
     listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    setHistoryPending: () => {}, historyPageBytes: 512 * 1024,
     onRestoreError: (error) => assert.fail(String(error)), onNavigationError: (error) => assert.fail(String(error)),
   };
   let authority: TranscriptScrollAuthority | undefined;
   function Harness() {
     const scrollRef = useRef<HTMLElement | null>(scroller);
-    const [, setHistoryPending] = useState<TranscriptHistoryPending | undefined>();
-    props.setHistoryPending = setHistoryPending;
     authority = useTranscriptScrollAuthority();
     const anchor = sessionUi.transcriptReadingAnchorBySessionRef.current[props.sessionId!];
     useChatScroll({
@@ -288,7 +279,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     return createElement(Fragment, null,
       createElement(TranscriptReadingPositionController, props),
       options.returnButton ? createElement(TranscriptScrollButton, {
-        onActivate: () => commands.current?.loadHistory('latest'),
+        onActivate: () => commands.current?.returnToLatest(),
       }) : null,
     );
   }
@@ -304,9 +295,10 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
       assert.ok(button);
       await act(() => { button.dispatchEvent(new window.Event('click', { bubbles: true })); });
     },
-    async activateHistoryGap(direction: 'earlier' | 'later') {
-      // ChatView releases the pin before invoking either history gap action.
-      await act(async () => { authority!.releasePin(); await commands.current!.loadHistory(direction); });
+    async fillEdge(edge: 'older' | 'newer') {
+      // A reader who scrolls to an edge releases the pin, and the band fills
+      // that edge behind them.
+      await act(async () => { authority!.releasePin(); await commands.current!.prefetchHistory(edge); });
     },
     async readAt(offset: number) {
       await act(() => {

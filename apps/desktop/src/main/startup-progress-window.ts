@@ -22,6 +22,7 @@ import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatHostHandoff, type HostHandoffView, type HostHandoffAction } from '@maka/runtime-host/client';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
+import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
 export type StartupPhase =
   | 'prepare' | 'storage' | 'connect' | 'package'
@@ -83,6 +84,8 @@ export function createStartupProgressWindow(input: {
   locale: UiLocale;
   dark: boolean;
   icon: string;
+  /** How far this run may go when the window asks for attention. */
+  revealMode: WindowRevealMode;
   createWindow(options: BrowserWindowConstructorOptions): BrowserWindow;
   copyDiagnostics(phase: StartupPhase, handoff?: HostHandoffView): void | Promise<void>;
   onError(error: unknown): void;
@@ -174,8 +177,8 @@ export function createStartupProgressWindow(input: {
     if (closed || win.isDestroyed()) return;
     loaded = true;
     publish();
-    if (handoff?.view.state === 'attention') { win.show(); win.focus(); }
-    else win.showInactive();
+    if (handoff?.view.state === 'attention') focusWindow(win, input.revealMode);
+    else showWindowInactive(win, input.revealMode);
   }).catch((error) => {
     input.onError(error);
     handoff?.submit(handoff.view.revision, 'cancel');
@@ -188,10 +191,7 @@ export function createStartupProgressWindow(input: {
       const needsAttention = handoff?.view.state !== 'attention' && view.state === 'attention';
       handoff = { view, submit, locale };
       publish();
-      if (loaded && needsAttention) {
-        if (win.isMinimized()) win.restore();
-        win.show(); win.focus();
-      }
+      if (loaded && needsAttention) focusWindow(win, input.revealMode);
     },
     clearHandoff() {
       handoff = undefined;
@@ -199,9 +199,7 @@ export function createStartupProgressWindow(input: {
     },
     focus() {
       if (closed || !loaded || win.isDestroyed()) return;
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
+      focusWindow(win, input.revealMode);
     },
     close,
     window: () => closed || win.isDestroyed() ? undefined : win,

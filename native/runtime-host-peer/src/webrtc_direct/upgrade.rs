@@ -44,6 +44,7 @@ use webrtc::{
 
 use super::{
     Signal, SignalingError, WebRtcConnection,
+    lifetime::PeerConnectionLifetime,
     muxer::{ReadySubstream, data_channel_diagnostic, keep_init_channel, ready_substream},
     read_signal, write_signal,
 };
@@ -103,31 +104,6 @@ pub enum UpgradeError {
     Cancelled,
 }
 
-struct PeerConnectionGuard(Option<Arc<dyn PeerConnection>>);
-
-impl PeerConnectionGuard {
-    fn new(peer_connection: Arc<dyn PeerConnection>) -> Self {
-        Self(Some(peer_connection))
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for PeerConnectionGuard {
-    fn drop(&mut self) {
-        let Some(peer_connection) = self.0.take() else {
-            return;
-        };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                let _ = peer_connection.close().await;
-            });
-        }
-    }
-}
-
 pub async fn upgrade_connection<S>(
     signaling: S,
     authenticated_peer: PeerId,
@@ -146,28 +122,29 @@ where
     }
 
     let channels = EventChannels::new();
-    let peer_connection = build_peer_connection(&options, channels.handler()).await?;
-    let mut peer_connection_guard = PeerConnectionGuard::new(Arc::clone(&peer_connection));
-    let negotiation = negotiate(signaling, role, Arc::clone(&peer_connection), channels);
-    tokio::pin!(negotiation);
-    let deadline = tokio::time::sleep(options.deadline);
-    tokio::pin!(deadline);
-
-    let result = tokio::select! {
-        biased;
-        _ = options.cancellation.cancelled() => Err(UpgradeError::Cancelled),
-        result = &mut negotiation => result,
-        _ = &mut deadline => Err(UpgradeError::Deadline),
+    // Retiring the signaling attempt after success must not cancel the connection.
+    let cancellation = CancellationToken::new();
+    let peer_connection =
+        build_peer_connection(&options, channels.handler(cancellation.clone())).await?;
+    let mut lifetime = PeerConnectionLifetime::new(peer_connection, cancellation);
+    let result = {
+        let negotiation = negotiate(signaling, role, &lifetime, channels);
+        tokio::pin!(negotiation);
+        tokio::select! {
+            biased;
+            _ = options.cancellation.cancelled() => Err(UpgradeError::Cancelled),
+            result = &mut negotiation => result,
+            _ = tokio::time::sleep(options.deadline) => Err(UpgradeError::Deadline),
+        }
     };
 
     match result {
-        Ok(connection) => {
-            peer_connection_guard.disarm();
-            Ok((authenticated_peer, connection))
-        }
+        Ok((incoming, states)) => Ok((
+            authenticated_peer,
+            WebRtcConnection::new(lifetime, incoming, states),
+        )),
         Err(error) => {
-            let _ = peer_connection.close().await;
-            peer_connection_guard.disarm();
+            let _ = lifetime.close().await;
             Err(error)
         }
     }
@@ -201,12 +178,19 @@ async fn build_peer_connection(
 async fn negotiate<S>(
     signaling: S,
     role: UpgradeRole,
-    peer_connection: Arc<dyn PeerConnection>,
+    lifetime: &PeerConnectionLifetime,
     channels: EventChannels,
-) -> Result<WebRtcConnection, UpgradeError>
+) -> Result<
+    (
+        mpsc::Receiver<Result<ReadySubstream, io::Error>>,
+        mpsc::Receiver<RTCPeerConnectionState>,
+    ),
+    UpgradeError,
+>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let peer_connection = Arc::clone(&lifetime.peer_connection);
     let (mut reader, mut writer) = signaling.split();
     let EventChannels {
         mut candidates,
@@ -234,7 +218,7 @@ where
                 .create_data_channel("init", None)
                 .await
                 .map_err(webrtc_upgrade_error)?;
-            keep_init_channel(init, init_sender);
+            keep_init_channel(init, init_sender, lifetime.cancellation.clone());
             let offer = peer_connection
                 .create_offer(None)
                 .await
@@ -279,7 +263,7 @@ where
             diagnostic(role, "signaling-write-closed", None);
         }
         if direct_connection_ready && !remote_signaling_open {
-            return Ok(WebRtcConnection::new(peer_connection, incoming, states));
+            return Ok((incoming, states));
         }
         tokio::select! {
             signal = read_signal(&mut reader), if remote_signaling_open => {
@@ -421,7 +405,7 @@ impl EventChannels {
         }
     }
 
-    fn handler(&self) -> Arc<EventHandler> {
+    fn handler(&self, cancellation: CancellationToken) -> Arc<EventHandler> {
         Arc::new(EventHandler {
             candidates: self.candidate_sender.clone(),
             states: self.state_sender.clone(),
@@ -430,6 +414,7 @@ impl EventChannels {
             failures: self.failure_sender.clone(),
             init_claimed: Arc::clone(&self.init_claimed),
             inbound_substreams: Arc::clone(&self.inbound_substreams),
+            cancellation,
         })
     }
 }
@@ -443,6 +428,7 @@ struct EventHandler {
     failures: mpsc::Sender<String>,
     init_claimed: Arc<AtomicBool>,
     inbound_substreams: Arc<Semaphore>,
+    cancellation: CancellationToken,
 }
 
 #[async_trait::async_trait]
@@ -460,6 +446,12 @@ impl PeerConnectionEventHandler for EventHandler {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+        ) {
+            self.cancellation.cancel();
+        }
         let mut states = self.states.clone();
         if states.try_send(state).is_err() {
             self.report_failure("connection state delivery overflowed");
@@ -475,7 +467,11 @@ impl PeerConnectionEventHandler for EventHandler {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
-                    keep_init_channel(data_channel, self.init_opened.clone());
+                    keep_init_channel(
+                        data_channel,
+                        self.init_opened.clone(),
+                        self.cancellation.clone(),
+                    );
                 } else {
                     data_channel_diagnostic("rejected", data_channel.id(), Some("duplicate-init"));
                     let _ = data_channel.close().await;
@@ -495,9 +491,18 @@ impl PeerConnectionEventHandler for EventHandler {
                     }
                 };
                 let mut incoming = self.incoming.clone();
+                let cancellation = self.cancellation.clone();
                 tokio::spawn(async move {
-                    let stream = ready_substream(data_channel, "incoming", Some(permit)).await;
-                    let _ = incoming.send(stream).await;
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {},
+                        _ = async {
+                            let stream = ready_substream(
+                                data_channel, "incoming", Some(permit), cancellation.clone(),
+                            ).await;
+                            let _ = incoming.send(stream).await;
+                        } => {},
+                    }
                 });
             }
             Err(error) => {

@@ -17,6 +17,11 @@
  * under the License.
  */
 
+import type {
+  SessionBundleExportIpcResult,
+  SessionBundleImportIpcResult,
+} from './bridge-contract.js';
+
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
@@ -76,6 +81,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -87,7 +93,6 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
-  type DesktopTranscriptNavigation,
 } from './transcript-contract.js';
 import {
   adoptTranscriptIdentity,
@@ -115,6 +120,7 @@ import type {
   AppIconTarget,
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
@@ -2279,7 +2285,11 @@ const makaBridge = {
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
-        if (disposed) return { completion: Promise.resolve() };
+        if (disposed) {
+          return {
+            completion: Promise.resolve({ kind: 'cancelled' } as const),
+          };
+        }
         const profileId = runtimeHostMetadataFor(session.scope)?.profileId;
         if (!profileId) throw new Error('The Runtime Host profile for this task is unavailable');
         // Keep the renderer listener across Host target epochs. The observer
@@ -2309,18 +2319,26 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             observerId,
-          ).then((seed: readonly SessionEvent[] | undefined) => {
-            if (disposed) return;
-            // Invoke replies can overtake event IPC. Apply the response's
-            // complete active snapshot before publishing renderer readiness.
-            for (const event of seed ?? []) handler(projectDesktopSessionEvent(session.scope, event));
+          ).then((result: RuntimeHostObservationIpcResult<readonly SessionEvent[]>) => {
+            if (!disposed && result.kind === 'ready') {
+              // Invoke replies can overtake event IPC. Apply the response's
+              // complete active snapshot before publishing renderer readiness.
+              for (const event of result.value) handler(projectDesktopSessionEvent(session.scope, event));
+            }
+            return result;
           }),
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
       void observing.then(
-        () => {
-          if (!disposed) onSeeded?.();
+        (result) => {
+          if (result.kind === 'cancelled') {
+            disposed = true;
+            unsubscribeObservationSeed();
+            unsubscribeEvents();
+          } else if (!disposed) {
+            onSeeded?.();
+          }
         },
         (error: unknown) => {
           if (!disposed) onSeedError?.(error);
@@ -2469,7 +2487,6 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
       let cachedIdentity: DesktopTranscriptIdentity | undefined;
-      let navigationVersion = 0;
       const retiredGenerations = new Set<string>();
       let closed = false;
       let requestClose = () => {};
@@ -2489,7 +2506,7 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if ((batch.navigationVersion ?? 0) === navigationVersion && !retiredGenerations.has(batch.generation)) {
+          if (!retiredGenerations.has(batch.generation)) {
             const adopted = adoptTranscriptIdentity(identity, batch);
             if (adopted !== identity) {
               if (identity && identity.generation !== adopted.generation) retiredGenerations.add(identity.generation);
@@ -2530,7 +2547,7 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             consumerId,
-          ) as Promise<DesktopTranscriptOpenResult>,
+          ) as Promise<RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>>,
         };
       });
       let closeTask: Promise<void> | undefined;
@@ -2544,9 +2561,9 @@ const makaBridge = {
         void closeTask.catch(() => undefined);
       };
       registerCancellation?.(requestClose);
-      let opened: DesktopTranscriptOpenResult;
+      let openResult: RuntimeHostObservationIpcResult<DesktopTranscriptOpenResult>;
       try {
-        opened = await openDispatch.then(({ completion }) => completion);
+        openResult = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
         const cancelled = closed;
         closed = true;
@@ -2555,26 +2572,32 @@ const makaBridge = {
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...cachedIdentity, sessionId, readThroughMessageId: null,
+            acknowledgeTail: unavailable,
             loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
+            loadLatest: unavailable,
             close: async () => {},
           };
         }
         throw error;
       }
+      if (openResult.kind === 'cancelled') {
+        closed = true;
+        ipcRenderer.off(channel, listener);
+        throw new Error('Desktop transcript open was cancelled');
+      }
+      const opened = openResult.value;
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
+        operation:
+          | 'sessions:transcript:load-before'
+          | 'sessions:transcript:load-after'
+          | 'sessions:transcript:load-around'
+          | 'sessions:transcript:load-latest',
         anchorSequence: number | null,
-        maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-        navigation?: DesktopTranscriptNavigation,
+        maxBytes: number,
+        navigation: number,
       ): Promise<void> => {
-        const nextNavigation = navigation ?? {
-          navigationVersion: navigationVersion + 1,
-          intent: 'history' as const,
-        };
-        if (nextNavigation.navigationVersion < navigationVersion) return Promise.resolve();
-        navigationVersion = nextNavigation.navigationVersion;
         const currentIdentity = identity;
         if (!currentIdentity) {
           throw new Error('Desktop transcript identity is unavailable');
@@ -2585,21 +2608,32 @@ const makaBridge = {
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
-          navigationVersion: nextNavigation.navigationVersion,
-          intent: nextNavigation.intent,
-          preserveRange: nextNavigation.preserveRange,
-          readingTurnId: nextNavigation.readingTurnId,
+          navigation,
         }) as Promise<void>;
       };
       return {
         ...opened,
         sessionId,
+        acknowledgeTail: (through) => {
+          const currentIdentity = identity;
+          if (!currentIdentity) {
+            throw new Error('Desktop transcript identity is unavailable');
+          }
+          return ipcRenderer.invoke('sessions:transcript:acknowledge-tail', consumerScope, {
+            consumerId,
+            sessionId: opened.sessionId,
+            hostEpoch: currentIdentity.hostEpoch,
+            through,
+          }) as Promise<void>;
+        },
         loadBefore: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
         loadAfter: (anchorSequence, maxBytes, navigation) =>
           range('sessions:transcript:load-after', anchorSequence, maxBytes, navigation),
         loadAround: (sequence, maxBytes, navigation) =>
           range('sessions:transcript:load-around', sequence, maxBytes, navigation),
+        loadLatest: (navigation) =>
+          range('sessions:transcript:load-latest', null, DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES, navigation),
         async close() {
           if (closed) return;
           requestClose();
@@ -2646,6 +2680,35 @@ const makaBridge = {
       return result.ok
         ? { ...result, session: projectCreatedSessionSummary(scope, result.session as DesktopSessionSummaryInput) }
         : result;
+    },
+  },
+  sessionBundles: {
+    // Both halves name a path the Electron picker chose, which is a path on
+    // THIS machine, and the protocol interprets it on the Host's filesystem.
+    // Those are the same filesystem only for the Local Host, so both are routed
+    // there explicitly -- not to whichever Host is active, and not to whichever
+    // one Settings happens to be pointed at. Carrying a bundle to or from a
+    // remote Host needs a byte transfer, not a path string.
+    async export(input: {
+      sessionId: string;
+      suggestedName: string;
+      confirmedSubtree?: readonly string[];
+    }): Promise<SessionBundleExportIpcResult> {
+      const scope = await localRuntimeHostRef();
+      const { sessionId } = parseDesktopSessionKey(input.sessionId);
+      // Unprojected here, where the boundary already is: the renderer holds
+      // host-scoped ids and the Host knows only its own, so a digest computed
+      // upstream would compare two different alphabets and never match.
+      const confirmed = input.confirmedSubtree?.map(
+        (projected) => parseDesktopSessionKey(projected).sessionId,
+      );
+      return (await ipcRenderer.invoke(
+        'session-bundle:export', scope, sessionId, input.suggestedName, confirmed,
+      )) as SessionBundleExportIpcResult;
+    },
+    async import(): Promise<SessionBundleImportIpcResult> {
+      const scope = await localRuntimeHostRef();
+      return (await ipcRenderer.invoke('session-bundle:import', scope)) as SessionBundleImportIpcResult;
     },
   },
   projects: {
@@ -3249,6 +3312,12 @@ const makaBridge = {
       );
     },
   },
+  externalAgents: {
+    selectExecutable(host) { return invokeSelectedRuntimeHost(host, 'external-agents:select-executable'); },
+    start(input, host) { return invokeSelectedRuntimeHost(host, 'external-agents:setup:start', input); },
+    query(attemptId, host) { return invokeSelectedRuntimeHost(host, 'external-agents:setup:query', { attemptId }); },
+    cancel(attemptId, host) { return invokeSelectedRuntimeHost(host, 'external-agents:setup:cancel', { attemptId }); },
+  },
   settings: {
     getClient(): Promise<AppSettings> {
       return ipcRenderer.invoke('settings:client:get');
@@ -3259,8 +3328,12 @@ const makaBridge = {
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult> {
       return ipcRenderer.invoke('settings:client:update', patch);
     },
-    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>> {
-      return invokeSelectedRuntimeHost(host, 'settings:update', patch);
+    update(
+      patch: UpdateAppSettingsInput,
+      host?: DesktopRuntimeHostRef,
+      guard?: RuntimeHostSettingsUpdateGuard,
+    ): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>> {
+      return invokeSelectedRuntimeHost(host, 'settings:update', patch, guard);
     },
     subscribeClientChanged(handler: () => void): () => void {
       const listener = () => handler();

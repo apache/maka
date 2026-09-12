@@ -180,6 +180,7 @@ test('WSL setup forwards the development archive and its exact evidence', async 
     'C:\\maka-development.tgz',
   ]);
   const setupCommand = launches[1]?.at(-1) ?? '';
+  assert.match(setupCommand, /\$\{SHELL:-\/bin\/sh\}.*-lic/u);
   assert.match(setupCommand, new RegExp(`${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=`, 'u'));
   assert.ok(setupCommand.includes(integrity));
   assert.match(setupCommand, /--update-existing/u);
@@ -248,6 +249,8 @@ test('WSL update cancellation closes retirement input without killing the transa
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(stdin.writableEnded, false);
+  assert.match(launch.at(-1)!, /\$\{SHELL:-\/bin\/sh\}.*-lic/u);
+  assert.match(launch.at(-1)!, /npx.*--package.*maka-agent@0\.3\.0/u);
   assert.match(launch.at(-1)!, /--expected-config-fingerprint/u);
   assert.match(launch.at(-1)!, /--expected-host-json/u);
   assert.doesNotMatch(launch.at(-1)!, /--allow-interrupt-active-tasks/u);

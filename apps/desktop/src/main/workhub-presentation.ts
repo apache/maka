@@ -22,6 +22,7 @@ import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } 
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
@@ -32,6 +33,8 @@ export interface WorkHubPresentationDeps {
   ensureMainWindow(): Promise<BrowserWindow>;
   /** Applied client settings; showing the window must not wait for storage. */
   isEnabled(): boolean;
+  /** How far this run may go when a WorkHub command reveals a window. */
+  revealMode: WindowRevealMode;
   mainModuleDirectory: string;
   viteDevServerUrl?: string;
   preloadPath: string;
@@ -98,7 +101,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function focusComposer(): void {
     focusPending = true;
-    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed() || !parent.isVisible()) return;
+    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed()) return;
+    // A cold summon stays hidden until the renderer has mounted its composer.
+    // Reuse focusPending so hide/disable can cancel it before ready arrives.
+    if (placement === 'floating' && progressRequest === undefined) focusWindow(parent, deps.revealMode);
+    if (!parent.isVisible()) return;
     if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
     view.webContents.send('workhub-presentation:focus-composer', expandOnFocus);
@@ -336,9 +343,6 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const current = target.getBounds();
     if (bounds.x !== current.x || bounds.y !== current.y || bounds.width !== current.width || bounds.height !== current.height) target.setBounds(bounds);
     fitFloating();
-    if (target.isMinimized()) target.restore();
-    target.show();
-    target.focus();
     focusComposer();
     changed();
   }
@@ -348,7 +352,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const dockVisible = placement === 'docked' && parent === main && main?.isVisible() && !main.isMinimized()
       && host.visible && !host.occluded && view?.getVisible();
     if (!controlTurnId || dismissedTurnId === controlTurnId || progressRequest !== undefined || dockVisible
-      || (placement === 'floating' && floating?.isVisible()) || !deps.isEnabled() || disposed) return;
+      || (placement === 'floating' && (floating?.isVisible() || focusPending)) || !deps.isEnabled() || disposed) return;
     ensureView();
     const target = ensureFloating();
     cancelFloatingAnimation();
@@ -390,9 +394,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     if (revision !== presentationRevision || (navigation.kind === 'workhub' && !deps.isEnabled())) return;
     attachMainWindow(main);
-    if (main.isMinimized()) main.restore();
-    main.show();
-    main.focus();
+    focusWindow(main, deps.revealMode);
     if (mainReady.has(main.webContents)) main.webContents.send('workhub-presentation:open-main', navigation);
     else pendingNavigation.set(main.webContents, { navigation, revision });
     return main;
@@ -468,7 +470,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         switch (command) {
           case 'snapshot': return getSnapshot();
           case 'ready':
-            if (!isMain) { rendererReady = true; if (focusPending) focusComposer(); }
+            if (!isMain) { rendererReady = true; if (focusPending) { focusComposer(); changed(); } }
             else {
               mainReady.add(event.sender);
               const pending = pendingNavigation.get(event.sender);
@@ -515,7 +517,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
             if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
             if (payload === progressRequest && payload === presentationRevision && deps.isEnabled()) {
-              floating?.showInactive();
+              showWindowInactive(floating ?? null, deps.revealMode);
               view?.webContents.setBackgroundThrottling(true);
               changed();
             }
@@ -599,7 +601,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   async function toggle(positionAtDefault = false): Promise<void> {
     if (disposed) throw new Error('WorkHub presentation is disposed');
     ++presentationRevision;
-    if (progressRequest === undefined && placement === 'floating' && floating?.isVisible()) {
+    if (progressRequest === undefined && placement === 'floating' && (floating?.isVisible() || focusPending)) {
       hideFloating();
     } else detach(positionAtDefault);
   }
@@ -608,13 +610,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const enabled = deps.isEnabled();
     if (disposed) return;
     if (enabled) {
-      // Prepare the reusable native window and renderer while enabling WorkHub,
-      // before a shortcut needs them. Never restart a crashed renderer implicitly.
-      const target = ensureFloating();
-      if (!rendererCrashed) {
-        ensureView();
-        if (!parent) { attach(target); fitFloating(); }
-      }
+      // Enabling only registers the shortcut. The dock, shortcut or control
+      // request creates the renderer on first use; settings alone must not
+      // load a second application in the background.
       if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
     } else {
       if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
@@ -642,6 +640,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     view = undefined;
     viewBounds = undefined;
     rendererReady = false;
+    focusPending = false;
     // Release this renderer's subscriptions and broadcasts before another view
     // can register. A delayed destroyed event must not release its replacement.
     previous?.webContents.removeListener('destroyed', releaseViewRegistration);

@@ -19,6 +19,7 @@
 
 import {
   copyFile,
+  link,
   lstat,
   mkdir,
   open,
@@ -27,15 +28,45 @@ import {
   realpath,
   rename,
   rm,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
-import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import {
+  withArtifactWriterLock,
+  withLeaseBoundArtifactWriterLock,
+} from './artifact-writer-lock.js';
+import { readStableBoundedFile, syncDirectoryChain } from './stable-storage.js';
+import {
+  prepareArtifactWriterLockAuthorityForLease,
+  type StorageRootLease,
+} from './root-authority.js';
+
+/**
+ * Holds the Artifact writer lock for the root the caller is authorised over.
+ *
+ * Without a lease the root is named by a path, and the lock is derived from
+ * that path again after the authority was checked. A lease says which root the
+ * authority covers, so deriving the lock from the lease keeps the two from
+ * drifting: an alias or a replaced directory between the two steps would
+ * otherwise bind the operation to one root while the lease names another --
+ * including an unmarked one, which takes no lock at all.
+ */
+async function withBundleArtifactWriterLock<T>(
+  stateRoot: string,
+  lease: StorageRootLease<'interactive', 'write'> | undefined,
+  operation: (canonicalStateRoot: string) => Promise<T>,
+): Promise<T> {
+  if (!lease) return withArtifactWriterLock(stateRoot, operation);
+  const authority = await prepareArtifactWriterLockAuthorityForLease(lease, 'interactive');
+  return withLeaseBoundArtifactWriterLock(authority, () => operation(lease.canonicalPath));
+}
+import { runWithContextValueMutation } from './context-value-mutation-gate.js';
 import {
   withOfflineContextSnapshot,
   copyContextSnapshot,
@@ -163,6 +194,16 @@ export interface SessionBundleExportInput extends SessionBundleRootLayoutInput {
    * asks a backup for.
    */
   omitDiagnostics?: boolean;
+  /**
+   * Authority the caller already holds, instead of electing it here.
+   *
+   * The Runtime Host owns the Storage Root for its whole lifetime and the
+   * owner lock is an election that refuses a second hold -- from any process,
+   * its own included. Lending the lease is the only way the Host can run this
+   * while it is up, which is the only way a user can reach it from the app.
+   * Omitted, the authority is elected exactly as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 
   // Every option above defaults to the behaviour this function had before it
   // learned to make portable bundles, so its existing callers are unchanged.
@@ -291,46 +332,49 @@ export async function planSessionBundleExport(
 export async function exportSessionBundleState(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
-  return withOfflineContextSnapshot(input.stateRoot, (contextLocked) =>
-    withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
-      const destinationRoot = resolve(input.destinationRoot);
-      await assertDestinationMissing(destinationRoot);
-      const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-      try {
-        await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-        // Take the private copy BEFORE anything is read. `lease.backup()` is
-        // what freezes the content; every decision after this -- schema, the
-        // subtree, the artifact list, quiescence, the manifest -- is made
-        // against this one file, so the bundle cannot describe two moments.
-        const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
-        await backupOperationalState(stateRoot, databasePath);
-        const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
-        for (const entry of plan.entries) {
-          if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
-            continue;
+  return withOfflineContextSnapshot(
+    input.stateRoot,
+    (contextLocked) =>
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
+        const destinationRoot = resolve(input.destinationRoot);
+        await assertDestinationMissing(destinationRoot);
+        const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+          // Take the private copy BEFORE anything is read. `lease.backup()` is
+          // what freezes the content; every decision after this -- schema, the
+          // subtree, the artifact list, quiescence, the manifest -- is made
+          // against this one file, so the bundle cannot describe two moments.
+          const databasePath = resolveInside(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+          await backupOperationalState(stateRoot, databasePath);
+          const plan = await planSessionBundleExport({ ...input, stateRoot, databasePath });
+          for (const entry of plan.entries) {
+            if (entry.source === 'context_snapshot' || entry.source === 'filtered_runtime_sqlite') {
+              continue;
+            }
+            const destination = resolveInside(stagingRoot, entry.relativePath);
+            if (entry.kind === 'directory') {
+              await mkdir(destination, { recursive: true });
+              continue;
+            }
+            await mkdir(dirname(destination), { recursive: true });
+            await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
           }
-          const destination = resolveInside(stagingRoot, entry.relativePath);
-          if (entry.kind === 'directory') {
-            await mkdir(destination, { recursive: true });
-            continue;
-          }
-          await mkdir(dirname(destination), { recursive: true });
-          await copyArtifactFile(plan.stateRoot, entry.relativePath, destination);
+          await filterBackedUpDatabase(databasePath, plan.sessionIds, {
+            omitDiagnostics: input.omitDiagnostics === true,
+            requireQuiescent: input.requireQuiescent === true,
+          });
+          await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
+          await validateContextSnapshot(stagingRoot);
+          await mkdir(dirname(plan.destinationRoot), { recursive: true });
+          await rename(stagingRoot, plan.destinationRoot);
+          return plan;
+        } catch (error) {
+          await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+          throw error;
         }
-        await filterBackedUpDatabase(databasePath, plan.sessionIds, {
-          omitDiagnostics: input.omitDiagnostics === true,
-          requireQuiescent: input.requireQuiescent === true,
-        });
-        await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
-        await validateContextSnapshot(stagingRoot);
-        await mkdir(dirname(plan.destinationRoot), { recursive: true });
-        await rename(stagingRoot, plan.destinationRoot);
-        return plan;
-      } catch (error) {
-        await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-        throw error;
-      }
-    }),
+      }),
+    input.lease ? { lease: input.lease } : {},
   );
 }
 
@@ -869,6 +913,16 @@ export interface SessionBundleImportInput {
   stateRoot: string;
   /** A hydrated bundle's state tree: the filtered database, artifacts, context. */
   bundleStateRoot: string;
+  /**
+   * Authority the caller already holds, instead of electing it here.
+   *
+   * The Runtime Host owns the Storage Root for its whole lifetime and the
+   * owner lock is an election that refuses a second hold -- from any process,
+   * its own included. Lending the lease is the only way the Host can run this
+   * while it is up, which is the only way a user can reach it from the app.
+   * Omitted, the authority is elected exactly as before.
+   */
+  lease?: StorageRootLease<'interactive', 'write'>;
 }
 
 export interface SessionBundleImportResult {
@@ -911,7 +965,7 @@ export async function importSessionBundleState(
   return withOfflineContextSnapshot(
     input.stateRoot,
     (contextLocked) =>
-      withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+      withBundleArtifactWriterLock(input.stateRoot, input.lease, async (stateRoot) => {
         const sessionIds = readBundleSessionIds(bundleDatabasePath);
         if (sessionIds.length === 0) {
           throw new SessionBundleImportError('invalid_root', 'Bundle carries no Session');
@@ -965,7 +1019,10 @@ export async function importSessionBundleState(
           lease.close();
         }
       }),
-    { requireAuthority: bundleCarriesContext },
+    {
+      requireAuthority: bundleCarriesContext,
+      ...(input.lease ? { lease: input.lease } : {}),
+    },
   );
 }
 
@@ -1127,10 +1184,44 @@ async function copyBundleArtifacts(
   return { copied, created };
 }
 
+/**
+ * Compares two files without following a symlink at either path.
+ *
+ * A payload path is content-addressed, so `EEXIST` there is normally the same
+ * bytes arriving twice. A symlink planted at that exact path pointing at
+ * matching content compares equal through an ordinary read, and the import
+ * accepts a payload tree the Context Store will later reject as corrupt --
+ * it refuses to read through a link. Opened no-follow, the planted link is a
+ * different content instead of the same content.
+ */
 async function sameFileContent(left: string, right: string): Promise<boolean> {
-  const [a, b] = await Promise.all([readFile(left), readFile(right)]);
-  return a.equals(b);
+  const expected = await readFile(left);
+  try {
+    // The repository's reader rather than an open of our own: it is
+    // non-blocking, so a FIFO planted at the path cannot hang the import, and
+    // it compares the opened file against `lstat` of the path, so a path that
+    // stops naming the same file mid-read reads as different content.
+    //
+    // On POSIX that also refuses a symlink, because the open carries
+    // `O_NOFOLLOW`. On Windows the flag is absent and `lstat` does not reliably
+    // report a file symlink as one, so the symlink refusal there rests on what
+    // the platform makes visible -- less than this reader gives on POSIX. Only
+    // `left` is trusted: it is a bundle entry, and the walk that reaches it
+    // admits `isFile()` directory entries, never a link.
+    const actual = await readStableBoundedFile({
+      path: right,
+      maxBytes: expected.length,
+      invalidFile: () => new NotTheSamePayloadError(),
+    });
+    return actual.equals(expected);
+  } catch (error) {
+    if (error instanceof NotTheSamePayloadError) return false;
+    throw error;
+  }
 }
+
+/** Internal: the stable reader reports every refusal through one error. */
+class NotTheSamePayloadError extends Error {}
 
 /**
  * Copy every table the bundle has, in one transaction.
@@ -1246,17 +1337,71 @@ async function mergeBundleContext(
     );
   }
 
-  // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
-  // only immediate children saw one directory, skipped it, and reported a
-  // successful import whose referenced bytes were all absent.
-  await copyContextValueTree(
-    resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
-    resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME),
-  );
+  // An archive digest authenticates the archive, not the state inside it: it
+  // says the bytes arrived as sent, and nothing about whether a row claiming a
+  // hash names a file that hashes to it, or whether the tree describes more
+  // than the Sessions it carries. Both are the snapshot's own shape, so one
+  // validator states it, against the hydrated copy, before anything reaches
+  // the target -- a second, bundle-only check could only ever drift from it.
+  await validateContextSnapshot(bundleStateRoot, sessionIds);
 
+  // Everything below is one turn in the Storage Root's context mutation queue,
+  // shared with the Context Store's own publication and collection. Those
+  // operations read database state, await, and only then act on files --
+  // collection decides a payload is unreferenced, awaits, unlinks it -- so an
+  // import that commits a reference inside that await leaves the reference
+  // pointing at a file that is about to disappear. The re-check collection does
+  // cannot see it, because the check and the unlink straddle the await.
+  return runWithContextValueMutation(stateRoot, async () => {
+    // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
+    // only immediate children saw one directory, skipped it, and reported a
+    // successful import whose referenced bytes were all absent.
+    await copyDeclaredContextValues(bundleContext, bundleStateRoot, stateRoot);
+    return mergeBundleContextDatabase(bundleContext, stateRoot, sessionIds);
+  });
+}
+
+async function mergeBundleContextDatabase(
+  bundleContext: string,
+  stateRoot: string,
+  sessionIds: readonly string[],
+): Promise<number> {
   const targetContext = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
-  if (!(await pathExists(targetContext))) {
-    await copyFile(bundleContext, targetContext);
+  // One publication path, and the filesystem decides which case this is.
+  //
+  // Asking first whether the database exists and branching on the answer is a
+  // decision that can be stale by the time it is acted on: a Context Store
+  // initialising under the same lease creates that file, and an import that
+  // already decided "absent" would then REPLACE it. On POSIX the Store keeps
+  // writing to the now-unlinked inode while every later open reads the new
+  // one, so its writes are invisible and gone at the next restart.
+  //
+  // `copyFile` also fills its destination progressively, and this destination
+  // is the path a Store opens to decide whether the workspace has a store at
+  // all. Staged and linked, it is absent or complete, never partly there.
+  const staging = `${targetContext}.${process.pid}.${randomUUID()}.tmp`;
+  let created = false;
+  try {
+    await copyFile(bundleContext, staging, constants.COPYFILE_EXCL);
+    // Synced before it is named, and the directory synced after: the Session
+    // rows are committed later, and a power loss between the two must not leave
+    // a Session whose context database is a name with nothing behind it, or no
+    // name at all. Same ordering the managed payloads use.
+    const handle = await open(staging, 'r+');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(staging, targetContext);
+    created = true;
+    await syncDirectoryChain(dirname(targetContext), stateRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  } finally {
+    await rm(staging, { force: true }).catch(() => {});
+  }
+  if (created) {
     return countContextRefs(targetContext, sessionIds);
   }
   const database = new DatabaseSync(targetContext);
@@ -1285,6 +1430,15 @@ async function mergeBundleContext(
           );
         }
         database.exec('INSERT OR IGNORE INTO main.context_refs SELECT * FROM bundle.context_refs');
+        // A blob the target already held may have been queued for collection
+        // while nothing referenced it. It is referenced again now, and leaving
+        // the candidate behind makes the next collection fail outright --
+        // `Context garbage candidate is still referenced or missing` -- and
+        // keep failing. Ordinary insertion in the Store clears it the same way.
+        database.exec(`
+          DELETE FROM main.context_gc_candidates
+          WHERE blob_id IN (SELECT blob_id FROM main.context_refs)
+        `);
         // The context store maintains its usage tables explicitly -- no trigger
         // does it. Inserting blobs and refs without them leaves quotas and the
         // cleanup consistency checks reading numbers that describe a store that
@@ -1330,25 +1484,156 @@ async function mergeBundleContext(
  * Content-addressed names mean an existing file is the same file, so an
  * already-present payload is left alone rather than treated as a conflict.
  */
-async function copyContextValueTree(source: string, destination: string): Promise<void> {
-  if (!(await pathExists(source))) return;
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    const from = resolveInside(source, entry.name);
-    const to = resolveInside(destination, entry.name);
-    if (entry.isDirectory()) {
-      await copyContextValueTree(from, to);
-      continue;
+/**
+ * Publishes exactly the payloads the bundle's database declares.
+ *
+ * Walking the tree and copying every regular file publishes whatever is there,
+ * and the validator only ever looks at rows: a hand-built bundle can carry
+ * bytes no row names, and those arrive charged to nothing and reachable by
+ * nothing -- not by usage, which counts blobs, and not by collection, which
+ * starts from a blob whose references were released. The locators are the one
+ * list both sides agree on, so they are what gets copied.
+ *
+ * Reading them raw is safe because the validator has already run: it derives
+ * each locator from its blob id and refuses anything that is not exactly
+ * `sha256/<first two>/<hash>`, so nothing here can name a path of its own
+ * choosing. Moving this before that check would remove that guarantee.
+ */
+async function copyDeclaredContextValues(
+  bundleContext: string,
+  bundleStateRoot: string,
+  stateRoot: string,
+): Promise<void> {
+  const locators: string[] = [];
+  const database = new DatabaseSync(bundleContext, { readOnly: true });
+  try {
+    for (const row of database
+      .prepare("SELECT payload FROM context_blobs WHERE storage_kind = 'managed_file'")
+      .iterate() as Iterable<{ payload?: unknown }>) {
+      const payload = row.payload;
+      if (!(payload instanceof Uint8Array)) {
+        throw new SessionBundleImportError('invalid_root', 'Bundle context locator is unreadable');
+      }
+      locators.push(Buffer.from(payload).toString('utf8'));
     }
-    if (!entry.isFile()) {
+  } finally {
+    database.close();
+  }
+
+  const sourceRoot = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  const destinationRoot = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  await mkdir(destinationRoot, { recursive: true, mode: 0o700 });
+  await assertManagedDestinationDirectory(destinationRoot, stateRoot);
+  for (const locator of locators) {
+    const from = resolveInside(sourceRoot, locator);
+    const to = resolveInside(destinationRoot, locator);
+    const entry = await lstat(from).catch(() => undefined);
+    if (!entry?.isFile()) {
       throw new SessionBundleImportError(
-        'io_failed',
-        `Bundle context payload is not a regular file: ${entry.name}`,
+        'invalid_root',
+        `Bundle context declares a payload it does not carry: ${locator}`,
       );
     }
-    await mkdir(dirname(to), { recursive: true });
-    await copyFile(from, to, constants.COPYFILE_EXCL).catch((error: unknown) => {
+    await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+    await assertManagedDestinationDirectory(dirname(to), stateRoot);
+    await publishContextValue(from, to, stateRoot);
+  }
+}
+
+/**
+ * Refuses a destination directory that does not really live inside the Storage
+ * Root.
+ *
+ * `resolveInside` compares strings, which says nothing about what the path
+ * resolves to: a `context-offload-values` replaced by a symlink passes it and
+ * then receives the payloads somewhere else entirely. The Context Store already
+ * holds this invariant over its own managed directories, and a directory it
+ * would refuse to publish into is not one an import may publish into either.
+ */
+async function assertManagedDestinationDirectory(
+  directory: string,
+  stateRoot: string,
+): Promise<void> {
+  let entry: Awaited<ReturnType<typeof lstat>>;
+  let resolved: string;
+  try {
+    [entry, resolved] = await Promise.all([lstat(directory), realpath(directory)]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') {
+      throw new SessionBundleImportError(
+        'io_failed',
+        `Context payload directory is not a directory: ${directory}`,
+      );
+    }
+    throw error;
+  }
+  const fromRoot = relative(stateRoot, resolved);
+  if (
+    !entry.isDirectory() ||
+    entry.isSymbolicLink() ||
+    fromRoot === '..' ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  ) {
+    throw new SessionBundleImportError(
+      'io_failed',
+      `Context payload directory escapes the Storage Root: ${directory}`,
+    );
+  }
+}
+
+/**
+ * Publishes one payload the way the Context Store publishes its own: the bytes
+ * are assembled under a staging name and become visible at the final path by a
+ * single `link`.
+ *
+ * `copyFile` fills its destination progressively, so the final path is
+ * observable half-written -- measured at 38 distinct intermediate sizes while
+ * copying 64 MiB. Payloads are content-addressed, so a bundle and its target
+ * routinely name the same path, and that path is one another Session may be
+ * reading. It also decides what a retry sees: a copy interrupted midway leaves
+ * a truncated file AT the final path, and the previous `EEXIST`-is-fine rule
+ * accepted it as already present.
+ *
+ * The staging name is the Store's with a different suffix. Two imports cannot
+ * race -- both need the write authority, and it is exclusive -- but an import
+ * and the Store publishing the same blob can, and they must not share a name.
+ */
+async function publishContextValue(from: string, to: string, stateRoot: string): Promise<void> {
+  const staging = join(dirname(to), `.${basename(to)}.import.tmp`);
+  await rm(staging, { force: true });
+  try {
+    await copyFile(from, staging, constants.COPYFILE_EXCL);
+    // 'r+' rather than 'r': Windows flushes through the handle and refuses a
+    // read-only one, so a read handle would make this fail only on Windows.
+    const handle = await open(staging, 'r+');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await link(staging, to);
+      // The bytes were synced; the directory entry naming them was not. A crash
+      // here otherwise keeps the committed reference and loses the name, which
+      // reads exactly like a payload that never arrived.
+      await syncDirectoryChain(dirname(to), stateRoot);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    });
+      // Reaching the final path now means the payload was already there, not
+      // that this import put it there. Content addressing says it should be
+      // byte-identical; if it is not, the store holds something this bundle
+      // cannot explain and overwriting it would destroy the other Session's
+      // payload.
+      if (!(await sameFileContent(from, to))) {
+        throw new SessionBundleImportError(
+          'conflict',
+          `Context payload already names different content: ${basename(to)}`,
+        );
+      }
+    }
+  } finally {
+    await unlink(staging).catch(() => {});
   }
 }
 

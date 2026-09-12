@@ -229,6 +229,133 @@ describe('session trace projection', () => {
     assert.equal(failure.message, 'turn ended after tool failure');
   });
 
+  test('projects a generic-lane function call as an in-flight tool step', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [
+        event({
+          id: 'call-1',
+          ts: 1_000,
+          content: {
+            kind: 'function_call',
+            id: 'tool-call-1',
+            name: 'AskUserQuestion',
+            args: { questions: [] },
+          },
+        }),
+      ],
+      modelCallAttempts: [],
+    });
+
+    assert.deepEqual(trace.turns[0]?.steps, [
+      {
+        kind: 'tool',
+        id: 'call-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        startedAt: 1_000,
+        toolName: 'AskUserQuestion',
+        toolCallId: 'tool-call-1',
+        status: 'in_flight',
+      },
+    ]);
+  });
+
+  test('settles a generic-lane tool step from its matching response', () => {
+    for (const expected of [
+      { isError: undefined, status: 'completed' as const },
+      { isError: true, status: 'failed' as const },
+    ]) {
+      const trace = projectSessionTrace({
+        sessionId: 'session-1',
+        runtimeEvents: [
+          event({
+            id: 'call-1',
+            ts: 1_000,
+            content: {
+              kind: 'function_call',
+              id: 'tool-call-1',
+              name: 'AskUserQuestion',
+              args: { questions: [] },
+            },
+          }),
+          event({
+            id: 'response-1',
+            ts: 1_250,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-call-1',
+              name: 'AskUserQuestion',
+              result: 'answer',
+              ...(expected.isError ? { isError: true } : {}),
+            },
+          }),
+        ],
+        modelCallAttempts: [],
+      });
+
+      const tool = trace.turns[0]?.steps[0];
+      assert.equal(tool?.kind, 'tool');
+      if (tool?.kind !== 'tool') continue;
+      assert.equal(tool.status, expected.status);
+      assert.equal(tool.endedAt, 1_250);
+      assert.equal(tool.durationMs, 250);
+    }
+  });
+
+  test('prefers the durable dispatch step when a function call also has one', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [
+        event({
+          id: 'call-1',
+          ts: 900,
+          content: {
+            kind: 'function_call',
+            id: 'tool-call-1',
+            name: 'Bash',
+            args: { command: 'pwd' },
+          },
+        }),
+        event({
+          id: 'dispatch-1',
+          ts: 1_000,
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'op-1',
+              providerToolCallId: 'tool-call-1',
+              toolName: 'Bash',
+              canonicalArgsHash: 'hash',
+              recoveryMode: 'replay_safe',
+            },
+          },
+        }),
+        event({
+          id: 'response-1',
+          ts: 1_250,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-call-1',
+            name: 'Bash',
+            result: 'ok',
+          },
+        }),
+      ],
+      modelCallAttempts: [],
+    });
+
+    const tools = trace.turns[0]?.steps.filter((step) => step.kind === 'tool') ?? [];
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]?.id, 'dispatch-1');
+    assert.equal(tools[0]?.operationId, 'op-1');
+    assert.equal(tools[0]?.status, 'completed');
+  });
+
   test('reports a backend that emits no canonical records instead of rendering an idle session', () => {
     // The pi backend emits `token_usage` and no `ModelCallAttempt` at all. An
     // empty timeline would be indistinguishable from a session that did nothing.

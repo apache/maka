@@ -20,6 +20,7 @@
 import type {
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
@@ -59,6 +60,7 @@ type RuntimeHostSettingsClient = Pick<
   | "testNetworkProxy"
   | "updateNetworkProxy"
   | "updateRuntimePolicy"
+  | "updateRuntimePolicyIf"
 >;
 
 const PROXY_CREDENTIAL: CredentialLocator = {
@@ -85,7 +87,10 @@ export type RuntimeHostSettingsModuleDeps = Omit<
 
 export interface RuntimeHostSettingsModule {
   get(): Promise<RuntimeHostAppSettings>;
-  update(patch: UpdateAppSettingsInput): Promise<RuntimeHostAppSettings>;
+  update(
+    patch: UpdateAppSettingsInput,
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ): Promise<RuntimeHostAppSettings>;
   testNetworkProxy(input?: TestProxyInput): Promise<SettingsTestResult>;
 }
 
@@ -132,9 +137,9 @@ export function createRuntimeHostSettingsModule(
 
   const module: RuntimeHostSettingsModule = {
     get: () => enqueue(() => loadRuntimeHostSettingsWithoutLane(deps)),
-    update: (patch) =>
+    update: (patch, guard) =>
       enqueue(() =>
-        updateRuntimeHostSettingsForImportWithoutLane(deps, patch).then(
+        updateRuntimeHostSettingsForImportWithoutLane(deps, patch, guard).then(
           (result) => result.settings,
         ),
       ),
@@ -188,8 +193,9 @@ export function registerRuntimeHostSettingsIpc(
     async (
       _event,
       patch: UpdateAppSettingsInput,
+      guard?: RuntimeHostSettingsUpdateGuard,
     ): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>> => {
-      const settings = await module.update(patch);
+      const settings = await module.update(patch, guard);
       return buildSettingsUpdateResult(settings, patch);
     },
   );
@@ -282,6 +288,7 @@ async function loadRuntimeHostSettingsWithoutLane(
     workspaceInstructions: policy.workspaceInstructions,
     privacy: policy.privacy,
     chatDefaults: policy.chatDefaults,
+    externalAgents: policy.externalAgents,
     shell: policy.shell,
     webSearch: {
       ...local.webSearch,
@@ -297,9 +304,10 @@ async function loadRuntimeHostSettingsWithoutLane(
 async function updateRuntimeHostSettingsForImportWithoutLane(
   deps: RuntimeHostSettingsModuleDeps,
   patch: UpdateAppSettingsInput,
+  guard?: RuntimeHostSettingsUpdateGuard,
 ): Promise<RuntimeHostSettingsImportResult> {
   validateProxyPatch(patch.network?.proxy);
-  const skippedCredentials = await applyHostPatchWithoutLane(deps.client, patch);
+  const skippedCredentials = await applyHostPatchWithoutLane(deps.client, patch, guard);
   const clientPatch = clientOwnedSettingsPatch(patch);
   const local = hasSettingsPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)
@@ -336,6 +344,7 @@ function projectWebSearchCredential(
 async function applyHostPatchWithoutLane(
   client: RuntimeHostSettingsClient,
   patch: UpdateAppSettingsInput,
+  guard?: RuntimeHostSettingsUpdateGuard,
 ): Promise<number> {
   let skippedCredentials = 0;
   if (patch.network?.proxy) {
@@ -379,6 +388,22 @@ async function applyHostPatchWithoutLane(
       patch.chatDefaults,
       "set_chat_defaults",
     );
+  }
+  if (patch.externalAgents) {
+    const mutation = () => ({
+      kind: "set_external_agents" as const,
+      value: patch.externalAgents!,
+    });
+    if (guard?.expectedExternalAgentExecutable === undefined) {
+      await client.updateRuntimePolicy(mutation);
+    } else {
+      await client.updateRuntimePolicyIf(
+        (policy) =>
+          policy.externalAgents.antigravity.executable ===
+          guard.expectedExternalAgentExecutable,
+        mutation,
+      );
+    }
   }
   if (patch.shell) {
     await mergePolicy(client, "shell", patch.shell, "set_shell");

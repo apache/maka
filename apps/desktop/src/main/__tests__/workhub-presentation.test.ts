@@ -27,10 +27,11 @@ import { build } from 'esbuild';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { createMainWindowController } from '../main-window.js';
 import type { createWorkHubPresentation } from '../workhub-presentation.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
-async function harness(animate = false, displayFrequency = 60) {
+async function harness(animate = false, displayFrequency = 60, revealMode: WindowRevealMode = 'active') {
   let enabled = true;
   let mainRequests = 0;
   let mainAvailable = true;
@@ -105,8 +106,10 @@ async function harness(animate = false, displayFrequency = 60) {
     setBounds(bounds: typeof this.bounds) { this.bounds = bounds; this.emit('resize'); }
     setVisibleOnAllWorkspaces() {}
     setMaximizable() {}
-    show() { this.visible = true; this.emit('show'); }
-    showInactive() { this.visible = true; }
+    shown = 0;
+    shownInactive = 0;
+    show() { this.shown++; this.visible = true; this.emit('show'); }
+    showInactive() { this.shownInactive++; this.visible = true; }
     hide() { this.visible = false; }
     resizable = true;
     setResizable(value: boolean) { this.resizable = value; }
@@ -147,6 +150,7 @@ async function harness(animate = false, displayFrequency = 60) {
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
     isEnabled: () => enabled,
+    revealMode,
     ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; mainAvailable = true; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
@@ -276,6 +280,7 @@ test('animates from the current height, keeps the bottom anchored and survives r
   const h = await harness(true);
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } });
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;
@@ -318,6 +323,7 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   h.main.show();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   assert.ok(h.main.children.has(view));
   await h.command(view.webContents, 'detach');
@@ -515,6 +521,7 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
   await h.controller.show();
   const view = h.views[0]!;
   const floating = h.windows[1]!;
+  await h.command(view.webContents, 'ready');
   assert.equal(floating.visible, true);
   const opened = deferred<void>();
   const opening = h.deferOpening(opened.promise);
@@ -550,13 +557,21 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
 });
 
 
-test('prewarms once and the shortcut shows and hides synchronously', async () => {
+test('creates on first shortcut, then shows and hides synchronously', async () => {
   const h = await harness();
   await h.controller.refreshSettings();
+  assert.equal(h.views.length, 0, 'enabling alone must not create the renderer');
+  h.shortcut();
+  assert.equal(h.windows[1]!.visible, false, 'a cold summon waits for the composer to mount');
+  assert.equal(h.windows[1]!.focused, 0, 'loading must not steal keyboard input');
+  await h.command(h.views[0]!.webContents, 'ready');
+  assert.equal(h.windows[1]!.visible, true);
+  assert.equal(h.views[0]!.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), true);
+  h.shortcut();
   const floating = h.windows[1]!;
   const view = h.views[0]!;
   assert.equal(floating.visible, false);
-  assert.equal(view.visible, false);
+  assert.equal(view.visible, true);
   assert.ok(floating.children.has(view));
   await h.controller.refreshSettings();
   assert.equal(h.windows.length, 2);
@@ -568,6 +583,26 @@ test('prewarms once and the shortcut shows and hides synchronously', async () =>
   assert.equal(h.mainRequests, 0);
   assert.equal(h.main.focused, 0);
   h.controller.dispose();
+});
+
+test('a second shortcut or disabling cancels a cold summon before ready', async () => {
+  for (const cancel of ['shortcut', 'disable'] as const) {
+    const h = await harness();
+    await h.controller.refreshSettings();
+    h.shortcut();
+    const view = h.views[0]!;
+    const floating = h.windows[1]!;
+    if (cancel === 'shortcut') h.shortcut();
+    else {
+      h.setEnabled(false);
+      await h.controller.refreshSettings();
+    }
+    await h.command(view.webContents, 'ready');
+    assert.equal(floating.visible, false, cancel);
+    assert.equal(floating.focused, 0, cancel);
+    assert.equal(view.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), false, cancel);
+    h.controller.dispose();
+  }
 });
 
 test('a pending backdrop capture and older hide cannot delay or undo the shortcut', async () => {
@@ -600,6 +635,7 @@ test('the shortcut supersedes a pending dock without waiting for the main window
   await h.controller.refreshSettings();
   h.shortcut();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   const floating = h.windows[1]!;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   h.advance(80);
@@ -627,6 +663,7 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   const h = await harness(true, 120);
   await h.controller.show();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   view.webContents.getZoomFactor = () => 2;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   const before = view.boundsUpdates.length;
@@ -654,6 +691,7 @@ test('hiding returns the live view to Desktop and preserves floating geometry fo
   h.shortcut();
   const floating = h.windows[1]!;
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 144 });
   h.shortcut();
   assert.equal(floating.visible, false);
@@ -676,6 +714,7 @@ test('hiding with Desktop closed keeps the conversation alive without reopening 
   const h = await harness();
   await h.controller.show();
   const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
   h.main.destroy();
   await h.controller.toggle();
   assert.equal(h.controller.getSnapshot().placement, 'docked');
@@ -768,6 +807,7 @@ test('closing progress suppresses the current turn and old paint acknowledgement
 test('the shortcut opens the normal composer from progress without waiting for its paint', async () => {
   const h = await harness();
   await h.controller.prepareControl('turn');
+  await h.command(h.views[0]!.webContents, 'ready');
   const request = h.controller.getSnapshot().progressRequest!;
   await h.controller.toggle(true);
   const floating = h.windows[1]!;
@@ -842,4 +882,35 @@ test('late progress measurements and send acknowledgements cannot revive a dismi
   assert.equal(h.windows[1]!.bounds.height, 180, 'reduced motion applies the final layout immediately');
   assert.equal(h.controller.getSnapshot().progressRequest, second);
   h.controller.dispose();
+});
+
+const REVEALS = {
+  hidden: { shown: 0, shownInactive: 0, focused: 0 },
+  inactive: { shown: 0, shownInactive: 1, focused: 0 },
+  active: { shown: 1, shownInactive: 0, focused: 1 },
+} as const;
+const reveals = (win: { shown: number; shownInactive: number; focused: number }) =>
+  ({ shown: win.shown, shownInactive: win.shownInactive, focused: win.focused });
+
+test('summoning and docking honor the run reveal mode', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.show();
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS.hidden, `a cold summon reveals nothing in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'ready');
+    assert.deepEqual(reveals(h.windows[1]!), REVEALS[mode], `detach in ${mode}`);
+    await h.command(h.views[0]!.webContents, 'dock');
+    assert.deepEqual(reveals(h.main), REVEALS[mode], `dock in ${mode}`);
+    h.controller.dispose();
+  }
+});
+
+test('the progress card stays hidden in a hidden run and inactive everywhere else', async () => {
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = await harness(false, 60, mode);
+    await h.controller.prepareControl('turn');
+    await h.command(h.views[0]!.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
+    assert.deepEqual(reveals(h.windows[1]!), mode === 'hidden' ? REVEALS.hidden : REVEALS.inactive, mode);
+    h.controller.dispose();
+  }
 });

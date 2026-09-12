@@ -120,6 +120,29 @@ test('handoff copy exposes background work even with zero operations and keeps l
   }
 });
 
+test('managed handoff copy gives the user an executable Desktop recovery path', () => {
+  const view: HostHandoffView = {
+    revision: 'managed',
+    target,
+    state: 'attention',
+    reason: 'operator_required',
+    mayExitNaturally: false,
+    actions: ['cancel', 'retry'],
+    defaultAction: 'cancel',
+    recoveryBlocker: 'managed',
+  };
+  for (const [locale, expected] of [
+    [
+      'en',
+      'Desktop installed it, open this workspace there and choose Stop old service and continue',
+    ],
+    ['zh-CN', '在该 Desktop 中打开此工作区，然后选择“停止旧服务并继续”'],
+    ['zh-TW', '在該 Desktop 中開啟此工作區，然後選擇「停止舊服務並繼續」'],
+  ] as const) {
+    assert.match(formatHostHandoff(view, locale).description, new RegExp(expected, 'u'));
+  }
+});
+
 test('maintenance evidence distinguishes idle retention without guessing for legacy activity', () => {
   const retention = { ...idle, residencies: [{ label: 'process-retention', count: 1 }] };
   assert.equal(isHostActivityIdle(decodeHostActivitySnapshot(retention)), false);
@@ -486,6 +509,8 @@ test('transaction failure remains a repair outcome instead of an automatic retry
       assert.ok(error instanceof HostHandoffRequiredError);
       assert.equal(error.view.reason, 'repair_required');
       assert.equal(error.view.diagnostic, 'Writer release was not verified');
+      assert.match(formatHostHandoff(error.view, 'zh-CN').description, /修复原因后再重试/u);
+      assert.match(formatHostHandoff(error.view, 'en').description, /without a state change/u);
       return true;
     },
   );

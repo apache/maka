@@ -76,6 +76,7 @@ export const SETTINGS_SECTIONS = [
   'daily-review',
   'models',
   'subagents',
+  'external-agents',
   'usage',
   // `maka://settings/<section>` is a public deep link, so the id names what
   // the page is rather than the noun it lives under.
@@ -584,6 +585,7 @@ export interface AppSettings {
   notifications: NotificationSettings;
   workHub: WorkHubSettings;
   system: SystemSettings;
+  externalAgents: { antigravity: { executable: string } };
   shell: ShellSettings;
   subagents: SubagentSettings;
 }
@@ -718,10 +720,16 @@ export type UpdateAppSettingsInput = Partial<{
   notifications: Partial<NotificationSettings>;
   workHub: Partial<WorkHubSettings>;
   system: Partial<SystemSettings>;
+  externalAgents: AppSettings['externalAgents'];
   shell: Partial<ShellSettings>;
   webSearch: WebSearchSettingsPatch;
   subagents: SubagentSettings;
 }>;
+
+/** Preconditions for a Host-owned Settings write that must not be retried past a semantic change. */
+export interface RuntimeHostSettingsUpdateGuard {
+  readonly expectedExternalAgentExecutable?: string;
+}
 
 export type PersonalizationSettingsWarning =
   | 'override-attempt'
@@ -804,6 +812,7 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
+    externalAgents: { antigravity: { executable: '' } },
     shell: {
       preference: 'auto',
       executable: '',
@@ -892,6 +901,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
+    externalAgents: patch.externalAgents ?? current.externalAgents,
     shell: {
       ...current.shell,
       ...(patch.shell ?? {}),
@@ -923,6 +933,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     notifications: value.notifications,
     workHub: value.workHub,
     system: value.system,
+    externalAgents: value.externalAgents,
     shell: value.shell,
     subagents: value.subagents,
   });
@@ -1026,6 +1037,14 @@ export function normalizeSettings(input: unknown): AppSettings {
     system: {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
+    },
+    externalAgents: {
+      antigravity: {
+        executable:
+          typeof base.externalAgents?.antigravity?.executable === 'string'
+            ? base.externalAgents.antigravity.executable
+            : '',
+      },
     },
     shell: normalizeShellSettings(base.shell),
     subagents: normalizeSubagentSettings(base.subagents),

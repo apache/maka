@@ -105,7 +105,7 @@ import { releaseBrowserSession } from "./browser/session.js";
 import {
   isBrowserMessageBoxPresentationActive,
   showBrowserMessageBox,
-  type BrowserMessageBoxAppearance,
+  type BrowserMessageBoxTheme,
 } from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
@@ -237,6 +237,7 @@ import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
+import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -380,16 +381,16 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   writeClipboard: (report) => clipboard.writeText(report),
 };
 let resolveBrowserDialogParent = desktopStartupProgressWindow;
-let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
+let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxTheme> => ({
   locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
   palette: "default",
 });
 
 async function showDesktopMessageBox(
   options: MessageBoxOptions,
-  override?: Partial<BrowserMessageBoxAppearance>,
+  override?: Partial<BrowserMessageBoxTheme>,
 ): Promise<MessageBoxReturnValue> {
-  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override };
+  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override, revealMode };
   return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
 }
 
@@ -919,6 +920,7 @@ const workHubControl = createWorkHubControl({
 let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
   isEnabled: () => workHubEnabled,
+  revealMode,
   mainWindow: () => mainWindowController.browserWindow(),
   ensureMainWindow: async () => {
     await quitCoordinator.focusOrCreateWindow();
@@ -1128,6 +1130,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     attachmentApprovals,
     stat: (path) => import("node:fs/promises").then(({ stat }) => stat(path)),
     resizeImage: resizeImageForAttachment,
+    mainWindowController,
     nativeCapabilities: {
       browserTools: native.browserTools,
       resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
@@ -1639,6 +1642,12 @@ function registerHostClientIpc(
     client,
     mainWindowController,
     showItemInFolder: (path) => shell.showItemInFolder(path),
+  });
+  registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
+    selectExecutable: async () => {
+      const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,

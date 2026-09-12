@@ -38,6 +38,7 @@ import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
+import { EXTERNAL_AGENT_SETUP_OPERATION_SPECS } from './external-agent-setup.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
@@ -59,6 +60,7 @@ import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
 import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
 import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
+import { SESSION_BUNDLE_OPERATION_SPECS } from './session-bundle.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
@@ -166,6 +168,7 @@ export * from './host-resources.js';
 export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
+export * from './external-agent-setup.js';
 export * from './plan.js';
 export * from './plugin-platform.js';
 export * from './project-catalog.js';
@@ -215,12 +218,14 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
+  SESSION_BUNDLE_OPERATION_SPECS,
   SESSION_RETIREMENT_OPERATION_SPECS,
   ARTIFACT_OPERATION_SPECS,
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
+  EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,

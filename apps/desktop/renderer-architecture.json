@@ -74,6 +74,7 @@
     "src/renderer/locales/settings-bot-copy.ts",
     "src/renderer/locales/settings-daily-review-copy.ts",
     "src/renderer/locales/settings-data-copy.ts",
+    "src/renderer/locales/settings-external-agents-copy.ts",
     "src/renderer/locales/settings-health-copy.ts",
     "src/renderer/locales/settings-memory-copy.ts",
     "src/renderer/locales/settings-navigation-copy.ts",
@@ -500,7 +501,7 @@
           "react": 1
         },
         "importSpecifiers": 19,
-        "nonTriviaTokens": 3816
+        "nonTriviaTokens": 3801
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 7,
@@ -592,8 +593,7 @@
         "importDeclarations": 2,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "requestAnimationFrame": 1,
-          "window.setTimeout": 2
+          "window.setTimeout": 1
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -603,12 +603,13 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "./features/conversation/index.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2808
+        "nonTriviaTokens": 2755
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -710,7 +711,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 70,
+        "importDeclarations": 69,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -775,7 +776,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 6,
-          "useState": 14,
+          "useState": 13,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -786,7 +787,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../preload/transcript-contract.js": 1,
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
@@ -871,8 +871,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 108,
-        "nonTriviaTokens": 13697
+        "importSpecifiers": 107,
+        "nonTriviaTokens": 13669
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1624,6 +1624,15 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/settings-external-agents-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
       "src/renderer/locales/settings-health-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -2312,15 +2321,6 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
-      "src/renderer/settings/action-guard.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
       "src/renderer/settings/appearance-settings-page.tsx": {
         "bridgePaths": {
           "window.maka.app.iconPreviews": 2,
@@ -2726,6 +2726,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/session-bundle/index.js": 1,
           "../locales/external-session-import-copy.js": 1,
           "../locales/shell-copy.js": 1,
           "./runtime-host-settings-target.js": 1,
@@ -2833,7 +2834,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "../application/contracts/settings-presentation/oauth-login-flow-guard.js": 1
+        }
       },
       "src/renderer/settings/optimistic-settings-draft-controller.ts": {
         "bridgePaths": {},
@@ -3416,15 +3419,12 @@
       "src/renderer/settings/runtime-host-settings-target.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useToast": 1
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "@maka/ui": 1,
-          "react": 1
+          "../application/contracts/settings-presentation/runtime-host-settings-target.js": 1
         }
       },
       "src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx": {
@@ -3563,8 +3563,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "@astryxdesign/core": 1,
-          "@maka/ui/icons": 1
+          "../application/contracts/settings-presentation/settings-route-header.js": 1
         }
       },
       "src/renderer/settings/settings-rows.tsx": {
@@ -3586,8 +3585,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "@astryxdesign/core": 1,
-          "@maka/ui": 1
+          "../application/contracts/settings-presentation/settings-section.js": 1
         }
       },
       "src/renderer/settings/settings-skeleton.tsx": {
@@ -3669,6 +3667,8 @@
           "../../shared/settings-ownership.js": 1,
           "../browser-storage": 1,
           "../features/connection-settings": 1,
+          "../features/external-agent-settings/index.js": 1,
+          "../features/session-bundle": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "./about-settings-page": 1,
@@ -3817,17 +3817,12 @@
       "src/renderer/settings/use-action-guard.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 2
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./action-guard.js": 1,
-          "./oauth-login-flow-guard.js": 1,
-          "react": 1
+          "../application/contracts/settings-presentation/use-action-guard.js": 1
         }
       },
       "src/renderer/settings/use-connection-detail.ts": {

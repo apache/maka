@@ -152,6 +152,7 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
+    backToWorkHub: string;
   };
   actions: {
     retry: string;
@@ -720,10 +721,11 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: '外观',
   projects: '工作区',
   models: '模型',
+  'external-agents': '外部 Agent',
   subagents: '子 Agent',
   usage: '使用统计',
   'archived-tasks': '已归档任务',
-  'import-tasks': '导入任务',
+  'import-tasks': '导入/导出任务',
   memory: '记忆',
   'daily-review': '每日回顾',
   'bot-chat': '远程接入',
@@ -739,10 +741,11 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: 'Appearance',
   projects: 'Workspace',
   models: 'Models',
+  'external-agents': 'External Agents',
   subagents: 'Subagents',
   usage: 'Usage',
   'archived-tasks': 'Archived tasks',
-  'import-tasks': 'Import tasks',
+  'import-tasks': 'Import/export tasks',
   memory: 'Memory',
   'daily-review': 'Daily Review',
   'bot-chat': 'Remote Access',
@@ -755,7 +758,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
-    navigation: { settings: '设置' },
+    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
@@ -1256,7 +1259,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
-    navigation: { settings: '設定' },
+    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
@@ -1757,7 +1760,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   en: {
-    navigation: { settings: 'Settings' },
+    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
