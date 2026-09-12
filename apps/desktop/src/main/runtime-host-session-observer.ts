@@ -18,7 +18,10 @@
  */
 
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
-import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
+import type {
+  SessionExecutionProjection,
+  SessionObservationMessage,
+} from '../shared/session-execution-projection.js';
 import type { SessionChangedReason, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
@@ -839,7 +842,7 @@ export class RuntimeHostSessionObserver {
     this.#send(state, group, {
       type: 'host_observation_seed',
       observerIds,
-      execution: { type: 'host_execution', available: true, rootTurn: state.snapshot.rootTurn },
+      execution: projectHostExecution(state.snapshot),
       events,
     });
     // Activation may seed a subscriber before its observe() wait resumes.
@@ -987,11 +990,7 @@ export class RuntimeHostSessionObserver {
 
   #sendExecution(state: ObservedSessionState, group: ObserverTargetGroup): void {
     if (!state.snapshot || !state.replica) return;
-    this.#send(state, group, {
-      type: 'host_execution',
-      available: true,
-      rootTurn: state.snapshot.rootTurn,
-    });
+    this.#send(state, group, projectHostExecution(state.snapshot));
   }
 
   #send(
@@ -1818,6 +1817,18 @@ function isTerminalSessionEvent(
     event.type === "error" ||
     event.type === "abort"
   );
+}
+
+
+function projectHostExecution(snapshot: SessionContinuitySnapshot): SessionExecutionProjection {
+  return {
+    type: 'host_execution',
+    available: true,
+    rootTurn: snapshot.rootTurn,
+    pendingInteractionKinds: snapshot.interactions.pending.map(
+      (interaction) => interaction.request.kind,
+    ),
+  };
 }
 
 function samePendingInteractions(

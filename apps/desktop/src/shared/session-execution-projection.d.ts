@@ -17,14 +17,20 @@
  * under the License.
  */
 
+import type { InteractionRequest } from '@maka/core/interaction';
 import type { TurnSnapshot } from '@maka/runtime-host/protocol';
 import type { SessionEvent } from '@maka/core/events';
+
+/** Canonical pending Interaction kinds only. Never request bodies or secrets. */
+export type HostPendingInteractionKind = InteractionRequest['kind'];
 
 /** Desktop observation data, never a Runtime event or a client execution claim. */
 export interface SessionExecutionProjection {
   readonly type: 'host_execution';
   readonly available: boolean;
   readonly rootTurn: TurnSnapshot | null;
+  /** Type-only pending Interaction summary. Empty when none are pending. */
+  readonly pendingInteractionKinds: readonly HostPendingInteractionKind[];
 }
 
 export type SessionObservationMessage = SessionExecutionProjection | {
