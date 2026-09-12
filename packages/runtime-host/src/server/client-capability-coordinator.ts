@@ -65,6 +65,7 @@ import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 const DESKTOP_BROWSER_SERVER_ID = 'desktop_browser';
 const DESKTOP_SETTINGS_SERVER_ID = 'desktop_settings';
+const DESKTOP_WORKHUB_SERVER_ID = 'desktop_workhub';
 const DESKTOP_MCP_OFFER_PREFIX = 'desktop_mcp';
 const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -1578,6 +1579,19 @@ function managedClientCapabilityGrantTarget(
       toolName,
       capability: 'browser',
       scope: Object.freeze({ kind: 'browser_origin', origin: url.origin }),
+    });
+  }
+  if (tool.offerId === DESKTOP_WORKHUB_SERVER_ID && serverId === DESKTOP_WORKHUB_SERVER_ID) {
+    if (evidence.kind !== 'none') {
+      throw new Error('Desktop WorkHub admission does not accept scope evidence');
+    }
+    return Object.freeze({
+      providerId: registration.providerId,
+      contractId,
+      serverId,
+      toolName,
+      capability: 'computer_use',
+      scope: Object.freeze({ kind: 'capability' }),
     });
   }
   // Desktop MCP tools publish one offer per MCP server (chunked past the
