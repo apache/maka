@@ -289,11 +289,10 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         normalized.value.schedule === undefined &&
         task.nextFireAt !== null &&
         task.nextFireAt > now;
-      const nextFireAt =
-        task.status === 'active'
-          ? keepsPendingFire
-            ? task.nextFireAt
-            : computeRequiredNext(schedule, now)
+      const nextFireAt = keepsPendingFire
+        ? task.nextFireAt
+        : task.status === 'active'
+          ? computeRequiredNext(schedule, now)
           : null;
       const effect = normalized.value.effect ?? task.effect;
       const intentBody = normalized.value.intentBody ?? task.intent.body;

@@ -289,13 +289,26 @@ test('ScheduledTask metadata updates preserve a future snoozed occurrence', asyn
     assert.deepEqual(renamed.schedule, task.schedule);
     assert.equal(renamed.nextFireAt, snoozed.nextFireAt);
 
+    const paused = await store.pause(task.id, NOW + 3);
+    assert.equal(paused.status, 'paused');
+    assert.equal(paused.nextFireAt, snoozed.nextFireAt);
+    const renamedWhilePaused = await store.update(
+      task.id,
+      { title: 'Renamed while paused' },
+      NOW + 4,
+    );
+    assert.equal(renamedWhilePaused.nextFireAt, snoozed.nextFireAt);
+    const resumed = await store.resume(task.id, NOW + 5);
+    assert.equal(resumed.status, 'active');
+    assert.equal(resumed.nextFireAt, snoozed.nextFireAt);
+
     const editedAnchorAt = NOW + 90_000;
     const rescheduled = await store.update(
       task.id,
       {
         schedule: { kind: 'calendar', recurrence: 'weekly', anchorAt: editedAnchorAt },
       },
-      NOW + 3,
+      NOW + 6,
     );
     assert.deepEqual(rescheduled.schedule, {
       kind: 'calendar',
@@ -305,11 +318,11 @@ test('ScheduledTask metadata updates preserve a future snoozed occurrence', asyn
     assert.equal(rescheduled.nextFireAt, editedAnchorAt);
 
     const intervalTask = await store.create(notifyInput('Interval reminder'), NOW);
-    const snoozedInterval = await store.snooze(intervalTask.id, 10_000, NOW + 4);
+    const snoozedInterval = await store.snooze(intervalTask.id, 10_000, NOW + 7);
     const renamedInterval = await store.update(
       intervalTask.id,
       { title: 'Renamed interval reminder' },
-      NOW + 5,
+      NOW + 8,
     );
     assert.deepEqual(renamedInterval.schedule, intervalTask.schedule);
     assert.equal(renamedInterval.nextFireAt, snoozedInterval.nextFireAt);

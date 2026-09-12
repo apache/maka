@@ -321,7 +321,6 @@ export function pauseScheduledTask(task: ScheduledTask, now: number): ScheduledT
   return {
     ...task,
     status: 'paused',
-    nextFireAt: null,
     updatedAt: now,
   };
 }
@@ -345,7 +344,10 @@ export function resumeScheduledTask(
       updatedAt: now,
     };
   }
-  const nextFireAt = computeNextFireAt(task.schedule, now);
+  const nextFireAt =
+    task.nextFireAt !== null && task.nextFireAt > now
+      ? task.nextFireAt
+      : computeNextFireAt(task.schedule, now);
   if (nextFireAt === null) {
     return { error: 'Schedule has no remaining fire' };
   }
