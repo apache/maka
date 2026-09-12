@@ -30,15 +30,18 @@
 // between `/Users/a/b` and `/Users/a-b`. Every record carries its own `cwd`,
 // and that is what a project-scoped query reads.
 import { existsSync } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { open, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   claudeAssistantText,
   claudeUserAuthoredText,
+  collectClaudeTitle,
   isSyntheticClaudeUserText,
   pickClaudeTitle,
   sanitizeForeignTitle,
+  type ClaudeTitleCandidates,
 } from '@maka/core/foreign-session';
 import { externalSessionMatchesQuery } from '@maka/core/external-session';
 import type {
@@ -50,15 +53,20 @@ import type {
 import type { StoredMessage } from '@maka/core/session';
 import {
   resolveTranscriptLineage,
+  TranscriptLineageIndexer,
   type TranscriptRecord,
 } from './claude-code-transcript-lineage.js';
 
 export const CLAUDE_CODE_SESSION_ADAPTER_ID = 'claude-code';
 
-/** A transcript larger than this is not read. Bounded for the same reason the
- *  Codex rollout cap exists: a single hostile or runaway file must not be able
- *  to exhaust the Host's memory during an import the user asked for. */
-export const CLAUDE_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
+/** Maximum source bytes scanned from one fixed transcript snapshot. */
+export const CLAUDE_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+const CLAUDE_TRANSCRIPT_READ_BYTES = 64 * 1024;
+const CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
+const CLAUDE_TRANSCRIPT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
+const CLAUDE_TRANSCRIPT_MAX_MESSAGES = 250_000;
+const CLAUDE_TRANSCRIPT_MAX_RECORDS = 1_000_000;
 
 /** Session ids are the transcript's filename stem, and reach the filesystem.
  *  A uuid is what Claude Code writes; anything else is refused rather than
@@ -68,11 +76,19 @@ const SESSION_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/u;
 export interface ClaudeCodeSessionAdapterOptions {
   /** Overrides `~/.claude`. */
   claudeHome?: string;
+  /** Maximum source bytes scanned from one fixed transcript snapshot. */
   maxTranscriptBytes?: number;
+  /** Maximum bytes buffered for one JSONL record. */
+  maxRecordBytes?: number;
+  /** Maximum serialized bytes retained across converted messages. */
+  maxConvertedBytes?: number;
+  /** Maximum number of converted messages retained in memory. */
+  maxMessages?: number;
+  /** Maximum parsed JSONL records in one transcript snapshot. */
+  maxRecords?: number;
 }
 
-interface ParsedTranscript {
-  readonly records: readonly TranscriptRecord[];
+interface TranscriptSummary {
   readonly cwd: string;
   readonly title: string;
   readonly createdAt?: number;
@@ -83,7 +99,7 @@ interface ParsedTranscript {
 export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   readonly id = CLAUDE_CODE_SESSION_ADAPTER_ID;
   readonly #home: string;
-  readonly #maxBytes: number;
+  readonly #limits: ClaudeTranscriptLimits;
   /**
    * Summaries already derived from a transcript, keyed by path and invalidated
    * by the file's own mtime and size.
@@ -104,7 +120,21 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
 
   constructor(options: ClaudeCodeSessionAdapterOptions = {}) {
     this.#home = options.claudeHome ?? join(homedir(), '.claude');
-    this.#maxBytes = options.maxTranscriptBytes ?? CLAUDE_TRANSCRIPT_MAX_BYTES;
+    this.#limits = {
+      maxTranscriptBytes: options.maxTranscriptBytes ?? CLAUDE_TRANSCRIPT_MAX_BYTES,
+      maxRecordBytes: options.maxRecordBytes ?? CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES,
+      maxConvertedBytes: options.maxConvertedBytes ?? CLAUDE_TRANSCRIPT_MAX_CONVERTED_BYTES,
+      maxMessages: options.maxMessages ?? CLAUDE_TRANSCRIPT_MAX_MESSAGES,
+      maxRecords: options.maxRecords ?? CLAUDE_TRANSCRIPT_MAX_RECORDS,
+    };
+    assertPositiveSafeInteger(this.#limits.maxTranscriptBytes, 'Claude transcript byte limit');
+    assertPositiveSafeInteger(this.#limits.maxRecordBytes, 'Claude transcript record byte limit');
+    assertPositiveSafeInteger(
+      this.#limits.maxConvertedBytes,
+      'Claude converted message byte limit',
+    );
+    assertPositiveSafeInteger(this.#limits.maxMessages, 'Claude converted message count limit');
+    assertPositiveSafeInteger(this.#limits.maxRecords, 'Claude transcript record count limit');
   }
 
   async detect(): Promise<boolean> {
@@ -153,7 +183,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     const cached = this.#summaries.get(path);
     if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.summary;
 
-    const parsed = await this.#parse(path, sessionId);
+    const parsed = await readTranscriptSummary(path);
     // Sub-agent transcripts are whole files, never records interleaved into a
     // parent — so exclusion is per file. Importing one would present a
     // fragment of a conversation as a conversation.
@@ -177,16 +207,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       (candidate) => candidate.sessionId === sessionId,
     );
     if (!file) throw new Error(`Claude Code transcript not found: ${sessionId}`);
-    const parsed = await this.#parse(file.path, sessionId);
-    if (!parsed) throw new Error(`Claude Code transcript could not be read: ${sessionId}`);
-    if (parsed.isSidechain) {
-      throw new Error(`Claude Code transcript is a sub-agent sidechain: ${sessionId}`);
-    }
-    return {
-      sourceSessionId: sessionId,
-      metadata: { name: parsed.title || sessionId, cwd: parsed.cwd },
-      messages: convertTranscript(sessionId, parsed.records),
-    };
+    return convertClaudeTranscript(file.path, sessionId, this.#limits);
   }
 
   #projectsRoot(): string {
@@ -246,74 +267,299 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     }
     return [...bySessionId.values()].map(({ path, sessionId }) => ({ path, sessionId }));
   }
+}
 
-  async #parse(path: string, sessionId: string): Promise<ParsedTranscript | undefined> {
-    try {
-      const info = await stat(path);
-      if (info.size > this.#maxBytes) return undefined;
-    } catch {
-      return undefined;
-    }
+interface ClaudeTranscriptLimits {
+  readonly maxTranscriptBytes: number;
+  readonly maxRecordBytes: number;
+  readonly maxConvertedBytes: number;
+  readonly maxMessages: number;
+  readonly maxRecords: number;
+}
 
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf8');
-    } catch {
-      return undefined;
-    }
+type ClaudeTranscriptReadLimits = Pick<ClaudeTranscriptLimits, 'maxRecordBytes' | 'maxRecords'>;
 
-    const records: TranscriptRecord[] = [];
+async function convertClaudeTranscript(
+  path: string,
+  sessionId: string,
+  limits: ClaudeTranscriptLimits,
+): Promise<ExternalMakaSession> {
+  const snapshot = await ClaudeTranscriptSnapshot.open(path, sessionId, limits.maxTranscriptBytes);
+  try {
+    const indexer = new TranscriptLineageIndexer();
     let cwd = '';
     let isSidechain = false;
-    let createdAt: number | undefined;
-    let updatedAt: number | undefined;
-    const titles: {
-      customTitle?: string;
-      aiTitle?: string;
-      summary?: string;
-      lastPrompt?: string;
-      firstUserMessage?: string;
-    } = {};
-
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let record: unknown;
-      try {
-        record = JSON.parse(trimmed);
-      } catch {
-        // A torn final line is what an interrupted write leaves behind, and a
-        // corrupt interior line is not worth failing an otherwise readable
-        // transcript over. Skipping is what the scanner already does.
-        continue;
-      }
-      if (typeof record !== 'object' || record === null || Array.isArray(record)) continue;
-      const typed = record as TranscriptRecord;
-      records.push(typed);
-
-      if (typed.isSidechain === true) isSidechain = true;
-      if (typeof typed.cwd === 'string' && typed.cwd && !cwd) cwd = typed.cwd;
-      const ts = timestampMs(typed);
-      if (ts !== undefined) {
-        createdAt ??= ts;
-        updatedAt = ts;
-      }
-      collectTitle(typed, titles);
-      if (titles.firstUserMessage === undefined && typed.type === 'user') {
-        const text = claudeUserAuthoredText(typed);
-        if (text) titles.firstUserMessage = text;
-      }
+    const titles: ClaudeTitleCandidates = {};
+    let records = 0;
+    for await (const record of snapshot.records(sessionId, limits)) {
+      records += 1;
+      indexer.accept(record);
+      if (record.isSidechain === true) isSidechain = true;
+      if (!cwd && typeof record.cwd === 'string' && record.cwd) cwd = record.cwd;
+      collectClaudeTitle(record, titles);
+      collectLegacyClaudeTitle(record, titles);
+    }
+    if (records === 0) throw new Error(`Claude Code transcript could not be read: ${sessionId}`);
+    if (isSidechain) {
+      throw new Error(`Claude Code transcript is a sub-agent sidechain: ${sessionId}`);
     }
 
-    if (records.length === 0) return undefined;
+    const lineage = indexer.finish();
+    const fragmentFilter = lineage.createFilter();
+    const responseCollector = new ClaudeResponseCollector(limits.maxConvertedBytes);
+    for await (const record of snapshot.records(sessionId, limits)) {
+      if (!fragmentFilter.keep(record) || record.type !== 'assistant') continue;
+      responseCollector.accept(record);
+    }
+
+    const converter = new ClaudeTranscriptConverter(sessionId, responseCollector.responses, limits);
+    const conversionFilter = lineage.createFilter();
+    for await (const record of snapshot.records(sessionId, limits)) {
+      if (conversionFilter.keep(record)) converter.accept(record);
+    }
     return {
-      records,
+      sourceSessionId: sessionId,
+      metadata: { name: pickClaudeTitle(titles) || sessionId, cwd },
+      messages: converter.finish(),
+    };
+  } finally {
+    await snapshot.close();
+  }
+}
+
+/**
+ * One open file descriptor and one byte length define the import snapshot.
+ * Appends are ignored, path replacement cannot redirect later passes, and a
+ * digest check rejects in-place rewrites that would otherwise mix records
+ * from different points in time.
+ */
+class ClaudeTranscriptSnapshot {
+  readonly #handle: FileHandle;
+  readonly #size: number;
+  #digest: string | undefined;
+
+  private constructor(handle: FileHandle, size: number) {
+    this.#handle = handle;
+    this.#size = size;
+  }
+
+  static async open(
+    path: string,
+    sessionId: string,
+    maxBytes: number,
+  ): Promise<ClaudeTranscriptSnapshot> {
+    const handle = await open(path, 'r');
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) throw new Error('Claude Code transcript is not a regular file');
+      if (metadata.size > maxBytes) {
+        throw new Error(`Claude Code transcript exceeds ${maxBytes} bytes: ${sessionId}`);
+      }
+      return new ClaudeTranscriptSnapshot(handle, metadata.size);
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
+  async *records(
+    sessionId: string,
+    limits: ClaudeTranscriptReadLimits,
+  ): AsyncGenerator<TranscriptRecord> {
+    const digest = createHash('sha256');
+    yield* readClaudeTranscriptRecords(this.#handle, this.#size, sessionId, limits, (chunk) =>
+      digest.update(chunk),
+    );
+    this.#verifyDigest(digest.digest('hex'));
+  }
+
+  async close(): Promise<void> {
+    await this.#handle.close();
+  }
+
+  #verifyDigest(digest: string): void {
+    if (this.#digest === undefined) {
+      this.#digest = digest;
+      return;
+    }
+    if (this.#digest !== digest) {
+      throw new Error('Claude Code transcript changed while being read');
+    }
+  }
+}
+
+async function* readClaudeTranscriptRecords(
+  handle: FileHandle,
+  snapshotBytes: number,
+  sessionId: string,
+  limits: ClaudeTranscriptReadLimits,
+  observeChunk?: (chunk: Buffer) => void,
+): AsyncGenerator<TranscriptRecord> {
+  const metadata = await handle.stat();
+  if (!metadata.isFile()) throw new Error('Claude Code transcript is not a regular file');
+  if (metadata.size < snapshotBytes) {
+    throw new Error('Claude Code transcript changed while being read');
+  }
+
+  const pending: Buffer[] = [];
+  let pendingBytes = 0;
+  let observedBytes = 0;
+  let parsedRecords = 0;
+  if (snapshotBytes > 0) {
+    for await (const value of handle.createReadStream({
+      autoClose: false,
+      emitClose: false,
+      start: 0,
+      end: snapshotBytes - 1,
+      highWaterMark: CLAUDE_TRANSCRIPT_READ_BYTES,
+    })) {
+      const chunk = Buffer.from(value);
+      observeChunk?.(chunk);
+      observedBytes += chunk.byteLength;
+      if (observedBytes > snapshotBytes) {
+        throw new Error('Claude Code transcript changed while being read');
+      }
+      let start = 0;
+      for (;;) {
+        const newline = chunk.indexOf(0x0a, start);
+        if (newline === -1) break;
+        const segment = chunk.subarray(start, newline);
+        assertClaudeRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, sessionId);
+        const bytes =
+          pending.length === 0
+            ? segment
+            : Buffer.concat([...pending, segment], pendingBytes + segment.byteLength);
+        const record = parseClaudeTranscriptLine(bytes);
+        if (record) {
+          parsedRecords += 1;
+          assertClaudeRecordCount(parsedRecords, limits.maxRecords, sessionId);
+          yield record;
+        }
+        pending.length = 0;
+        pendingBytes = 0;
+        start = newline + 1;
+      }
+      if (start < chunk.byteLength) {
+        const segment = chunk.subarray(start);
+        assertClaudeRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, sessionId);
+        pending.push(segment);
+        pendingBytes += segment.byteLength;
+      }
+    }
+  }
+  if (observedBytes !== snapshotBytes) {
+    throw new Error('Claude Code transcript changed while being read');
+  }
+  if (pendingBytes > 0) {
+    const record = parseClaudeTranscriptLine(
+      pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes),
+    );
+    if (record) {
+      parsedRecords += 1;
+      assertClaudeRecordCount(parsedRecords, limits.maxRecords, sessionId);
+      yield record;
+    }
+  }
+}
+
+function assertClaudeRecordSize(actualBytes: number, maxBytes: number, sessionId: string): void {
+  if (actualBytes > maxBytes) {
+    throw new ClaudeTranscriptReadLimitError(
+      `Claude Code transcript record exceeds ${maxBytes} bytes: ${sessionId}`,
+    );
+  }
+}
+
+function assertClaudeRecordCount(actual: number, maxRecords: number, sessionId: string): void {
+  if (actual > maxRecords) {
+    throw new ClaudeTranscriptReadLimitError(
+      `Claude Code transcript has more than ${maxRecords} records: ${sessionId}`,
+    );
+  }
+}
+
+class ClaudeTranscriptReadLimitError extends Error {}
+
+function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined {
+  const text = bytes.toString('utf8').trim();
+  if (!text) return undefined;
+  try {
+    const value = JSON.parse(text) as unknown;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as TranscriptRecord)
+      : undefined;
+  } catch {
+    // Interrupted writes leave a torn tail, while old transcripts can contain
+    // corrupt interior lines. Both were historically skipped so one bad line
+    // does not erase an otherwise readable conversation.
+    return undefined;
+  }
+}
+
+async function readTranscriptSummary(path: string): Promise<TranscriptSummary | undefined> {
+  const handle = await open(path, 'r').catch(() => undefined);
+  if (!handle) return undefined;
+  const titles: ClaudeTitleCandidates = {};
+  let cwd = '';
+  let isSidechain = false;
+  let createdAt: number | undefined;
+  let updatedAt: number | undefined;
+  let records = 0;
+  let mtimeMs: number | undefined;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return undefined;
+    mtimeMs = info.mtimeMs;
+    for await (const record of readClaudeTranscriptRecords(handle, info.size, path, {
+      maxRecordBytes: CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES,
+      maxRecords: CLAUDE_TRANSCRIPT_MAX_RECORDS,
+    })) {
+      records += 1;
+      collectClaudeTitle(record, titles);
+      collectLegacyClaudeTitle(record, titles);
+      if (record.isSidechain === true) isSidechain = true;
+      if (!cwd && typeof record.cwd === 'string' && record.cwd) cwd = record.cwd;
+      const ts = timestampMs(record);
+      if (ts !== undefined) {
+        createdAt ??= ts;
+        if (updatedAt === undefined || ts > updatedAt) updatedAt = ts;
+      }
+    }
+    if (records === 0) return undefined;
+    return {
       cwd,
       title: pickClaudeTitle(titles),
       ...(createdAt !== undefined ? { createdAt } : {}),
       ...(updatedAt !== undefined ? { updatedAt } : {}),
       isSidechain,
     };
+  } catch (error) {
+    if (error instanceof ClaudeTranscriptReadLimitError && mtimeMs !== undefined) {
+      // Import keeps strict per-record and record-count bounds, but reaching
+      // one of them must not erase a real transcript from the catalog. Retain
+      // any metadata already observed and use the file mtime for a stable,
+      // sortable fallback row; selecting it then surfaces the precise limit.
+      return {
+        cwd,
+        title: pickClaudeTitle(titles),
+        ...(createdAt !== undefined ? { createdAt } : {}),
+        updatedAt: mtimeMs,
+        isSidechain,
+      };
+    }
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+function collectLegacyClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {
+  const take = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() ? sanitizeForeignTitle(value) : undefined;
+  if (record.type === 'ai-title') {
+    titles.aiTitle = take(record.aiTitle ?? record.title) ?? titles.aiTitle;
+  } else if (record.type === 'last-prompt') {
+    titles.lastPrompt = take(record.lastPrompt ?? record.prompt) ?? titles.lastPrompt;
   }
 }
 
@@ -323,24 +569,9 @@ function assertSafeSessionId(sessionId: string): void {
   }
 }
 
-function collectTitle(
-  record: TranscriptRecord,
-  titles: { customTitle?: string; aiTitle?: string; summary?: string; lastPrompt?: string },
-): void {
-  const take = (value: unknown): string | undefined =>
-    typeof value === 'string' && value.trim() ? sanitizeForeignTitle(value) : undefined;
-  switch (record.type) {
-    case 'ai-title':
-      titles.aiTitle = take(record.aiTitle ?? record.title) ?? titles.aiTitle;
-      return;
-    case 'last-prompt':
-      titles.lastPrompt = take(record.lastPrompt ?? record.prompt) ?? titles.lastPrompt;
-      return;
-    case 'summary':
-      titles.summary = take(record.summary) ?? titles.summary;
-      return;
-    default:
-      return;
+function assertPositiveSafeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
   }
 }
 
@@ -410,23 +641,291 @@ export function convertTranscript(
     if (existing) existing.push(record);
     else responseFragments.set(responseId, [record]);
   }
-  const emittedResponses = new Set<string>();
-  const messages: StoredMessage[] = [];
-  // A boundary can precede the first turn — a transcript that opens straight
-  // after a compaction. A system note needs a turn to hang from, so the fact
-  // waits for one rather than being dropped for arriving early.
-  let pendingCompactBoundaryTs: number | undefined;
-  let turn: TurnAccumulator | undefined;
-  let sequence = 0;
-  const id = (kind: string): string => `claude-code:${sessionId}:${kind}:${sequence++}`;
-  // Turn ids count separately from message ids. Sharing one counter made turn
-  // ids skip (`turn:0`, `turn:3`) for no reason, and left them one edit away
-  // from colliding with a message id if the emission order ever changed.
-  let turnSequence = 0;
-  const nextTurnId = (): string => `claude-code:${sessionId}:turn:${turnSequence++}`;
+  const converter = new ClaudeTranscriptConverter(sessionId, responseFragments, {
+    maxConvertedBytes: Number.MAX_SAFE_INTEGER,
+    maxMessages: Number.MAX_SAFE_INTEGER,
+  });
+  for (const record of records) converter.accept(record);
+  return converter.finish();
+}
 
-  const closeTurn = (): void => {
-    if (!turn) return;
+class ClaudeResponseCollector {
+  readonly responses = new Map<string, TranscriptRecord[]>();
+  readonly #maxBytes: number;
+  #retainedBytes = 0;
+
+  constructor(maxBytes: number) {
+    this.#maxBytes = maxBytes;
+  }
+
+  accept(record: TranscriptRecord): void {
+    const responseId = stringOf(asMessageRecord(record)?.id);
+    if (responseId === undefined) return;
+    const retainedBytes = Buffer.byteLength(JSON.stringify(record), 'utf8');
+    if (retainedBytes > this.#maxBytes - this.#retainedBytes) {
+      throw new Error(`Claude Code transcript converts to more than ${this.#maxBytes} bytes`);
+    }
+    this.#retainedBytes += retainedBytes;
+    const existing = this.responses.get(responseId);
+    if (existing) existing.push(record);
+    else this.responses.set(responseId, [record]);
+  }
+}
+
+class ClaudeTranscriptConverter {
+  readonly #emittedResponses = new Set<string>();
+  readonly #messages: StoredMessage[] = [];
+  readonly #sessionId: string;
+  readonly #responseFragments: Map<string, TranscriptRecord[]>;
+  readonly #limits: Pick<ClaudeTranscriptLimits, 'maxConvertedBytes' | 'maxMessages'>;
+  #pendingCompactBoundaryTs: number | undefined;
+  #turn: TurnAccumulator | undefined;
+  #sequence = 0;
+  #turnSequence = 0;
+  #convertedBytes = 0;
+
+  constructor(
+    sessionId: string,
+    responseFragments: Map<string, TranscriptRecord[]>,
+    limits: Pick<ClaudeTranscriptLimits, 'maxConvertedBytes' | 'maxMessages'>,
+  ) {
+    this.#sessionId = sessionId;
+    this.#responseFragments = responseFragments;
+    this.#limits = limits;
+  }
+
+  accept(record: TranscriptRecord): void {
+    const ts = timestampMs(record) ?? this.#turn?.lastTs ?? 0;
+    if (this.#turn) this.#turn.lastTs = ts;
+    const type = record.type;
+
+    if (type === 'user') {
+      const message = asMessageRecord(record);
+      const toolResults = toolResultBlocks(message);
+      if (toolResults.length > 0) {
+        // Tool results arrive as `user` records — the harness replying to the
+        // model, not the human. Importing them as user Turns would put the
+        // model's own tool output in the user's mouth.
+        for (const block of toolResults) {
+          if (!this.#turn) continue;
+          const toolUseId = stringOf(block.tool_use_id);
+          // A result with no `tool_use_id` cannot be matched to its call.
+          // Minting one produces a result that is guaranteed not to pair with
+          // anything — a detached row in the transcript view, which is worse
+          // than the row being absent.
+          if (!toolUseId) continue;
+          this.#append({
+            type: 'tool_result',
+            id: this.#id('tool-result'),
+            turnId: this.#turn.turnId,
+            ts,
+            toolUseId,
+            isError: block.is_error === true,
+            content: { kind: 'text', text: toolResultText(block.content) },
+          });
+        }
+        return;
+      }
+
+      const text = claudeUserAuthoredText(record);
+      if (text === undefined) {
+        // Synthetic user text: interrupt notices and command wrappers. The
+        // interrupt notice is one of the few terminal facts a transcript
+        // carries, so it is read for status even though it is not a message.
+        const raw = rawUserText(message);
+        if (
+          raw &&
+          isSyntheticClaudeUserText(raw) &&
+          raw.trimStart().startsWith('[Request interrupted')
+        ) {
+          if (this.#turn) this.#turn.aborted = true;
+        }
+        return;
+      }
+
+      // A human-authored user record opens a new turn.
+      this.#closeTurn();
+      this.#turn = { turnId: this.#nextTurnId(), lastTs: ts };
+      if (this.#pendingCompactBoundaryTs !== undefined) {
+        this.#append({
+          type: 'system_note',
+          id: this.#id('compact'),
+          turnId: this.#turn.turnId,
+          ts: this.#pendingCompactBoundaryTs,
+          kind: 'context_compacted',
+        });
+        this.#pendingCompactBoundaryTs = undefined;
+      }
+      this.#append({
+        type: 'user',
+        id: this.#id('user'),
+        turnId: this.#turn.turnId,
+        ts,
+        text,
+      });
+      return;
+    }
+
+    if (type === 'assistant') {
+      if (!this.#turn) {
+        // A transcript can open with an assistant record when the session was
+        // resumed. Give it a turn rather than dropping the content.
+        this.#turn = { turnId: this.#nextTurnId(), lastTs: ts };
+        if (this.#pendingCompactBoundaryTs !== undefined) {
+          this.#append({
+            type: 'system_note',
+            id: this.#id('compact'),
+            turnId: this.#turn.turnId,
+            ts: this.#pendingCompactBoundaryTs,
+            kind: 'context_compacted',
+          });
+          this.#pendingCompactBoundaryTs = undefined;
+        }
+      }
+      if (record.isApiErrorMessage === true) this.#turn.failed = true;
+      const message = asMessageRecord(record);
+      const responseId = stringOf(message?.id);
+      // A response is emitted once, at its first fragment, assembled from all
+      // of them. A later fragment reached here is that same response still
+      // being written — its content is already in what was emitted, and
+      // emitting again would repeat the reply.
+      if (responseId !== undefined) {
+        if (this.#emittedResponses.has(responseId)) return;
+        this.#emittedResponses.add(responseId);
+      }
+      // A fragment with no id stands alone; it is the only fragment of itself.
+      const fragments = (responseId === undefined
+        ? undefined
+        : this.#responseFragments.get(responseId)) ?? [record];
+
+      // Status evidence is read from every fragment, not just the first: the
+      // `stop_reason` lands on whichever fragment the response finished on.
+      for (const fragment of fragments) {
+        if (fragment.isApiErrorMessage === true) this.#turn.failed = true;
+        const stop = stringOf(asMessageRecord(fragment)?.stop_reason);
+        if (stop && TERMINAL_STOP_REASONS.has(stop)) this.#turn.terminalStop = stop;
+      }
+
+      // The transcript names the model that produced each step. Carrying the
+      // real value keeps an imported turn attributable; a placeholder would
+      // put a model the user never ran onto their history.
+      const modelId = stringOf(message?.model) ?? 'claude-code';
+
+      // Concatenated in fragment order, which is the order the response was
+      // streamed. Joining rather than picking one: every delta is content the
+      // model produced, and choosing between them would be choosing which
+      // half of a reply to keep.
+      const thinking = fragments
+        .map((fragment) => thinkingText(asMessageRecord(fragment)))
+        .filter((part) => part.length > 0)
+        .join('\n\n');
+      if (thinking) {
+        this.#append({
+          type: 'assistant',
+          id: this.#id('thinking'),
+          turnId: this.#turn.turnId,
+          ts,
+          text: '',
+          thinking: { text: thinking },
+          contentOrder: ['thinking'],
+          modelId,
+        });
+      }
+      const text = fragments
+        .map((fragment) => claudeAssistantText(fragment))
+        .filter((part): part is string => part !== undefined && part.length > 0)
+        .join('\n\n');
+      if (text) {
+        this.#append({
+          type: 'assistant',
+          id: this.#id('assistant'),
+          turnId: this.#turn.turnId,
+          ts,
+          text,
+          contentOrder: ['text'],
+          modelId,
+        });
+      }
+      // Every call the response made, before any of their results. Calls
+      // sharing a `message.id` came from one API response, so they were
+      // issued together however the log interleaved them with the results
+      // arriving; a call written after its sibling's result did not follow it.
+      for (const fragment of fragments) {
+        for (const block of toolUseBlocks(asMessageRecord(fragment))) {
+          this.#append({
+            type: 'tool_call',
+            // The id must equal the tool_use id so the result can match it.
+            id: stringOf(block.id) ?? this.#id('tool-call'),
+            turnId: this.#turn.turnId,
+            ts,
+            toolName: stringOf(block.name) ?? 'unknown',
+            args: block.input ?? {},
+          });
+        }
+      }
+      if (responseId !== undefined) this.#responseFragments.delete(responseId);
+      return;
+    }
+
+    // The compaction boundary, keyed on the record that states it.
+    //
+    // It used to be keyed on `isCompactSummary`, which belongs to the summary
+    // *user* record — and that record is consumed by the `user` branch above
+    // and never reaches here, so the note was never emitted. The import then
+    // carried the pre-boundary history flat with nothing saying a compaction
+    // had happened, while `claudeUserAuthoredText` dropped the summary itself
+    // for being `isCompactSummary`: both halves of the event lost at once.
+    //
+    // Pre-boundary records stay. They are the conversation that actually
+    // happened — 24,695 of them across the 5 compacted transcripts here — and
+    // the boundary marks where the model's context restarted, which is the
+    // part a reader cannot reconstruct from the messages themselves.
+    if (record.subtype === 'compact_boundary') {
+      if (!this.#turn) {
+        this.#pendingCompactBoundaryTs = ts;
+        return;
+      }
+      this.#append({
+        type: 'system_note',
+        id: this.#id('compact'),
+        turnId: this.#turn.turnId,
+        ts,
+        kind: 'context_compacted',
+      });
+    }
+  }
+
+  finish(): readonly StoredMessage[] {
+    this.#closeTurn();
+    return this.#messages;
+  }
+
+  #id(kind: string): string {
+    return `claude-code:${this.#sessionId}:${kind}:${this.#sequence++}`;
+  }
+
+  #nextTurnId(): string {
+    return `claude-code:${this.#sessionId}:turn:${this.#turnSequence++}`;
+  }
+
+  #append(message: StoredMessage): void {
+    if (this.#messages.length >= this.#limits.maxMessages) {
+      throw new Error(
+        `Claude Code transcript converts to more than ${this.#limits.maxMessages} messages`,
+      );
+    }
+    const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > this.#limits.maxConvertedBytes - this.#convertedBytes) {
+      throw new Error(
+        `Claude Code transcript converts to more than ${this.#limits.maxConvertedBytes} bytes`,
+      );
+    }
+    this.#convertedBytes += encodedBytes;
+    this.#messages.push(message);
+  }
+
+  #closeTurn(): void {
+    if (!this.#turn) return;
     // Every turn gets a terminal state, and which one depends on what the
     // transcript actually says.
     //
@@ -444,243 +943,46 @@ export function convertTranscript(
     // mid-turn, with an `abortSource` naming the import rather than a user or
     // a provider. `end_turn`, interrupt notices and API errors keep their own
     // evidence and are unaffected.
-    if (turn.aborted) {
-      messages.push({
+    if (this.#turn.aborted) {
+      this.#append({
         type: 'turn_state',
-        id: id('turn-state'),
-        turnId: turn.turnId,
-        ts: turn.lastTs,
+        id: this.#id('turn-state'),
+        turnId: this.#turn.turnId,
+        ts: this.#turn.lastTs,
         status: 'aborted',
-        abortedAt: turn.lastTs,
+        abortedAt: this.#turn.lastTs,
         abortSource: 'claude-code.interrupt',
       });
-    } else if (turn.failed) {
-      messages.push({
+    } else if (this.#turn.failed) {
+      this.#append({
         type: 'turn_state',
-        id: id('turn-state'),
-        turnId: turn.turnId,
-        ts: turn.lastTs,
+        id: this.#id('turn-state'),
+        turnId: this.#turn.turnId,
+        ts: this.#turn.lastTs,
         status: 'failed',
         errorClass: 'claude_code_api_error',
       });
-    } else if (turn.terminalStop) {
-      messages.push({
+    } else if (this.#turn.terminalStop) {
+      this.#append({
         type: 'turn_state',
-        id: id('turn-state'),
-        turnId: turn.turnId,
-        ts: turn.lastTs,
+        id: this.#id('turn-state'),
+        turnId: this.#turn.turnId,
+        ts: this.#turn.lastTs,
         status: 'completed',
       });
     } else {
-      messages.push({
+      this.#append({
         type: 'turn_state',
-        id: id('turn-state'),
-        turnId: turn.turnId,
-        ts: turn.lastTs,
+        id: this.#id('turn-state'),
+        turnId: this.#turn.turnId,
+        ts: this.#turn.lastTs,
         status: 'aborted',
-        abortedAt: turn.lastTs,
+        abortedAt: this.#turn.lastTs,
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
       });
     }
-    turn = undefined;
-  };
-
-  for (const record of records) {
-    const ts = timestampMs(record) ?? turn?.lastTs ?? 0;
-    if (turn) turn.lastTs = ts;
-    const type = record.type;
-
-    if (type === 'user') {
-      const message = asMessageRecord(record);
-      const toolResults = toolResultBlocks(message);
-      if (toolResults.length > 0) {
-        // Tool results arrive as `user` records — the harness replying to the
-        // model, not the human. Importing them as user Turns would put the
-        // model's own tool output in the user's mouth.
-        for (const block of toolResults) {
-          if (!turn) continue;
-          const toolUseId = stringOf(block.tool_use_id);
-          // A result with no `tool_use_id` cannot be matched to its call.
-          // Minting one produces a result that is guaranteed not to pair with
-          // anything — a detached row in the transcript view, which is worse
-          // than the row being absent.
-          if (!toolUseId) continue;
-          messages.push({
-            type: 'tool_result',
-            id: id('tool-result'),
-            turnId: turn.turnId,
-            ts,
-            toolUseId,
-            isError: block.is_error === true,
-            content: { kind: 'text', text: toolResultText(block.content) },
-          });
-        }
-        continue;
-      }
-
-      const text = claudeUserAuthoredText(record);
-      if (text === undefined) {
-        // Synthetic user text: interrupt notices and command wrappers. The
-        // interrupt notice is one of the few terminal facts a transcript
-        // carries, so it is read for status even though it is not a message.
-        const raw = rawUserText(message);
-        if (
-          raw &&
-          isSyntheticClaudeUserText(raw) &&
-          raw.trimStart().startsWith('[Request interrupted')
-        ) {
-          if (turn) turn.aborted = true;
-        }
-        continue;
-      }
-
-      // A human-authored user record opens a new turn.
-      closeTurn();
-      turn = { turnId: nextTurnId(), lastTs: ts };
-      if (pendingCompactBoundaryTs !== undefined) {
-        messages.push({
-          type: 'system_note',
-          id: id('compact'),
-          turnId: turn.turnId,
-          ts: pendingCompactBoundaryTs,
-          kind: 'context_compacted',
-        });
-        pendingCompactBoundaryTs = undefined;
-      }
-      messages.push({ type: 'user', id: id('user'), turnId: turn.turnId, ts, text });
-      continue;
-    }
-
-    if (type === 'assistant') {
-      if (!turn) {
-        // A transcript can open with an assistant record when the session was
-        // resumed. Give it a turn rather than dropping the content.
-        turn = { turnId: nextTurnId(), lastTs: ts };
-        if (pendingCompactBoundaryTs !== undefined) {
-          messages.push({
-            type: 'system_note',
-            id: id('compact'),
-            turnId: turn.turnId,
-            ts: pendingCompactBoundaryTs,
-            kind: 'context_compacted',
-          });
-          pendingCompactBoundaryTs = undefined;
-        }
-      }
-      if (record.isApiErrorMessage === true) turn.failed = true;
-      const message = asMessageRecord(record);
-      const responseId = stringOf(message?.id);
-      // A response is emitted once, at its first fragment, assembled from all
-      // of them. A later fragment reached here is that same response still
-      // being written — its content is already in what was emitted, and
-      // emitting again would repeat the reply.
-      if (responseId !== undefined) {
-        if (emittedResponses.has(responseId)) continue;
-        emittedResponses.add(responseId);
-      }
-      // A fragment with no id stands alone; it is the only fragment of itself.
-      const fragments = (responseId === undefined
-        ? undefined
-        : responseFragments.get(responseId)) ?? [record];
-
-      // Status evidence is read from every fragment, not just the first: the
-      // `stop_reason` lands on whichever fragment the response finished on.
-      for (const fragment of fragments) {
-        if (fragment.isApiErrorMessage === true) turn.failed = true;
-        const stop = stringOf(asMessageRecord(fragment)?.stop_reason);
-        if (stop && TERMINAL_STOP_REASONS.has(stop)) turn.terminalStop = stop;
-      }
-
-      // The transcript names the model that produced each step. Carrying the
-      // real value keeps an imported turn attributable; a placeholder would
-      // put a model the user never ran onto their history.
-      const modelId = stringOf(message?.model) ?? 'claude-code';
-
-      // Concatenated in fragment order, which is the order the response was
-      // streamed. Joining rather than picking one: every delta is content the
-      // model produced, and choosing between them would be choosing which
-      // half of a reply to keep.
-      const thinking = fragments
-        .map((fragment) => thinkingText(asMessageRecord(fragment)))
-        .filter((part) => part.length > 0)
-        .join('\n\n');
-      if (thinking) {
-        messages.push({
-          type: 'assistant',
-          id: id('thinking'),
-          turnId: turn.turnId,
-          ts,
-          text: '',
-          thinking: { text: thinking },
-          contentOrder: ['thinking'],
-          modelId,
-        });
-      }
-      const text = fragments
-        .map((fragment) => claudeAssistantText(fragment))
-        .filter((part): part is string => part !== undefined && part.length > 0)
-        .join('\n\n');
-      if (text) {
-        messages.push({
-          type: 'assistant',
-          id: id('assistant'),
-          turnId: turn.turnId,
-          ts,
-          text,
-          contentOrder: ['text'],
-          modelId,
-        });
-      }
-      // Every call the response made, before any of their results. Calls
-      // sharing a `message.id` came from one API response, so they were
-      // issued together however the log interleaved them with the results
-      // arriving; a call written after its sibling's result did not follow it.
-      for (const fragment of fragments) {
-        for (const block of toolUseBlocks(asMessageRecord(fragment))) {
-          messages.push({
-            type: 'tool_call',
-            // The id must equal the tool_use id so the result can match it.
-            id: stringOf(block.id) ?? id('tool-call'),
-            turnId: turn.turnId,
-            ts,
-            toolName: stringOf(block.name) ?? 'unknown',
-            args: block.input ?? {},
-          });
-        }
-      }
-      continue;
-    }
-
-    // The compaction boundary, keyed on the record that states it.
-    //
-    // It used to be keyed on `isCompactSummary`, which belongs to the summary
-    // *user* record — and that record is consumed by the `user` branch above
-    // and never reaches here, so the note was never emitted. The import then
-    // carried the pre-boundary history flat with nothing saying a compaction
-    // had happened, while `claudeUserAuthoredText` dropped the summary itself
-    // for being `isCompactSummary`: both halves of the event lost at once.
-    //
-    // Pre-boundary records stay. They are the conversation that actually
-    // happened — 24,695 of them across the 5 compacted transcripts here — and
-    // the boundary marks where the model's context restarted, which is the
-    // part a reader cannot reconstruct from the messages themselves.
-    if (record.subtype === 'compact_boundary') {
-      if (!turn) {
-        pendingCompactBoundaryTs = ts;
-        continue;
-      }
-      messages.push({
-        type: 'system_note',
-        id: id('compact'),
-        turnId: turn.turnId,
-        ts,
-        kind: 'context_compacted',
-      });
-    }
+    this.#turn = undefined;
   }
-
-  closeTurn();
-  return messages;
 }
 
 function asMessageRecord(record: TranscriptRecord): Record<string, unknown> | undefined {
