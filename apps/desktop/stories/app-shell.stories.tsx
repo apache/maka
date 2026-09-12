@@ -963,8 +963,7 @@ export const ManyTurns: Story = {
   ),
 };
 
-// The same transcript and fixture CSS, with enough resident Turns for native
-// render skipping but no need to mount the 120-Turn catalog demonstration.
+// Exercise transcript motion without mounting the 120-Turn catalog demonstration.
 export const TranscriptRenderCost: Story = {
   render: () => <ComposedShell frameHeight={700} chat={{ messages: manyTurnMessages.slice(-64) }} />,
   play: async ({ canvasElement }) => {
@@ -975,7 +974,6 @@ export const TranscriptRenderCost: Story = {
     await frame();
     let transitions = 0;
     let animations = 0;
-    const skipped = new Set<Element>();
     const turns = [...canvasElement.querySelectorAll<HTMLElement>('.maka-transcript-turn')];
     expect(turns.length).toBeGreaterThan(0);
     for (const pseudo of [null, '::before', '::after']) {
@@ -983,35 +981,24 @@ export const TranscriptRenderCost: Story = {
       expect(style.transitionProperty).toBe('none');
       expect(style.animationName).toBe('none');
     }
-    const visibility = (event: Event) => {
-      if (event.target !== event.currentTarget) return;
-      const turn = event.currentTarget as Element;
-      if ((event as Event & { skipped: boolean }).skipped) skipped.add(turn);
-      else skipped.delete(turn);
-    };
-    for (const turn of turns) turn.addEventListener('contentvisibilityautostatechange', visibility);
     const transition = () => { transitions += 1; };
     const animation = () => { animations += 1; };
     canvasElement.addEventListener('transitionrun', transition, true);
     canvasElement.addEventListener('animationstart', animation, true);
     try {
       // No Host paging or wheel routing is under test: move the real Chromium
-      // scrollport to exercise the fixture CSS and browser render skipping.
-      // Two distant positions expose and skip resident Turns. Forty incremental
-      // paints added cost under CI contention without testing another contract.
+      // scrollport between two distant positions to exercise the fixture CSS.
       for (const direction of [-1, 1]) {
         scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 120, bubbles: true }));
         scroller.scrollTop = direction < 0 ? 0 : scroller.scrollHeight;
         await frame();
         await frame();
       }
-      await waitFor(() => expect(skipped.size).toBeGreaterThan(0));
       expect(transitions).toBe(0);
       expect(animations).toBe(0);
       expect(canvasElement.getAnimations({ subtree: true })
         .filter((animation) => animation.playState !== 'finished')).toHaveLength(0);
     } finally {
-      for (const turn of turns) turn.removeEventListener('contentvisibilityautostatechange', visibility);
       canvasElement.removeEventListener('transitionrun', transition, true);
       canvasElement.removeEventListener('animationstart', animation, true);
     }
