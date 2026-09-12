@@ -48,6 +48,20 @@ function verdict(input: BuildModelCatalogInput) {
   return { ok: entry?.canUseAsChatDefault === true };
 }
 
+test('catalog transport preserves independent limits and their unmodified defaults', () => {
+  const [entry] = buildModelCatalogEntries({
+    providerType: 'openai-compatible',
+    models: [{ id: 'custom', contextWindow: 64000, inputLimit: 32000 }],
+    modelOverrides: { custom: { contextWindow: 200000 } },
+  });
+  assert.ok(entry);
+  const decoded = decodeModelCatalogEntry(JSON.parse(JSON.stringify(entry)));
+  assert.equal(decoded.contextWindow, 200000);
+  assert.equal(decoded.inputLimit, 32000);
+  assert.equal(decoded.defaultContextWindow, 64000);
+  assert.equal(decoded.defaultInputLimit, 32000);
+});
+
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,

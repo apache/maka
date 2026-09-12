@@ -24,7 +24,7 @@ import type {
   ProviderDefaults,
   ProviderType,
 } from './llm-connections.js';
-import { applyModelOverride } from './model-thinking.js';
+import { applyModelOverride, resolveModelLimits } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_REGISTRY,
@@ -47,7 +47,7 @@ import {
  * desktop IPC boundary, so a field nothing renders is paid for on every
  * catalog read by every attached client — and the ones that were here
  * (`providerType`, `connectionSlug`, `source`, `unavailableReason`,
- * `lifecycle`, `inputLimit`, `maxOutputTokens`, `structuredOutput`,
+ * `lifecycle`, `maxOutputTokens`, `structuredOutput`,
  * `lastUpdated`, `modalities`, `provenance`, `pricing`, and every capability
  * but vision) had none. They are not needed today; when a surface actually asks
  * for one, add it back with the reader that wants it. `makeEntry` still
@@ -82,6 +82,9 @@ export interface ModelCatalogEntry {
    */
   thinkingLevels: readonly ThinkingLevel[];
   contextWindow?: number;
+  inputLimit?: number;
+  defaultContextWindow?: number;
+  defaultInputLimit?: number;
   knowledgeCutoff?: string;
 }
 
@@ -348,7 +351,13 @@ function makeEntry(
     input.modelOverrides?.[model.id.trim()],
   );
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
-  const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
+  const sourceModel = { ...model, id: normalizedModel.id };
+  const defaults = resolveModelLimits(input.providerType, sourceModel);
+  const limits = resolveModelLimits(
+    input.providerType,
+    sourceModel,
+    input.modelOverrides?.[normalizedModel.id],
+  );
   const description = normalizedModel.description ?? metadata.description;
   const knowledgeCutoff = normalizedModel.knowledgeCutoff ?? metadata.knowledgeCutoff;
   const modalities = normalizedModel.modalities ?? metadata.modalities;
@@ -399,7 +408,11 @@ function makeEntry(
       ? {}
       : { compactionThreshold: input.modelOverrides[normalizedModel.id]!.compactionThreshold }),
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
-    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...limits,
+    ...(defaults.contextWindow === undefined
+      ? {}
+      : { defaultContextWindow: defaults.contextWindow }),
+    ...(defaults.inputLimit === undefined ? {} : { defaultInputLimit: defaults.inputLimit }),
     ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
   };
 }

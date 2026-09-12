@@ -895,7 +895,8 @@ export const ModelParameterSave: Story = {
     const enable = canvas.getByRole('switch', { name: /gemini-3\.8-flash/i });
     expect(enable).not.toBeChecked();
     await userEvent.click(configure);
-    const field = await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i });
+    const field = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
+    const inputLimit = body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i });
     const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
@@ -903,19 +904,24 @@ export const ModelParameterSave: Story = {
     await userEvent.clear(field);
     await userEvent.type(field, '128K');
     expect(field).toHaveFocus();
+    await userEvent.type(inputLimit, '160K');
+    expect(save).toBeDisabled();
+    await userEvent.clear(inputLimit);
+    await userEvent.type(inputLimit, '64K');
     expect(save).toBeEnabled();
     await userEvent.click(save);
     await waitFor(() => expect(configure).toHaveFocus());
     expect(enable).not.toBeChecked();
     await userEvent.click(configure);
-    const reopened = await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i });
+    const reopened = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
     expect(reopened).toHaveValue('128000');
+    expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
     await userEvent.clear(reopened);
     await userEvent.type(reopened, '256K');
     await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
-    expect(await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i })).toHaveValue('128000');
+    expect(await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i })).toHaveValue('128000');
   },
 };
 

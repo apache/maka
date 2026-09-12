@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { applyConnectionModelOverrides } from '@maka/core/model-thinking';
+import { applyConnectionModelOverrides, modelLimitsConflict } from '@maka/core/model-thinking';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { LegacyModelFactsReader } from '../model-facts-store.js';
 import { randomUUID } from 'node:crypto';
@@ -195,7 +196,6 @@ export class ConnectionCatalogDocumentOwner {
             ? {}
             : {
                 contextWindow: facts.contextWindow,
-                inputLimit: facts.inputLimit ?? facts.contextWindow,
                 compactionThreshold: Math.min(
                   facts.contextWindow,
                   facts.inputLimit ?? facts.contextWindow,
@@ -294,6 +294,7 @@ export class ConnectionCatalogDocumentOwner {
         models: [],
       },
     ]);
+    assertModelLimits(next.connections.at(-1)!);
     await this.write(root, next);
     return committed(next);
   }
@@ -387,6 +388,7 @@ export class ConnectionCatalogDocumentOwner {
         : { lastTest: previous.lastTest }),
     };
     const next = this.nextDocument(current, connections);
+    if (changes.modelOverrides !== undefined) assertModelLimits(connections[index]!);
     await this.write(root, next);
     return committed(next);
   }
@@ -906,6 +908,23 @@ export class ConnectionCatalogDocumentOwner {
       throw new RuntimePolicyStoreError(
         'invalid_connection_input',
         `connection catalog exceeds its ${CATALOG_DOCUMENT_MAX_BYTES} byte limit`,
+      );
+    }
+  }
+}
+
+function assertModelLimits(connection: ConnectionCatalogEntry): void {
+  for (const model of resolveConnectionModelCatalog({
+    ...connection,
+    models: [...connection.models],
+    enabledModelIds: [...connection.enabledModelIds],
+    defaultModel: connection.enabledModelIds[0] ?? '',
+  })) {
+    if (connection.modelOverrides?.[model.id] === undefined) continue;
+    if (modelLimitsConflict(model)) {
+      throw codecError(
+        'invalid_connection_input',
+        `Input limit exceeds the context window for ${model.id}`,
       );
     }
   }

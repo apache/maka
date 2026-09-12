@@ -18,8 +18,12 @@
  */
 
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
-import { declaredContextWindow, modelOverride } from '@maka/core/model-thinking';
+import {
+  declaredContextWindow,
+  modelOverride,
+  resolveModelLimits,
+  modelLimitsConflict,
+} from '@maka/core/model-thinking';
 import type { ContextBudgetPolicy } from './context-budget.js';
 
 export interface BuildDefaultContextBudgetPolicyOptions {
@@ -84,14 +88,15 @@ export function resolveSelectedModelContextWindow(
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
   const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
-  const metadata = lookupModelMetadata(connection.providerType, selectedModelId);
-  // Provider/access-path facts outrank static metadata. Within one source,
-  // use the narrowest positive bound: models.dev's input limit can be lower
-  // than its total context window, while an access path can expose a narrower
-  // context window than the public catalog.
-  const modelLimit = narrowestPositiveLimit(model?.contextWindow, model?.inputLimit);
-  const metadataLimit = narrowestPositiveLimit(metadata.contextWindow, metadata.inputLimit);
-  return modelLimit ?? metadataLimit;
+  // Resolve each fact independently before deriving the input budget.
+  const limits = resolveModelLimits(
+    connection.providerType,
+    model ?? { id: selectedModelId },
+    connection.modelOverrides?.[selectedModelId],
+  );
+  if (modelLimitsConflict(limits))
+    throw new Error('Model input limit exceeds the context window. Update the model limits.');
+  return narrowestPositiveLimit(limits.contextWindow, limits.inputLimit);
 }
 
 function narrowestPositiveLimit(...values: Array<number | undefined>): number | undefined {

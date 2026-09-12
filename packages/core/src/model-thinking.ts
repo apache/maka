@@ -371,15 +371,36 @@ export function applyModelOverride(
   return {
     ...model,
     ...facts,
-    ...(override.contextWindow !== undefined && override.inputLimit === undefined
-      ? { inputLimit: override.contextWindow }
-      : {}),
     capabilities: {
       ...model.capabilities,
       ...capabilities,
       ...(vision === undefined ? {} : { vision }),
     },
   };
+}
+
+export type ModelLimits = Pick<ModelInfo, 'contextWindow' | 'inputLimit'>;
+
+export function resolveModelLimits(
+  providerType: ProviderType,
+  model: ModelInfo,
+  override?: ModelOverride,
+): ModelLimits {
+  const metadata = lookupModelMetadata(providerType, model.id);
+  const contextWindow = override?.contextWindow ?? model.contextWindow ?? metadata.contextWindow;
+  const inputLimit = override?.inputLimit ?? model.inputLimit ?? metadata.inputLimit;
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(inputLimit === undefined ? {} : { inputLimit }),
+  };
+}
+
+export function modelLimitsConflict(limits: ModelLimits): boolean {
+  return (
+    limits.contextWindow !== undefined &&
+    limits.inputLimit !== undefined &&
+    limits.inputLimit > limits.contextWindow
+  );
 }
 
 export function applyConnectionModelOverrides<

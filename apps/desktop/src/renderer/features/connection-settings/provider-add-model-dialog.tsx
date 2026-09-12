@@ -19,7 +19,7 @@
 
 import { useId, useState, type ReactNode } from 'react';
 import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connections';
-import { supportsRelayFastServiceTier, type ModelOverride } from '@maka/core/model-thinking';
+import { supportsRelayFastServiceTier, modelLimitsConflict, type ModelOverride } from '@maka/core/model-thinking';
 import { CapabilityEditor } from './provider-capability-editor.js';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -43,12 +43,13 @@ export function AddModelDialog(props: {
   const [contextWindowInput, setContextWindowInput] = useState('');
   const contextWindow = parseContextWindowInput(contextWindowInput);
   const [numericInputs, setNumericInputs] = useState<
-    Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>>
+    Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>
   >({});
   const numericInvalid = Object.values(numericInputs).some(
     (input) => input.trim() !== '' && parseContextWindowInput(input) === null,
   );
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const limitsConflict = modelLimitsConflict({ contextWindow: contextWindow ?? undefined, inputLimit: profile.inputLimit });
   const [isSaving, setSaving] = useState(false);
 
   const trimmedId = id.trim();
@@ -77,7 +78,7 @@ export function AddModelDialog(props: {
   // typed text, still there to retry from.
   async function submit() {
     setSubmitAttempted(true);
-    if (idError || contextWindowError || numericInvalid || isSaving) return;
+    if (idError || contextWindowError || numericInvalid || limitsConflict || isSaving) return;
     setSaving(true);
     try {
       const { serviceTier, ...parameters } = profile;
@@ -102,7 +103,7 @@ export function AddModelDialog(props: {
       title={copy.addModel}
       confirmLabel={copy.addModelConfirm}
       isSaving={isSaving}
-      isSubmitDisabled={props.isSubmitDisabled}
+      isSubmitDisabled={props.isSubmitDisabled || limitsConflict}
       onClose={close}
       onSubmit={submit}
     >
@@ -111,6 +112,7 @@ export function AddModelDialog(props: {
         modelId={trimmedId}
         isRelay={isRelayProviderType(props.providerType)}
         declared={profile}
+        limitsConflict={limitsConflict}
         onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
         contextWindowInput={contextWindowInput}
         contextWindowInputInvalid={submitAttempted && contextWindowError !== null}

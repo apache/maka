@@ -37,8 +37,11 @@ export function CapabilityEditor(props: {
   declared: ModelOverride | undefined;
   contextWindowInput: string;
   contextWindowInputInvalid: boolean;
-  numericInputs?: Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>>;
-  onNumericInput(field: 'compactionThreshold' | 'maxOutputTokens', input: string): void;
+  numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>;
+  onNumericInput(field: 'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', input: string): void;
+  defaultContextWindow?: number;
+  defaultInputLimit?: number;
+  limitsConflict?: boolean;
   contextWindowError?: string;
   disabled: boolean;
   showsFastMode: boolean;
@@ -101,7 +104,7 @@ export function CapabilityEditor(props: {
         label={copy.contextWindow}
         labelTooltip={copy.contextWindowHelp}
         hasClear
-        placeholder="128000 / 128K / 1M"
+        placeholder={props.defaultContextWindow === undefined ? '128000 / 128K / 1M' : String(props.defaultContextWindow)}
         onChange={props.onContextWindowInput}
         status={
           props.contextWindowInputInvalid
@@ -109,7 +112,7 @@ export function CapabilityEditor(props: {
             : undefined
         }
       />
-      {(['compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
+      {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
         const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
         const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
         return (
@@ -123,9 +126,9 @@ export function CapabilityEditor(props: {
             onChange={(value) => props.onNumericInput(field, value)}
             isDisabled={props.disabled}
             hasClear
-            placeholder={field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
+            placeholder={field === 'inputLimit' && props.defaultInputLimit !== undefined ? String(props.defaultInputLimit) : field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
             status={
-              invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : undefined
+              invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
             }
           />
         );

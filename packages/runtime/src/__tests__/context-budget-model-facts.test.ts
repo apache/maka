@@ -50,18 +50,43 @@ test('invalid zero input limits do not disable the context-window fallback', () 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 1_000);
 });
 
-test('a relay user declaration remains ahead of runtime and static model facts', () => {
+test('overriding total capacity preserves the independent input limit', () => {
   const connection = {
     slug: 'relay',
     providerType: 'openai-compatible' as const,
     defaultModel: 'relay-model',
-    models: [{ id: 'relay-model', contextWindow: 64_000, inputLimit: 128_000 }],
-    modelOverrides: { 'relay-model': { contextWindow: 32_000 } },
+    models: [{ id: 'relay-model', contextWindow: 64_000, inputLimit: 32_000 }],
+    modelOverrides: { 'relay-model': { contextWindow: 200_000 } },
   };
 
   assert.equal(
     resolveSelectedModelContextWindow(applyConnectionModelOverrides(connection), undefined),
     32_000,
+  );
+  assert.equal(
+    resolveSelectedModelContextWindow(
+      {
+        ...connection,
+        modelOverrides: {
+          'relay-model': { contextWindow: 200_000, inputLimit: 160_000 },
+        },
+      },
+      undefined,
+    ),
+    160_000,
+  );
+  assert.throws(
+    () =>
+      resolveSelectedModelContextWindow(
+        {
+          ...connection,
+          modelOverrides: {
+            'relay-model': { contextWindow: 16_000 },
+          },
+        },
+        undefined,
+      ),
+    /input limit exceeds/i,
   );
 });
 

@@ -43,6 +43,9 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'compactionThreshold',
       'thinkingLevels',
       'contextWindow',
+      'inputLimit',
+      'defaultContextWindow',
+      'defaultInputLimit',
       'knowledgeCutoff',
     ],
     ['id', 'canUseAsChatDefault', 'isDefault', 'supportsVision', 'thinkingLevels'],
@@ -52,10 +55,17 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
   // fields, so it is handed exactly the subset it owns.
   const shared = decodeConnectionModel({
     id: item.id,
-    ...pick(item, ['displayName', 'description', 'contextWindow', 'knowledgeCutoff']),
+    ...pick(item, ['displayName', 'description', 'contextWindow', 'inputLimit', 'knowledgeCutoff']),
   });
   return {
     ...shared,
+    ...Object.fromEntries(
+      ['defaultContextWindow', 'defaultInputLimit'].flatMap((field) =>
+        item[field] === undefined
+          ? []
+          : [[field, integerValue(item[field], field, 1, Number.MAX_SAFE_INTEGER)]],
+      ),
+    ),
     canUseAsChatDefault: booleanValue(item.canUseAsChatDefault, 'entry chat default eligibility'),
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     supportsVision: booleanValue(item.supportsVision, 'entry vision support'),

@@ -112,19 +112,64 @@ test('schema one converts both old declarations once and ignores the old file af
     assert.deepEqual(migrated.modelOverrides, {
       manual: {
         contextWindow: 64000,
-        inputLimit: 64000,
         compactionThreshold: 64000,
         vision: false,
       },
     });
-    assert.equal((await update(owner, migrated, { contextWindow: 128000 })).kind, 'committed');
+    assert.equal(
+      (await update(owner, migrated, { ...migrated.modelOverrides?.manual, contextWindow: 128000 }))
+        .kind,
+      'committed',
+    );
     assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 2);
     await writeFile(join(root, 'model-facts.json'), '{broken legacy input');
     const restarted = new RuntimePolicyCoordinator((operation) => operation(root));
     assert.deepEqual((await restarted.getCatalogSnapshot()).connections[0]?.modelOverrides, {
-      manual: { contextWindow: 128000 },
+      manual: { contextWindow: 128000, compactionThreshold: 64000, vision: false },
     });
     assert.equal(connection.connectionId, migrated.connectionId);
+  });
+});
+
+test('independent limits survive restart and conflicting saves leave the document untouched', async () => {
+  await withCatalog(async (root, owner) => {
+    let connection = await create(owner, 'limits');
+    const fetched = await owner.beginModelFetch(connection.connectionId);
+    assert.equal(fetched.kind, 'ready');
+    if (fetched.kind !== 'ready') throw new Error('fetch unavailable');
+    await owner.completeModelFetch(fetched.ticket, {
+      models: [{ id: 'manual', contextWindow: 64000, inputLimit: 32000 }],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    for (const override of [
+      { contextWindow: 200000, inputLimit: 160000 },
+      { contextWindow: 200000 },
+      { inputLimit: 48000 },
+      {},
+    ]) {
+      connection = (await owner.getCatalogSnapshot()).connections[0]!;
+      assert.equal((await update(owner, connection, override)).kind, 'committed');
+      owner = new RuntimePolicyCoordinator((operation) => operation(root));
+      connection = (await owner.getCatalogSnapshot()).connections[0]!;
+      assert.deepEqual(connection.modelOverrides?.manual, override);
+      const resolved = await owner.resolveExecutionConnection({
+        kind: 'catalog_slug',
+        connectionSlug: 'limits',
+      });
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind !== 'ready') throw new Error('execution unavailable');
+      const model = resolved.connection.models.find((model) => model.id === 'manual')!;
+      assert.equal(model.contextWindow, override.contextWindow ?? 64000);
+      assert.equal(model.inputLimit, override.inputLimit ?? 32000);
+    }
+    const path = join(root, 'connection-catalog.json');
+    const before = await readFile(path, 'utf8');
+    await assert.rejects(
+      update(owner, connection, { contextWindow: 16000 }),
+      /input limit exceeds/i,
+    );
+    assert.equal(await readFile(path, 'utf8'), before);
   });
 });
 

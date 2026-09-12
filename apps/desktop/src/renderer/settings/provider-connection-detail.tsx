@@ -33,6 +33,7 @@ import {
 import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
   supportsRelayFastServiceTier,
+  modelLimitsConflict,
   type ModelOverride,
 } from '@maka/core/model-thinking';
 import {
@@ -144,7 +145,7 @@ type EditingRow =
   | 'endpoint'
   | 'headers'
   | 'body'
-  | { model: string; contextWindowInput?: string; numericInputs?: Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>> }
+  | { model: string; contextWindowInput?: string; numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>> }
   /* The 添加模型 dialog: one thing is open at a time, so it is a row here. */
   | 'add-model'
   | null;
@@ -257,6 +258,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const numericInputs = typeof editingRow === 'object' && editingRow?.model === editingModelId ? editingRow.numericInputs : undefined;
   const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
   const declared: ModelOverride | undefined = editingModelId === null ? undefined : modelParameters[editingModelId];
+  const modelEntry = connection.catalogEntries.find((model) => model.id === editingModelId);
+  const limitsConflict = modelLimitsConflict({
+    contextWindow: declared?.contextWindow ?? modelEntry?.defaultContextWindow,
+    inputLimit: declared?.inputLimit ?? modelEntry?.defaultInputLimit,
+  });
 
   function openRow(row: Exclude<EditingRow, null>) {
     // Opening one row abandons whatever another row was holding: only one is
@@ -680,7 +686,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       <ModelParametersDialog
         isOpen={editingModelId !== null} title={copy.declareCapabilities} subtitle={editingModelId ?? undefined}
         confirmLabel={copy.save} isSaving={allActionsBusy}
-        isSubmitDisabled={!hasModelChanges || contextWindowInputInvalid || numericInvalid}
+        isSubmitDisabled={!hasModelChanges || contextWindowInputInvalid || numericInvalid || limitsConflict}
         onClose={() => { if (editingModelId !== null) resetDraftProfile(editingModelId); setEditingRow(null); }}
         onSubmit={async () => {
             if (await saveModelParameters()) setEditingRow(null);
@@ -697,6 +703,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             if (value !== null || input.trim() === '') setDraftParameters(editingModelId, { [field]: value ?? undefined });
           }}
           declared={declared}
+          limitsConflict={limitsConflict}
+          defaultContextWindow={modelEntry?.defaultContextWindow}
+          defaultInputLimit={modelEntry?.defaultInputLimit}
           onChange={(patch) => setDraftParameters(editingModelId, patch)}
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}
