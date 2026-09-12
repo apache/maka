@@ -783,10 +783,23 @@ export const TurnView = memo(function TurnView(props: {
             </LocalizedChatMessage>
             {/* An abort is a short, settled status change rather than sender
                 content or a recovery error. Keep Astryx's system notice as a
-                sibling of the assistant message, after the work it closes. */}
+                sibling of the assistant message, after the work it closes;
+                the Desktop continuation action remains attached to that same
+                outcome while the Host retains final safety authority. */}
             {ownsTurnChrome && turn.status === 'aborted' && (
               <ChatSystemMessage icon={<Ban size={ICON_SIZE.meta} aria-hidden="true" />}>
                 {turnAbortStatusLabel(turn.abortSource, locale)}
+                {props.safeResumeAction && (
+                  <UiButton
+                    variant="ghost"
+                    size="sm"
+                    isDisabled={props.safeResumeAction.pending}
+                    onClick={props.safeResumeAction.onResume}
+                    label={
+                      props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
+                    }
+                  />
+                )}
               </ChatSystemMessage>
             )}
           </Fragment>

@@ -144,7 +144,8 @@ plan captures these facts in a safety snapshot and execution revalidates them.
 
 ## Host entry points and observability
 
-- desktop interrupted-turn banner action: **Safe resume**;
+- desktop interrupted-turn presentation: **Safe resume** on an eligible failure
+  banner or user-Stop status notice;
 - desktop main IPC: `sessions:resumeLatest`;
 - CLI TUI command: `/resume`;
 - startup recovery: repairs and reconstructs already admitted continuations but
