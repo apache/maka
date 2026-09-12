@@ -23,7 +23,12 @@ import { existsSync, promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { killWindowsTree } from '../process-tree-terminator.js';
-import { runProcessWithBoundedTail, runShellWithBoundedTail } from '../shell-exec.js';
+import {
+  buildUserCommandEnv,
+  runProcessWithBoundedTail,
+  runShellWithBoundedTail,
+} from '../shell-exec.js';
+import { defaultShellPlan } from '../shell-detect.js';
 
 const base = (over: Record<string, unknown> = {}) => ({
   cwd: process.cwd(),
@@ -71,6 +76,82 @@ function findPwsh(): string | undefined {
 }
 
 describe('runShellWithBoundedTail', () => {
+  test('removes Windows case variants without mutating the supplied environment', () => {
+    const input = {
+      ELECTRON_RUN_AS_NODE: 'upper',
+      electron_run_as_node: 'lower',
+      MAKA_SHELL_ENV_KEEP: 'kept',
+    };
+    const output = buildUserCommandEnv(input);
+    if (process.platform === 'win32') {
+      assert.deepEqual(output, { MAKA_SHELL_ENV_KEEP: 'kept' });
+    } else {
+      assert.deepEqual(output, {
+        electron_run_as_node: 'lower',
+        MAKA_SHELL_ENV_KEEP: 'kept',
+      });
+    }
+    assert.deepEqual(input, {
+      ELECTRON_RUN_AS_NODE: 'upper',
+      electron_run_as_node: 'lower',
+      MAKA_SHELL_ENV_KEEP: 'kept',
+    });
+  });
+
+  test('clears inherited Electron Node mode at the user-command boundary', async () => {
+    const previousElectronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+    const previousKeep = process.env.MAKA_SHELL_ENV_KEEP;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    process.env.MAKA_SHELL_ENV_KEEP = 'kept-by-parent';
+    try {
+      const childEnv = buildUserCommandEnv(process.env);
+      assert.equal(childEnv.ELECTRON_RUN_AS_NODE, undefined);
+      assert.equal(childEnv.MAKA_SHELL_ENV_KEEP, 'kept-by-parent');
+
+      const result = await runShellWithBoundedTail(
+        shellEnvironmentProbeCommand(),
+        base({ env: process.env, shell: defaultShellPlan() }),
+      );
+      assert.equal(result.exitCode, 0);
+      assert.match(result.stdout, /electron=\r?\n/u);
+      assert.match(result.stdout, /keep=kept-by-parent/u);
+      assert.match(result.stdout, /explicit=explicit/u);
+      assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
+      assert.equal(process.env.MAKA_SHELL_ENV_KEEP, 'kept-by-parent');
+    } finally {
+      if (previousElectronRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+      else process.env.ELECTRON_RUN_AS_NODE = previousElectronRunAsNode;
+      if (previousKeep === undefined) delete process.env.MAKA_SHELL_ENV_KEEP;
+      else process.env.MAKA_SHELL_ENV_KEEP = previousKeep;
+    }
+  });
+
+  test('clears inherited Electron Node mode for direct argv commands', async () => {
+    const previousElectronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+    const previousKeep = process.env.MAKA_SHELL_ENV_KEEP;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    process.env.MAKA_SHELL_ENV_KEEP = 'kept-by-parent';
+    try {
+      const result = await runProcessWithBoundedTail(
+        process.execPath,
+        [
+          '-e',
+          "process.stdout.write(`electron=${process.env.ELECTRON_RUN_AS_NODE ?? ''}\\nkeep=${process.env.MAKA_SHELL_ENV_KEEP ?? ''}`)",
+        ],
+        base({ env: process.env }),
+      );
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, 'electron=\nkeep=kept-by-parent');
+      assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
+      assert.equal(process.env.MAKA_SHELL_ENV_KEEP, 'kept-by-parent');
+    } finally {
+      if (previousElectronRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+      else process.env.ELECTRON_RUN_AS_NODE = previousElectronRunAsNode;
+      if (previousKeep === undefined) delete process.env.MAKA_SHELL_ENV_KEEP;
+      else process.env.MAKA_SHELL_ENV_KEEP = previousKeep;
+    }
+  });
+
   test('writes a legacy WSL Bash command through stdin', {
     skip: process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false,
   }, async () => {
@@ -349,3 +430,14 @@ describe('runShellWithBoundedTail', () => {
     assert.equal(await killWindowsTree(999_999), false);
   });
 });
+
+function shellEnvironmentProbeCommand(): string {
+  const shell = defaultShellPlan();
+  if (shell.kind === 'cmd') {
+    return 'echo electron=%ELECTRON_RUN_AS_NODE% & echo keep=%MAKA_SHELL_ENV_KEEP% & set ELECTRON_RUN_AS_NODE=explicit & call echo explicit=%%ELECTRON_RUN_AS_NODE%%';
+  }
+  if (shell.kind === 'pwsh' || shell.kind === 'powershell') {
+    return 'Write-Output "electron=$env:ELECTRON_RUN_AS_NODE"; Write-Output "keep=$env:MAKA_SHELL_ENV_KEEP"; $env:ELECTRON_RUN_AS_NODE=\'explicit\'; Write-Output "explicit=$env:ELECTRON_RUN_AS_NODE"';
+  }
+  return 'printf \'electron=%s\\nkeep=%s\\n\' "${ELECTRON_RUN_AS_NODE-}" "$MAKA_SHELL_ENV_KEEP"; ELECTRON_RUN_AS_NODE=explicit; printf \'explicit=%s\\n\' "$ELECTRON_RUN_AS_NODE"';
+}

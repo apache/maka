@@ -173,6 +173,70 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.liveCount(), 0);
   });
 
+  test('clears inherited Electron Node mode for background pipes, PTY, and argv', async () => {
+    const previousElectronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+    const previousKeep = process.env.MAKA_SHELL_ENV_KEEP;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    process.env.MAKA_SHELL_ENV_KEEP = 'kept-by-parent';
+    let manager: ShellRunProcessManager | undefined;
+    try {
+      manager = await createTestManager();
+      const cwd = await workspace();
+      const probeScript =
+        "process.stdout.write(`electron=${process.env.ELECTRON_RUN_AS_NODE ?? '<missing>'}\\nkeep=${process.env.MAKA_SHELL_ENV_KEEP ?? '<missing>'}\\n`)";
+      const command = nodeCommand(probeScript);
+
+      const pipe = await manager.runBackgroundBash(shellInput({ cwd, command, timeoutMs: 10_000 }));
+      assert.equal(pipe.kind, 'shell_run');
+      const pipeResult = await waitForTerminalShellRun(manager, pipe.ref);
+      assert.equal(pipeResult.status, 'completed');
+      assert.equal(pipeResult.output?.mode, 'pipes');
+      if (pipeResult.output?.mode !== 'pipes') throw new Error('expected pipe output');
+      assert.match(pipeResult.output.stdout, /electron=<missing>/u);
+      assert.match(pipeResult.output.stdout, /keep=kept-by-parent/u);
+
+      const argv = await manager.runBackgroundBash(
+        shellInput({
+          cwd,
+          command: 'direct argv probe',
+          argv: [process.execPath, '-e', probeScript],
+          timeoutMs: 10_000,
+        }),
+      );
+      assert.equal(argv.kind, 'shell_run');
+      const argvResult = await waitForTerminalShellRun(manager, argv.ref);
+      assert.equal(argvResult.status, 'completed');
+      assert.equal(argvResult.output?.mode, 'pipes');
+      if (argvResult.output?.mode !== 'pipes') throw new Error('expected pipe output');
+      assert.match(argvResult.output.stdout, /electron=<missing>/u);
+      assert.match(argvResult.output.stdout, /keep=kept-by-parent/u);
+
+      const pty = await manager.runBackgroundBash(
+        shellInput({ cwd, command, pty: true, timeoutMs: 10_000 }),
+      );
+      assert.equal(pty.kind, 'shell_run');
+      const ptyResult = await waitForTerminalShellRun(manager, pty.ref);
+      assert.equal(ptyResult.status, 'completed');
+      assert.equal(ptyResult.output?.mode, 'pty');
+      if (ptyResult.output?.mode !== 'pty') throw new Error('expected PTY output');
+      const ptyText = terminalText(ptyResult.output);
+      assert.match(ptyText, /electron=<missing>/u);
+      assert.match(ptyText, /keep=kept-by-parent/u);
+
+      assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
+      assert.equal(process.env.MAKA_SHELL_ENV_KEEP, 'kept-by-parent');
+    } finally {
+      try {
+        await manager?.terminateAll();
+      } finally {
+        if (previousElectronRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+        else process.env.ELECTRON_RUN_AS_NODE = previousElectronRunAsNode;
+        if (previousKeep === undefined) delete process.env.MAKA_SHELL_ENV_KEEP;
+        else process.env.MAKA_SHELL_ENV_KEEP = previousKeep;
+      }
+    }
+  });
+
   test('preserves CJK PowerShell output through pipes', {
     skip: process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression',
   }, async () => {
