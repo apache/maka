@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
 import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
@@ -771,6 +773,7 @@ export class HostSessionCatalogCoordinator {
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
           expectedRevision: input.expectedRevision,
           clearConnectionBlock: input.patch.modelTarget !== undefined,
+          permissionModeOnly: isPermissionModeOnlyPatch(input.patch),
           configuration,
         });
         return configurationSuccess(
@@ -1282,6 +1285,16 @@ function sessionConfigurationMatches(
   );
 }
 
+function isPermissionModeOnlyPatch(patch: SessionConfigurationUpdateInput['patch']): boolean {
+  return (
+    patch.permissionMode !== undefined &&
+    patch.modelTarget === undefined &&
+    patch.thinkingLevel === undefined &&
+    patch.collaborationMode === undefined &&
+    patch.orchestrationMode === undefined
+  );
+}
+
 interface PreparedSessionCreate {
   readonly name: string;
   readonly labels: readonly string[];
@@ -1493,18 +1506,18 @@ function page(
   project: (record: SessionCatalogRecord) => SessionCatalogItem = projectSessionCatalogRecord,
 ): SessionCatalogQueryResult {
   const items: SessionCatalogItem[] = [];
+  const budget = new JsonArrayPageBudget(SESSION_CATALOG_RESULT_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    sessions: [],
+    nextCursor: null,
+  });
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (!record) throw new Error('Session catalog record index is invalid');
     const item = project(record);
     const moreItems = index + 1 < records.length || hasMore;
-    const candidate = {
-      kind: 'page' as const,
-      revision,
-      sessions: [...items, item],
-      nextCursor: moreItems ? encodeCursor(record) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > SESSION_CATALOG_RESULT_MAX_BYTES) {
+    if (!budget.tryAppend(item, moreItems ? encodeCursor(record) : null)) {
       break;
     }
     items.push(item);

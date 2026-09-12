@@ -23,6 +23,7 @@ apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
+apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx
 apps/desktop/src/renderer/features/external-agent-settings/page.tsx
@@ -90,7 +91,6 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
-apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
 apps/desktop/src/renderer/mcp-brand-marks.tsx
 apps/desktop/src/renderer/mcp-page.tsx

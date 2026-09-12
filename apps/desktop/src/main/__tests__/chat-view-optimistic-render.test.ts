@@ -72,7 +72,7 @@ const OPTIMISTIC_BUBBLE: TransientUserMessageProjection = {
 test('ChatView renders the optimistic bubble and running status before a session exists', () => {
   const markup = renderNoSessionChatView({
     transientMessages: [OPTIMISTIC_BUBBLE],
-    runningStatus: true,
+    activeTurn: { turnId: 'turn-1' },
   });
   // The user's question is on screen immediately, before the fork/session lands.
   assert.match(markup, /why does this fail\?/);
@@ -85,7 +85,7 @@ test('ChatView renders the optimistic bubble and running status before a session
 test('ChatView shows the empty state when there is neither a bubble nor a running turn', () => {
   const markup = renderNoSessionChatView({
     transientMessages: [],
-    runningStatus: false,
+    activeTurn: undefined,
   });
   assert.doesNotMatch(markup, /why does this fail\?/);
   assert.doesNotMatch(markup, /data-live-streaming="true"/);

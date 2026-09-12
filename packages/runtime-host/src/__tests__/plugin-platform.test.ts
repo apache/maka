@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -694,13 +696,13 @@ test('Plugin Platform query projects scoped Command contributions for clients', 
   }
 });
 
-test('Plugin Platform query pages share the protocol byte budget across multiple items', async () => {
+test('Plugin Platform query pages reserve a cursor even when the complete final result fits', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-plugin-query-budget-'));
   try {
     const platform = createPlatform(join(root, 'control'));
     const coordinator = new HostPluginPlatformCoordinator(platform);
     await platform.recover();
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       await platform.apply({
         operations: [
           {
@@ -714,6 +716,30 @@ test('Plugin Platform query pages share the protocol byte budget across multiple
       });
     }
 
+    // Make the complete null-cursor result fit exactly. Admission still reserves
+    // a non-null candidate cursor, so the last item must move to a second page.
+    let expected = platform.inspect().map((item) => ({ ...item, children: [] }));
+    const completeBytes = () =>
+      Buffer.byteLength(
+        JSON.stringify({ view: 'entries', items: expected, nextCursor: null }),
+        'utf8',
+      );
+    const excess = completeBytes() - PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES;
+    assert.ok(excess > 0 && excess < 60 * 1024);
+    await platform.apply({
+      operations: [
+        {
+          type: 'update',
+          entryId: 'large-query-entry-7',
+          patch: {
+            config: { payload: `7:${'x'.repeat(60 * 1024 - excess)}` },
+          },
+        },
+      ],
+    });
+    expected = platform.inspect().map((item) => ({ ...item, children: [] }));
+    assert.equal(completeBytes(), PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES);
+
     const queried = await coordinator.handlers['plugin.platform.query'](
       { view: 'entries', limit: 64 },
       null as never,
@@ -721,7 +747,7 @@ test('Plugin Platform query pages share the protocol byte budget across multiple
     assert.equal(queried.ok, true);
     if (!queried.ok || queried.result.view !== 'entries') throw new Error('Expected Entry page');
     assert.ok(queried.result.items.length > 1);
-    assert.ok(queried.result.items.length < 12);
+    assert.ok(queried.result.items.length < 8);
     assert.notEqual(queried.result.nextCursor, null);
     assert.ok(
       Buffer.byteLength(JSON.stringify(queried.result), 'utf8') <=
@@ -735,6 +761,35 @@ test('Plugin Platform query pages share the protocol byte budget across multiple
         result: queried.result,
       }),
     );
+    const pages = [queried.result];
+    assert.ok(queried.result.nextCursor);
+    const cursorFields = JSON.parse(
+      Buffer.from(queried.result.nextCursor, 'base64url').toString('utf8'),
+    );
+    let cursor = queried.result.nextCursor as string | null;
+    while (cursor !== null) {
+      const next = await coordinator.handlers['plugin.platform.query'](
+        { view: 'entries', limit: 64, cursor },
+        null as never,
+      );
+      assert.ok(next.ok && next.result.view === 'entries' && next.result.items.length > 0);
+      pages.push(next.result);
+      assert.ok(pages.length <= expected.length);
+      cursor = next.result.nextCursor;
+    }
+    assert.equal(pages.length, 2);
+    assertMaximalJsonPages(pages, expected, {
+      maxBytes: PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
+      maxItems: 64,
+      items: (page) => page.items,
+      candidate: (page, items, end) => ({
+        ...page,
+        items,
+        nextCursor: Buffer.from(JSON.stringify({ ...cursorFields, offset: end })).toString(
+          'base64url',
+        ),
+      }),
+    });
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });

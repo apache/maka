@@ -62,7 +62,7 @@ describe('scheduled-task catalog', () => {
     assert.equal(next.fireCount, 1);
   });
 
-  it('pause and resume restore nextFireAt', () => {
+  it('pause and resume preserve a pending occurrence', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     const next = computeNextFireAt({ kind: 'interval', everySeconds: 3600, startAt: now }, now);
     assert.ok(next);
@@ -87,12 +87,41 @@ describe('scheduled-task catalog', () => {
     assert.equal(isScheduledTaskDue(task, next), true);
     const paused = pauseScheduledTask(task, now + 1);
     assert.equal(paused.status, 'paused');
-    assert.equal(paused.nextFireAt, null);
+    assert.equal(paused.nextFireAt, next);
+    assert.equal(isScheduledTaskDue(paused, next), false);
     const resumed = resumeScheduledTask(paused, now + 2);
     assert.ok(!('error' in resumed));
     if ('error' in resumed) return;
     assert.equal(resumed.status, 'active');
-    assert.ok(typeof resumed.nextFireAt === 'number');
+    assert.equal(resumed.nextFireAt, next);
+  });
+
+  it('resume recomputes an occurrence that elapsed while paused', () => {
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const pending = now + 10 * 60_000;
+    const task: ScheduledTask = {
+      id: 'snoozed-daily',
+      title: 'Daily',
+      intent: { kind: 'text', body: 'tick' },
+      schedule: { kind: 'calendar', recurrence: 'daily', anchorAt: now },
+      effect: { kind: 'notify', channel: 'local' },
+      status: 'paused',
+      nextFireAt: pending,
+      lastFireAt: null,
+      fireCount: 0,
+      maxFires: null,
+      expiresAt: null,
+      createdBy: { kind: 'user' },
+      createdAt: now,
+      updatedAt: now,
+      runs: [],
+      lastError: null,
+    };
+
+    const resumed = resumeScheduledTask(task, pending + 1);
+    assert.ok(!('error' in resumed));
+    if ('error' in resumed) return;
+    assert.equal(resumed.nextFireAt, computeNextFireAt(task.schedule, pending + 1));
   });
 
   it('does not resume a task whose fire budget is already spent', () => {

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
@@ -965,19 +967,18 @@ function createScheduledTaskPage(
   offset: number,
 ) {
   const page: ScheduledTask[] = [];
+  const budget = new JsonArrayPageBudget(SCHEDULED_TASK_RESULT_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    tasks: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < tasks.length; index += 1) {
     if (page.length >= SCHEDULED_TASK_PAGE_MAX_ITEMS) break;
     const task = tasks[index];
     if (!task) throw new Error('ScheduledTask page index is invalid');
-    const candidate = [...page, task];
-    const nextOffset = offset + candidate.length;
-    const result = {
-      kind: 'page' as const,
-      revision,
-      tasks: candidate,
-      nextCursor: nextOffset < tasks.length ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > SCHEDULED_TASK_RESULT_MAX_BYTES) {
+    const nextOffset = offset + page.length + 1;
+    if (!budget.tryAppend(task, nextOffset < tasks.length ? String(nextOffset) : null)) {
       break;
     }
     page.push(task);

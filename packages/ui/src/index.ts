@@ -52,6 +52,7 @@ export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
 export * from './materialize.js';
 export * from './live-turn-projection.js';
+export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';

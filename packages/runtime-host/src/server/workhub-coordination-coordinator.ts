@@ -880,6 +880,7 @@ export class HostWorkHubCoordinationCoordinator {
       const configured = await this.#transitionConfiguration({
         expectedRevision: record.revision,
         clearConnectionBlock: false,
+        permissionModeOnly: false,
         configuration: {
           backend: record.header.backend,
           llmConnectionId: record.header.llmConnectionId,

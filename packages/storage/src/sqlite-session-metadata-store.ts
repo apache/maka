@@ -23,6 +23,7 @@ import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
@@ -4575,7 +4576,7 @@ export class SqliteSessionMetadataStore {
           `Managed sandbox boundary history is invalid: ${sessionId}`,
         );
       }
-      if (!isCanonicalReadOnlySandboxProfile(boundary.profile)) return boundary.profile;
+      if (!isCanonicalReadOnlyPermissionProfile(boundary.profile)) return boundary.profile;
     }
     return requireManagedProfile(createGenesisExecutionBoundary('ask'));
   }
@@ -4838,7 +4839,7 @@ export class SqliteSessionMetadataStore {
       kind === 'managed'
         ? projectedMode === 'explore'
           ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
-          : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
+          : current.kind === 'managed' && !isCanonicalReadOnlyPermissionProfile(current.profile)
             ? current.profile
             : this.readLatestAutoSandboxProfileSync(sessionId)
         : undefined;
@@ -6262,16 +6263,6 @@ function requireManagedProfile(
 ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
   if (boundary.kind !== 'managed') throw new Error('Expected a managed execution boundary');
   return boundary.profile;
-}
-
-function isCanonicalReadOnlySandboxProfile(
-  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
-): boolean {
-  const { name: _profileName, ...profilePolicy } = profile;
-  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
-    createGenesisExecutionBoundary('explore'),
-  );
-  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
 }
 
 function assertGraphLookupIdentity(value: string, name: string): void {

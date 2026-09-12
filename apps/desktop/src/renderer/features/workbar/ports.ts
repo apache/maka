@@ -269,6 +269,7 @@ export interface SideChatSessionPort {
     handler: (event: SessionEvent) => void,
     onSeeded?: () => void,
     onSeedError?: (error: unknown) => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): WorkbarUnsubscribe;
   subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;
 }

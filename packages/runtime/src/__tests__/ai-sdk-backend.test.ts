@@ -5207,6 +5207,7 @@ describe('AiSdkBackend model history', () => {
           newId: idGenerator(),
           now: monotonicClock(),
           readExecutionBoundary: readExternalExecutionBoundary,
+          readPermissionMode: async () => 'ask',
           contextBudget: {
             name: 'malformed-summary-config-circuit-test',
             charsPerToken: 1,

@@ -17,6 +17,15 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  decodeScheduledTaskQueryResult,
+  SCHEDULED_TASK_PAGE_MAX_ITEMS,
+  SCHEDULED_TASK_RESULT_MAX_BYTES,
+  type ScheduledTaskQueryInput,
+  type ScheduledTaskQueryResult,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -520,3 +529,83 @@ function admission(
     admittedAt: 1_000,
   };
 }
+
+test('ScheduledTask catalog returns every task through maximal byte-limited pages', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-scheduled-task-pages-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+  const coordinator = new HostScheduledTaskCoordinator({
+    store,
+    sessions: null as never,
+    runtime: null as never,
+    root: null as never,
+    runtimePolicy: null as never,
+    nativeEffects: null as never,
+    createSession: async () => {},
+    changes: { publish() {} },
+    acquireResidency: () => ({ release() {} }),
+    requestDrain: () => assert.fail('query must not drain'),
+  });
+  try {
+    for (let index = 0; index < 12; index += 1) {
+      await store.create(
+        {
+          title: `Task ${index}`,
+          intentBody: '文"\\🙂'.repeat(700),
+          schedule: { kind: 'interval', everySeconds: 60 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/workspace',
+              backend: 'ai-sdk',
+              llmConnectionId: 'connection-default',
+              llmConnectionSlug: 'default',
+              model: 'test-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+          createdBy: { kind: 'user' },
+        },
+        1000 + index,
+      );
+    }
+    await coordinator.prepareRecovery();
+    const expected = await store.list();
+    const pages: Extract<ScheduledTaskQueryResult, { kind: 'page' }>[] = [];
+    let input: ScheduledTaskQueryInput = { kind: 'list' };
+    let end = 0;
+    do {
+      const outcome = await coordinator.handlers['scheduled-task.query'](input, null as never);
+      assert.ok(outcome.ok && outcome.result.kind === 'page');
+      const page = outcome.result;
+      assert.deepEqual(decodeScheduledTaskQueryResult(page), page);
+      assert.ok(page.tasks.length > 0);
+      pages.push(page);
+      end += page.tasks.length;
+      assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+      if (page.nextCursor === null) break;
+      input = { kind: 'list', expectedRevision: page.revision, cursor: page.nextCursor };
+    } while (end < expected.length);
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.tasks.length < SCHEDULED_TASK_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, expected, {
+      maxBytes: SCHEDULED_TASK_RESULT_MAX_BYTES,
+      maxItems: SCHEDULED_TASK_PAGE_MAX_ITEMS,
+      items: (page) => page.tasks,
+      candidate: (page, tasks, end) => ({
+        ...page,
+        tasks,
+        nextCursor: end < expected.length ? String(end) : null,
+      }),
+    });
+  } finally {
+    await coordinator.close();
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -439,6 +439,8 @@ export const TurnView = memo(function TurnView(props: {
    * While live the footer shows activity in the same slot as completed
    * actions, without exposing actions against a still-streaming answer.
    */
+  /** Whether current Host observation permits activity cues; content stays intact. */
+  activityObserved?: boolean;
   liveStreaming?: {
     onStreamingSettled?: (messageId?: string) => void;
     /**
@@ -612,14 +614,14 @@ export const TurnView = memo(function TurnView(props: {
           key={note.id}
           className="maka-chat-system-message"
           variant={note.compactionState === "running" || note.compactionState === "compacted" ? "divider" : "default"}
-          data-compaction-state={note.compactionState}
-          aria-label={note.compactionState === "running" ? note.text : copy.systemAriaLabel}
+          data-compaction-state={note.compactionState === 'running' && props.activityObserved === false ? 'unavailable' : note.compactionState}
+          aria-label={note.compactionState === 'running' && props.activityObserved === false ? copy.systemNotes.contextCompactionUnobserved : note.compactionState === "running" ? note.text : copy.systemAriaLabel}
         >
           {note.compactionState ? (
             <span className="maka-compaction-status">
-              {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
-              <span>{note.text}</span>
-              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
+              {note.compactionState === "running" && props.activityObserved !== false && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              <span>{note.compactionState === 'running' && props.activityObserved === false ? copy.systemNotes.contextCompactionUnobserved : note.text}</span>
+              {note.compactionState === "running" && props.activityObserved !== false && <TurnElapsedTime startedAt={turn.startedAt} />}
             </span>
           ) : note.text}
         </ChatSystemMessage>
@@ -671,6 +673,7 @@ export const TurnView = memo(function TurnView(props: {
                 item.kind === 'processing' ? (
                   <ProcessingBlock
                     key={`processing-${item.id}`}
+                    activityObserved={props.activityObserved}
                     entries={item.children}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
@@ -683,6 +686,7 @@ export const TurnView = memo(function TurnView(props: {
                 ) : (
                   <TurnTimelineEntry
                     key={timelineEntryKey(item, index)}
+                    activityObserved={props.activityObserved}
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
@@ -1229,6 +1233,7 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
 function TurnTimelineEntry(props: {
+  activityObserved?: boolean;
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
@@ -1240,7 +1245,7 @@ function TurnTimelineEntry(props: {
     return (
       <DeepThinking
         text={item.text}
-        live={item.live === true}
+        live={item.live === true && props.activityObserved !== false}
         settledText={props.initialLiveContent?.get(`thinking:${item.messageId}`)}
         truncated={item.truncated === true}
       />
@@ -1250,6 +1255,7 @@ function TurnTimelineEntry(props: {
     return (
       <ToolTrow
         items={item.items}
+        activityObserved={props.activityObserved}
         onOpenLinkedSession={props.onOpenLinkedSession}
         onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
       />
@@ -1269,6 +1275,7 @@ function TurnTimelineEntry(props: {
 }
 
 function ProcessingBlock(props: {
+  activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
@@ -1283,6 +1290,7 @@ function ProcessingBlock(props: {
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
+          activityObserved={props.activityObserved}
           item={entry}
           onOpenLinkedSession={props.onOpenLinkedSession}
           onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}

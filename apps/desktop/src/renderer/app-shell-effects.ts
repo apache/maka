@@ -148,7 +148,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;
   /** Releases a send's pending claim once the authority names that turn. */
-  confirmLiveTurn: (sessionId: string, turnId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
@@ -200,12 +199,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleSessionChange = useEffectEvent(
     (event: SessionChangedEvent) => {
-      // The authority has spoken about a specific turn — whether it started,
-      // failed to start, or ended. That confirms the send's arm, and the
-      // session's status becomes readable as an answer about it again.
-      if (event.sessionId && event.turnId) {
-        options.confirmLiveTurn(event.sessionId, event.turnId);
-      }
       const refreshedSessions = options.refreshSessions();
       if (event.reason === 'created' || event.reason === 'migrated') {
         void options.refreshProjects();
@@ -321,8 +314,9 @@ export function useActiveSessionEvents(options: {
   observationAuthorityRevision: number;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
-  beginObservationSeed?: (sessionId: string) => number;
-  completeObservationSeed?: (sessionId: string, generation?: number) => void;
+  setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
+  beginObservationSeed: (sessionId: string) => void;
+  completeObservationSeed: (sessionId: string) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
@@ -381,15 +375,8 @@ export function useActiveSessionEvents(options: {
     });
     options.handleEvent(sessionId, event);
   });
-  const beginObservationSeed = useEffectEvent((sessionId: string) => {
-    return options.beginObservationSeed?.(sessionId) ?? 0;
-  });
-  const completeObservationSeed = useEffectEvent((
-    sessionId: string,
-    generation?: number,
-  ) => {
-    options.completeObservationSeed?.(sessionId, generation);
-  });
+  const beginObservationSeed = useEffectEvent(options.beginObservationSeed);
+  const completeObservationSeed = useEffectEvent(options.completeObservationSeed);
   const markSessionEventStreamClosed = useEffectEvent((sessionId: string) => {
     options.setSessionEventHealthBySession((current) => {
       const previous = current[sessionId];
@@ -449,7 +436,7 @@ export function useActiveSessionEvents(options: {
     options.transcriptRangeRef.current = controller;
     const subscribeSessionEvents = () => {
       const attempt = ++observationAttempt;
-      const observationGeneration = beginObservationSeed(activeId);
+      beginObservationSeed(activeId);
       let unsubscribeRequested = false;
       let unsubscribeCurrent = () => {
         unsubscribeRequested = true;
@@ -460,21 +447,19 @@ export function useActiveSessionEvents(options: {
           if (attempt !== observationAttempt) return;
           handleSessionEvent(activeId, event);
         },
-        () => {
-          if (attempt !== observationAttempt) return;
-          controller.observationChanged('ready');
-          observationFailures = 0;
-          completeObservationSeed(activeId, observationGeneration);
-        },
         (phase) => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged(phase);
           if (phase === 'pending') beginObservationSeed(activeId);
-          else completeObservationSeed(activeId);
+          else {
+            observationFailures = 0;
+            completeObservationSeed(activeId);
+          }
         },
         () => {
-          if (disposed || attempt !== observationAttempt) return;
+          if (attempt !== observationAttempt) return;
           controller.observationChanged('pending');
+          options.setExecution(activeId, undefined);
           unsubscribeCurrent();
           observationFailures += 1;
           const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);
@@ -482,6 +467,9 @@ export function useActiveSessionEvents(options: {
             observationRetryTimer = undefined;
             if (!disposed && attempt === observationAttempt) subscribeSessionEvents();
           }, retryDelayMs);
+        },
+        (projection) => {
+          if (attempt === observationAttempt) options.setExecution(activeId, projection);
         },
       );
       unsubscribeCurrent = unsubscribe;
@@ -501,6 +489,7 @@ export function useActiveSessionEvents(options: {
       void controller.close();
       unsubscribeTranscript();
       unsubscribeSessionEvents();
+      options.setExecution(activeId, undefined);
       markSessionEventStreamClosed(activeId);
     };
   }, [activeId, options.observationAuthorityRevision]);

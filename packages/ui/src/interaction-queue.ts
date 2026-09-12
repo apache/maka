@@ -73,9 +73,10 @@ export function dequeueInteractionByToolUseId(
   return { ...queues, [sessionId]: queue.filter((interaction) => interaction.toolUseId !== toolUseId) };
 }
 
-export function clearInteractions(queues: InteractionQueues, sessionId: string): InteractionQueues {
+export function clearInteractions(queues: InteractionQueues, sessionId: string, turnId?: string): InteractionQueues {
   if (!queues[sessionId]?.length) return queues;
-  return { ...queues, [sessionId]: [] };
+  const retained = turnId ? queues[sessionId]!.filter((interaction) => interaction.turnId !== turnId) : [];
+  return retained.length === queues[sessionId]!.length ? queues : { ...queues, [sessionId]: retained };
 }
 
 export function reduceInteractionQueues(
@@ -97,7 +98,9 @@ export function reduceInteractionQueues(
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
     case 'error':
-      return clearInteractions(queues, sessionId);
+    case 'abort':
+    case 'complete':
+      return clearInteractions(queues, sessionId, event.turnId);
     default:
       return queues;
   }
