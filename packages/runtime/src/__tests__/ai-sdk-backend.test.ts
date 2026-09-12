@@ -15874,6 +15874,88 @@ describe('AiSdkBackend steering durability and identity', () => {
       /encrypted-result/,
     );
   });
+
+  test('renders Gemini Google Search grounding as web_search rows and keeps replay metadata', async () => {
+    const providerMetadata = {
+      google: {
+        serverToolCallId: 'search-google-1',
+        serverToolType: 'GOOGLE_SEARCH_WEB',
+      },
+    };
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call',
+              toolCallId: 'search-google-1',
+              toolName: 'server:GOOGLE_SEARCH_WEB',
+              input: JSON.stringify({ query: 'latest Maka' }),
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'search-google-1',
+              toolName: 'server:GOOGLE_SEARCH_WEB',
+              result: {},
+              providerExecuted: true,
+              providerMetadata,
+            },
+            {
+              type: 'source',
+              sourceType: 'url',
+              id: 'src-1',
+              url: 'https://maka.example/',
+              title: 'Maka',
+            },
+            { type: 'text-start', id: 'text-google-1' },
+            { type: 'text-delta', id: 'text-google-1', delta: 'Maka is current.' },
+            { type: 'text-end', id: 'text-google-1' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createBackend({
+      connection: {
+        slug: 'google',
+        providerType: 'google',
+        defaultModel: 'gemini-3-flash',
+      },
+      modelId: 'gemini-3-flash',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'google-grounding' })],
+    });
+    const events: SessionEvent[] = [];
+
+    await collectEvents(backend.send({ turnId: 'turn-1', text: 'search', context: [] }), events);
+
+    const result = events.find((event) => event.type === 'tool_result');
+    assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, {
+      kind: 'web_search',
+      provider: 'model',
+      query: 'latest Maka',
+      rows: [
+        {
+          title: 'Maka',
+          url: 'https://maka.example/',
+          snippet: '',
+          source: 'maka.example',
+        },
+      ],
+    });
+    assert.deepEqual(
+      result?.type === 'tool_result' ? result.providerOptions : undefined,
+      providerMetadata,
+    );
+  });
 });
 
 function textCompletionModel(text: string): MockLanguageModelV4 {

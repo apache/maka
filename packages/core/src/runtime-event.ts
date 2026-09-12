@@ -223,6 +223,8 @@ export interface RuntimeEventFunctionResponseContent {
   result: unknown;
   isError?: boolean;
   providerExecuted?: boolean;
+  /** Opaque provider metadata required to reconstruct a native toolResponse on replay. */
+  providerOptions?: Record<string, unknown>;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
   /** Frozen provider-neutral content consumed by every model-history projection. */
@@ -742,7 +744,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
+  ['isError', 'providerExecuted', 'providerOptions', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -1085,6 +1087,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
         (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
+        (value.providerOptions === undefined || isRecord(value.providerOptions)) &&
         (value.modelProjection === undefined ||
           decodesDurableToolResultProjection(value.modelProjection))
       );

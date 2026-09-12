@@ -20,6 +20,7 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
+import { google } from '@ai-sdk/google';
 import {
   providerAuthRequiresSecret,
   type RuntimeExecutionConnection,
@@ -751,6 +752,10 @@ interface AiSdkStreamChunk {
   error?: unknown;
   /** Provider-specific metadata; carries the Anthropic reasoning signature. */
   providerMetadata?: unknown;
+  /** Grounding URL source parts (Gemini `source` chunks). */
+  sourceType?: unknown;
+  url?: unknown;
+  title?: unknown;
 }
 
 /**
@@ -1113,6 +1118,21 @@ function translateChunk(
           toolName: runtimeToolName?.(chunk.toolName) ?? chunk.toolName,
           output: chunk.type === 'tool-error' ? chunk.error : (chunk.output ?? chunk.result),
           ...(chunk.type === 'tool-error' || chunk.isError === true ? { isError: true } : {}),
+          ...(chunk.providerMetadata !== undefined
+            ? {
+                providerOptions: chunk.providerMetadata as ToolCallPart['providerOptions'],
+              }
+            : {}),
+        },
+      ];
+    }
+    case 'source': {
+      if (chunk.sourceType !== 'url' || typeof chunk.url !== 'string') return [];
+      return [
+        {
+          kind: 'source',
+          url: chunk.url,
+          ...(typeof chunk.title === 'string' && chunk.title.trim() ? { title: chunk.title } : {}),
         },
       ];
     }
@@ -1233,6 +1253,8 @@ function compileProviderTool(
       return anthropic.tools.webSearch_20250305({
         ...(tool.maxUses !== undefined ? { maxUses: tool.maxUses } : {}),
       });
+    case 'google-search':
+      return google.tools.googleSearch({});
   }
 }
 

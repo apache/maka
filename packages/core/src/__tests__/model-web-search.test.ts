@@ -57,8 +57,25 @@ describe('hosted web search capability', () => {
       resolveHostedWebSearchCapability('anthropic', undefined, 'claude-sonnet-4-6'),
       { adapter: 'anthropic-messages', implemented: true },
     );
+    assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-2.0-flash'), {
+      adapter: 'google-grounding',
+      implemented: false,
+    });
     assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-2.5-flash'), {
       adapter: 'google-grounding',
+      implemented: false,
+    });
+    assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-3-flash'), {
+      adapter: 'google-grounding',
+      implemented: true,
+    });
+    assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-3.5-flash'), {
+      adapter: 'google-grounding',
+      implemented: true,
+    });
+    assert.equal(resolveHostedWebSearchCapability('google', undefined, 'gemini-1.5-flash'), null);
+    assert.deepEqual(resolveHostedWebSearchCapability('openrouter', undefined, 'gemini-3-flash'), {
+      adapter: 'openrouter-web-plugin',
       implemented: false,
     });
     assert.deepEqual(resolveHostedWebSearchCapability('zai', undefined, 'glm-5'), {
@@ -76,6 +93,22 @@ describe('hosted web search capability', () => {
         'deepseek-v4-flash',
       ),
       null,
+    );
+    assert.deepEqual(
+      resolveHostedWebSearchCapability(
+        'google',
+        [{ id: 'gemini-2.5-flash', capabilities: { webSearch: true } }],
+        'gemini-2.5-flash',
+      ),
+      { adapter: 'google-grounding', implemented: false },
+    );
+    assert.deepEqual(
+      resolveHostedWebSearchCapability(
+        'google',
+        [{ id: 'gemini-3-flash', capabilities: { webSearch: true } }],
+        'gemini-3-flash',
+      ),
+      { adapter: 'google-grounding', implemented: true },
     );
     assert.deepEqual(
       resolveHostedWebSearchCapability(

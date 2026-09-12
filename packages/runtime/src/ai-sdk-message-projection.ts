@@ -410,6 +410,9 @@ export class AiSdkMessageProjection {
           toolCallId: result.toolCallId,
           toolName: result.toolName,
           output: await materializeReplayToolResult(result, call.toolName),
+          ...(result.providerOptions !== undefined
+            ? { providerOptions: result.providerOptions }
+            : {}),
         });
       }
       if (text && text.content.length > 0) {

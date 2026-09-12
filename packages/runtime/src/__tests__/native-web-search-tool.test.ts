@@ -120,6 +120,13 @@ test('turn-start routing falls back explicitly when native search is unavailable
   );
 });
 
+test('native Gemini WebSearch is a provider-executed Google Search descriptor', () => {
+  const tool = buildNativeWebSearchTool({ adapter: 'google-grounding' });
+  assert.equal(tool.name, NATIVE_WEB_SEARCH_TOOL_NAME);
+  assert.deepEqual(tool.providerTool, { kind: 'google-search' });
+  assert.throws(() => tool.impl({}, {} as never), /must not execute through ToolRuntime/);
+});
+
 test('turn-start routing compiles Claude models to the CC-compatible Anthropic tool', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
@@ -143,6 +150,162 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
     kind: 'anthropic-web-search-20250305',
     maxUses: 8,
   });
+});
+
+test('Gemini 2.x native search stays unimplemented and drops the client WebSearch tool', () => {
+  const clientSearch = {
+    name: NATIVE_WEB_SEARCH_TOOL_NAME,
+    description: 'Tavily',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const read = {
+    name: 'Read',
+    description: 'Read',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const connection = {
+    slug: 'google',
+    providerType: 'google' as const,
+    defaultModel: 'gemini-2.5-flash',
+  };
+
+  const routed = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(
+    routed.map((tool) => tool.name),
+    ['Read'],
+  );
+  assert.equal(routed[0], read);
+  assert.equal(
+    routed.some((tool) => tool.providerTool?.kind === 'google-search'),
+    false,
+  );
+
+  const root = routeWebSearchTools({
+    tools: [read],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: false,
+    allowAddNative: true,
+  });
+  assert.deepEqual(
+    root.map((tool) => tool.name),
+    ['Read'],
+  );
+});
+
+test('Gemini 3 mixes Google Search grounding with function tools', () => {
+  const clientSearch = {
+    name: NATIVE_WEB_SEARCH_TOOL_NAME,
+    description: 'Tavily',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const read = {
+    name: 'Read',
+    description: 'Read',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const connection = {
+    slug: 'google',
+    providerType: 'google' as const,
+    defaultModel: 'gemini-3-flash',
+  };
+
+  const mixed = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection,
+    model: 'gemini-3-flash',
+    tavilyReady: true,
+  });
+  assert.deepEqual(
+    mixed.map((tool) => tool.name),
+    ['Read', NATIVE_WEB_SEARCH_TOOL_NAME],
+  );
+  assert.equal(mixed[0], read);
+  assert.deepEqual(mixed[1]?.providerTool, { kind: 'google-search' });
+
+  const tavily = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'tavily' },
+    connection,
+    model: 'gemini-3-flash',
+    tavilyReady: true,
+  });
+  assert.equal(
+    tavily.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME),
+    clientSearch,
+  );
+
+  const incognito = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    privacy: { incognitoActive: true },
+    connection,
+    model: 'gemini-3-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(
+    incognito.map((tool) => tool.name),
+    ['Read'],
+  );
+
+  const unmatchedFamily = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection,
+    model: 'gemini-1.5-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(
+    unmatchedFamily.map((tool) => tool.name),
+    ['Read'],
+  );
+});
+
+test('OpenRouter Gemini does not compile Google Search grounding', () => {
+  const clientSearch = {
+    name: NATIVE_WEB_SEARCH_TOOL_NAME,
+    description: 'Tavily',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const read = {
+    name: 'Read',
+    description: 'Read',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+
+  const routed = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: {
+      slug: 'openrouter',
+      providerType: 'openrouter',
+      defaultModel: 'gemini-3-flash',
+    },
+    model: 'gemini-3-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(
+    routed.map((tool) => tool.name),
+    ['Read'],
+  );
+  assert.equal(
+    routed.some((tool) => tool.providerTool?.kind === 'google-search'),
+    false,
+  );
 });
 
 test('root surfaces do not advertise unsupported DeepSeek native search', () => {

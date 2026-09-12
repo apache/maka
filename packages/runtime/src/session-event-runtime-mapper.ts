@@ -363,6 +363,9 @@ function mapBackendSessionEvent(
         ...(event.providerExecuted !== undefined
           ? { providerExecuted: event.providerExecuted }
           : {}),
+        ...(event.providerOptions !== undefined
+          ? { providerOptions: structuredClone(event.providerOptions) }
+          : {}),
         ...(event.providerExecuted && event.providerOutput !== undefined
           ? { providerOutput: structuredClone(event.providerOutput) }
           : {}),
