@@ -21,7 +21,7 @@ import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } 
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
-import { readableAppIconPath } from './app-icon-surface.js';
+import { applyInitialWindowAppIcon, readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
@@ -432,6 +432,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
+    applyInitialWindowAppIcon(
+      mainWindow,
+      appIconForTheme(persistedAppearance ?? {}, isDark),
+      (error) => console.error('[icon] failed to set the initial app icon:', error),
+    );
     mainWindowShutdownSignal = signal;
     observeRendererProcess(mainWindow, signal);
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
