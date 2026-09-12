@@ -289,6 +289,13 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/goals/controller/use-goal-controller.ts",
+      "symbol": "useGoalController",
+      "owner": "src/renderer/features/goals/ui/goal-provider.tsx",
+      "ownerSymbol": "GoalProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/module-hub/controller/use-module-hub-controller.ts",
       "symbol": "useModuleHubController",
       "owner": "src/renderer/features/module-hub/ui/module-hub-provider.tsx",
@@ -300,6 +307,13 @@
       "symbol": "useTaskEntryController",
       "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
       "ownerSymbol": "TaskEntryRoot",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/workhub/controller/use-workhub-controller.ts",
+      "symbol": "useWorkHubController",
+      "owner": "src/renderer/features/workhub/ui/workhub-root.tsx",
+      "ownerSymbol": "WorkHubRoot",
       "count": 1
     }
   ],
