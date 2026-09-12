@@ -342,8 +342,9 @@ test('ScheduledTask with an exact Connection identity reaches Session and AgentR
       },
     } as never,
     nativeEffects: null as never,
-    createSession: async (input) => {
+    createSession: async (input, toolMode) => {
       createSessionCalls += 1;
+      assert.equal(toolMode, 'code_mode');
       assert.deepEqual(input.modelTarget, {
         kind: 'explicit',
         connectionId: 'connection-a',
@@ -371,6 +372,7 @@ test('ScheduledTask with an exact Connection identity reaches Session and AgentR
             permissionMode: 'ask',
             collaborationMode: 'agent',
             orchestrationMode: 'default',
+            toolMode: 'code_mode',
           },
         },
         createdBy: { kind: 'user' },

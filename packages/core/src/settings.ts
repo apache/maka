@@ -511,6 +511,8 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /** Applies only when a new task is created. */
+  codeModeEnabled?: boolean;
   /**
    * Seeds new sessions' thinking level. `undefined` means "whatever the model
    * does on its own" — the absence of a preference, not a level.
@@ -1092,6 +1094,7 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    ...(settings.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
     // Same fail-closed reasoning as the mode below: a garbage persisted level
     // drops to "no preference" (the model's own default) rather than reaching
     // session creation as a rung no picker recognizes.

@@ -26,6 +26,28 @@ interface SettingsChunkLatchWindow extends Window {
   };
 }
 
+test('Code Mode persists as a global setting after reopening settings', async ({ window: page }, testInfo) => {
+  await ensureSidebarExpanded(page);
+  await page.getByRole('button', { name: '设置' }).click();
+  await page.getByRole('button', { name: '通用', exact: true }).click();
+  const toggle = page.getByRole('switch', { name: 'Code Mode', exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect.poll(() => page.evaluate(async () => (await window.maka.settings.get()).chatDefaults.codeModeEnabled)).toBe(true);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '设置' }).click();
+  await expect(toggle).toBeChecked();
+  await toggle.scrollIntoViewIfNeeded();
+  const screenshotPath = testInfo.outputPath('code-mode-settings.png');
+  await page.screenshot({ path: screenshotPath });
+  await testInfo.attach('Code Mode in General settings', {
+    path: screenshotPath,
+    contentType: 'image/png',
+  });
+  await toggle.click();
+  await expect.poll(() => page.evaluate(async () => (await window.maka.settings.get()).chatDefaults.codeModeEnabled === true)).toBe(false);
+});
+
 test('Settings loading surface owns unmodified Escape', async ({ window: page }) => {
   const latchInstalled = await page.evaluate(() => {
     const e2eLatch = (window as unknown as SettingsChunkLatchWindow).makaE2eLatch;

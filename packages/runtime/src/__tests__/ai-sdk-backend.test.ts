@@ -1092,10 +1092,9 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
                   {
                     type: 'tool-call',
                     toolCallId: 'code-boundary-request',
-                    toolName: 'request_sandbox_boundary',
+                    toolName: 'exec',
                     input: JSON.stringify({
-                      expansion: { network: { enabled: true } },
-                      justification: 'Use the network.',
+                      code: 'return await tools.request_sandbox_boundary({ expansion: { network: { enabled: true } }, justification: "Use the network." })',
                     }),
                   },
                   {
@@ -1213,7 +1212,11 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
       );
 
       if (!inheritedDenial) {
-        await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+        await pollFor(() => events.some((event) => event.type === 'sandbox_boundary_request'), {
+          attempts: 500,
+          pollMs: 10,
+          message: 'Code Mode did not request the sandbox boundary',
+        });
         const request = events.find((event) => event.type === 'sandbox_boundary_request');
         assert.ok(request?.type === 'sandbox_boundary_request');
         await backend.respondToSandboxBoundary({

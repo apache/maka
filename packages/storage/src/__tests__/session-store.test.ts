@@ -42,6 +42,22 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('persists the creation-time tool mode across reloads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-mode-'));
+    let store = createSessionStore(root);
+    try {
+      const code = await store.create(makeInput({ cwd: root, toolMode: 'code_mode' }));
+      const direct = await store.create(makeInput({ cwd: root }));
+      await store.close?.();
+      store = createSessionStore(root);
+      assert.equal((await store.readHeader(code.id)).toolMode, 'code_mode');
+      assert.equal((await store.readHeader(direct.id)).toolMode, 'direct');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('requires the reserved WorkHub Coordination identity and role together', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
     const store = createSessionStore(root);

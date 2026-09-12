@@ -28,6 +28,7 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { ToolMode } from '@maka/core/tool-mode';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
@@ -344,13 +345,14 @@ export class HostSessionCatalogCoordinator {
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
+      toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
     };
   }
 
-  async createForHost(input: SessionCreateInput): Promise<void> {
-    const outcome = await this.#create(input);
+  async createForHost(input: SessionCreateInput, toolMode: ToolMode): Promise<void> {
+    const outcome = await this.#create(input, toolMode);
     if (!outcome.ok) throw new Error(outcome.error.message);
   }
 
@@ -381,6 +383,7 @@ export class HostSessionCatalogCoordinator {
           ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
           ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
           permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
           collaborationMode: input.collaborationMode ?? 'agent',
           orchestrationMode: input.orchestrationMode ?? 'default',
         },
@@ -562,7 +565,10 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
-  async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+  async #create(
+    input: SessionCreateInput,
+    toolMode?: ToolMode,
+  ): Promise<OperationOutcome<'session.create'>> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
         'operation_conflict',
@@ -613,6 +619,8 @@ export class HostSessionCatalogCoordinator {
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
               ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+              toolMode:
+                toolMode ?? (policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct'),
               collaborationMode: input.collaborationMode ?? 'agent',
               orchestrationMode: input.orchestrationMode ?? 'default',
             };

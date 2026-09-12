@@ -716,6 +716,7 @@ export class HostSessionRevisionCoordinator {
       model: source.model,
       ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),
       permissionMode: source.permissionMode,
+      toolMode: source.toolMode ?? 'direct',
       collaborationMode: source.collaborationMode ?? 'agent',
       orchestrationMode: source.orchestrationMode ?? 'default',
       name: source.name,

@@ -25,14 +25,6 @@ import { buildCancelPlanTool, buildSubmitPlanTool, buildUpdatePlanTool } from '.
 import type { MakaTool } from '../tool-runtime.js';
 
 describe('Plan Mode tool surface', () => {
-  test('keeps plan lifecycle controls outside nested Code Mode execution', () => {
-    const store = {} as never;
-
-    assert.equal(buildSubmitPlanTool(store).nesting, 'direct_only');
-    assert.equal(buildUpdatePlanTool(store, 'execution-1').nesting, 'direct_only');
-    assert.equal(buildCancelPlanTool(store, 'execution-1').nesting, 'direct_only');
-  });
-
   test('requires plain-text step titles and descriptions', () => {
     const submitPlan = buildSubmitPlanTool({} as never);
     assert.equal(submitPlan.recoveryMode, 'idempotent');

@@ -1024,6 +1024,74 @@ test('creation rejects explore permission without a declared mode', async () => 
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('new tasks snapshot the current global Code Mode setting', async () => {
+  let enabled = true;
+  const runtimePolicy: RuntimePolicy = {
+    ...runtimePolicyFixture({}),
+    runtimePolicy: {
+      getSnapshot: async () => ({
+        revision: 1,
+        policy: {
+          ...createDefaultRuntimePolicy(),
+          chatDefaults: { permissionMode: 'ask', codeModeEnabled: enabled },
+        },
+      }),
+    },
+  };
+  const modes: unknown[] = [];
+  const fixture = createFixture({
+    runtimePolicy,
+    stores: {
+      createStableSession: async (request) => {
+        modes.push(request.input.toolMode);
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, []), 3),
+        };
+      },
+    },
+  });
+  for (const value of [true, false]) {
+    enabled = value;
+    const expectedMode = value ? 'code_mode' : 'direct';
+    assert.equal(
+      (await fixture.coordinator.resolveExternalSessionImportTarget()).toolMode,
+      expectedMode,
+    );
+    assert.equal((await fixture.coordinator.resolveDefaultCreateTarget()).toolMode, expectedMode);
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+  }
+  assert.deepEqual(modes, ['code_mode', 'direct']);
+  // A scheduled task carries its frozen mode through the internal creation
+  // path even when the user's global default has since changed.
+  await fixture.coordinator.createForHost(
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    'code_mode',
+  );
+  enabled = true;
+  await fixture.coordinator.createForHost(
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    'direct',
+  );
+  assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
+});
+
 test('creation materializes Deep Research semantics inside the Host transaction', async () => {
   let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
   const fixture = createFixture({

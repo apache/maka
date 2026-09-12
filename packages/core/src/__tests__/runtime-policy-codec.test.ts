@@ -61,6 +61,26 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
+test('Code Mode is opt-in and survives policy decoding', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.notEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults.codeModeEnabled, true);
+  assert.equal(
+    decodeCanonicalRuntimePolicy({
+      ...policy,
+      chatDefaults: { ...policy.chatDefaults, codeModeEnabled: true },
+    }).chatDefaults.codeModeEnabled,
+    true,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalRuntimePolicy({
+        ...policy,
+        chatDefaults: { ...policy.chatDefaults, codeModeEnabled: 'true' },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('preserves a valid default thinking level and rejects unknown levels', () => {
   const policy = {
     ...createDefaultRuntimePolicy(),

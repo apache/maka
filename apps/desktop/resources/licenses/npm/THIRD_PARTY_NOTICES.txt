@@ -209,7 +209,7 @@ Apache License
 
 ================================================================================
 
-Package: @ai-sdk/anthropic@4.0.46
+Package: @ai-sdk/anthropic@4.0.53
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/anthropic
@@ -231,7 +231,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/code-mode@1.0.42
+Package: @ai-sdk/code-mode@1.0.56
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/code-mode
@@ -253,7 +253,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/cohere@4.0.35
+Package: @ai-sdk/cohere@4.0.41
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/cohere
@@ -275,7 +275,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/gateway@4.0.69
+Package: @ai-sdk/gateway@4.0.80
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/gateway
@@ -297,7 +297,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/google@4.0.58
+Package: @ai-sdk/google@4.0.69
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/google
@@ -319,7 +319,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/open-responses@2.0.36
+Package: @ai-sdk/open-responses@2.0.44
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/open-responses
@@ -341,7 +341,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai@4.0.52
+Package: @ai-sdk/openai@4.0.66
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai
@@ -363,7 +363,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai-compatible@3.0.41
+Package: @ai-sdk/openai-compatible@3.0.48
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai-compatible
@@ -385,7 +385,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider@4.0.9
+Package: @ai-sdk/provider@4.0.14
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider
@@ -407,7 +407,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider-utils@5.0.34
+Package: @ai-sdk/provider-utils@5.0.40
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider-utils
@@ -5107,7 +5107,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: ai@7.0.85
+Package: ai@7.0.99
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/ai
@@ -13073,7 +13073,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: run@2.0.0
+Package: run@2.1.4
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/vercel-labs/run.git#packages/run
@@ -14530,7 +14530,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: quickjs-emscripten (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.42
+Embedded by: @ai-sdk/code-mode@1.0.56
 Selected license: MIT
 Repository: https://github.com/justjake/quickjs-emscripten
 
@@ -14560,7 +14560,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: QuickJS JavaScript engine (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.42
+Embedded by: @ai-sdk/code-mode@1.0.56
 Selected license: MIT
 Repository: https://github.com/bellard/quickjs
 
