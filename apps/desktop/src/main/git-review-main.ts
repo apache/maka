@@ -24,6 +24,8 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
+  type GitReviewBaseBranchOption,
+  type GitReviewBranchContext,
   type GitReviewFile,
   type GitReviewFileStatus,
   type GitReviewReadResult,
@@ -47,6 +49,7 @@ export async function readGitReview(
   runGit: GitReviewCommandRunner = runGitCommand,
   requestedBaseBranch?: string,
 ): Promise<GitReviewReadResult> {
+  let branches: GitReviewBranchContext | undefined;
   try {
     const repositoryRoot = await resolveProjectRoot([cwd]);
     if (!(await resolveProjectGitInfo(repositoryRoot)).isGitRepo) {
@@ -61,17 +64,17 @@ export async function readGitReview(
       source === 'branch' && hasHead
         ? await listBaseBranches(repositoryRoot, runGit)
         : [];
-    if (
-      source === 'branch' &&
-      requestedBaseBranch != null &&
-      !baseBranchOptions.includes(requestedBaseBranch)
-    ) {
+    if (source === 'branch') branches = { currentBranch, baseBranchOptions };
+    const requestedOption = requestedBaseBranch == null
+      ? undefined
+      : resolveRequestedBaseBranch(requestedBaseBranch, baseBranchOptions);
+    if (source === 'branch' && requestedBaseBranch != null && !requestedOption) {
       return { ok: false, reason: 'invalid_base_branch' };
     }
     const baseBranch =
       source === 'branch' && hasHead
-        ? requestedBaseBranch ??
-          (await resolveBaseBranch(repositoryRoot, currentBranch, runGit))
+        ? requestedOption?.value ??
+          (await resolveBaseBranch(repositoryRoot, currentBranch, baseBranchOptions, runGit))
         : null;
     const branchComparison =
       source === 'branch' && baseBranch
@@ -139,9 +142,9 @@ export async function readGitReview(
     };
   } catch (error) {
     if (isUnbornRepositoryError(error)) {
-      return { ok: false, reason: 'unborn_repository' };
+      return { ok: false, reason: 'unborn_repository', ...(branches ? { branches } : {}) };
     }
-    return { ok: false, reason: 'git_failed' };
+    return { ok: false, reason: 'git_failed', ...(branches ? { branches } : {}) };
   }
 }
 
@@ -168,7 +171,7 @@ async function readTrackedChanges(input: {
   let truncated = false;
 
   for (const comparison of comparisons) {
-    const [nameStatus, unified] = await Promise.all([
+    const [nameStatus, unifiedResult] = await Promise.all([
       input.runGit(input.repositoryRoot, [
         'diff',
         '--name-status',
@@ -176,7 +179,7 @@ async function readTrackedChanges(input: {
         '--find-renames',
         ...comparison,
       ]),
-      input.runGit(input.repositoryRoot, [
+      runDiffAllowTruncated(input.runGit, input.repositoryRoot, [
         'diff',
         '--no-ext-diff',
         '--no-color',
@@ -187,7 +190,7 @@ async function readTrackedChanges(input: {
       ]),
     ]);
     const entries = parseNameStatus(nameStatus);
-    const chunks = splitUnifiedDiff(unified);
+    const chunks = splitUnifiedDiff(unifiedResult.stdout);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!;
       const diff = chunks[index] ?? '';
@@ -203,9 +206,42 @@ async function readTrackedChanges(input: {
       diffChars += diff.length;
     }
     if (truncated) break;
+    // The diff itself was cut off at the buffer limit: keep what we read and
+    // say so, rather than failing the whole review on a huge branch diff.
+    if (unifiedResult.truncated) {
+      truncated = true;
+      break;
+    }
   }
 
   return { files: dedupeReviewFiles(files), diffChars, truncated };
+}
+
+/**
+ * A branch diff can exceed the child process buffer on far-diverged branches.
+ * Node hands back the bytes it managed to read, which the caller caps at
+ * REVIEW_MAX_DIFF_CHARS anyway, so overflow degrades to a truncated diff.
+ */
+async function runDiffAllowTruncated(
+  runGit: GitReviewCommandRunner,
+  root: string,
+  args: readonly string[],
+): Promise<{ stdout: string; truncated: boolean }> {
+  try {
+    return { stdout: await runGit(root, args), truncated: false };
+  } catch (error) {
+    const partial = maxBufferStdout(error);
+    if (partial === null) throw error;
+    return { stdout: partial, truncated: true };
+  }
+}
+
+function maxBufferStdout(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const { code, stdout } = error as { code?: unknown; stdout?: unknown };
+  return code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' && typeof stdout === 'string'
+    ? stdout
+    : null;
 }
 
 async function readUntrackedChanges(
@@ -361,46 +397,85 @@ function dedupeReviewFiles(files: readonly GitReviewFile[]): GitReviewFile[] {
   return [...byPath.values()];
 }
 
+// The branches a review is most likely to compare against, in the order a
+// reader expects them. `origin/HEAD` stays selectable: it is the remote's
+// declared default, and the one name that survives a rename of that branch.
+const BASE_BRANCH_PRIORITY = [
+  'refs/remotes/origin/HEAD',
+  'refs/remotes/origin/main',
+  'refs/remotes/origin/master',
+  'refs/heads/main',
+  'refs/heads/master',
+];
+
+// The branch a review falls back to when the caller names none. The remote's
+// resolved default comes first so the panel shows a concrete name, then the
+// shared priority order covers repositories whose origin/HEAD is unset.
 async function resolveBaseBranch(
   repositoryRoot: string,
   currentBranch: string | null,
+  options: readonly GitReviewBaseBranchOption[],
   runGit: GitReviewCommandRunner,
 ): Promise<string | null> {
   const remoteHead = cleanLine(
     await runGit(repositoryRoot, [
       'symbolic-ref',
       '--quiet',
-      '--short',
       'refs/remotes/origin/HEAD',
     ]).catch(() => ''),
   );
-  const candidates = [
-    remoteHead,
-    'origin/main',
-    'origin/master',
-    'main',
-    'master',
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const candidates = [...new Set([remoteHead, ...BASE_BRANCH_PRIORITY])].filter(
+    (candidate): candidate is string => Boolean(candidate),
+  );
   for (const candidate of candidates) {
-    if (candidate === currentBranch) continue;
-    if (await gitRefExists(repositoryRoot, candidate, runGit)) return candidate;
+    if (candidate === `refs/heads/${currentBranch}`) continue;
+    if (options.some((option) => option.value === candidate) &&
+        await gitRefExists(repositoryRoot, candidate, runGit)) return candidate;
   }
   return null;
+}
+
+// Old preferences contain display names. Match only enumerated branches and
+// reject collisions between local and remote names rather than guessing.
+function resolveRequestedBaseBranch(
+  requested: string,
+  options: readonly GitReviewBaseBranchOption[],
+): GitReviewBaseBranchOption | undefined {
+  const exact = options.find((option) => option.value === requested);
+  if (exact) return exact;
+  const matches = options.filter((option) => option.label === requested);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 async function listBaseBranches(
   repositoryRoot: string,
   runGit: GitReviewCommandRunner,
-): Promise<string[]> {
+): Promise<GitReviewBaseBranchOption[]> {
   const output = await runGit(repositoryRoot, [
     'for-each-ref',
-    '--format=%(refname:short)',
+    '--format=%(refname)',
     'refs/heads',
     'refs/remotes',
   ]);
-  return [...new Set(output.split('\n').map((line) => line.trim()).filter(Boolean))]
-    .filter((branch) => !branch.endsWith('/HEAD'))
-    .sort((left, right) => left.localeCompare(right));
+  const branches: GitReviewBaseBranchOption[] = [];
+  for (const value of new Set(output.split('\n').map((line) => line.trim()))) {
+    if (value.startsWith('refs/heads/')) {
+      branches.push({ label: value.slice('refs/heads/'.length), value });
+    } else if (value.startsWith('refs/remotes/') &&
+      (value === 'refs/remotes/origin/HEAD' || !value.endsWith('/HEAD'))) {
+      branches.push({ label: value.slice('refs/remotes/'.length), value });
+    }
+  }
+  return branches.sort((left, right) => {
+    const leftRank = BASE_BRANCH_PRIORITY.indexOf(left.value);
+    const rightRank = BASE_BRANCH_PRIORITY.indexOf(right.value);
+    if (leftRank !== rightRank) {
+      if (leftRank === -1) return 1;
+      if (rightRank === -1) return -1;
+      return leftRank - rightRank;
+    }
+    return left.label.localeCompare(right.label);
+  });
 }
 
 async function gitRefExists(

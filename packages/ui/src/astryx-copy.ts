@@ -89,7 +89,7 @@ export interface AstryxCopy {
   menus: { dropdown: string; more: string };
   multiSelector: { clearAll: string; selectAll: string };
   /** Selector and MultiSelector render the same two search affordances. */
-  search: { options: string; placeholder: string };
+  search: { emptySearch: string; options: string; placeholder: string; resultCount: string };
   sideNav: {
     label: string;
     resizeSidebar: string;
@@ -161,7 +161,12 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
   lightbox: { mediaViewer: '媒体查看器', previous: '上一张', next: '下一张' },
   menus: { dropdown: '菜单', more: '更多选项' },
   multiSelector: { clearAll: '清除全部{label}', selectAll: '全选' },
-  search: { options: '搜索选项', placeholder: '搜索…' },
+  search: {
+    options: '搜索选项',
+    placeholder: '搜索…',
+    emptySearch: '没有匹配的选项',
+    resultCount: '{count} 个选项',
+  },
   sideNav: {
     label: '侧边导航',
     resizeSidebar: '调整侧边栏宽度',
@@ -233,7 +238,12 @@ export const ASTRYX_COPY_ZH_TW: AstryxCopy = {
   lightbox: { mediaViewer: '媒體檢視器', previous: '上一張', next: '下一張' },
   menus: { dropdown: '選單', more: '更多選項' },
   multiSelector: { clearAll: '清除全部{label}', selectAll: '全選' },
-  search: { options: '搜尋選項', placeholder: '搜尋…' },
+  search: {
+    options: '搜尋選項',
+    placeholder: '搜尋…',
+    emptySearch: '沒有符合的選項',
+    resultCount: '{count} 個選項',
+  },
   sideNav: {
     label: '側邊導航',
     resizeSidebar: '調整側邊欄寬度',

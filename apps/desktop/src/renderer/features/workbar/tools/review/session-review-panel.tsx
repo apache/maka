@@ -28,11 +28,18 @@ import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redaction';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { type GitReviewReadResult } from '@maka/core/git-review';
+import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
-import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
+import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
+import {
+  persistSessionReviewBaseBranch,
+  readSessionReviewBaseBranch,
+  resolveAdoptedBaseBranch,
+  reviewBaseBranchRequestValue,
+} from './session-review-base-branch-model.js';
+import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;
@@ -57,21 +64,74 @@ export function SessionReviewPanel(props: {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
+  const [branches, setBranches] = useState<GitReviewBranchContext | null>(null);
   const [loading, setLoading] = useState(false);
+  // Distinct from `loading`: a background refresh must not flash the switch
+  // feedback, so only a user's pick drives it.
+  const [switching, setSwitching] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
+  const [baseBranch, setBaseBranch] = useState(() =>
+    readSessionReviewBaseBranch(props.sessionId),
+  );
   const revisionRef = useRef(0);
+  // Requests read the ref, not the state: adopting a resolved branch must not
+  // re-run the load effect, and a Session switch must not race a stale value.
+  const baseBranchRef = useRef(baseBranch);
+
+  useEffect(() => {
+    setBranches(null);
+    setGitResult(null);
+    setSwitching(false);
+    const stored = readSessionReviewBaseBranch(props.sessionId);
+    baseBranchRef.current = stored;
+    setBaseBranch(stored);
+  }, [props.sessionId]);
 
   const load = useCallback(async () => {
     const revision = ++revisionRef.current;
     setLoading(true);
     setError(null);
-    try {
-      const nextGit = await review.read({
+    const readReview = (selection: string | null) =>
+      review.read({
         sessionId: props.sessionId,
         source: 'branch',
+        baseBranch: reviewBaseBranchRequestValue(selection),
       });
+    try {
+      let nextGit = await readReview(baseBranchRef.current);
       if (revision !== revisionRef.current) return;
+      if (
+        !nextGit.ok &&
+        nextGit.reason === 'invalid_base_branch' &&
+        baseBranchRef.current !== null
+      ) {
+        // The pinned branch is gone. Drop it and re-read once: the retry has no
+        // selection left to reject, so this cannot loop.
+        baseBranchRef.current = null;
+        setBaseBranch(null);
+        persistSessionReviewBaseBranch(props.sessionId, null);
+        nextGit = await readReview(null);
+        if (revision !== revisionRef.current) return;
+      }
+      const nextBranches = nextGit.ok ? nextGit.snapshot : nextGit.branches;
+      if (nextBranches) {
+        setBranches({
+          currentBranch: nextBranches.currentBranch,
+          baseBranchOptions: nextBranches.baseBranchOptions,
+        });
+      }
+      if (nextGit.ok) {
+        const adopted = resolveAdoptedBaseBranch(
+          baseBranchRef.current,
+          nextGit.snapshot,
+        );
+        if (adopted !== baseBranchRef.current) {
+          baseBranchRef.current = adopted;
+          setBaseBranch(adopted);
+          persistSessionReviewBaseBranch(props.sessionId, adopted);
+        }
+      }
       setGitResult(nextGit);
     } catch (nextError) {
       if (revision === revisionRef.current) {
@@ -80,9 +140,24 @@ export function SessionReviewPanel(props: {
         );
       }
     } finally {
-      if (revision === revisionRef.current) setLoading(false);
+      if (revision === revisionRef.current) {
+        setLoading(false);
+        setSwitching(false);
+      }
     }
   }, [copy.loadFailed, locale, props.sessionId, review]);
+
+  const selectBaseBranch = useCallback(
+    (branch: string) => {
+      if (branch === baseBranchRef.current) return;
+      baseBranchRef.current = branch;
+      setBaseBranch(branch);
+      persistSessionReviewBaseBranch(props.sessionId, branch);
+      setSwitching(true);
+      void load();
+    },
+    [load, props.sessionId],
+  );
 
   useEffect(() => {
     if (!props.active) return;
@@ -146,7 +221,41 @@ export function SessionReviewPanel(props: {
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      <VStack gap={3} align="stretch" width="100%">
+      <VStack
+        gap={3}
+        align="stretch"
+        width="100%"
+        className={switching ? 'maka-session-review-switching' : undefined}
+      >
+        {/* Keep branch selection available when computing the diff fails. */}
+        {branches && branches.baseBranchOptions.length > 0 ? (
+          <HStack
+            gap={2}
+            align="center"
+            width="100%"
+            className="maka-session-review-branch-row"
+          >
+            {branches.currentBranch ? (
+              <>
+                <Text
+                  type="supporting"
+                  maxLines={1}
+                  className="maka-session-review-current-branch"
+                >
+                  {branches.currentBranch}
+                </Text>
+                <ArrowRight size={ICON_SIZE.control} aria-hidden />
+              </>
+            ) : null}
+            <SessionReviewBaseBranchPicker
+              baseBranch={baseBranch}
+              baseBranchOptions={branches.baseBranchOptions}
+              isLoading={switching}
+              label={copy.baseBranchLabel}
+              onSelect={selectBaseBranch}
+            />
+          </HStack>
+        ) : null}
         {loading && gitResult === null ? (
           <VStack
             gap={2}
