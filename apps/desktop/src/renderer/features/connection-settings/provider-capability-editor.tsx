@@ -61,7 +61,7 @@ export function CapabilityEditor(props: {
       draftLevels.includes(level),
   );
   return (
-    <FormLayout direction="horizontal-labels" defaultOptionality="optional">
+    <FormLayout direction="vertical" defaultOptionality="optional">
       {props.children}
       <TextInput
         size="sm"
@@ -99,7 +99,7 @@ export function CapabilityEditor(props: {
         value={props.contextWindowInput}
         isDisabled={props.disabled}
         label={copy.contextWindow}
-        description={copy.contextWindowHelp}
+        labelTooltip={copy.contextWindowHelp}
         hasClear
         placeholder="128000 / 128K / 1M"
         onChange={props.onContextWindowInput}
@@ -118,8 +118,7 @@ export function CapabilityEditor(props: {
             width="100%"
             key={field}
             label={copy[field]}
-            description={field === 'compactionThreshold' ? copy.compactionThresholdHelp : undefined}
-            labelTooltip={field === 'maxOutputTokens' ? copy.maxOutputTokensHelp : undefined}
+            labelTooltip={copy[`${field}Help`]}
             value={input}
             onChange={(value) => props.onNumericInput(field, value)}
             isDisabled={props.disabled}

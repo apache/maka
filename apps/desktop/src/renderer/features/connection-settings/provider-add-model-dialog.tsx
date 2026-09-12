@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connections';
 import { supportsRelayFastServiceTier, type ModelOverride } from '@maka/core/model-thinking';
 import { CapabilityEditor } from './provider-capability-editor';
@@ -75,8 +75,7 @@ export function AddModelDialog(props: {
   // exact model id is not something a user can reproduce from memory. The
   // failure is reported by the caller's toast; what this owes them is the
   // typed text, still there to retry from.
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function submit() {
     setSubmitAttempted(true);
     if (idError || contextWindowError || numericInvalid || isSaving) return;
     setSaving(true);
@@ -98,79 +97,117 @@ export function AddModelDialog(props: {
   }
 
   return (
+    <ModelParametersDialog
+      isOpen={props.isOpen}
+      title={copy.addModel}
+      confirmLabel={copy.addModelConfirm}
+      isSaving={isSaving}
+      isSubmitDisabled={props.isSubmitDisabled}
+      onClose={close}
+      onSubmit={submit}
+    >
+      <CapabilityEditor
+        copy={copy}
+        modelId={trimmedId}
+        isRelay={isRelayProviderType(props.providerType)}
+        declared={profile}
+        onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
+        contextWindowInput={contextWindowInput}
+        contextWindowInputInvalid={submitAttempted && contextWindowError !== null}
+        contextWindowError={contextWindowError ?? undefined}
+        numericInputs={numericInputs}
+        onNumericInput={(field, input) => {
+          setNumericInputs((current) => ({ ...current, [field]: input }));
+          const value = parseContextWindowInput(input);
+          if (value !== null || input.trim() === '')
+            setProfile((current) => ({ ...current, [field]: value ?? undefined }));
+        }}
+        disabled={isSaving}
+        showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
+        defaultVision={undefined}
+        onContextWindowInput={setContextWindowInput}
+      >
+        <TextInput
+          label={copy.addModelIdField}
+          labelTooltip={copy.addModelIdFieldHelp}
+          size="sm"
+          isRequired
+          hasAutoFocus
+          isDisabled={isSaving}
+          value={id}
+          placeholder={copy.addModelIdPlaceholder}
+          onChange={setId}
+          status={submitAttempted && idError ? { type: 'error', message: idError } : undefined}
+        />
+      </CapabilityEditor>
+    </ModelParametersDialog>
+  );
+}
+
+export function ModelParametersDialog(props: {
+  isOpen: boolean;
+  title: string;
+  subtitle?: string;
+  confirmLabel: string;
+  isSaving: boolean;
+  isSubmitDisabled?: boolean;
+  onClose(): void;
+  onSubmit(): Promise<void>;
+  children: ReactNode;
+}) {
+  const formId = useId();
+  const copy = getProviderSettingsCopy(useUiLocale()).detail;
+  const close = () => {
+    if (!props.isSaving) props.onClose();
+  };
+  return (
     <Dialog
       isOpen={props.isOpen}
       onOpenChange={(open) => {
-        // A write in flight owns the draft until it settles: dismissing here
-        // would discard the very text the retry needs.
-        if (!open && !isSaving) close();
+        if (!open) close();
       }}
       purpose="form"
-      width={560}
+      width={440}
     >
       <Layout
         header={
           <DialogHeader
-            title={copy.addModel}
+            title={props.title}
+            subtitle={props.subtitle}
             onOpenChange={(open) => {
-              if (!open && !isSaving) close();
+              if (!open) close();
             }}
           />
         }
         content={
           <LayoutContent>
-            <form id="maka-add-model-form" onSubmit={(event) => void submit(event)}>
-              <CapabilityEditor
-                copy={copy}
-                modelId={trimmedId}
-                isRelay={isRelayProviderType(props.providerType)}
-                declared={profile}
-                onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
-                contextWindowInput={contextWindowInput}
-                contextWindowInputInvalid={submitAttempted && contextWindowError !== null}
-                contextWindowError={contextWindowError ?? undefined}
-                numericInputs={numericInputs}
-                onNumericInput={(field, input) => {
-                  setNumericInputs((current) => ({ ...current, [field]: input }));
-                  const value = parseContextWindowInput(input);
-                  if (value !== null || input.trim() === '')
-                    setProfile((current) => ({ ...current, [field]: value ?? undefined }));
-                }}
-                disabled={isSaving}
-                showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
-                defaultVision={undefined}
-                onContextWindowInput={setContextWindowInput}
-              >
-                <TextInput
-                  label={copy.addModelIdField}
-                  description={copy.addModelIdFieldHelp}
-                  isRequired
-                  hasAutoFocus
-                  isDisabled={isSaving}
-                  value={id}
-                  placeholder={copy.addModelIdPlaceholder}
-                  onChange={setId}
-                  status={
-                    submitAttempted && idError ? { type: 'error', message: idError } : undefined
-                  }
-                />
-              </CapabilityEditor>
+            <form
+              id={formId}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!props.isSaving && !props.isSubmitDisabled) void props.onSubmit();
+              }}
+            >
+              {props.children}
             </form>
           </LayoutContent>
         }
         footer={
           <LayoutFooter>
-            {/* One button, as in scheduled-task-form-dialog: the header's close
-                control and Escape are already two ways out, so a footer cancel
-                would be a third route to the same place. */}
             <HStack gap={2} hAlign="end">
+              <Button
+                variant="ghost"
+                label={copy.cancel}
+                isDisabled={props.isSaving}
+                onClick={close}
+              />
               <Button
                 variant="primary"
                 type="submit"
-                form="maka-add-model-form"
-                isDisabled={props.isSubmitDisabled || isSaving}
-                isLoading={isSaving}
-                label={copy.addModelConfirm}
+                form={formId}
+                label={props.confirmLabel}
+                isDisabled={props.isSaving || props.isSubmitDisabled}
+                isLoading={props.isSaving}
               />
             </HStack>
           </LayoutFooter>

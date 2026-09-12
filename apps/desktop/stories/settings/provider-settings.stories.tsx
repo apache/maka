@@ -879,7 +879,7 @@ export const ModelCapabilities: Story = {
   play: async ({ canvasElement }) => {
     const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*gpt-5.6-luna/i });
     configure.click();
-    await waitFor(() => expect(canvasElement.querySelector('.settingsExpandableEditor .astryx-form-layout')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('dialog[open] .astryx-form-layout')).not.toBeNull());
     const pane = canvasElement.querySelector('.settingsMainPane');
     if (pane) pane.scrollTop = 0;
   },

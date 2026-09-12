@@ -23,6 +23,7 @@ import {
   Banner,
   HStack,
   Icon,
+  IconButton,
   Link,
   Switch,
   Text,
@@ -46,7 +47,7 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
 import { providerDisplay } from './provider-display';
-import { CapabilityEditor, AddModelDialog } from '../features/connection-settings';
+import { CapabilityEditor, AddModelDialog, ModelParametersDialog } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
@@ -252,6 +253,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       current = false;
     };
   }, [connection.slug, props.bridge, toast]);
+
+  const numericInputs = typeof editingRow === 'object' && editingRow?.model === editingModelId ? editingRow.numericInputs : undefined;
+  const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
+  const declared: ModelOverride | undefined = editingModelId === null ? undefined : modelParameters[editingModelId];
 
   function openRow(row: Exclude<EditingRow, null>) {
     // Opening one row abandons whatever another row was holding: only one is
@@ -654,9 +659,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             />
           ) : visibleModelRows.map(({ id, entry }) => {
             const label = entry?.displayName?.trim() || id;
-            const numericInputs = typeof editingRow === 'object' && editingRow?.model === id ? editingRow.numericInputs : undefined;
-            const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
-            const declared: ModelOverride | undefined = modelParameters[id];
             const rowLabel = entry?.isDefault ? (
               <HStack gap={2} vAlign="center">
                 <span>{label}</span>
@@ -664,50 +666,46 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               </HStack>
             ) : label;
             return (
-              <SettingsExpandableRow
-                key={id}
-                label={rowLabel}
-                value={undefined}
-                actionIcon={<Icon icon="wrench" size="sm" />}
-                actionLabel={copy.declareCapabilities}
-                actionAriaLabel={copy.declareCapabilitiesAria(label)}
-                afterAction={modelEnableSwitch(id, label)}
-                isEditing={editingModelId === id}
-                isDisabled={allActionsBusy}
-                canSave={hasModelChanges && !contextWindowInputInvalid && !numericInvalid}
-                saveLabel={copy.save}
-                cancelLabel={copy.cancel}
-                onEdit={() => openRow({ model: id })}
-                onCancel={() => { resetDraftProfile(id); setEditingRow(null); }}
-                onSave={async () => {
-                  if (!contextWindowInputInvalid && !numericInvalid && await saveModelParameters()) setEditingRow(null);
-                }}
-              >
-                <Text type="supporting" color="secondary">{copy.capabilitiesHelp}</Text>
-                <CapabilityEditor
-                  copy={copy}
-                  modelId={id}
-                  isRelay={isRelay}
-                  numericInputs={numericInputs}
-                  onNumericInput={(field, input) => {
-                    setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: id, numericInputs: { ...numericInputs, [field]: input } }));
-                    const value = parseContextWindowInput(input);
-                    if (value !== null || input.trim() === '') setDraftParameters(id, { [field]: value ?? undefined });
-                  }}
-                  declared={declared}
-                  onChange={(patch) => setDraftParameters(id, patch)}
-                  contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
-                  contextWindowInputInvalid={contextWindowInputInvalid}
-                  disabled={allActionsBusy}
-                  showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
-                  defaultVision={connection.catalogEntries.find((model) => model.id === id)?.defaultSupportsVision}
-                  onContextWindowInput={(input) => changeContextWindow(id, input)}
-                />
-              </SettingsExpandableRow>
+                <SettingsRow key={id} label={rowLabel} end={<>
+                  <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
+                    label={copy.declareCapabilitiesAria(label)} tooltip={copy.declareCapabilities}
+                    isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
+                  {modelEnableSwitch(id, label)}
+                </>} />
+
             );
           })}
         </SettingsSection>
       )}
+      <ModelParametersDialog
+        isOpen={editingModelId !== null} title={copy.declareCapabilities} subtitle={editingModelId ?? undefined}
+        confirmLabel={copy.save} isSaving={allActionsBusy}
+        isSubmitDisabled={!hasModelChanges || contextWindowInputInvalid || numericInvalid}
+        onClose={() => { if (editingModelId !== null) resetDraftProfile(editingModelId); setEditingRow(null); }}
+        onSubmit={async () => {
+            if (await saveModelParameters()) setEditingRow(null);
+          }}
+        >
+        {editingModelId !== null && <CapabilityEditor
+          copy={copy}
+          modelId={editingModelId}
+          isRelay={isRelay}
+          numericInputs={numericInputs}
+          onNumericInput={(field, input) => {
+            setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));
+            const value = parseContextWindowInput(input);
+            if (value !== null || input.trim() === '') setDraftParameters(editingModelId, { [field]: value ?? undefined });
+          }}
+          declared={declared}
+          onChange={(patch) => setDraftParameters(editingModelId, patch)}
+          contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
+          contextWindowInputInvalid={contextWindowInputInvalid}
+          disabled={allActionsBusy}
+          showsFastMode={supportsRelayFastServiceTier(connection.providerType, editingModelId)}
+          defaultVision={connection.catalogEntries.find((model) => model.id === editingModelId)?.defaultSupportsVision}
+          onContextWindowInput={(input) => changeContextWindow(editingModelId, input)}
+        />}
+      </ModelParametersDialog>
       <AddModelDialog
         isOpen={editingRow === 'add-model'}
         providerType={connection.providerType}

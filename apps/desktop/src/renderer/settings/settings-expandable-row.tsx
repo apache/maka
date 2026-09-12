@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { Button, IconButton, HStack, Text } from '@astryxdesign/core';
+import { Button, HStack, Text } from '@astryxdesign/core';
 import { SettingsField, SettingsRow } from './settings-section';
 
 /**
@@ -62,7 +62,6 @@ export function SettingsExpandableRow(props: {
   actionLabel?: string;
   /** A specific accessible name when neighboring rows share the same visible action label. */
   actionAriaLabel?: string;
-  actionIcon?: ReactNode;
   /**
    * Replaces the built-in 更改 trigger for rows that already own their end
    * slot — a project row carries a default Badge, a 设为默认 button and a …
@@ -127,17 +126,7 @@ export function SettingsExpandableRow(props: {
         align="start"
         end={props.end ?? (
           <>
-            {props.actionIcon ? <IconButton
-              ref={triggerRef}
-              data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
-              variant="ghost"
-              size="sm"
-              icon={props.actionIcon}
-              label={props.actionAriaLabel ?? props.actionLabel ?? ''}
-              tooltip={props.actionLabel}
-              isDisabled={props.isDisabled}
-              onClick={props.onEdit}
-            /> : <Button
+            <Button
               ref={triggerRef}
               data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
               variant="ghost"
@@ -146,7 +135,7 @@ export function SettingsExpandableRow(props: {
               onClick={props.onEdit}
               label={props.actionLabel ?? ''}
               aria-label={props.actionAriaLabel}
-            />}
+            />
             {props.afterAction}
           </>
         )}

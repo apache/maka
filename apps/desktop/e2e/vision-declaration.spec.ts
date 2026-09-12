@@ -53,7 +53,9 @@ test('adding and configuring a disabled model preserves its parameters and selec
   const enable = page.getByRole('switch', { name: copy.enableModelAria(MODEL_ID) });
   await enable.click();
   await expect(enable).not.toBeChecked();
-  await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
+  const configure = page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) });
+  await configure.click();
+  await expect(page.getByRole('dialog', { name: copy.declareCapabilities, exact: true })).toBeVisible();
   await expect(vision).toHaveText(copy.visionEnabledOption);
   await vision.click();
   await page.getByRole('listbox').getByRole('option', { name: copy.visionDefaultOption(false) }).click();
@@ -73,6 +75,7 @@ test('adding and configuring a disabled model preserves its parameters and selec
   await page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }).click();
   await expect(vision).toHaveText(copy.visionDefaultOption(false));
   await page.getByRole('button', { name: copy.cancel, exact: true }).click();
+  await expect(configure).toBeFocused();
   await enable.click();
   await expect(enable).toBeChecked();
   await expect.poll(async () => page.evaluate(async (modelId) => {
