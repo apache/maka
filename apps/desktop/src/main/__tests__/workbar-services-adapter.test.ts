@@ -338,6 +338,10 @@ describe('createDesktopWorkbarServices', () => {
       's',
       'a',
     ]);
+    assert.deepEqual(calls.find((call) => call.name === 'app.openArtifactPath')?.args, [
+      's',
+      'a',
+    ]);
     assert.deepEqual(calls.find((call) => call.name === 'inspector.trace')?.args, [
       's',
       'cursor-1',

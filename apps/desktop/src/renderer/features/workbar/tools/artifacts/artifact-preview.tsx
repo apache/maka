@@ -66,8 +66,8 @@ import {
 import { Banner } from '@astryxdesign/core/Banner';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
-import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { RegistryArtifactPreview } from './artifact-preview-registry-shell.js';
+import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFolder?: () => void }) {
@@ -79,7 +79,7 @@ export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFol
     case 'diff':
       return <DiffPreview record={record} copy={copy} />;
     case 'html':
-      return <HtmlPreview record={record} copy={copy} />;
+      return <HtmlPreview record={record} copy={copy} onShowInFolder={onShowInFolder} />;
     case 'image':
       // PR-UI-RENDER-3a: route image previews through the typed
       // registry shell so the resolution path (mime match / ext
@@ -176,10 +176,23 @@ function DiffPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   );
 }
 
-function HtmlPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
+function HtmlPreview(props: {
+  record: ArtifactDescriptor;
+  copy: ArtifactCopy;
+  onShowInFolder?: () => void;
+}) {
   const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingHtml} />;
-  if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
+  if (!result.value.ok) {
+    return (
+      <TextFailureCard
+        record={props.record}
+        reason={result.value.reason}
+        copy={props.copy}
+        onShowInFolder={props.onShowInFolder}
+      />
+    );
+  }
   const bounded = boundPreviewText(result.value.text);
   if (bounded.isDisplayTruncated) {
     return (
@@ -335,9 +348,28 @@ function PreviewLoading(props: { label: string }) {
   );
 }
 
-function TextFailureCard(props: { record: ArtifactDescriptor; reason: TextFailureReason; copy: ArtifactCopy }) {
+function TextFailureCard(props: {
+  record: ArtifactDescriptor;
+  reason: TextFailureReason;
+  copy: ArtifactCopy;
+  onShowInFolder?: () => void;
+}) {
   const { status, title, description } = failureCopyText(props.record, props.reason, props.copy);
-  return <Banner status={status} role="status" title={title} description={description} />;
+  return (
+    <Banner
+      status={status}
+      role="status"
+      title={title}
+      description={description}
+      endContent={props.onShowInFolder ? (
+        <Button
+          variant="secondary"
+          onClick={props.onShowInFolder}
+          label={props.copy.pane.openInFinder}
+        />
+      ) : undefined}
+    />
+  );
 }
 
 function BinaryFailureCard(props: { record: ArtifactDescriptor; reason: BinaryFailureReason; copy: ArtifactCopy }) {

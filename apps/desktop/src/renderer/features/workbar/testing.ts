@@ -30,6 +30,7 @@ export * from './model/workbar-tabs.js';
 export * from './model/workbar-layout.js';
 export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
+export { ArtifactPreview } from './tools/artifacts/artifact-preview.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from './tools/inspector/session-inspector-panel-model.js';
 export {
