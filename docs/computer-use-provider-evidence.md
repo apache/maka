@@ -38,7 +38,7 @@ provider transports, or execution backends.
 
 ## Report Contract
 
-Reports separate three evidence classes:
+Reports separate four evidence classes:
 
 - `real-runtime`: a live provider model used the production Maka runtime;
 - `fault-injection`: a live provider and Runtime exercised a named injected
