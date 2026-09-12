@@ -101,6 +101,16 @@ test('core CI validates pull requests and the resulting main branch state', () =
   assert.doesNotMatch(workflow, /github\.event\.pull_request\.base\.sha/u);
 });
 
+test('core CI discards runs superseded by the same trigger on the same ref', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.match(
+    workflow,
+    /group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}/u,
+  );
+  assert.match(workflow, /\n {2}cancel-in-progress: true/u);
+});
+
 test('every core diff gate consumes the shared comparison without resolving another base', () => {
   const workflow = readWorkflow('ci.yml');
   const gates = workflow.split('\n      - ').filter((step) => step.includes('--base '));

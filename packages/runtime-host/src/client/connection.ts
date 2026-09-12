@@ -113,6 +113,7 @@ export interface ConnectRuntimeHostInput {
    * Injectable so tests can exercise the cadence without waiting 2 seconds.
    */
   livenessIntervalMs?: number;
+  livenessTimeoutMs?: number;
   /**
    * Invoked after each liveness probe round-trips and validates its Host
    * Epoch. Test observability: lets a probe-crossing test prove probes
@@ -386,6 +387,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #inFlightDomainRequests = 0;
   #terminalError: Error | undefined;
   readonly #livenessIntervalMs: number;
+  readonly #livenessTimeoutMs: number | undefined;
   readonly #onLivenessProbe: (() => void) | undefined;
   readonly #onHostStatus: ((status: HostStatusResult) => void) | undefined;
 
@@ -404,6 +406,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     // the other connect timeouts, before any transport work happens.
     options?: {
       livenessIntervalMs?: number;
+      livenessTimeoutMs?: number;
       onLivenessProbe?: () => void;
       onHostStatus?: (status: HostStatusResult) => void;
       connectionResource?: RuntimeHostConnectionResource;
@@ -412,6 +415,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
+    this.#livenessTimeoutMs = options?.livenessTimeoutMs;
     this.#onLivenessProbe = options?.onLivenessProbe;
     this.#onHostStatus = options?.onHostStatus;
     this.#transport = transport;
@@ -912,7 +916,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         this.#livenessProbeDeadline = undefined;
         this.#fail(requestTimeoutError('host.status'));
       },
-      this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS,
+      this.#livenessTimeoutMs ??
+        (this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS),
     );
     void this.#requestOperation(
       'host.status',
@@ -1179,12 +1184,14 @@ function normalizeConnectRuntimeHostInput(
     | 'connectTimeoutMs'
     | 'handshakeTimeoutMs'
     | 'livenessIntervalMs'
+    | 'livenessTimeoutMs'
   >,
 ): {
   clientInstanceId: string;
   connectTimeoutMs: number;
   handshakeTimeoutMs: number;
   livenessIntervalMs: number;
+  livenessTimeoutMs: number | undefined;
 } {
   validateProtocolRange(input.protocol);
   return {
@@ -1201,6 +1208,10 @@ function normalizeConnectRuntimeHostInput(
       input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
       'livenessIntervalMs',
     ),
+    livenessTimeoutMs:
+      input.livenessTimeoutMs === undefined
+        ? undefined
+        : requireTimeout(input.livenessTimeoutMs, 'livenessTimeoutMs'),
   };
 }
 
@@ -1248,6 +1259,10 @@ export async function connectResolvedRuntimeHost(
     input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
     'livenessIntervalMs',
   );
+  const livenessTimeoutMs =
+    input.livenessTimeoutMs === undefined
+      ? undefined
+      : requireTimeout(input.livenessTimeoutMs, 'livenessTimeoutMs');
   const compositionId = requireHostCompositionId(
     input.compositionId ?? INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   );
@@ -1364,6 +1379,7 @@ export async function connectResolvedRuntimeHost(
         : registration.compositionRevision,
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
+      ...(livenessTimeoutMs === undefined ? {} : { livenessTimeoutMs }),
       onLivenessProbe: input.onLivenessProbe,
       onHostStatus: input.onHostStatus,
     });
@@ -1481,6 +1497,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly expectedRootId?: string;
   readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
+  readonly livenessTimeoutMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
@@ -1564,6 +1581,9 @@ async function exchangeRuntimeHostHandshake(
     kind: 'connected',
     connection: new RuntimeHostConnectionImpl(input.transport, handshake, {
       livenessIntervalMs: input.livenessIntervalMs,
+      ...(input.livenessTimeoutMs === undefined
+        ? {}
+        : { livenessTimeoutMs: input.livenessTimeoutMs }),
       onLivenessProbe: input.onLivenessProbe,
       onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,

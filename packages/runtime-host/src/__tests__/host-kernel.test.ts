@@ -2650,7 +2650,10 @@ describe('non-serving Runtime Host kernel', () => {
       });
       let stopped = false;
       try {
-        const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+        const connected = await retryConnect(paths, CURRENT_PROTOCOL, {
+          livenessIntervalMs: 20,
+          livenessTimeoutMs: 100,
+        });
         assert.equal(connected.kind, 'connected');
         if (connected.kind !== 'connected') return;
 
@@ -2671,7 +2674,7 @@ describe('non-serving Runtime Host kernel', () => {
               error.cause.code === 'read_timeout' &&
               error.cause.message.includes('host.status'),
           ),
-          12_000,
+          1_000,
           'automatic Runtime Host liveness check did not reject pending work',
         );
         await withTimeout(
@@ -3443,6 +3446,15 @@ describe('non-serving Runtime Host kernel', () => {
           connectRuntimeHost({
             rootPath: paths.root,
             protocol: CURRENT_PROTOCOL,
+            livenessTimeoutMs: 0,
+          }),
+        RangeError,
+      );
+      await assert.rejects(
+        () =>
+          connectRuntimeHost({
+            rootPath: paths.root,
+            protocol: CURRENT_PROTOCOL,
             clientInstanceId: '',
           }),
         RuntimeHostProtocolError,
@@ -3828,6 +3840,7 @@ async function retryConnect(
   protocol: { min: number; max: number },
   options?: {
     livenessIntervalMs?: number;
+    livenessTimeoutMs?: number;
     onLivenessProbe?: () => void;
     clientInstanceId?: string;
   },
