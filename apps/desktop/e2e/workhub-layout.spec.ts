@@ -62,7 +62,13 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
-  await mainWindow.evaluate((window, bounds) => window.setBounds(bounds), originalBounds);
+  const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
+    window.setBounds(bounds);
+    return window.getContentSize()[0];
+  }, originalBounds);
+  await expect.poll(() => page.evaluate(() => innerWidth)).toBe(restoredContentWidth);
+  const restoredDockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
+  await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
   const anchors = workhub.locator('.workhub-anchors');
   const draftBeforeOverlays = 'Draft survives main-window overlays and dragging.';
   await workhub.locator(COMPOSER_INPUT).fill(draftBeforeOverlays);
@@ -349,8 +355,8 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
   await expect(followups).toHaveText([queuedTexts[0]]);
   await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[1]);
-  // The first queue row is optimistic; Enter does not auto-wait for the
-  // previous submission to release the Composer, unlike a button click.
+  // Queue projection can arrive before the previous send IPC releases admission.
+  // Keyboard submission must wait for the same readiness as clicking Send.
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('Enter');
   await expect(followups).toHaveText(queuedTexts);
