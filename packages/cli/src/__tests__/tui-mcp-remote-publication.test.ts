@@ -907,6 +907,9 @@ function reconnectingConnection(connection: RuntimeHostConnection) {
   return {
     ...connection,
     reconnecting: true as const,
+    openSessionSubscriptionOnce: (
+      input: Parameters<RuntimeHostConnection['openSessionSubscription']>[0],
+    ) => connection.openSessionSubscription(input),
     subscribeConnectionAvailability: (
       listener: (availability: {
         kind: 'connected';
