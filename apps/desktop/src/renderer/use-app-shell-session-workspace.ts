@@ -57,7 +57,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
-  const { messagesRef, transcriptRangeRef, setMessagesState } = publication;
+  const {
+    messagesRef, transcriptRangeRef, setMessagesState,
+    messages, publishedTranscriptRange, publishTranscript, isMessagePublished,
+  } = publication;
   const [transientMessages, setTransientMessages] = useState<TransientUserMessage[]>([]);
   const transientMessagesBySessionRef = useRef(
     new Map<string, Map<string, TransientUserMessage>>(),
@@ -102,9 +105,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
     ...actions,
-    messages: publication.messages,
-    publishedTranscriptRange: publication.publishedTranscriptRange,
-    publishTranscript: publication.publishTranscript,
+    messages,
+    publishedTranscriptRange,
+    publishTranscript,
+    isMessagePublished,
     transientMessages,
     transcriptRangeRef,
     messageLoadPending,

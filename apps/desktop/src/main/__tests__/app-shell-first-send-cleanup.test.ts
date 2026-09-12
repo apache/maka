@@ -35,6 +35,10 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { act, createElement } from 'react';
+import type { StoredMessage } from '@maka/core/session';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 
 import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
@@ -570,6 +574,43 @@ describe('composer first-send cleanup', () => {
     assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
     publishedAnswer = durableAnswer;
     assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
+  });
+
+  it('an in-flight refresh reads publication that commits after the call began', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [answer] }),
+        hasDurableMessage: () => true,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const { root } = installReactRenderer();
+    let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
+    function Probe(): null {
+      publication = useAppShellSessionUiState(deps.activeIdRef, () => {}).publication;
+      return null;
+    }
+    try {
+      act(() => root.render(createElement(Probe)));
+      const actions = createAppShellChatActions({
+        ...deps, transcriptRangeRef: { current: controller },
+        isMessagePublished: publication.isMessagePublished,
+      });
+      const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+      act(() => {
+        publication.messagesRef.current = [answer];
+        publication.setMessagesState([answer]);
+      });
+      ready.resolve();
+      assert.equal(await refresh, true, 'the original invocation must see the new publication');
+      assert.equal(publication.isMessagePublished({ ...answer }), false, 'same id is not the published version');
+    } finally {
+      cleanupFakeDom();
+    }
   });
 
   for (const initialized of [false, true]) {

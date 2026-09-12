@@ -49,6 +49,7 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
   // callback that dispatches through its actions ref. Keep their identities as
   // stable as the other workspace actions consumers receive.
   const [actions] = useState(() => ({
+    isMessagePublished: (message: StoredMessage) => messagesRef.current.includes(message),
     setMessagesState(messages: StoredMessage[]) {
       setView({
         messages,
