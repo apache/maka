@@ -86,8 +86,14 @@ test('native thumb keeps its geometry and releases history without moving the re
             }>,
           };
           (window as any).__windowGeometry = state;
-          root.addEventListener('pointerdown', () => state.pointerDown++);
-          document.addEventListener('pointerup', () => state.pointerUp++);
+          root.addEventListener('pointerdown', () => {
+            state.pointerDown++;
+            state.held = true;
+          });
+          document.addEventListener('pointerup', () => {
+            state.pointerUp++;
+            state.held = false;
+          });
           const frame = () => {
             const turns = [...root.querySelectorAll<HTMLElement>('.maka-transcript-turn')];
             state.frames.push({
@@ -118,9 +124,6 @@ test('native thumb keeps its geometry and releases history without moving the re
         expect(start.h).toBeGreaterThan(start.v);
         const startY = start.top + ((start.t + start.v / 2) * start.v) / start.h;
         await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: start.x, y: startY });
-        await page.evaluate(() => {
-          (window as any).__windowGeometry.held = true;
-        });
         await cdp.send('Input.dispatchMouseEvent', {
           type: 'mousePressed',
           x: start.x,
@@ -158,10 +161,17 @@ test('native thumb keeps its geometry and releases history without moving the re
           buttons: 0,
           clickCount: 1,
         });
-        await page.evaluate(() => {
-          (window as any).__windowGeometry.held = false;
+        // A loaded runner can deliver fewer than three frames in 300ms. Keep
+        // observing through the actual publication instead of stopping on time.
+        await page.waitForFunction(() => {
+          const state = (window as any).__windowGeometry;
+          const held = state.frames.find((frame: any) => frame.held);
+          const released = state.frames.filter((frame: any) => !frame.held && frame.anchorTop !== undefined);
+          return released.length > 2 && released.some((frame: any) => frame.range !== held.range);
         });
-        await page.waitForTimeout(300);
+        await page.evaluate(() => new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ));
         const result = await page.evaluate(() => {
           const state = (window as any).__windowGeometry;
           state.done = true;
