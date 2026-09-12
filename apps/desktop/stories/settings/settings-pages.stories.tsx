@@ -1877,13 +1877,6 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
-function fieldChrome(element: HTMLElement) {
-  const field = element.parentElement;
-  if (!field) throw new Error('Settings field chrome is missing');
-  const style = getComputedStyle(field);
-  return `${style.borderColor} | ${style.boxShadow}`;
-}
-
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -2088,7 +2081,7 @@ export const GeneralPickerOpenFocusRing: Story = {
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The field carries the
+// Real path: keyboard navigation through 设置 → 通用. The model button carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2097,16 +2090,19 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
+    await waitFor(() => {
+      const style = getComputedStyle(trigger);
+      expect(style.outlineStyle).toBe('solid');
+      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
+    });
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The field loses its own paint there, so the Item retains the focus ring.
+// The model button's outline survives, and the Item retains its shared fallback.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2114,10 +2110,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
-    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(fieldChrome(trigger)).toBe(resting);
+    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
+    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };
