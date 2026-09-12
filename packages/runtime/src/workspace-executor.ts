@@ -35,7 +35,11 @@ import {
 } from './file-stable-write.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
-import { RipgrepUnavailableError, ripgrepMissingOnPathMessage } from './ripgrep-guidance.js';
+import {
+  currentRipgrepEnvironment,
+  RipgrepUnavailableError,
+  ripgrepMissingOnPathMessage,
+} from './ripgrep-guidance.js';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
@@ -460,7 +464,10 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       // Node reports a missing spawn cwd exactly like a missing executable
       // (both `spawn rg ENOENT`), so only blame ripgrep once the cwd exists.
       if (error?.code === 'ENOENT' && (await isDirectory(input.cwd)))
-        throw new RipgrepUnavailableError(ripgrepMissingOnPathMessage(), { cause: error });
+        throw new RipgrepUnavailableError(
+          ripgrepMissingOnPathMessage(currentRipgrepEnvironment()),
+          { cause: error },
+        );
       throw error;
     }
   }

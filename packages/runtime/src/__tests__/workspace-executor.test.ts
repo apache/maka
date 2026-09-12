@@ -294,6 +294,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
           assert.equal(error.code, 'grep_unavailable');
           assert.match(error.message, /ripgrep/);
           assert.match(error.message, /BurntSushi\/ripgrep/);
+          assert.match(error.message, /then retry/);
           return true;
         },
       ),

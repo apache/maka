@@ -243,7 +243,7 @@ describe('filesystem worker operations', () => {
     });
   });
 
-  test('names ripgrep and the restart when the runtime started without it (#5167)', async () => {
+  test('names ripgrep, where to install it, and a retry when no usable copy was found (#5167)', async () => {
     const root = await temporaryDirectory('maka-worker-grep-missing-');
     const target = join(root, 'file.ts');
     await writeFile(target, 'const healthSignal = true;', 'utf8');
@@ -261,20 +261,22 @@ describe('filesystem worker operations', () => {
         },
         { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
       ),
-      {},
+      { ripgrepEnvironment: { kind: 'wsl', name: 'Ubuntu-24.04' } },
     );
 
     assert.equal(response.ok, false);
     if (!response.ok) {
       assert.equal(response.error.code, 'grep_unavailable');
       assert.match(response.error.message, /ripgrep/);
-      assert.match(response.error.message, /restart Maka/);
+      assert.match(response.error.message, /the WSL distribution "Ubuntu-24\.04"/);
+      assert.match(response.error.message, /then retry/);
+      assert.doesNotMatch(response.error.message, /restart/i);
     }
   });
 
   test('reports a ripgrep that vanished after startup as unavailable, not as a missing search path', async () => {
-    // Launch-time resolution pins the realpath (e.g. a versioned Homebrew
-    // keg); an upgrade can delete it while the runtime keeps running.
+    // The launch configuration checks the executable before every launch, so
+    // this is the narrow window where it disappears after that check.
     const root = await temporaryDirectory('maka-worker-grep-vanished-');
     const target = join(root, 'file.ts');
     const vanished = join(root, 'uninstalled', 'rg');
@@ -300,7 +302,11 @@ describe('filesystem worker operations', () => {
     if (!response.ok) {
       assert.equal(response.error.code, 'grep_unavailable');
       assert.ok(response.error.message.includes(vanished));
-      assert.match(response.error.message, /restart Maka/);
+      assert.match(
+        response.error.message,
+        /for a remote Host, that server rather than this computer/,
+      );
+      assert.match(response.error.message, /then retry/);
     }
   });
 
