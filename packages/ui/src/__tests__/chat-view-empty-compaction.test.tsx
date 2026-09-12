@@ -43,7 +43,7 @@ function renderChat(liveTurn?: LiveTurnProjection, overrides: Partial<ComponentP
         <ChatView
           messages={[]}
           activeSession={activeSession}
-          liveTurn={liveTurn}
+          liveTurns={liveTurn ? [liveTurn] : undefined}
           scrollBehavior="auto"
           onNew={() => undefined}
           {...overrides}
@@ -140,7 +140,7 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
     await act(() => root.render(
       <LocaleProvider locale="en">
         <ChatSurfaceLayout composer={null}>
-          <ChatView messages={[]} activeSession={activeSession} liveTurn={liveTurn}
+          <ChatView messages={[]} activeSession={activeSession} liveTurns={liveTurn ? [liveTurn] : undefined}
             activeTurn={{ turnId: liveTurn.turnId! }} transientMessages={[pending]} scrollBehavior="auto" onNew={() => undefined} {...overrides} />
         </ChatSurfaceLayout>
       </LocaleProvider>,
@@ -157,7 +157,7 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
-  await render({ liveTurn: undefined, activeTurn: undefined, transientMessages: [] });
+  await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
 });
 

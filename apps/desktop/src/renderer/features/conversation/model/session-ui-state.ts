@@ -20,7 +20,7 @@
 import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
+import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
 import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
@@ -31,7 +31,7 @@ export interface AppShellSessionUiState {
   messageLoadErrorBySession: Record<string, string>;
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
-  liveTurnBySession: Record<string, LiveTurnProjection>;
+  liveTurnBySession: Record<string, LiveTurnBuffer>;
   executionBySession: Record<string, SessionExecutionProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;

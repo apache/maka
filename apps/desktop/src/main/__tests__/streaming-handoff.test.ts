@@ -82,7 +82,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
     scrollBehavior: 'smooth',
-    liveTurn,
+    liveTurns: liveTurn ? [liveTurn] : undefined,
     onNew() {},
   } satisfies Parameters<typeof ChatView>[0]));
 }
@@ -179,7 +179,7 @@ describe('single live-turn handoff', () => {
       messageLoading: true,
       scrollBehavior: 'smooth',
       activeTurn: { turnId: 'turn-1' },
-      liveTurn: {
+      liveTurns: [{
         turnId: 'turn-1',
         phase: 'streamed',
         steps: [{
@@ -187,7 +187,7 @@ describe('single live-turn handoff', () => {
           text: { text: 'live answer', truncated: false, complete: false },
           tools: [],
         }],
-      },
+      }],
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
@@ -218,7 +218,7 @@ describe('single live-turn handoff', () => {
         },
       ],
       scrollBehavior: 'smooth',
-      liveTurn: {
+      liveTurns: [{
         turnId: 'host-turn',
         phase: 'streamed',
         steps: [{
@@ -226,7 +226,7 @@ describe('single live-turn handoff', () => {
           text: { text: 'live answer', truncated: false, complete: false },
           tools: [],
         }],
-      },
+      }],
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
@@ -277,7 +277,7 @@ describe('single live-turn handoff', () => {
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text: finalText, modelId: 'model' },
       ],
       scrollBehavior: 'smooth',
-      liveTurn: {
+      liveTurns: [{
         turnId: 'turn-1',
         phase: 'streamed',
         terminal: true,
@@ -286,7 +286,7 @@ describe('single live-turn handoff', () => {
           text: { text: finalText, truncated: false, complete: true },
           tools: [],
         }],
-      },
+      }],
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
@@ -307,7 +307,7 @@ describe('single live-turn handoff', () => {
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
       ],
       scrollBehavior: 'smooth',
-      liveTurn: {
+      liveTurns: [{
         turnId: 'turn-1',
         phase: 'streamed',
         steps: [{
@@ -315,7 +315,7 @@ describe('single live-turn handoff', () => {
           text: { text, truncated: false, complete: false },
           tools: [{ toolUseId: 'tool-1', toolName: 'Bash', stepId: 'assistant-1', status: 'running', args: {} }],
         }],
-      },
+      }],
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
@@ -324,13 +324,13 @@ describe('single live-turn handoff', () => {
   });
 
   it('hands terminal streamed text to committed history without waiting for a render callback', async () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const refreshes: Array<{ sessionId: string; required?: string }> = [];
-    const setLiveTurnBySession = (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
+    const setLiveTurnBySession = (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
       liveTurns.set(updater);
       liveTurnBySessionRef.current = liveTurns.get();
     };
@@ -362,7 +362,7 @@ describe('single live-turn handoff', () => {
     });
     emit({ type: 'complete', id: 'e4', turnId: 'turn-1', ts: 4, stopReason: 'end_turn' });
 
-    const terminal = liveTurns.get()['session-1'];
+    const terminal = liveTurns.get()['session-1']?.[0];
     assert.equal(terminal?.terminal, true);
     assert.deepEqual(terminal?.steps[0]?.thinking?.text, '思考');
     assert.equal(terminal?.steps[0]?.tools[0]?.toolUseId, 'tool-1');
@@ -380,8 +380,8 @@ describe('single live-turn handoff', () => {
   });
 
   it('publishes visible deltas at most once per animation frame', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -418,7 +418,7 @@ describe('single live-turn handoff', () => {
     assert.equal(frames.length, 1);
     frames.shift()?.();
     assert.equal(publications, 1);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'x'.repeat(100));
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text, 'x'.repeat(100));
 
     handlers.handleEvent('session-1', {
       type: 'text_delta', id: 'event-100', turnId: 'turn-1', messageId: 'assistant-1', ts: 100, text: 'y',
@@ -427,14 +427,14 @@ describe('single live-turn handoff', () => {
       type: 'text_complete', id: 'event-101', turnId: 'turn-1', messageId: 'assistant-1', ts: 101, text: 'done',
     });
     assert.equal(publications, 2);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text, 'done');
     frames.shift()?.();
     assert.equal(publications, 2);
   });
 
   it('bounds tool output queued for one animation frame', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -478,7 +478,7 @@ describe('single live-turn handoff', () => {
     assert.equal(displayBatch.pendingEvents.get('session-1')?.length, 200);
     frames.shift()?.();
     assert.equal(publications, 1);
-    const chunks = liveTurns.get()['session-1']?.steps[0]?.tools[0]?.outputChunks;
+    const chunks = liveTurns.get()['session-1']?.[0]?.steps[0]?.tools[0]?.outputChunks;
     assert.equal(chunks?.length, 200);
     assert.equal(chunks?.[0]?.seq, 1);
     assert.equal(chunks?.at(-1)?.seq, 200);
@@ -502,8 +502,8 @@ describe('single live-turn handoff', () => {
   });
 
   it('does not publish queued output after its session is cleared', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -539,8 +539,8 @@ describe('single live-turn handoff', () => {
   });
 
   it('applies catch-up deltas immediately until the returning session is seeded', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -576,7 +576,7 @@ describe('single live-turn handoff', () => {
     assert.equal(publications, 1);
     assert.equal(frames.length, 0);
     assert.equal(
-      liveTurns.get()['session-1']?.steps[0]?.text?.text,
+      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
       'prefix accumulated while away',
     );
 
@@ -595,14 +595,14 @@ describe('single live-turn handoff', () => {
     frames.shift()?.();
     assert.equal(publications, 2);
     assert.equal(
-      liveTurns.get()['session-1']?.steps[0]?.text?.text,
+      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
       'prefix accumulated while away new',
     );
   });
 
   it('shares pending display events across handler replacement', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -615,7 +615,7 @@ describe('single live-turn handoff', () => {
       liveTurnBySessionRef,
       refreshMessages: async () => true,
       refreshSessions: async () => [],
-      setLiveTurnBySession: (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
+      setLiveTurnBySession: (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
         publications += 1;
         liveTurns.set(updater);
         liveTurnBySessionRef.current = liveTurns.get();
@@ -637,22 +637,22 @@ describe('single live-turn handoff', () => {
       type: 'text_complete', id: 'complete', turnId: 'turn-1', messageId: 'assistant-1', ts: 2,
       text: 'done',
     });
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.complete, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text, 'done');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.complete, true);
 
     frames.shift()?.();
     assert.equal(publications, 1);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.complete, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text, 'done');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.complete, true);
   });
 
   it('queues a sandbox boundary request without ending the live turn', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
-    const setLiveTurnBySession = (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
+    const setLiveTurnBySession = (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
       liveTurns.set(updater);
       ref.current = liveTurns.get();
     };
@@ -683,13 +683,13 @@ describe('single live-turn handoff', () => {
       },
     });
 
-    assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, undefined);
     assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 
   it('queues and retires a form at the Host answer acknowledgement', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': armLiveTurn('turn-1'),
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [armLiveTurn('turn-1')],
     });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -726,12 +726,12 @@ describe('single live-turn handoff', () => {
       toolUseId: 'tool-1',
     });
     assert.deepEqual(interactions.get()['session-1'], []);
-    assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, undefined);
   });
 
   it('hands an aborted projection over only after persisted messages cover it', async () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': {
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [{
         turnId: 'turn-1',
         phase: 'streamed',
         steps: [{
@@ -743,11 +743,11 @@ describe('single live-turn handoff', () => {
             args: {},
           }],
         }],
-      },
+      }],
     });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
-    const setLiveTurnBySession = (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
+    const setLiveTurnBySession = (updater: (current: Record<string, readonly LiveTurnProjection[]>) => Record<string, readonly LiveTurnProjection[]>) => {
       liveTurns.set(updater);
       ref.current = liveTurns.get();
     };
@@ -771,12 +771,12 @@ describe('single live-turn handoff', () => {
       type: 'abort', id: 'event-1', turnId: 'turn-1', ts: 1, reason: 'user_stop',
     });
 
-    assert.equal(liveTurns.get()['session-1']?.terminal, true);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.tools[0]?.status, 'interrupted');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.tools[0]?.status, 'interrupted');
 
     resolveRefresh(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(liveTurns.get()['session-1']?.terminal, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, true);
     handlers.reconcilePersistedMessages('session-1', [
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 2, toolName: 'Bash', args: {} },
     ]);
@@ -797,7 +797,7 @@ describe('single live-turn handoff', () => {
         }],
       }],
     };
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({ 'session-1': projection });
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({ 'session-1': [projection] });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     let diagnosticDetails: string | undefined;
@@ -830,9 +830,9 @@ describe('single live-turn handoff', () => {
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(liveTurns.get()['session-1']?.terminal, true);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.tools[0]?.status, 'interrupted');
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.tools[0]?.outputChunks?.[0]?.text, 'partial output');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.tools[0]?.status, 'interrupted');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.tools[0]?.outputChunks?.[0]?.text, 'partial output');
     assert.match(diagnosticDetails ?? '', /Session: session-1/u);
     assert.match(diagnosticDetails ?? '', /Turn: turn-1/u);
     assert.match(diagnosticDetails ?? '', /Reason: tool_failed/u);
@@ -846,7 +846,7 @@ describe('single live-turn handoff', () => {
     handlers.reconcilePersistedMessages('session-1', [
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 3, toolName: 'Bash', args: {} },
     ]);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.tools[0]?.outputChunks?.[0]?.text, 'partial output');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.steps[0]?.tools[0]?.outputChunks?.[0]?.text, 'partial output');
     handlers.reconcilePersistedMessages('session-1', [
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 3, toolName: 'Bash', args: {} },
       { type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 4, toolUseId: 'tool-1', isError: true, content: { kind: 'text', text: 'partial output' } },
@@ -874,7 +874,7 @@ describe('single live-turn handoff', () => {
         },
       ],
     };
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({ 'session-1': projection });
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({ 'session-1': [projection] });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const handlers = createAppShellSessionEventHandlers({
@@ -897,19 +897,19 @@ describe('single live-turn handoff', () => {
       { type: 'tool_result', id: 'old-result', turnId: 'turn-1', ts: 2, toolUseId: 'old-tool', isError: false, content: { kind: 'text', text: 'old\n' } },
     ]);
 
-    assert.deepEqual(liveTurns.get()['session-1']?.steps, [projection.steps[1]]);
+    assert.deepEqual(liveTurns.get()['session-1']?.[0]?.steps, [projection.steps[1]]);
   });
 
   it('settles a tool-only terminal projection after persisted history refreshes', async () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
-      'session-1': {
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      'session-1': [{
         turnId: 'turn-1',
         phase: 'streamed',
         steps: [{
           stepId: 'tool:tool-1',
           tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'completed', args: {} }],
         }],
-      },
+      }],
     });
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
@@ -935,7 +935,7 @@ describe('single live-turn handoff', () => {
     handlers.handleEvent('session-1', {
       type: 'complete', id: 'event-1', turnId: 'turn-1', ts: 2, stopReason: 'end_turn',
     });
-    assert.equal(liveTurns.get()['session-1']?.terminal, true);
+    assert.equal(liveTurns.get()['session-1']?.[0]?.terminal, true);
 
     resolveRefresh(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -947,7 +947,7 @@ describe('single live-turn handoff', () => {
   });
 
   it('retires a re-seeded compaction row when the refreshed transcript is terminal', () => {
-    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({});
+    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({});
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const handlers = createAppShellSessionEventHandlers({
@@ -973,7 +973,7 @@ describe('single live-turn handoff', () => {
       turnId: 'turn-compact',
       ts: 1,
     });
-    assert.equal(liveTurns.get()['session-1']?.rootExecutionKind, 'context_compact');
+    assert.equal(liveTurns.get()['session-1']?.[0]?.rootExecutionKind, 'context_compact');
 
     handlers.reconcilePersistedMessages('session-1', [
       {

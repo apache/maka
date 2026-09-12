@@ -327,7 +327,7 @@ export function WorkHubRoot() {
           onRetainWindow={controller.retainWindow}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
-          liveTurn={controller.liveTurn}
+          liveTurns={controller.liveTurns}
           onStreamingSettled={controller.streamingSettled}
           activeTurn={chatTurnActivity(controller.execution)}
           messageLoading={!transcript.ready}

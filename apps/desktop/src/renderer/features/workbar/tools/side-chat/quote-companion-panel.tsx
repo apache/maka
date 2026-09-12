@@ -381,7 +381,7 @@ export function QuoteCompanionPanel(props: {
           messages={companion.messages}
           transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
-          liveTurn={companion.liveTurn}
+          liveTurns={companion.liveTurns}
           activeTurn={chatTurnActivity(companion.execution)}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}

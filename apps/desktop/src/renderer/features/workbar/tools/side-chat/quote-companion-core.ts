@@ -456,6 +456,6 @@ export function applyCompanionInteractionEvent(
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
     default:
-      return isCompanionTurnTerminal(event) ? clearInteractions(queues, sessionId) : queues;
+      return isCompanionTurnTerminal(event) ? clearInteractions(queues, sessionId, event.turnId) : queues;
   }
 }

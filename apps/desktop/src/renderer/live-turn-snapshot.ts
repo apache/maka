@@ -18,6 +18,7 @@
  */
 
 import type { LiveTurnProjection } from '@maka/ui';
+import { activeHostTurn, type SessionExecutionProjection } from '../shared/session-execution-projection.js';
 import { hasInFlightToolActivity } from './session-event-health.js';
 
 /**
@@ -99,11 +100,14 @@ export function liveTurnSnapshotsEqual(a: LiveTurnSnapshot, b: LiveTurnSnapshot)
  * change, so only value equality keeps the sidebar off the token path.
  */
 export function selectStreamingSessionIds(
-  liveTurnBySession: Record<string, LiveTurnProjection>,
+  liveTurnBySession: Record<string, import('@maka/ui').LiveTurnBuffer>,
+  executionBySession: Record<string, SessionExecutionProjection>,
 ): Set<string> {
   const streaming = new Set<string>();
   for (const [sessionId, projection] of Object.entries(liveTurnBySession)) {
-    if (projection.steps.some((step) => step.text?.text && !step.text.complete)) streaming.add(sessionId);
+    const execution = executionBySession[sessionId];
+    const active = execution?.available ? activeHostTurn(execution) : undefined;
+    if (active && projection.find((turn) => turn.turnId === active.turnId)?.steps.some((step) => step.text?.text && !step.text.complete)) streaming.add(sessionId);
   }
   return streaming;
 }

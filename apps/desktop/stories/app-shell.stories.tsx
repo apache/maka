@@ -586,13 +586,13 @@ export const StreamingTurn: Story = {
           user('msg-s-1', 'turn-s', 3, '顶层布局的 story 怎么做最稳？'),
           { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-s', phase: 'streamed', steps: [{
             stepId: 'msg-assistant-s',
             text: { text: '直接挂载 Astryx AppShell，通过官方插槽组合真实产品子组件，只隔离 IPC。', truncated: false, complete: false },
             tools: [],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -619,7 +619,7 @@ export const RunningStatusDuringToolRun: Story = {
           user('msg-t-1', 'turn-t', 2, '把整个测试套件跑一遍，看看那三个失败用例是不是同一个原因。'),
           { type: 'turn_state', id: 'state-t', turnId: 'turn-t', ts: NOW - 120_000, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-t', phase: 'streamed', steps: [{
             stepId: 'msg-assistant-t',
             tools: [{
@@ -630,7 +630,7 @@ export const RunningStatusDuringToolRun: Story = {
               args: { command: 'npm test' },
             }],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -882,7 +882,7 @@ export const ProviderRetrying: Story = {
           user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
           { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-rr',
           phase: 'streamed',
           steps: [{ stepId: 'msg-assistant-rr', tools: [] }],
@@ -901,7 +901,7 @@ export const ProviderRetrying: Story = {
             },
             receivedAtMs: NOW - 5_000,
           },
-        },
+        }],
       }}
     />
   ),
@@ -1082,7 +1082,7 @@ export const ComputerUseObservability: Story = {
             status: 'running',
           },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-cu',
           phase: 'streamed',
           steps: [{
@@ -1114,7 +1114,7 @@ export const ComputerUseObservability: Story = {
               },
             ],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -2116,7 +2116,7 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
             },
           ] : []),
         ],
-        liveTurn: question && !settled ? {
+        liveTurns: question && !settled ? [{
           turnId: 'turn-tail',
           phase: 'streamed',
           steps: [{
@@ -2130,7 +2130,7 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
             },
             tools: [],
           }],
-        } : undefined,
+        }] : undefined,
       }}
     />
   );
@@ -3610,13 +3610,13 @@ function CompactionRunningScene(props: { motionEnabled?: boolean }) {
           { type: 'turn_state', id: 'state-c1', turnId: 'turn-c1', ts: NOW - 300_000, status: 'completed' },
           { type: 'turn_state', id: 'state-compact', turnId: 'turn-compact', ts: startedAt, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-compact',
           phase: 'waiting',
           steps: [],
           rootExecutionKind: 'context_compact',
           startedAt,
-        },
+        }],
       }}
     />
   );

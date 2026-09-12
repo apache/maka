@@ -43,7 +43,7 @@ const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBy
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
 export const selectExecution = (state: AppShellSessionUiState, id: string | undefined) => id ? state.executionBySession[id] : undefined;
-const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
+const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession, state.executionBySession);
 
 /**
  * The active session's raw projection — the one selection that moves per token.
@@ -51,6 +51,10 @@ const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSession
  * reconciler) share one definition instead of each keeping a copy.
  */
 export const selectLiveTurn = (state: AppShellSessionUiState, sessionId: string | undefined) =>
+  sessionId ? state.liveTurnBySession[sessionId]?.find((turn) => turn.turnId === state.executionBySession[sessionId]?.rootTurn?.turnId)
+    ?? state.liveTurnBySession[sessionId]?.at(-1) : undefined;
+
+export const selectLiveTurns = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.liveTurnBySession[sessionId] : undefined;
 
 const selectActiveSnapshot = (state: AppShellSessionUiState, sessionId: string | undefined) =>

@@ -108,13 +108,20 @@ test('a failed transcript open recovers when its Session observation becomes rea
   });
 });
 
-test('remounting a live surface leaves accumulated output settled', async ({
+test('a successor owns working status and remounting leaves accumulated output settled', async ({
   window: page,
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
 
   const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('complete the predecessor');
+  await awaitSendReady(page);
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText('Fake backend received: complete the predecessor');
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+  const previousTurnId = await page.locator('[data-transcript-turn-id]').first().getAttribute('data-transcript-turn-id');
+  expect(previousTurnId).toBeTruthy();
   await composer.fill(FAKE_HOLD_OPEN_REWRITE_PROMPT);
   await awaitSendReady(page);
   await composer.press('Enter');
@@ -122,6 +129,8 @@ test('remounting a live surface leaves accumulated output settled', async ({
   const accumulatedOutput = 'prefix sk-123456789012345';
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
+  await expect(page.locator(`[data-transcript-turn-id=${JSON.stringify(previousTurnId)}] .maka-turn-processing`)).toHaveCount(0);
+  await expect(page.locator('.maka-turn-processing')).toHaveCount(1);
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await ensureSidebarExpanded(page);

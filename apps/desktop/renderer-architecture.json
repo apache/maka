@@ -330,7 +330,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3720
+        "nonTriviaTokens": 3683
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -604,8 +604,8 @@
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2755
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2763
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -869,7 +869,7 @@
           "react": 1
         },
         "importSpecifiers": 107,
-        "nonTriviaTokens": 13595
+        "nonTriviaTokens": 13589
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -931,7 +931,7 @@
           "./use-external-store-selector.js": 1
         },
         "importSpecifiers": 5,
-        "nonTriviaTokens": 360
+        "nonTriviaTokens": 426
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
         "importDeclarations": 8,
@@ -1113,7 +1113,7 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useDeepResearchRun": 1,
-          "useExternalStoreSelector": 3,
+          "useExternalStoreSelector": 4,
           "useState": 1,
           "useUiLocale": 1
         },
@@ -1456,6 +1456,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../shared/session-execution-projection.js": 1,
           "./session-event-health.js": 1
         }
       },

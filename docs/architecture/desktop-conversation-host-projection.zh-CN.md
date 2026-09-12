@@ -19,7 +19,7 @@
 
 # Desktop 对话：以 Host 投影为唯一执行依据
 
-状态：待实施设计。执行权威原则已确定；本文定义目标结构，不代表当前代码已经实现。
+状态：已实施。主对话、Side Chat、WorkHub 共用 Host 执行投影；内容按 Turn 独立缓冲。本文区分执行事实、命令接收、观察可用性和显示交接。
 
 基线：`12d3fb9332602ec7708cc90b2ffda9fd78dfa491`。范围：主对话、Side Chat、WorkHub 的消息交付、执行状态、观察连接和内容显示。遵循 [Runtime Host 架构](./runtime-host-architecture.md)，不改变 Host 的执行、接收、恢复和持久化权威。
 
@@ -75,8 +75,8 @@ Host projector 继续为内容、交互和现有 CLI 消费者提供适配。它
 
 扩展现有 Session observer 的交付契约，使同一观察范围交付三类信息：
 
-- 已接收的连续性投影，至少保留 rootTurn、queue、interactions 及其版本身份；使用协议类型，避免再定义一份执行状态枚举。
-- 内容事件，保留其原始 Turn/Run 归属及观察身份。不能把旧缓冲标记为当前 Run；历史补交与当前增量需有明确来源。
+- 已接收的 `rootTurn`，连同 `hostEpoch`、`projectionRevision` 和观察可用性，以 `host_execution` 在现有 Session 事件通道交付。直接复用协议 `TurnSnapshot`；queue、interactions 沿原有投影路径交付，不再复制一份。
+- 内容事件，保留其 Turn/Message/Step 归属，沿既有观察范围交付。内容缓冲不决定当前 Run；历史补交和当前增量按消息身份与 offset 去重。
 - 观察可用性与错误，不伪装为 Runtime 的 error/abort/complete。
 
 这是现有观察流的完整化，不新增独立快照轮询器或第二条 Host 订阅。接口在 Desktop shared/preload 边界统一转换；UI 只接收其需要的展示字段，避免让 UI 包依赖 Desktop 或执行实现。
@@ -84,16 +84,16 @@ Host projector 继续为内容、交互和现有 CLI 消费者提供适配。它
 初始快照、增量更新、重连替换遵循同一个交付规则：
 
 1. 绑定现有目标身份和订阅；preload 在请求初始结果前安装接收端。
-2. 初始结果与已经到达的更新按同一订阅水位接纳，迟到的初始结果不得覆盖较新的快照。
-3. 使用已有 HostEpoch、subscriptionId、sequence/projectionRevision 的语义；不同订阅的 sequence 不互相比较，重连必须显式替换观察范围。
-4. Main 向 Renderer 交付的内容必须受相同观察范围约束。若展示事件经过适配失去原 envelope，在 Desktop 交付包装中保留实际接受来源；不靠 event.id 字符串解析恢复身份。
-5. 成功安装替换快照和相应内容 seed 后才标记观察 ready；IPC 回包不能倒退已接受的状态。仅 ready 通知不证明内容或执行为空。
+2. Main 的既有 subscription owner 和 replica 负责水位、重连和范围检查；Renderer 不增加第二套订阅序列状态机。
+3. 执行快照只经观察事件通道交付，初始 invoke 回包不写执行状态。回包中的内容 seed 按原 Turn/Message 身份归并，不覆盖后来轮次的缓冲。
+4. preload 沿用目标作用域和 Host profile 筛选，把 Session 身份投影为 Desktop 身份；不靠 event.id 字符串解析恢复身份。
+5. 观察失败通过 `host_observation_error` 进入观察错误回调，不进入 Runtime reducer。pending 将最后快照标记为不可用，停止工作动画并保留最后停止目标；新的已接纳快照恢复观察事实。
 
 尚未取得快照与快照明确 `rootTurn:null` 是两个不同事实，不能都编码成 undefined/false 后再靠目录补猜。断线保留的上次快照必须标记过期。
 
 ### Renderer
 
-在现有 Conversation/session UI 容器中接纳快照。接纳逻辑只检查范围、版本和完整性，不自己推进 admitted → running → completed。
+在现有 Conversation/session UI 容器中接纳快照。Main/preload 完成范围与顺序检查，Renderer 不自己推进 admitted → running → completed。
 
 共享纯展示投影从快照和对应内容计算 UI；主对话、Side Chat、WorkHub 使用同一个规则。保留各领域的命令、未知结果恢复和资源关闭职责，不合并成一个全能 controller。
 
@@ -111,22 +111,22 @@ Shell 订阅低频执行与交付信息，正文订阅高频内容。会话目�
 | Host waiting_for_user | 显示该轮次已有交互请求，不用通用工作提示掩盖等待用户。 |
 | Host providerRetry/context_compact | 投影其已有具体状态，不从是否收到 token 推断。 |
 | Host completed/failed/cancelled | 结束该 Run 的执行展示与控制资格。内容缓冲可以继续视觉交接。 |
-| 观察断开或失败 | 标记状态待同步，保留明确标记的上次事实；不制造终态或发送执行结束通知。 |
+| 观察断开或失败 | 快照标记不可用，暂停工作动画并保留最后已知停止目标；不制造终态或发送执行结束通知。 |
 
 停止和取消仍是命令：本地取消只影响尚未派发的消息；停止已接收执行携带 Host 确认的目标身份，沿用现有命令的匹配校验。响应未知时保留请求结果未知，不能把 Stop 按钮已点击当成执行已结束。断线后的命令恢复也不得静默改指新 Turn。
 
 ### 新旧轮次交接
 
-A 的缓冲与 B 的执行可同时存在。缓冲由原 Turn/Run/Message 身份拥有，B 的快照不能覆盖 A 尚未交接的内容，A 的终态也不能压制 B 的运行提示。
+A 的缓冲与 B 的执行可同时存在。缓冲由原 Turn/Message/Step 身份拥有，B 的快照不能覆盖 A 尚未交接的内容，A 的终态也不能压制 B 的运行提示。
 
 展示规则只有一套：
 
 - 已知 Turn 身份时，同一 TurnView 容纳活动投影及随后到达的历史；以该 Turn 身份保持节点稳定，不建立第二套“实时 Turn”组件。
 - 历史尚未装入不影响运行归属。可以仅投影该 Turn 的状态占位；不得伪造 StoredMessage。
 - 未绑定 Message 留在消息交付区域；Host 回执、查询或历史明确绑定后才归组，不根据 rootTurn 恰好最新就绑定。
-- 多个旧视觉缓冲必须按所属身份分别留存并沿现有交接规则有界回收。不能用一个“当前 liveTurn”槽同时代表执行权威和所有待显示内容。
-- 同一 Turn 恢复为新 Run 时，控制状态跟随新 Run，旧 Run 的内容不得被重解释为新 Run 仍在执行的工具。
-- 执行计时只能使用对应 Host 记录中的时间；消息发送时间可用于交付等待时长，两者不得混称。没有可信时间就不显示执行计时。
+- `LiveTurnBuffer` 保存多轮内容，事件只更新所属 Turn，旧轮次的终态只清理其交互请求。终态内容在对应 durable assistant/tool 证据到达后释放；不增加任意容量、LRU 或过期时间。
+- Run 身份继续由 Host 执行快照与停止命令管理，内容步骤不决定控制资格。
+- 保留已有的消息等待时长显示，但只关联明确绑定的消息。`rootTurn` 当前不提供运行开始时间，不能把消息时间声称为精确 Run 执行时长；没有对应时间时只显示状态文字。
 
 ## 删除与保留
 
@@ -149,7 +149,7 @@ A 的缓冲与 B 的执行可同时存在。缓冲由原 Turn/Run/Message 身份
 - [Session continuity 协议](../../packages/runtime-host/src/protocol/session-continuity.ts)与[Turn 快照](../../packages/runtime-host/src/protocol/turn.ts)：复用权威事实。
 - [Main observer](../../apps/desktop/src/main/runtime-host-session-observer.ts)、[preload](../../apps/desktop/src/preload/preload.ts)：完整、带范围地交付。
 - [Conversation 状态](../../apps/desktop/src/renderer/features/conversation/model/session-ui-state.ts)、[shell 状态](../../apps/desktop/src/renderer/use-shell-live-turn.ts)：接纳并选择投影。
-- [ChatView](../../packages/ui/src/chat-view.tsx)、[内容投影](../../packages/ui/src/live-turn-projection.ts)：身份归属与视觉交接。
+- [ChatView](../../packages/ui/src/chat-view.tsx)、[多轮缓冲](../../packages/ui/src/live-turn-buffer.ts)、[内容投影](../../packages/ui/src/live-turn-projection.ts)：身份归属与视觉交接。
 
 ## 收敛约束
 

@@ -43,7 +43,6 @@ import { prepareTranscriptForSend } from '../../renderer/features/conversation/t
 
 import {
   createActionsDeps,
-  createTurnState,
   installWindow,
 } from './app-shell-chat-actions-fixture.js';
 
@@ -630,24 +629,6 @@ describe('composer send failure feedback', () => {
     }
 
     assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated to 设置 · 模型');
-  });
-
-  it('does not invent a live turn when the send never lands', async () => {
-    const turnState = createTurnState();
-    const restoreWindow = installWindow(readinessFailure());
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: 'session-a' },
-        setLiveTurnBySession: turnState.setLiveTurnBySession,
-      });
-      assert.equal(await actions.send('hello'), false);
-    } finally {
-      restoreWindow();
-    }
-
-    assert.deepEqual(turnState.liveTurnBySession, {}, 'the arm must be disarmed');
   });
 
   it('still answers the surface that is actually waiting', async () => {

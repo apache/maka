@@ -63,7 +63,7 @@ function seededState(): AppShellSessionUiState {
     messageLoadErrorBySession: { drop: 'failed', keep: 'still failed' },
     messageRetryPendingBySession: { drop: true, keep: true },
     stopPendingBySession: { drop: true, keep: true },
-    liveTurnBySession: { drop: armLiveTurn('turn-drop'), keep: armLiveTurn('turn-keep') },
+    liveTurnBySession: { drop: [armLiveTurn('turn-drop')], keep: [armLiveTurn('turn-keep')] },
     interactionBySession: {
       drop: [boundaryRequest('drop')],
       keep: [boundaryRequest('keep')],
@@ -355,7 +355,7 @@ describe('app shell session UI state controller', () => {
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {
     const controller = createAppShellSessionUiStateController();
-    const projection = armLiveTurn('turn-1');
+    const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
   });

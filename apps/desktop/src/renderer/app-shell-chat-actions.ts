@@ -33,7 +33,6 @@ import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   dequeueInteractionByRequestId,
   type InteractionQueues,
-  type LiveTurnProjection,
   type NavSelection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -71,9 +70,6 @@ type ComposerImportOwner = {
 };
 
 type RefBox<T> = { current: T };
-type LiveTurnRecordUpdater = (
-  updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
-) => void;
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
@@ -175,7 +171,6 @@ export function createAppShellChatActions(deps: {
   onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
-  setLiveTurnBySession: LiveTurnRecordUpdater;
   setInteractionBySession: InteractionQueueUpdater;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
@@ -221,7 +216,6 @@ export function createAppShellChatActions(deps: {
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest,
-    setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,

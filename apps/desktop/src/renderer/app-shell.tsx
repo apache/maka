@@ -1499,7 +1499,6 @@ function AppShellContent({
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? Promise.resolve(true),
-    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,

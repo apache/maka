@@ -21,15 +21,14 @@ import type { ContextCompactionOutcome, SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
-  applyLiveTurnEvent,
-  clearInteractions,
+  applyLiveTurnBufferEvent,
   reduceInteractionQueues,
-  reconcileTerminalLiveTurn,
-  settleLiveTurnStep,
+  reconcileLiveTurnBuffer,
+  settleLiveTurnBufferStep,
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
 } from '@maka/ui';
-import type { LiveTurnProjection, InteractionQueues } from '@maka/ui';
+import type { LiveTurnBuffer, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
@@ -74,10 +73,10 @@ export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
+  liveTurnBySessionRef: RefBox<Record<string, LiveTurnBuffer>>;
   refreshMessages: (sessionId: string, options?: RefreshMessagesOptions) => Promise<boolean>;
   refreshSessions: () => Promise<unknown>;
-  setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
+  setLiveTurnBySession: StateUpdater<Record<string, LiveTurnBuffer>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
@@ -120,18 +119,18 @@ export function createAppShellSessionEventHandlers(options: {
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
   function applyProjectionEvents(
-    projection: LiveTurnProjection | undefined,
+    projection: LiveTurnBuffer | undefined,
     events: readonly SessionEvent[],
-  ): LiveTurnProjection | undefined {
+  ): LiveTurnBuffer | undefined {
     let next = projection;
-    for (const event of events) next = applyLiveTurnEvent(next, event, uiLocale);
+    for (const event of events) next = applyLiveTurnBufferEvent(next, event, uiLocale);
     return next;
   }
 
   function replaceLiveTurns(
-    current: Record<string, LiveTurnProjection>,
+    current: Record<string, LiveTurnBuffer>,
     batches: ReadonlyMap<string, readonly SessionEvent[]>,
-  ): Record<string, LiveTurnProjection> {
+  ): Record<string, LiveTurnBuffer> {
     let next = current;
     for (const [sessionId, events] of batches) {
       const projection = applyProjectionEvents(current[sessionId], events);
@@ -214,7 +213,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession((current) => {
       const projection = current[sessionId];
       if (!projection) return current;
-      const settled = settleLiveTurnStep(projection, stepId);
+      const settled = settleLiveTurnBufferStep(projection, stepId);
       if (settled === projection) return current;
       const next = { ...current };
       if (settled) next[sessionId] = settled;
@@ -234,7 +233,7 @@ export function createAppShellSessionEventHandlers(options: {
   ): Promise<void> {
     const projection = liveTurnBySessionRef.current[sessionId];
     if (!projection || !messageId) return;
-    const step = projection.steps.find((candidate) => candidate.stepId === messageId);
+    const step = projection.flatMap((turn) => turn.steps).find((candidate) => candidate.stepId === messageId);
     if (!step?.text || (requireCompletedLiveText && !step.text.complete)) return;
     const attempts = requireCompletedLiveText ? 1 : TERMINAL_HANDOFF_ATTEMPTS;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -247,7 +246,7 @@ export function createAppShellSessionEventHandlers(options: {
       }
       if (
         attempt + 1 >= attempts ||
-        !liveTurnBySessionRef.current[sessionId]?.steps.some(
+        !liveTurnBySessionRef.current[sessionId]?.flatMap((turn) => turn.steps).some(
           (candidate) => candidate.stepId === messageId,
         )
       ) return;
@@ -262,7 +261,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession((current) => {
       const projection = applyProjectionEvents(current[sessionId], pending);
       if (!projection) return current;
-      const reconciled = reconcileTerminalLiveTurn(projection, messages);
+      const reconciled = reconcileLiveTurnBuffer(projection, messages);
       if (reconciled === current[sessionId]) return current;
       const next = { ...current };
       if (reconciled) next[sessionId] = reconciled;
@@ -271,7 +270,7 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  function terminalRefreshOptions(projection: LiveTurnProjection | undefined): RefreshMessagesOptions | undefined {
+  function terminalRefreshOptions(projection: import('@maka/ui').LiveTurnProjection | undefined): RefreshMessagesOptions | undefined {
     const messageId = [...(projection?.steps ?? [])].reverse().find((step) => step.text)?.stepId;
     return messageId ? { requiredAssistantMessageId: messageId } : undefined;
   }
@@ -293,7 +292,7 @@ export function createAppShellSessionEventHandlers(options: {
       return;
     }
     const pending = takePendingDisplayEvents(sessionId);
-    const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending);
+    const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending)?.find((turn) => turn.turnId === event.turnId);
     updateLiveTurn(sessionId, [...pending, event]);
     setInteractionBySession((current) =>
       reduceInteractionQueues(current, sessionId, event),
@@ -395,13 +394,11 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'abort':
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
