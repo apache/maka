@@ -53,6 +53,7 @@ export {
   decodeCanonicalRuntimePolicy,
   normalizeNetworkProxyCredentialTarget,
   decodeRuntimePolicyV2,
+  decodeRuntimePolicyV3,
   normalizeNetworkProxyUpdate,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
@@ -160,6 +161,7 @@ export interface RuntimePolicy {
   };
   readonly subagents: SubagentSettings;
   readonly shell: ShellSettings;
+  readonly externalAgents: { readonly antigravity: { readonly executable: string } };
 }
 
 export interface RuntimePolicySnapshot {
@@ -187,6 +189,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'set_external_agents'; readonly value: RuntimePolicy['externalAgents'] }
   | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
@@ -257,6 +260,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
     shell: { preference: 'auto', executable: '' },
+    externalAgents: { antigravity: { executable: '' } },
   };
 }
 

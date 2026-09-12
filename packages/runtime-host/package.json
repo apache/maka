@@ -29,6 +29,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",

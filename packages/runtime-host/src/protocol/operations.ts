@@ -38,6 +38,7 @@ import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
+import { EXTERNAL_AGENT_SETUP_OPERATION_SPECS } from './external-agent-setup.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
@@ -167,6 +168,7 @@ export * from './host-resources.js';
 export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
+export * from './external-agent-setup.js';
 export * from './plan.js';
 export * from './plugin-platform.js';
 export * from './project-catalog.js';
@@ -223,6 +225,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
+  EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,

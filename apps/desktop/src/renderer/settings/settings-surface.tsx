@@ -42,6 +42,7 @@ import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   ChatDefaultPermissionMode,
   SettingsSection,
   ThemePalette,
@@ -64,6 +65,7 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
+import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { ProjectsSettingsPage } from './projects-settings-page';
@@ -450,7 +452,7 @@ function SettingsSurfaceContent(
     );
     return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
   }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
-  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
+  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search', 'external-agents'].includes(section);
   const sectionNeedsConnections = ['general', 'models', 'subagents', 'daily-review'].includes(section);
   const runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus =
     selectedRuntimeHost
@@ -597,7 +599,10 @@ function SettingsSurfaceContent(
     }
   }
 
-  async function updateSettings(patch: Parameters<typeof window.maka.settings.update>[0]) {
+  async function updateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ) {
     const uiLocaleTicket = props.uiLocaleUpdateGate.begin(
       patch.personalization?.uiLocale !== undefined,
     );
@@ -618,7 +623,7 @@ function SettingsSurfaceContent(
         ? undefined
         : ++clientSettingsTicketRef.current;
       const result = host
-        ? await window.maka.settings.update(patch, host)
+        ? await window.maka.settings.update(patch, host, guard)
         : await window.maka.settings.updateClient(patch);
       if (hostTicket && !runtimeHostRequestAuthority.isCurrentTarget(hostTicket)) {
         throw new Error(copy.runtimeHostUnavailable);
@@ -1084,7 +1089,10 @@ function SettingsPageBody(props: {
   themePref: ThemePreference;
   themePalette: ThemePalette;
   onRefreshConnections(): Promise<void>;
-  onUpdateSettings(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
+  onUpdateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ): Promise<UpdateAppSettingsResult>;
   onReloadSettings(): Promise<void>;
   onReloadClientSettings(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
@@ -1126,6 +1134,8 @@ function SettingsPageBody(props: {
           />
         </SettingsPage>
       );
+    case 'external-agents':
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
