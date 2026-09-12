@@ -1992,15 +1992,13 @@ function AppShellContent({
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
-    return next.generation;
   };
-  const completeObservationSeed = (sessionId: string, generation?: number) => {
+  const completeObservationSeed = (sessionId: string) => {
     const current = activeEventSeedRef.current;
-    const expected = generation ?? current.generation;
-    if (current.sessionId !== sessionId || current.generation !== expected) return;
+    if (current.sessionId !== sessionId) return;
     flushDisplayEvents(sessionId);
     markDisplayReady(sessionId);
-    const next = liveContent.completeLiveContentSeed(current, sessionId, expected);
+    const next = liveContent.completeLiveContentSeed(current, sessionId);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
     void retireCancelledTransientMessages(sessionId);

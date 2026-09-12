@@ -866,7 +866,8 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     firstIpc.sender.sent.some(
       ({ hostId, payload }) =>
         hostId === TEST_HOST_ID &&
-        (payload as { type?: unknown }).type === 'user_question_request',
+        (payload as { type?: unknown }).type === 'host_observation_seed'
+        && (payload as { events: Array<{ type: string }> }).events.some((event) => event.type === 'user_question_request'),
     ),
   );
   assert.equal(
@@ -912,27 +913,19 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
 
   const seedPendingAt = resyncs.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
-      && (payload as { phase?: unknown }).phase === 'pending',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_pending',
   );
   const seedReadyAt = resyncs.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
-      && (payload as { phase?: unknown }).phase === 'ready',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_seed',
   );
   assert.ok(seedPendingAt >= 0);
   assert.ok(seedReadyAt > seedPendingAt);
-  const sessionEventIndexes = resyncs.flatMap(({ channel }, index) =>
-    channel === 'sessions:event:session-1' ? [index] : [],
-  );
-  assert.ok(sessionEventIndexes.length > 0);
-  assert.ok(
-    sessionEventIndexes.every(
-      (index) => index > seedPendingAt && index < seedReadyAt,
-    ),
-  );
+  const seed = resyncs[seedReadyAt]!.payload as { execution: { available: boolean }; events: unknown[] };
+  assert.equal(seed.execution.available, true);
+  assert.ok(seed.events.length > 0);
   assert.ok(
     resyncs.some(
       ({ channel, payload }) =>
@@ -1030,19 +1023,16 @@ test('retries candidate startup when a restored observation cannot seed', async 
       ),
     /Failed to restore Session observations: session-1/,
   );
-  const failedPhases = seedEvents
-    .filter(({ channel }) => channel === 'sessions:observation-seed')
-    .map(({ payload }) => (payload as { phase?: unknown }).phase);
   // Restore startup and subscription failure may both invalidate observation.
   // Neither is evidence that the Host Turn ended or observation became ready.
-  assert.ok(failedPhases.length > 0);
-  assert.ok(failedPhases.every((phase) => phase === 'pending'));
   const failureEvents = seedEvents
     .filter(({ channel }) => channel === 'sessions:event:session-1')
     .map(({ payload }) => payload as { type?: unknown; message?: unknown });
   assert.ok(failureEvents.some((event) =>
     event.type === 'host_observation_error' && event.message === 'restore failed'));
-  assert.ok(failureEvents.every((event) => event.type === 'host_observation_error'));
+  assert.ok(failureEvents.some((event) => event.type === 'host_observation_pending'));
+  assert.ok(failureEvents.every((event) =>
+    event.type === 'host_observation_error' || event.type === 'host_observation_pending'));
   seedEvents.length = 0;
 
   const recoveredHost = connectionHarness('restore-recovered', {
@@ -1064,25 +1054,16 @@ test('retries candidate startup when a restored observation cannot seed', async 
   );
   const pendingAt = seedEvents.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { phase?: unknown }).phase === 'pending',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_pending',
   );
   const readyAt = seedEvents.findIndex(
     ({ channel, payload }) =>
-      channel === 'sessions:observation-seed'
-      && (payload as { phase?: unknown }).phase === 'ready',
+      channel === 'sessions:event:session-1'
+      && (payload as { type?: unknown }).type === 'host_observation_seed',
   );
   assert.ok(pendingAt >= 0);
   assert.ok(readyAt > pendingAt);
-  const catchUpEventIndexes = seedEvents.flatMap(({ channel }, index) =>
-    channel === 'sessions:event:session-1' ? [index] : [],
-  );
-  assert.ok(catchUpEventIndexes.length > 0);
-  assert.ok(
-    catchUpEventIndexes.every(
-      (index) => index > pendingAt && index < readyAt,
-    ),
-  );
   await recoveredCandidate.close();
   await observations.close();
 });

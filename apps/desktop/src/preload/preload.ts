@@ -2277,7 +2277,6 @@ const makaBridge = {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
@@ -2286,7 +2285,10 @@ const makaBridge = {
       let lastExecution: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined;
       let disposed = false;
       let unsubscribeEvents = () => {};
-      let unsubscribeObservationSeed = () => {};
+      const acceptExecution = (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection) => {
+        lastExecution = { ...projection, rootTurn: projection.rootTurn ? { ...projection.rootTurn, sessionId } : null };
+        onExecution?.(lastExecution);
+      };
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
         if (disposed) {
           return {
@@ -2302,10 +2304,28 @@ const makaBridge = {
         unsubscribeEvents = subscribeEveryRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
           (scope, event: SessionEvent | SessionObservationMessage) => {
+            if (disposed) return;
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
-            if (event.type === 'host_execution') {
-              lastExecution = { ...event, rootTurn: event.rootTurn ? { ...event.rootTurn, sessionId } : null };
+            if (event.type === 'host_observation_seed') {
+              if (!event.observerIds.includes(observerId)) return;
+              // Seed and live updates share this ordered channel. Readiness
+              // follows consumption, never the separate registration reply.
+              acceptExecution(event.execution);
+              for (const seededEvent of event.events) {
+                if (disposed) return;
+                handler(projectDesktopSessionEvent(scope, seededEvent));
+              }
+              if (!disposed) onObservationSeed?.('ready');
+              return;
+            }
+            if (event.type === 'host_observation_pending') {
+              if (lastExecution) lastExecution = { ...lastExecution, available: false };
               onExecution?.(lastExecution);
+              onObservationSeed?.('pending');
+              return;
+            }
+            if (event.type === 'host_execution') {
+              acceptExecution(event);
               return;
             }
             if (event.type === 'host_observation_error') {
@@ -2315,34 +2335,13 @@ const makaBridge = {
             handler(projectDesktopSessionEvent(scope, event));
           },
         );
-        unsubscribeObservationSeed = subscribeEveryRuntimeHostEvent(
-          'sessions:observation-seed',
-          (scope, payload: { sessionId?: string; phase?: string }) => {
-            if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
-            if (payload.sessionId !== session.sessionId) return;
-            if (payload.phase === 'pending' || payload.phase === 'ready') {
-              if (payload.phase === 'pending') {
-                if (lastExecution) lastExecution = { ...lastExecution, available: false };
-                onExecution?.(lastExecution);
-              }
-              onObservationSeed?.(payload.phase);
-            }
-          },
-        );
         return {
           completion: ipcRenderer.invoke(
             'sessions:observe',
             session.scope,
             session.sessionId,
             observerId,
-          ).then((result: RuntimeHostObservationIpcResult<readonly SessionEvent[]>) => {
-            if (!disposed && result.kind === 'ready') {
-              // Invoke replies can overtake event IPC. Apply the response's
-              // complete active snapshot before publishing renderer readiness.
-              for (const event of result.value) handler(projectDesktopSessionEvent(session.scope, event));
-            }
-            return result;
-          }),
+          ) as Promise<RuntimeHostObservationIpcResult<void>>,
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
@@ -2350,10 +2349,7 @@ const makaBridge = {
         (result) => {
           if (result.kind === 'cancelled') {
             disposed = true;
-            unsubscribeObservationSeed();
             unsubscribeEvents();
-          } else if (!disposed) {
-            onSeeded?.();
           }
         },
         (error: unknown) => {
@@ -2362,7 +2358,6 @@ const makaBridge = {
       );
       return () => {
         disposed = true;
-        unsubscribeObservationSeed();
         unsubscribeEvents();
         void releaseSessionObservation(observeDispatch, () =>
           ipcRenderer.invoke('sessions:unobserve', observerId),
@@ -3956,7 +3951,6 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   makaBridge.sessions.subscribeEvents = (
     sessionId,
     handler,
-    onSeeded,
     onObservationSeed,
     onSeedError,
     onExecution,
@@ -3968,7 +3962,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       let unsubscribe = () => {};
       void waitForLatch('sessions.observe').then(() => {
         if (!disposed) unsubscribe = subscribeSessionEvents(
-          sessionId, handler, onSeeded, onObservationSeed, onSeedError, onExecution,
+          sessionId, handler, onObservationSeed, onSeedError, onExecution,
         );
       });
       return () => { disposed = true; unsubscribe(); };

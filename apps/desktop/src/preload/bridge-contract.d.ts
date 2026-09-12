@@ -1224,7 +1224,6 @@ export interface MakaBridge {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,

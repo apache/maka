@@ -235,7 +235,7 @@ export function createDesktopWorkHubServices(
     reorderQueueEntries: (sessionId, entryIds) => bridge.sessions.reorderQueueEntries(sessionId, entryIds),
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
     observe: (sessionId, handler, onError, onPhase, onExecution) =>
-      bridge.sessions.subscribeEvents(sessionId, handler, () => onPhase('ready'), onPhase, onError, onExecution),
+      bridge.sessions.subscribeEvents(sessionId, handler, onPhase, onError, onExecution),
     stop: async (sessionId, turnId) => {
       const result = await bridge.sessions.stop(sessionId, {
         source: 'stop_button',

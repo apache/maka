@@ -315,8 +315,8 @@ export function useActiveSessionEvents(options: {
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
-  beginObservationSeed: (sessionId: string) => number;
-  completeObservationSeed: (sessionId: string, generation?: number) => void;
+  beginObservationSeed: (sessionId: string) => void;
+  completeObservationSeed: (sessionId: string) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
@@ -436,7 +436,7 @@ export function useActiveSessionEvents(options: {
     options.transcriptRangeRef.current = controller;
     const subscribeSessionEvents = () => {
       const attempt = ++observationAttempt;
-      const observationGeneration = beginObservationSeed(activeId);
+      beginObservationSeed(activeId);
       let unsubscribeRequested = false;
       let unsubscribeCurrent = () => {
         unsubscribeRequested = true;
@@ -447,17 +447,14 @@ export function useActiveSessionEvents(options: {
           if (attempt !== observationAttempt) return;
           handleSessionEvent(activeId, event);
         },
-        () => {
-          if (attempt !== observationAttempt) return;
-          controller.observationChanged('ready');
-          observationFailures = 0;
-          completeObservationSeed(activeId, observationGeneration);
-        },
         (phase) => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged(phase);
           if (phase === 'pending') beginObservationSeed(activeId);
-          else completeObservationSeed(activeId);
+          else {
+            observationFailures = 0;
+            completeObservationSeed(activeId);
+          }
         },
         () => {
           if (attempt !== observationAttempt) return;
