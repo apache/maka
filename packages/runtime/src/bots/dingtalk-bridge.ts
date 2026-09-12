@@ -255,12 +255,11 @@ export function dingTalkPayloadToEvent(
   const userId = payload.senderId;
   if (typeof conversationId !== 'string' || conversationId.length === 0) return null;
   if (typeof userId !== 'string' || userId.length === 0) return null;
-  // Stamp the send route from the authoritative conversationType (the QQ
-  // bridge convention): real 1:1 and group conversationIds share the same
-  // `cid` prefix, so the id shape cannot discriminate them (#5111). The
-  // 1:1 endpoint addresses by senderStaffId; when it is absent the bare
-  // conversationId stays unstamped and the send side falls back to the
-  // legacy routing instead of guessing.
+  // Stamp the send route from the authoritative conversationType (#5111):
+  // real 1:1 and group conversationIds share the same `cid` prefix, so the
+  // id shape cannot discriminate them. Without senderStaffId the bare
+  // conversationId stays unstamped; how the send side routes an unstamped
+  // id is defined once, on `pickDingTalkSendRoute`.
   const isGroup = payload.conversationType === '2';
   const chatId = isGroup
     ? `${DINGTALK_GROUP_CHAT_PREFIX}${conversationId}`
@@ -429,12 +428,8 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
   }
 
   /**
-   * DingTalk REST send. `pickDingTalkSendRoute` routes on the prefix the
-   * receive side stamped from `conversationType` — group conversationIds
-   * go to the group endpoint, stamped staff ids to the 1:1 batch endpoint.
-   * A bare id is legacy state (e.g. a chatId typed into a scheduled task
-   * before stamping existed) and keeps the pre-stamping discrimination:
-   * `cid…` routes as a group, anything else as a single user (#5116).
+   * DingTalk REST send. Routing — including how legacy bare ids are
+   * handled — is defined once by `pickDingTalkSendRoute` (#5116).
    */
   async sendMessage(
     chatId: string,
@@ -444,7 +439,14 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
     if (this.platform !== 'dingtalk' || !this.running) return null;
     const robotCode = this.settings.appId?.trim() ?? '';
     const route = pickDingTalkSendRoute(chatId, robotCode, text);
-    if (!route) return null;
+    if (!route) {
+      // An unroutable id is a send-side configuration problem, not a
+      // gateway failure — record it so the readiness surface shows why
+      // nothing was sent instead of returning silently (#5116 review).
+      this.recordFailure('unroutable-chat-id', 'send-failed');
+      this.emitStatusChange();
+      return null;
+    }
     const token = await this.refreshTokenIfNeeded();
     if (!token) return null;
     const first = await this.performSend(route.path, route.body, token);

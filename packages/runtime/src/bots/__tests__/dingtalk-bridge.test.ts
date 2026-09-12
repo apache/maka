@@ -210,8 +210,10 @@ describe('dingTalkPayloadToEvent', () => {
   });
 
   it('keeps the bare conversationId when no staffId is available (#5111)', () => {
-    // Graceful fallback: the message still arrives, but the send side
-    // fails closed on the unstamped id rather than guessing a route.
+    // Receive-side contract only: an unstamped id travels as-is. What the
+    // send side does with it is legacy routing, pinned in the
+    // pickDingTalkSendRoute cases below — this receive case predates
+    // stamping and passes on the pre-stamping code too.
     const event = dingTalkPayloadToEvent(
       {
         senderId: 'u1',
