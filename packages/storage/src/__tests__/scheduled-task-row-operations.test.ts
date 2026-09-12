@@ -272,6 +272,50 @@ test('ScheduledTask metadata updates keep schedule and expired-trigger semantics
   });
 });
 
+test('ScheduledTask metadata updates preserve a future snoozed occurrence', async (t) => {
+  await withStore(t, async ({ store }) => {
+    const anchorAt = NOW + 60_000;
+    const task = await store.create(
+      {
+        ...notifyInput('Daily reminder'),
+        schedule: { kind: 'calendar', recurrence: 'daily', anchorAt },
+      },
+      NOW,
+    );
+    const snoozed = await store.snooze(task.id, 10_000, NOW + 1);
+    const renamed = await store.update(task.id, { title: 'Renamed reminder' }, NOW + 2);
+
+    assert.equal(renamed.title, 'Renamed reminder');
+    assert.deepEqual(renamed.schedule, task.schedule);
+    assert.equal(renamed.nextFireAt, snoozed.nextFireAt);
+
+    const editedAnchorAt = NOW + 90_000;
+    const rescheduled = await store.update(
+      task.id,
+      {
+        schedule: { kind: 'calendar', recurrence: 'weekly', anchorAt: editedAnchorAt },
+      },
+      NOW + 3,
+    );
+    assert.deepEqual(rescheduled.schedule, {
+      kind: 'calendar',
+      recurrence: 'weekly',
+      anchorAt: editedAnchorAt,
+    });
+    assert.equal(rescheduled.nextFireAt, editedAnchorAt);
+
+    const intervalTask = await store.create(notifyInput('Interval reminder'), NOW);
+    const snoozedInterval = await store.snooze(intervalTask.id, 10_000, NOW + 4);
+    const renamedInterval = await store.update(
+      intervalTask.id,
+      { title: 'Renamed interval reminder' },
+      NOW + 5,
+    );
+    assert.deepEqual(renamedInterval.schedule, intervalTask.schedule);
+    assert.equal(renamedInterval.nextFireAt, snoozedInterval.nextFireAt);
+  });
+});
+
 test('ScheduledTask due discovery rejects a damaged task identity before changing another task', async (t) => {
   await withStore(t, async ({ store, probe }) => {
     const expiring = await store.create(
