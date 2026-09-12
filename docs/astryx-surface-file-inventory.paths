@@ -235,6 +235,7 @@ packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker.tsx
+packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
