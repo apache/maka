@@ -46,8 +46,8 @@ import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
+import { isSafeStorageId } from './storage-id.js';
 
-const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REMEMBER_SCOPE_ID = /^[0-9a-f]{64}$/;
 export const STORED_INTERACTION_REQUEST_MAX_BYTES = 20 * 1024;
 export const STORED_INTERACTION_OUTCOME_MAX_BYTES = 12 * 1024;
@@ -788,7 +788,7 @@ function assertId(
   source: DecodeSource = 'input',
   message = 'Invalid Interaction identity',
 ): string {
-  if (typeof value !== 'string' || !SAFE_ID.test(value)) decodeFailure(source, message);
+  if (!isSafeStorageId(value)) decodeFailure(source, message);
   return value;
 }
 

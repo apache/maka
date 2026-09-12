@@ -138,6 +138,52 @@ test('a fetch never deletes a choice the user made', () => {
   );
 });
 
+test('an authoritative account catalog removes unavailable bootstrap and stale models', () => {
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'fallback-unavailable',
+        enabledModelIds: ['fallback-unavailable', 'account-available'],
+        hasModelInventory: false,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    {
+      defaultModel: 'account-available',
+      enabledModelIds: ['account-available', 'newly-available'],
+    },
+  );
+  // Once an account inventory exists, a refresh removes withdrawn selections
+  // without automatically opting the user into newly introduced models.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'account-available',
+        enabledModelIds: ['account-available', 'withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'account-available' }, { id: 'newly-available' }],
+      { authoritative: true },
+    ),
+    { defaultModel: 'account-available', enabledModelIds: ['account-available'] },
+  );
+  // Losing every selected model does not silently opt the user into the first
+  // catalogue entry. A model that later returns remains available but opt-in.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'withdrawn',
+        enabledModelIds: ['withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'replacement' }],
+      { authoritative: true },
+    ),
+    { defaultModel: '', enabledModelIds: [] },
+  );
+});
+
 test('model reconciliation never invents a default the user cleared', () => {
   // Unchecking the default leaves a legitimate {no default, some enabled}
   // state. Repair had nothing to repair here, so it reached for "the first

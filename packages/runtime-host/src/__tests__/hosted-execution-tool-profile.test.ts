@@ -20,9 +20,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { z } from 'zod';
 import { decodeHostedExecutionStartInput } from '../protocol/index.js';
 import {
+  bindWorkHubRoutingDecisionPrompt,
   hostedExecutionRunProfile,
   projectHostedExecutionTools,
 } from '../server/hosted-execution-tool-profile.js';
@@ -138,4 +140,82 @@ test('the WorkHub coordination profile has conversational authority but zero too
     impl: async () => 'not reachable',
   };
   assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
+});
+
+test('WorkHub v2 can read its attachments without inheriting terminal, browser, or filesystem access', async () => {
+  const makeTool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => name,
+  });
+  const control = makeTool('mcp__desktop_workhub__control');
+  const tasks = makeTool('mcp__desktop_workhub__tasks');
+  const reads: unknown[] = [];
+  const builtinRead = buildBuiltinTools({
+    attachmentResources: {
+      async readAttachmentResource(sessionId, artifactId) {
+        reads.push({ sessionId, artifactId });
+        return { kind: 'text', text: 'attachment contents' };
+      },
+    },
+  }).find(({ name }) => name === 'Read')!;
+  const tools = [
+    makeTool('Bash'),
+    builtinRead,
+    makeTool('mcp__desktop_browser__browser_navigate'),
+    control,
+    tasks,
+  ];
+  const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
+  assert.deepEqual(
+    projected.map(({ name }) => name),
+    [control.name, tasks.name, 'Read'],
+  );
+  const read = projected[2]!;
+  const context = {
+    sessionId: 'workhub',
+    runId: 'run',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'read',
+    abortSignal: new AbortController().signal,
+    emitOutput() {},
+  };
+  assert.deepEqual(await read.impl({ ref: 'maka://runtime/attachments/attachment-1' }, context), {
+    kind: 'text',
+    text: 'attachment contents',
+  });
+  assert.deepEqual(reads, [{ sessionId: 'workhub', artifactId: 'attachment-1' }]);
+  for (const input of [
+    { path: '/etc/passwd' },
+    { ref: 'maka://runtime/background-tasks/task-1' },
+    { ref: 'maka://runtime/attachments/a?session=other' },
+  ]) {
+    assert.throws(() => read.impl(input, context));
+  }
+  assert.equal(reads.length, 1);
+  assert.throws(
+    () => projectHostedExecutionTools(tools.slice(0, 4), 'workhub-coordination-v2'),
+    /Hosted tool profile is unavailable/,
+  );
+  assert.equal(hostedExecutionRunProfile('workhub-coordination-v2')?.memoryExtraction, false);
+  const prompt = hostedExecutionRunProfile('workhub-coordination-v2')?.systemPrompt ?? '';
+  assert.match(prompt, /Intent never selects a target/u);
+  assert.match(prompt, /call the tasks candidates operation before choosing/u);
+  assert.match(prompt, /only when the user explicitly asks to create new work/u);
+  assert.match(prompt, /never implies create_new/u);
+  assert.match(prompt, /ordinary request to continue work is routing, not a linked resume/u);
+});
+
+test('WorkHub routing prompt binds the exact recalled candidate without granting authority', () => {
+  const prompt = bindWorkHubRoutingDecisionPrompt('base', {
+    kind: 'routing',
+    disposition: 'delegate_existing',
+    candidateSetId: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    candidateRef: 'whc_candidate_a',
+  });
+  assert.match(prompt, /candidateSetId sha256:0123456789abcdef/u);
+  assert.match(prompt, /candidateRef whc_candidate_a/u);
+  assert.match(prompt, /grants no authority/u);
 });

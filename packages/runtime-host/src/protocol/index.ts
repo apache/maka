@@ -101,7 +101,49 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 123 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 147 as const;
+// 147: OAuth create targets may carry a caller-selected Connection name and
+// slug, and slug collisions remain a closed typed error before or after
+// authorization. Older peers reject those strict input and output shapes.
+// 146: Code Mode settings and Session tool mode join the epoch-145 Host contract.
+// 145: Combine Antigravity setup with Session bundle Host operations and explicit
+// missing/archived Skill query refusals.
+// 144: Antigravity setup combined with explicit missing/archived Skill query refusals.
+// 143: Session bundle export and import are Host operations. Pre-merge Antigravity
+// builds also advertised 143 without this contract and remain incompatible.
+// 142: Invocable Skill queries expose missing and archived Session refusals explicitly.
+// 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
+// 140: Plugin Platform queries expose scoped Command contribution projections.
+// Epoch-139 peers reject the added query view and result shape.
+// 139: WorkHub recovery preserves the Host-authenticated Desktop capability binding.
+// 138: Removes the unused steering display anchor from canonical MessageContent.
+// 137: Reserved by the former display anchor contract.
+// 136: WorkHub transient proposals distinguish routing dispositions from linked
+// operations. Older peers expect replace/stop_work/resume_work dispositions.
+// 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.
+// 134: Coordination actions own real Runtime Turns. Removes the synthetic record
+// operation, projects typed action receipts and admitted action identities, and
+// distinguishes stale candidate refusals and resumable transcript preparation.
+// 133: WorkHub actions carry attachments and new-Work model/permission defaults.
+// Epoch-132 peers reject these additional fields on strict action shapes.
+// 132: new Tool Result archives use versioned ledger references, not Artifact payloads.
+// 131: Logical model steps bind durable Request Composition identities.
+// 130: Turn contributions carry the optional bounded `failureMessage` diagnostic.
+// Epoch-129 peers reject this added field on the strict contribution shape.
+// 129: Turn states and Turn records drop `partialOutputRetained`. The fact was
+// derived twice — once from the Turn's output rows, once off the state message
+// — and read by nothing; older peers require the field on both.
+// 128: Session transcript bootstraps drop `durableCoverage`. A durable sequence
+// is an event ordinal times its stride, so no projection has contiguous
+// sequences any more and the claim the field made is unavailable to make.
+// 127: Session Turn contributions carry only the Turn's recorded state. Older
+// peers require the derived shape booleans this projection no longer sends.
+// 126: Durable transcript cursors seek Session event ordinals instead of run indexes.
+// 125: Live Turn snapshots carry an optional `rootExecutionKind:'context_compact'`
+// so a running context-compaction Turn can render a transcript row. Epoch-124
+// peers reject the added optional field on the strict live snapshot shape.
+// 124: PTY delivery is independent of the ordered Session state stream. A
+// bounded PTY overflow requests terminal-only snapshot recovery.
 // 123: Failed turns carry canonical retry decisions through bounded projections.
 // 122: Authenticated physical handoff continuations retain logical Turn identity.
 // Older peers cannot decode the handoff source and sealed invocation facts.

@@ -19,8 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { CAPABILITY_REASON_CODES } from '@maka/core/capabilities';
+import { UI_LOCALES, type UiCatalog } from '@maka/core/ui-locale';
 import { connectionLastTestMessageDisplay } from '../../renderer/features/connection-settings/index.js';
 import { getHealthCenterCopy } from '../../renderer/locales/settings-health-copy.js';
+import { getCapabilityReasonCopy } from '../../renderer/locales/capability-reason-copy.js';
 
 test('labels blocker counts as global across filtered health views', () => {
   assert.equal(
@@ -96,23 +99,25 @@ test('renders runtime probe details from structured params, not string parsing',
   );
 });
 
-test('keeps zh capability reasons and hides wrong-locale ones', () => {
-  const zhReason = { kind: 'capability_reason', reason: '未配置平台凭据' } as const;
-  assert.equal(getHealthCenterCopy('zh-CN').signalDetail(signal({ detail: zhReason })), '未配置平台凭据');
-  assert.equal(
-    getHealthCenterCopy('en').signalDetail(signal({ detail: zhReason })),
-    'See the corresponding settings page for details.',
-  );
-
-  const enReason = { kind: 'capability_reason', reason: 'Slack requires a Bot Token.' } as const;
-  assert.equal(
-    getHealthCenterCopy('zh-CN').signalDetail(signal({ detail: enReason })),
-    '状态详情请见对应设置页。',
-  );
-  assert.equal(
-    getHealthCenterCopy('en').signalDetail(signal({ detail: enReason })),
-    'See the corresponding settings page for details.',
-  );
+test('capability reason codes have copy in every locale, unknown reasons keep the fallback', () => {
+  const fallback = {
+    'zh-CN': '状态详情请见对应设置页。',
+    'zh-TW': '狀態詳細資料請參閱對應的設定頁。',
+    en: 'See the corresponding settings page for details.',
+  } satisfies UiCatalog<string>;
+  assert.equal(getCapabilityReasonCopy('zh-CN').platform_credentials_missing, '未配置平台凭据');
+  for (const locale of UI_LOCALES) {
+    const reasons = getCapabilityReasonCopy(locale);
+    for (const code of CAPABILITY_REASON_CODES) {
+      assert.equal(typeof reasons[code], 'string');
+      assert.notEqual(reasons[code], code);
+    }
+    const render = (reason: string) =>
+      getHealthCenterCopy(locale).signalDetail(signal({ detail: { kind: 'capability_reason', reason } }));
+    for (const reason of ['future_code', '未配置平台凭据', 'Slack requires a Bot Token.', 'toString', '__proto__']) {
+      assert.equal(render(reason), fallback[locale]);
+    }
+  }
 });
 
 test('maps connection test error classes without exposing machine tokens', () => {

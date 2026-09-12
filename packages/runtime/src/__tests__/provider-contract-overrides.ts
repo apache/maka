@@ -348,12 +348,20 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
     assert.equal(request.headers['x-github-api-version'], '2026-06-01');
     respondJson(response, 200, {
       data: [
-        copilotModel('gpt-5.4', ['/responses']),
+        {
+          ...copilotModel('gpt-5.4', ['/responses']),
+          // Current GitHub clients also accept models with no policy gate.
+          policy: undefined,
+        },
         copilotModel('claude-sonnet-4.6', ['/v1/messages']),
         copilotModel('gemini-3.1-pro-preview', ['/chat/completions']),
         {
           ...copilotModel('disabled-by-policy', ['/chat/completions']),
           policy: { state: 'disabled' },
+        },
+        {
+          ...copilotModel('policy-not-accepted', ['/chat/completions']),
+          policy: { state: 'unconfigured' },
         },
         {
           ...copilotModel('hidden-from-picker', ['/chat/completions']),

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
@@ -542,21 +544,25 @@ function catalogPage(
   offset: number,
 ): ConnectionCatalogQueryResult {
   const items: ConnectionCatalogPageItem[] = [];
+  const budget = new JsonArrayPageBudget(CONNECTION_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    revision: snapshot.revision,
+    defaultTarget: snapshot.defaultTarget,
+    connectionCount: snapshot.connections.length,
+    items: [],
+    nextCursor: null,
+  });
   const limit = Math.min(allItems.length, offset + CONNECTION_CATALOG_PAGE_MAX_ITEMS);
   for (let index = offset; index < limit; index += 1) {
     const item = allItems[index];
     if (!item) throw invariantFailure('Catalog projection index was out of bounds');
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    const result = {
-      kind: 'page' as const,
-      revision: snapshot.revision,
-      defaultTarget: snapshot.defaultTarget,
-      connectionCount: snapshot.connections.length,
-      items: candidate,
-      nextCursor: nextOffset < allItems.length ? cursorForItem(allItems[nextOffset]) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > CONNECTION_CATALOG_PAGE_MAX_BYTES) {
+    const nextOffset = offset + items.length + 1;
+    if (
+      !budget.tryAppend(
+        item,
+        nextOffset < allItems.length ? cursorForItem(allItems[nextOffset]) : null,
+      )
+    ) {
       break;
     }
     items.push(item);

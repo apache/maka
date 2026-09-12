@@ -59,3 +59,18 @@
     border-radius: 0;
   }
 }
+
+.externalAgentRelease {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 4px;
+}
+
+.externalAgentDownloadProgress {
+  display: block;
+  inline-size: min(100%, 24rem);
+  block-size: 4px;
+  margin-block-start: 8px;
+  accent-color: var(--primary);
+}

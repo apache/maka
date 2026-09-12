@@ -370,7 +370,7 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
 
 export async function withRuntimeHostManagedServiceDeploymentLock<T>(
   clientDataRoot: string,
-  operation: () => Promise<T>,
+  operation: (inheritableLeaseFd?: number) => Promise<T>,
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
@@ -1235,10 +1235,6 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
       { cause: error },
     );
   }
-}
-
-export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
-  return normalizeStateRoot(requestedRoot);
 }
 
 async function normalizeProjectDirectoryRoots(

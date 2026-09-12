@@ -29,6 +29,7 @@
  * persistence and same-session serialization semantics.
  */
 
+import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -52,11 +53,12 @@ import type {
   SessionStatus,
   SessionSummary,
   StoredMessage,
+  RuntimeSystemNoteKind,
   SubagentSessionParent,
   TurnRecord,
   UserMessage,
+  AssistantMessage,
   PermissionDecisionMessage,
-  SystemNoteMessage,
   PersistedBackendKind,
 } from '@maka/core/session';
 import type {
@@ -68,6 +70,7 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import { isCanonicalReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
@@ -93,7 +96,6 @@ import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   childSessionsForParent,
-  deriveTurnRecords,
   subagentSessionRuntimeSummary,
 } from '@maka/core/session';
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
@@ -137,7 +139,10 @@ import type {
   RuntimeInvocationRootAuthority,
   ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
@@ -152,11 +157,10 @@ import {
 import {
   RuntimeReadModel,
   RuntimeReadModelError,
-  type RuntimeReadModelProjectionCache,
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
-import { RuntimeLedgerRepair } from './runtime-ledger-repair.js';
+import { isTranscriptLedgerInvocation, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -175,7 +179,7 @@ import type { ShellRunProcessManager } from './shell-run-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
-import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
+import type { RuntimeContinuationFailpoint } from './agent-run.js';
 import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
   attributeSandboxBoundaryRestartClosure,
@@ -208,11 +212,7 @@ import type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-
 import { fingerprintAgentGraphRunnableIntent } from './stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 import { projectAgentGraphRecords } from './stream-graph-projection.js';
-import {
-  buildStatusPatch,
-  buildTurnStateMessage,
-  type RunLifecycleStatus,
-} from './session-projection-helpers.js';
+import { buildStatusPatch, type RunLifecycleStatus } from './session-projection-helpers.js';
 import {
   assertAgentDefinitionRunnable,
   buildToolsForAgentDefinition,
@@ -542,6 +542,7 @@ export interface SessionConfigurationStoreUpdate {
 export interface SessionConfigurationTransitionRequest {
   readonly expectedRevision: number;
   readonly clearConnectionBlock: boolean;
+  readonly permissionModeOnly: boolean;
   readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
 }
 
@@ -624,11 +625,19 @@ export interface SessionStore {
   ): Promise<ProvisionAgentGraphOperatorResult>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
-  readMessagesSnapshot?(sessionId: string): Promise<StoredMessage[]>;
-  listTurns(sessionId: string): Promise<TurnRecord[]>;
-  appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
-  appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
+  /** One forward page of the legacy rows the transcript converter lifts. */
+  readMessagesAfter(
+    sessionId: string,
+    request: { afterSequence?: number; maxMessages: number; maxStoredBytes: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }>;
+  /** Commit the Session-list facts a durable message carries. */
+  commitMessageCatalogProjection?(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void>;
   updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
   updateHeaderVersioned?(
     sessionId: string,
@@ -647,7 +656,6 @@ export interface SessionStore {
 
 export interface StrictRecoverySessionStore extends SessionStore {
   listForRecovery(): Promise<SessionHeader[]>;
-  readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
 }
 
 export interface StrictRecoveryAgentRunStore extends AgentRunStore {
@@ -670,7 +678,6 @@ export interface BackendFactoryContext {
   store: SessionStore;
   /** Process-local cancellation for the execution that owns this activation. */
   abortSignal?: AbortSignal;
-  appendMessage?: (message: StoredMessage) => Promise<void>;
   /**
    * Child-agent instruction channel. Linked child sessions populate this; an
    * ordinary main-session activation leaves it undefined. A
@@ -703,8 +710,18 @@ export interface BackendFactoryContext {
    * provider call, including metering and its prepared-request observation.
    */
   recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
+  /**
+   * Writes one runtime note — something that happened inside the running
+   * invocation — to that invocation's RuntimeEvent ledger.
+   */
+  recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
   recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
+  /** Append-only logical request surface; provider dispatch waits for this durable epoch. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,
@@ -908,10 +925,7 @@ export class SessionManager {
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runtimeEventStore: deps.runtimeEventStore,
-        readMessages: (sessionId) => deps.store.readMessages(sessionId),
-        appendMessage: (sessionId, message) => deps.store.appendMessage(sessionId, message),
-        newId: deps.newId,
-        now: deps.now,
+        readMessagesAfter: (sessionId, request) => deps.store.readMessagesAfter(sessionId, request),
       });
     }
     this.runtimeKernel = deps.runtimeKernel ?? new RuntimeKernel({ ...deps });
@@ -1132,56 +1146,80 @@ export class SessionManager {
     input: SessionConfigurationTransitionRequest,
   ): Promise<VersionedSessionHeader> {
     const store = this.requireSessionConfigurationStore();
-    const next = await this.commitExecutionResourceTransition(
-      sessionId,
-      input.configuration.permissionMode,
-      async () => {
-        const current = await store.readHeaderRecordSnapshot(sessionId);
-        if (current.revision !== input.expectedRevision) {
-          throw new SessionConfigurationRevisionConflictError(
-            input.expectedRevision,
-            current.revision,
-          );
-        }
-        if (current.header.isArchived) {
-          throw new SessionConfigurationTransitionError(
-            'operation_conflict',
-            'Archived Session configuration cannot be changed',
-          );
-        }
-        if (current.header.status === 'waiting_for_user') {
-          throw new SessionConfigurationTransitionError(
-            'session_busy',
-            'Session has a pending Interaction',
-          );
-        }
-        await this.assertCollaborationTransition(
-          current.header,
-          input.configuration.collaborationMode,
+    const observed = await store.readHeaderRecordSnapshot(sessionId);
+    if (observed.revision !== input.expectedRevision) {
+      throw new SessionConfigurationRevisionConflictError(
+        input.expectedRevision,
+        observed.revision,
+      );
+    }
+    if (
+      !input.clearConnectionBlock &&
+      sessionConfigurationMatches(observed.header, input.configuration)
+    ) {
+      return observed;
+    }
+    const permissionModeOnly =
+      input.permissionModeOnly &&
+      sessionConfigurationMatchesExceptPermissionMode(observed.header, input.configuration);
+    const prepareCommit = async (): Promise<() => Promise<VersionedSessionHeader>> => {
+      const current = await store.readHeaderRecordSnapshot(sessionId);
+      if (current.revision !== input.expectedRevision) {
+        throw new SessionConfigurationRevisionConflictError(
+          input.expectedRevision,
+          current.revision,
         );
-        const leavingDeepResearch =
-          isDeepResearchSession(current.header.labels) &&
-          input.configuration.permissionMode !== 'explore';
-        const labels = leavingDeepResearch
-          ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-          : current.header.labels;
-        return () =>
-          store.updateSessionConfiguration(sessionId, {
-            expectedVersion: input.expectedRevision,
-            configuration: {
-              ...input.configuration,
-              labels,
-            },
-            lifecycle:
-              input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
-                ? {
-                    kind: 'clear_connection_block',
-                    statusUpdatedAt: this.deps.now(),
-                  }
-                : { kind: 'preserve' },
-          });
-      },
-    );
+      }
+      if (current.header.isArchived) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Archived Session configuration cannot be changed',
+        );
+      }
+      if (current.header.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      await this.assertCollaborationTransition(
+        current.header,
+        input.configuration.collaborationMode,
+      );
+      const leavingDeepResearch =
+        isDeepResearchSession(current.header.labels) &&
+        input.configuration.permissionMode !== 'explore';
+      const labels = leavingDeepResearch
+        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+        : current.header.labels;
+      return () =>
+        store.updateSessionConfiguration(sessionId, {
+          expectedVersion: input.expectedRevision,
+          configuration: {
+            ...input.configuration,
+            labels,
+          },
+          lifecycle:
+            input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
+              ? {
+                  kind: 'clear_connection_block',
+                  statusUpdatedAt: this.deps.now(),
+                }
+              : { kind: 'preserve' },
+        });
+    };
+    const next = permissionModeOnly
+      ? await this.commitExecutionBoundaryTransition(
+          sessionId,
+          await this.deps.store.readExecutionBoundary(sessionId),
+          input.configuration.permissionMode,
+          prepareCommit,
+        )
+      : await this.commitExecutionResourceTransition(
+          sessionId,
+          input.configuration.permissionMode,
+          prepareCommit,
+        );
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
     return next;
   }
@@ -1420,13 +1458,6 @@ export class SessionManager {
     );
     const recovered = new Set<string>();
     for (const session of interrupted) {
-      if (this.runtimeLedgerRepair) {
-        await recoverOr(
-          policy,
-          () => this.runtimeLedgerRepair!.repairSteeringMessagesOnce(session.id),
-          0,
-        );
-      }
       if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
       // Fail-closed: a request whose live owner died can never be answered, so
       // it settles as `deny` with a durable `host_restarted` reason. The run
@@ -1464,27 +1495,10 @@ export class SessionManager {
         );
         if (recoveredShellRuns > 0) recovered.add(session.id);
       }
-      let messages: StoredMessage[] = [];
-      let messagesReadable = true;
-      try {
-        messages =
-          policy.kind === 'strict'
-            ? await policy.stores.sessionStore.readMessagesForRecovery(session.id)
-            : await this.deps.store.readMessages(session.id);
-      } catch (error) {
-        if (policy.kind === 'strict') throw error;
-        messagesReadable = false;
-      }
-
-      if (session.revisionState === 'preparing' && messagesReadable) {
-        if (hasRevisionUserMessage(messages)) {
-          await recoverOr(policy, () => this.commitRevisionVersion(session.id), undefined);
-        } else {
-          await recoverOr(policy, () => this.remove(session.id), undefined);
-          recovered.add(session.id);
-          continue;
-        }
-      }
+      // A revision copy still `preparing` is settled by the Host's revision
+      // coordinator, which reads the admission ledger and runs before this
+      // recovery. Deciding it a second time here — off a transcript scan, and
+      // ending in `remove()` — could only ever contradict it.
 
       let continuationClaimRecovered = false;
       const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
@@ -1546,51 +1560,24 @@ export class SessionManager {
           if (runRecovery.recovered || continuationClaimRecovered) {
             await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
             recovered.add(session.id);
-          } else if (
-            !messagesReadable &&
-            (session.status === 'running' || session.status === 'waiting_for_user')
-          ) {
-            await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
-            recovered.add(session.id);
           }
           continue;
         }
       }
 
-      if (!messagesReadable) {
-        if (session.status === 'running' || session.status === 'waiting_for_user') {
-          // Recovery may run in BACKGROUND startup (#456): re-check for a
-          // run the user started while this session's recovery was in
-          // flight, so we never stomp a live run's status.
-          if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
-          await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
-          recovered.add(session.id);
-        }
-        continue;
-      }
-
-      const recoveries = interruptedTurnRecoveries(messages);
-      if (recoveries.length === 0) continue;
-      for (const recovery of recoveries) {
-        await recoverOr(
-          policy,
-          () =>
-            this.appendTurnState(session.id, recovery.turnId, 'failed', recovery.lineage, {
-              errorClass: recovery.errorClass,
-            }),
-          undefined,
-        );
-      }
+      // No ledger and nothing to recover from it. A Session whose turns were
+      // interrupted before this process started is settled by the transcript
+      // importer, which converts a turn that never recorded how it ended into
+      // the failed terminal fact it actually was — this recovery has no second
+      // transcript to read that from.
       if (session.status === 'running' || session.status === 'waiting_for_user') {
-        // Same double-check as above: a message sent mid-recovery owns
-        // the session status now (its own transitions will settle it).
-        if (this.runtimeKernel.hasActiveRuns(session.id)) {
-          recovered.add(session.id);
-          continue;
-        }
+        // Recovery may run in BACKGROUND startup (#456): re-check for a run the
+        // user started while this session's recovery was in flight, so we never
+        // stomp a live run's status.
+        if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
         await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
+        recovered.add(session.id);
       }
-      recovered.add(session.id);
     }
     return [...recovered];
   }
@@ -1638,6 +1625,29 @@ export class SessionManager {
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
+    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
+      this.deps.store,
+    );
+    if (!readHeaderRecordSnapshot || !this.deps.store.updateSessionConfiguration) {
+      // Temporary compatibility bridge for SessionStore embeddings that predate
+      // versioned configuration authority. A follow-up PR will shortly remove
+      // setPermissionMode and this redundant fallback after callers migrate.
+      return this.setPermissionModeWithLegacyStore(sessionId, mode);
+    }
+    const current = await readHeaderRecordSnapshot(sessionId);
+    const next = await this.transitionSessionConfiguration(sessionId, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: sessionConfigurationWithPermissionMode(current.header, mode),
+    });
+    return headerToSummary(next.header);
+  }
+
+  private async setPermissionModeWithLegacyStore(
+    sessionId: string,
+    mode: PermissionMode,
+  ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
     const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
@@ -1649,32 +1659,26 @@ export class SessionManager {
       return headerToSummary(previous);
     }
 
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
-    }
-    if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
-    }
-
     const labels = leavingDeepResearch
       ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
       : previous.labels;
-    const nextKind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, nextKind, {
-      permissionMode: mode,
-      labels,
+    const kind = mode === 'bypass' ? 'bypass' : 'managed';
+    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
+      const current = await this.deps.store.readHeader(sessionId);
+      if (current.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      return () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
+          permissionMode: mode,
+          labels,
+        });
     });
     const next = await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.deps.store
-      .appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { from: previous.permissionMode, to: mode },
-      } satisfies SystemNoteMessage)
-      .catch(() => undefined);
     return headerToSummary(next);
   }
 
@@ -1682,29 +1686,40 @@ export class SessionManager {
     sessionId: string,
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+    const current = await this.deps.store.readExecutionBoundary(sessionId);
+    const header = await this.deps.store.readHeader(sessionId);
+    // Managed includes Explore. Match Storage's default projection, then pass
+    // it explicitly so classification and commit describe the same transition.
+    const permissionMode =
+      kind === 'bypass'
+        ? 'bypass'
+        : header.permissionMode === 'bypass'
+          ? 'ask'
+          : header.permissionMode;
+    const narrows = narrowsExecutionAuthority(current, permissionMode);
+    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
     }
-    const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
     }
-    const current = await this.deps.store.readExecutionBoundary(sessionId);
-    const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
+    const boundary = await this.commitExecutionBoundaryTransition(
+      sessionId,
+      current,
+      permissionMode,
+      async () => () =>
+        this.deps.store.setExecutionBoundaryKind(sessionId, kind, { permissionMode }),
+    );
     return boundary;
   }
 
-  private async commitExecutionBoundaryTransition(
+  private async commitExecutionBoundaryTransition<T>(
     sessionId: string,
     current: ExecutionBoundary,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    const nextPermissionMode = projection?.permissionMode ?? (kind === 'bypass' ? 'bypass' : 'ask');
-    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, async () => {
+    nextPermissionMode: PermissionMode,
+    prepareCommit: () => Promise<() => Promise<T>>,
+  ): Promise<T> {
+    const prepareBoundaryCommit = async (): Promise<() => Promise<T>> => {
       const latest = await this.deps.store.readExecutionBoundary(sessionId);
       if (latest.revision !== current.revision) {
         throw new SessionConfigurationTransitionError(
@@ -1712,8 +1727,38 @@ export class SessionManager {
           'Session execution boundary changed before the transition',
         );
       }
-      return () => this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
-    });
+      return prepareCommit();
+    };
+    if (!narrowsExecutionAuthority(current, nextPermissionMode)) {
+      // Widening needs no quiescence. Every consumer that froze the old, tighter
+      // boundary fails closed against a wider one, and a descendant's admission
+      // check only gets easier — so the grant is just written. Waiting for the
+      // Session to go idle is what let a running Turn, or a Goal's continuation
+      // holding a claim near-continuously, keep the user's own grant out.
+      if (!this.runtimeKernel.runSessionAdmissionMutation) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session boundary changes require Runtime admission mutation authority',
+        );
+      }
+      // Serialize the revision check through commit without requiring an idle
+      // Turn. Otherwise two unversioned writes can both pass the check, then
+      // the later write can narrow the first grant using its stale classification.
+      const result = await this.runtimeKernel.runSessionAdmissionMutation([sessionId], async () => {
+        const commit = await prepareBoundaryCommit();
+        return commit();
+      });
+      // Not `disposeBackend`: disposing a live Turn's backend stops that Turn.
+      // Invalidation refreshes it now when the Session is idle, and otherwise
+      // defers to the next activation, which disposes before it starts.
+      await this.runtimeKernel.invalidateBackend(sessionId);
+      return result;
+    }
+    return this.commitExecutionResourceTransition(
+      sessionId,
+      nextPermissionMode,
+      prepareBoundaryCommit,
+    );
   }
 
   private async commitExecutionResourceTransition<T>(
@@ -1833,6 +1878,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Fences a Session and every subagent Session under it for one operation.
+   *
+   * Preparing a bundle reads a Session's whole subtree, and a child holds the
+   * result of a tool call its parent made -- so a Turn starting anywhere in
+   * that tree while the read is in progress produces a bundle describing two
+   * moments. Refuses outright if any of them is already running.
+   */
+  async runSessionSubtreeQuiescentMutation<T>(
+    sessionId: string,
+    operation: (fencedSessionIds: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    const descendants = await this.listLinkedDescendantSessionIds(sessionId);
+    const fenced = [sessionId, ...descendants];
+    return this.runSessionQuiescentMutation(fenced, async () => {
+      // Discovered again, now that the fence is held. The first walk happened
+      // before it, so a child created in that gap is in the subtree and NOT in
+      // what was fenced -- the operation would read it without it being held
+      // still. Refusing is the only honest answer: fencing it now would be
+      // fencing a set this call never admitted.
+      const current = await this.listLinkedDescendantSessionIds(sessionId);
+      if (current.length !== descendants.length || current.some((id) => !fenced.includes(id))) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Session lineage changed while the subtree was being fenced',
+        );
+      }
+      return operation(fenced);
+    });
+  }
+
   private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {
     const sessions = await this.deps.store.list();
     const childrenByParent = new Map<string, string[]>();
@@ -1891,13 +1967,6 @@ export class SessionManager {
     const next = await this.deps.store.updateHeader(sessionId, {
       collaborationMode: mode,
     });
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'collaboration', from, to: mode },
-    } satisfies SystemNoteMessage);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     await this.runtimeKernel.disposeBackend(sessionId);
     return headerToSummary(next);
@@ -1914,13 +1983,6 @@ export class SessionManager {
       throw new Error('Cannot change orchestration mode while a tool call awaits confirmation.');
     }
     const next = await this.deps.store.updateHeader(sessionId, { orchestrationMode: mode });
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'orchestration', from, to: mode },
-    } satisfies SystemNoteMessage);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return headerToSummary(next);
   }
@@ -1963,7 +2025,7 @@ export class SessionManager {
     }
     if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
     const result = await this.requirePlanStore().abandonProposal(input);
-    await this.finalizePlanAbandonment(sessionId, operationId, replay);
+    await this.finalizePlanAbandonment(sessionId);
     return result;
   }
 
@@ -2405,6 +2467,15 @@ export class SessionManager {
     }
   }
 
+  runCoordinationOperation(
+    sessionId: string,
+    input: UserMessageInput,
+    options: TurnStartOptions,
+    execute: () => Promise<WorkHubActionReceipt>,
+  ): AsyncIterable<SessionEvent> {
+    return this.runtimeKernel.runCoordinationOperation(sessionId, input, options, execute);
+  }
+
   async *compactSession(
     sessionId: string,
     input: CompactSessionInput = {},
@@ -2614,6 +2685,7 @@ export class SessionManager {
         permissionMode: childPermissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
+        toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
         subagentParent: {
           kind: 'subagent',
           parentSessionId: input.source.sessionId,
@@ -2887,18 +2959,15 @@ export class SessionManager {
 
     await this.finalizeChildWorkspacePatches(child.id);
 
-    const [runs, messages] = await Promise.all([
-      this.listInvocations(child.id),
-      this.deps.store.readMessages(child.id),
-    ]);
-    const turnOwner = runs.find((candidate) => candidate.turnId === claim.targetTurnId);
+    // An invocation is what makes a Turn exist on the ledger, so the run listing
+    // is the whole occupancy check: a Turn with durable content has one.
+    const turnOwner = (await this.listInvocations(child.id)).find(
+      (candidate) => candidate.turnId === claim.targetTurnId,
+    );
     if (turnOwner) {
       throw new Error(
         `Claimed graph turn ${claim.targetTurnId} is already owned by run ${turnOwner.runId}`,
       );
-    }
-    if (messages.some((message) => 'turnId' in message && message.turnId === claim.targetTurnId)) {
-      throw new Error(`Claimed graph turn ${claim.targetTurnId} already has durable messages`);
     }
     if (child.isArchived || child.status === 'aborted') {
       throw new Error('Claimed graph execution target child session is terminated');
@@ -3079,7 +3148,7 @@ export class SessionManager {
     prompt: string,
     expectedUserMessageId?: string,
   ): Promise<void> {
-    const messages = await this.deps.store.readMessages(sessionId);
+    const { messages } = await this.getSessionView(sessionId);
     const userMessages = messages.filter(
       (message): message is UserMessage => message.type === 'user' && message.turnId === turnId,
     );
@@ -3159,6 +3228,7 @@ export class SessionManager {
         permissionMode: definition.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
+        toolMode: parentHeader.toolMode ?? DEFAULT_TOOL_MODE,
         subagentParent: {
           kind: 'subagent',
           parentSessionId,
@@ -3387,18 +3457,10 @@ export class SessionManager {
     const snapshot = child.subagentRuntime;
     if (!snapshot) throw new Error('Stored child session is missing its durable runtime snapshot');
     const facts = invocationListingFacts(run);
-    const [messages, runtimeEvents, artifacts] = await Promise.all([
-      this.deps.store.readMessages(child.id),
+    const [runtimeEvents, artifacts] = await Promise.all([
       this.deps.runtimeEventStore.readRuntimeEvents(child.id, run.runId),
       this.finalizeAndListChildTurnArtifacts(child.id, run.turnId, facts.status),
     ]);
-    const storedSummary =
-      messages
-        .filter(
-          (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
-            message.type === 'assistant' && message.turnId === run.turnId,
-        )
-        .at(-1)?.text ?? '';
     const runtimeText = runtimeEvents.filter(
       (
         event,
@@ -3421,7 +3483,7 @@ export class SessionManager {
       runId: run.runId,
       status: agentRunStatusForSpawnResult(facts.status),
       permissionMode: child.permissionMode,
-      summary: trimSummary(durableRuntimeSummary ?? (storedSummary || partialRuntimeSummary)),
+      summary: trimSummary(durableRuntimeSummary ?? partialRuntimeSummary),
       artifactIds: artifacts.map((artifact) => artifact.id),
       startedAt: facts.createdAt,
       completedAt: facts.updatedAt,
@@ -3669,38 +3731,39 @@ export class SessionManager {
     const hostedAuthority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
-    const ownStop = hostedAuthority
-      ? hostedAuthority.stopSession(sessionId, input)
-      : this.runtimeKernel.stopSession(sessionId, input);
-    let childStops: PromiseSettledResult<void>[] = [];
-    let childLookupError: unknown;
-    try {
-      const children = await this.listChildSessions(sessionId);
-      childStops = await Promise.allSettled(
-        children
-          .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            hostedAuthority
-              ? hostedAuthority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
-      );
-    } catch (error) {
-      childLookupError = error;
-    }
-    await ownStop;
-    const childStopError = childStops.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    )?.reason;
-    if (childLookupError !== undefined) throw childLookupError;
-    if (childStopError !== undefined) throw childStopError;
+    await this.#stopSessionTree(
+      sessionId,
+      hostedAuthority
+        ? hostedAuthority.stopSession(sessionId, input)
+        : this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        hostedAuthority
+          ? hostedAuthority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
   }
 
   async deliverHostedRootStop(sessionId: string, input: StopSessionInput = {}): Promise<void> {
-    const ownStop = this.runtimeKernel.stopSession(sessionId, input);
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
+    await this.#stopSessionTree(
+      sessionId,
+      this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        authority
+          ? authority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
+  }
+
+  async #stopSessionTree(
+    sessionId: string,
+    ownStop: Promise<void>,
+    stopChild: (childSessionId: string) => Promise<void>,
+  ): Promise<void> {
+    // Observe immediately while child lookup runs; await below still propagates the original error.
+    void ownStop.catch(() => undefined);
     let childStops: PromiseSettledResult<void>[] = [];
     let childLookupError: unknown;
     try {
@@ -3708,11 +3771,7 @@ export class SessionManager {
       childStops = await Promise.allSettled(
         children
           .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            authority
-              ? authority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
+          .map((child) => stopChild(child.id)),
       );
     } catch (error) {
       childLookupError = error;
@@ -3730,6 +3789,12 @@ export class SessionManager {
     turnId: string;
     runId: string;
     admittedAt: number;
+    /**
+     * The message this admission owns, when the crash beat the Run that would
+     * have recorded it. Recovery writes it into the invocation it opens below,
+     * so the Turn the user sees still carries what they asked for.
+     */
+    userMessage?: { id: string; content: MessageContent; origin?: UserMessage['origin'] };
     execution: Exclude<
       RootExecutionDescriptor,
       | { kind: 'regenerate' }
@@ -3762,6 +3827,12 @@ export class SessionManager {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
       };
+    } else if (
+      input.execution.kind === 'workhub_coordination' &&
+      input.execution.operation === 'action'
+    ) {
+      recoveryReason = 'coordination_action_admission_without_run';
+      diagnostic = { executionKind: input.execution.kind, operation: input.execution.operation };
     } else if (input.execution.kind === 'legacy_automation') {
       root = { kind: 'legacy_automation', legacyAutomationId: input.execution.automationId };
       recoveryReason = 'legacy_automation_authority_removed';
@@ -3889,7 +3960,7 @@ export class SessionManager {
         cwd: session.cwd,
         permissionMode: session.permissionMode,
         collaborationMode: session.collaborationMode ?? 'agent',
-        toolMode: DEFAULT_TOOL_MODE,
+        toolMode: session.toolMode ?? DEFAULT_TOOL_MODE,
         ...orchestration,
         ...(workspaceIdentity !== undefined ? { workspaceIdentity } : {}),
       },
@@ -3910,6 +3981,34 @@ export class SessionManager {
         opening,
       }),
     );
+
+    if (input.userMessage) {
+      await this.deps.runtimeEventStore.appendRuntimeEvent(input.sessionId, input.runId, {
+        id: input.userMessage.id,
+        ...run,
+        ts: input.admittedAt,
+        partial: false,
+        role: 'user',
+        author: input.userMessage.origin ? 'host' : 'user',
+        content: {
+          kind: 'text',
+          text: input.userMessage.content.text,
+          ...(input.userMessage.content.displayText !== undefined
+            ? { displayText: input.userMessage.content.displayText }
+            : {}),
+          ...(input.userMessage.content.attachments?.length
+            ? { attachments: input.userMessage.content.attachments }
+            : {}),
+          ...(input.userMessage.content.directoryReferences?.length
+            ? { directoryReferences: input.userMessage.content.directoryReferences }
+            : {}),
+          ...(input.userMessage.content.quotes?.length
+            ? { quotes: input.userMessage.content.quotes }
+            : {}),
+          ...(input.userMessage.origin ? { origin: input.userMessage.origin } : {}),
+        },
+      });
+    }
 
     const ts = this.deps.now();
     const terminalEvent = buildRecoveredTerminalRuntimeEvent({
@@ -4058,20 +4157,7 @@ export class SessionManager {
 
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */
   async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
-    const readMessagesSnapshot = this.deps.store.readMessagesSnapshot;
-    if (!readMessagesSnapshot) {
-      throw new Error('Conversation copy requires a side-effect-free message snapshot');
-    }
-    const readMessages = readMessagesSnapshot.bind(this.deps.store);
-    const view = await this.getSessionView(sessionId, { readMessages });
-    if (view.invocations.length > 0 || view.messages.length > 0) return view;
-    const messages = await readMessages(sessionId);
-    if (messages.length === 0) return view;
-    return {
-      ...view,
-      messages,
-      turns: deriveTurnRecords(messages),
-    };
+    return this.getSessionView(sessionId);
   }
 
   async respondToSandboxBoundary(
@@ -4159,13 +4245,10 @@ export class SessionManager {
       return await this.getMessages(sessionId);
     } catch (error) {
       if (!(error instanceof RuntimeReadModelError)) throw error;
-      // ShellRun hydration is a best-effort UI projection. A legacy RuntimeEvent
-      // incompatibility must not turn its retry loop into a permanent IPC error.
-      try {
-        return await this.deps.store.readMessages(sessionId);
-      } catch {
-        return null;
-      }
+      // ShellRun hydration is a best-effort UI projection. A ledger the read
+      // model cannot project yet must not turn its retry loop into a permanent
+      // IPC error; there is no second transcript to fall back to.
+      return null;
     }
   }
 
@@ -4281,41 +4364,13 @@ export class SessionManager {
     this.runtimeKernel.updateCachedHeader(sessionId, next);
   }
 
-  private async finalizePlanAbandonment(
-    sessionId: string,
-    operationId: string | undefined,
-    replay: boolean,
-  ): Promise<void> {
+  private async finalizePlanAbandonment(sessionId: string): Promise<void> {
     const header = await this.deps.store.readHeader(sessionId);
-    const from = header.collaborationMode ?? 'agent';
-    const changed = from !== 'agent';
-    const next = changed
-      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' })
-      : header;
+    const next =
+      (header.collaborationMode ?? 'agent') === 'agent'
+        ? header
+        : await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-
-    if (!changed && !replay) return;
-    if (!operationId) {
-      await this.deps.store.appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { dimension: 'collaboration', from, to: 'agent' },
-      } satisfies SystemNoteMessage);
-      return;
-    }
-
-    const noteId = planAbandonmentNoteId(operationId);
-    const messages = await this.deps.store.readMessages(sessionId);
-    if (messages.some((message) => message.id === noteId)) return;
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: noteId,
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { dimension: 'collaboration', from: 'plan', to: 'agent' },
-    } satisfies SystemNoteMessage);
   }
 
   private requirePlanStore(): PlanStore {
@@ -4371,28 +4426,6 @@ export class SessionManager {
     }
   }
 
-  private async appendTurnState(
-    sessionId: string,
-    turnId: string,
-    status: TurnRecord['status'],
-    lineage: AgentRunLineage = {},
-    options: { ts?: number; errorClass?: string; abortSource?: string } = {},
-  ): Promise<void> {
-    const ts = options.ts ?? this.deps.now();
-    await this.deps.store.appendMessage(
-      sessionId,
-      buildTurnStateMessage({
-        id: this.deps.newId(),
-        turnId,
-        ts,
-        status,
-        lineage,
-        ...(options.abortSource ? { abortSource: options.abortSource } : {}),
-        ...(options.errorClass !== undefined ? { errorClass: options.errorClass } : {}),
-      }),
-    );
-  }
-
   private async requireTurnForAction(
     sessionId: string,
     turnId: string,
@@ -4409,26 +4442,41 @@ export class SessionManager {
     return turn;
   }
 
-  private async getSessionView(
-    sessionId: string,
-    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
-  ): Promise<RuntimeReadModelSessionView> {
-    return this.readModel(projectionCache).getSessionView(sessionId);
+  /**
+   * The Session as its ledger tells it.
+   *
+   * A transcript written before the ledger owned execution facts is converted
+   * here, on the first read, because there is no second transcript left to read
+   * it from: the importer is what gives those turns an invocation to be
+   * projected from, so a read that skipped it would report the Session empty.
+   */
+  private async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
+    await this.ensureTranscriptLedgerForRead(sessionId);
+    return this.readModel().getSessionView(sessionId);
   }
 
-  private readModel(
-    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
-  ): RuntimeReadModel {
+  private readModel(): RuntimeReadModel {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('RuntimeReadModel requires AgentRunStore and RuntimeEventStore');
     }
     return new RuntimeReadModel({
       runtimeEventStore: this.deps.runtimeEventStore,
-      projectionCache,
       ...(this.deps.canonicalPermissionOutcomes
         ? { canonicalPermissionOutcomes: this.deps.canonicalPermissionOutcomes }
         : {}),
     });
+  }
+
+  /**
+   * Convert a transcript written before the ledger owned execution facts, so a
+   * reader that goes straight to the ledger still sees the whole Session.
+   *
+   * Idempotent and cheap after the first call: the conversion is remembered per
+   * Session, and a Session born on the ledger has nothing to convert.
+   */
+  async ensureTranscriptLedgerForRead(sessionId: string): Promise<void> {
+    const repair = this.runtimeLedgerRepair;
+    if (repair) await this.ensureTranscriptLedger(sessionId, repair, 'compatibility');
   }
 
   async prepareImportedSessionHistory(sessionId: string): Promise<void> {
@@ -4447,6 +4495,14 @@ export class SessionManager {
     if (header.transcriptLedgerVersion === 0 && source !== 'import') {
       throw new Error('Imported Session history is still being prepared');
     }
+    // Version 1 says a conversion ran, not that every legacy fact reached the
+    // ledger. A released build set it on the first send and went on writing
+    // context notes to the transcript alone, so those notes stay behind on
+    // Sessions it touched. Re-running the converter cannot reach them: they
+    // belong to turns a real run already sealed, and a sealed run refuses the
+    // append. They are hidden from the model and describe context, so they are
+    // the accepted cost of the cutover — do not read this marker as proof that
+    // nothing is left in `session_messages`.
     if (header.transcriptLedgerVersion !== 1) {
       await repair.materializeTranscriptLedger(header);
       await this.updateHeader(sessionId, { transcriptLedgerVersion: 1 });
@@ -4562,7 +4618,11 @@ export class SessionManager {
   ): Promise<{ hasLedger: boolean; recovered: boolean }> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore)
       return { hasLedger: false, recovered: false };
-    const runs = await this.listInvocations(sessionId);
+    // The importer may have committed only a prefix before a restart. Sealing
+    // that prefix here would make the next read skip the unconverted history.
+    const runs = (await this.listInvocations(sessionId)).filter(
+      (run) => !isTranscriptLedgerInvocation(run),
+    );
     if (runs.length === 0) return { hasLedger: false, recovered: false };
     const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
     const claimOwnedUnsettledRunIds = new Set<string>();
@@ -4750,52 +4810,11 @@ export class SessionManager {
       return false;
     }
 
-    const appendedTurnState = await recoverOr(
-      policy,
-      () =>
-        this.appendTerminalTurnStateIfNeeded(
-          sessionId,
-          inspected.invocation,
-          decision,
-          terminalTurnStatus(status),
-          {
-            ts,
-            ...(failureClass ? { errorClass: failureClass } : {}),
-            ...(abortSource ? { abortSource } : {}),
-          },
-          policy,
-        ),
-      false,
-    );
-    // A run that already carried a complete terminal fact and a terminal Turn
-    // state had nothing to recover. Saying otherwise makes recovery rewrite the
-    // Session status of every healthy run it walks past.
-    return inspected.terminalRuntimeFact === undefined || appendedTurnState;
+    // A run that already carried a complete terminal fact had nothing to
+    // recover. Saying otherwise makes recovery rewrite the Session status of
+    // every healthy run it walks past.
+    return inspected.terminalRuntimeFact === undefined;
   }
-
-  private async appendTerminalTurnStateIfNeeded(
-    sessionId: string,
-    run: RuntimeInvocationRecord,
-    decision: AgentRunRecoveryDecision,
-    status: TurnRecord['status'],
-    options: { ts: number; errorClass?: string; abortSource?: string },
-    policy: RecoveryPolicy = { kind: 'best_effort' },
-  ): Promise<boolean> {
-    if (!isSessionInlineInvocation(run.opening)) return false;
-    const messages = await recoverOr(
-      policy,
-      () => this.deps.store.readMessages(sessionId),
-      [] as StoredMessage[],
-    );
-    const latest = latestTurnState(messages, decision.turnId);
-    if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return false;
-    await this.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
-    return true;
-  }
-}
-
-function planAbandonmentNoteId(operationId: string): string {
-  return `plan-abandonment-${createHash('sha256').update(operationId).digest('hex')}`;
 }
 
 function resumeFeatureDisabledPlan(): SafeBoundaryContinuationPlan {
@@ -5162,6 +5181,49 @@ function claimedAgentGraphIntentResult(
   };
 }
 
+function sessionConfigurationWithPermissionMode(
+  header: SessionHeader,
+  permissionMode: PermissionMode,
+): SessionConfigurationTransitionRequest['configuration'] {
+  return {
+    backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
+    llmConnectionSlug: header.llmConnectionSlug,
+    connectionLocked: header.connectionLocked,
+    model: header.model,
+    thinkingLevel: header.thinkingLevel,
+    permissionMode,
+    collaborationMode: header.collaborationMode ?? 'agent',
+    orchestrationMode: header.orchestrationMode ?? 'default',
+  };
+}
+
+function sessionConfigurationMatchesExceptPermissionMode(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.backend === configuration.backend &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.connectionLocked === configuration.connectionLocked &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
+    (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
+  );
+}
+
+function sessionConfigurationMatches(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.permissionMode === configuration.permissionMode &&
+    sessionConfigurationMatchesExceptPermissionMode(header, configuration)
+  );
+}
+
 function executionBoundaryMatchesPermissionMode(
   boundary: ExecutionBoundary,
   mode: PermissionMode,
@@ -5179,7 +5241,9 @@ function narrowsExecutionAuthority(
 ): boolean {
   if (nextPermissionMode === 'bypass') return false;
   if (boundary.kind !== 'managed') return true;
-  return nextPermissionMode === 'explore' && boundary.profile.name !== 'read-only';
+  return (
+    nextPermissionMode === 'explore' && !isCanonicalReadOnlyPermissionProfile(boundary.profile)
+  );
 }
 
 function agentRunStatusForSpawnResult(
@@ -5256,111 +5320,8 @@ class ChildAgentSummaryAccumulator {
   }
 }
 
-interface InterruptedTurnRecovery {
-  turnId: string;
-  errorClass: string;
-  lineage: Partial<
-    Pick<
-      UserMessageInput,
-      | 'parentTurnId'
-      | 'retriedFromTurnId'
-      | 'regeneratedFromTurnId'
-      | 'branchOfTurnId'
-      | 'parentSessionId'
-    >
-  >;
-}
-
-function hasRevisionUserMessage(messages: readonly StoredMessage[]): boolean {
-  let boundary = -1;
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]!;
-    if (
-      message.type === 'system_note' &&
-      message.kind === 'session_start' &&
-      message.data &&
-      typeof message.data === 'object' &&
-      'revisionRootSessionId' in message.data
-    ) {
-      boundary = index;
-    }
-  }
-  return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
-}
-
-function interruptedTurnRecoveries(messages: readonly StoredMessage[]): InterruptedTurnRecovery[] {
-  const byTurn = new Map<
-    string,
-    {
-      hasAssistant: boolean;
-      states: Array<Extract<StoredMessage, { type: 'turn_state' }>>;
-    }
-  >();
-  for (const message of messages) {
-    const turnId = (message as { turnId?: string }).turnId;
-    if (!turnId) continue;
-    const bucket = byTurn.get(turnId) ?? { hasAssistant: false, states: [] };
-    if (message.type === 'assistant') bucket.hasAssistant = true;
-    if (message.type === 'turn_state') bucket.states.push(message);
-    byTurn.set(turnId, bucket);
-  }
-
-  const recoveries: InterruptedTurnRecovery[] = [];
-  for (const [turnId, bucket] of byTurn) {
-    const latest = bucket.states.at(-1);
-    if (!latest) continue;
-    if (latest.status === 'running') {
-      recoveries.push({
-        turnId,
-        errorClass: 'app_restarted',
-        lineage: turnStateLineage(latest),
-      });
-      continue;
-    }
-    const failed = [...bucket.states].reverse().find((state) => state.status === 'failed');
-    if (latest.status === 'completed' && !bucket.hasAssistant && failed) {
-      recoveries.push({
-        turnId,
-        errorClass: failed.errorClass ?? 'unknown',
-        lineage: turnStateLineage(failed),
-      });
-    }
-  }
-  return recoveries;
-}
-
-function turnStateLineage(
-  state: Extract<StoredMessage, { type: 'turn_state' }>,
-): Partial<
-  Pick<
-    UserMessageInput,
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
-> {
-  return {
-    ...(state.parentTurnId ? { parentTurnId: state.parentTurnId } : {}),
-    ...(state.retriedFromTurnId ? { retriedFromTurnId: state.retriedFromTurnId } : {}),
-    ...(state.regeneratedFromTurnId ? { regeneratedFromTurnId: state.regeneratedFromTurnId } : {}),
-    ...(state.branchOfTurnId ? { branchOfTurnId: state.branchOfTurnId } : {}),
-    ...(state.parentSessionId ? { parentSessionId: state.parentSessionId } : {}),
-  };
-}
-
 function isTerminalRunStatus(status: RunLifecycleStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function isTerminalTurnStatus(status: TurnRecord['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'aborted';
-}
-
-function terminalTurnStatus(status: AgentRunRecoveryDecision['status']): TurnRecord['status'] {
-  if (status === 'cancelled') return 'aborted';
-  return status;
 }
 
 function diagnosticRecoveryReason(diagnostic: Record<string, unknown> | undefined): string {
@@ -5368,17 +5329,6 @@ function diagnosticRecoveryReason(diagnostic: Record<string, unknown> | undefine
   return typeof recoveryReason === 'string' && recoveryReason.length > 0
     ? recoveryReason
     : 'agent_run_recovery';
-}
-
-function latestTurnState(
-  messages: readonly StoredMessage[],
-  turnId: string,
-): Extract<StoredMessage, { type: 'turn_state' }> | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.type === 'turn_state' && message.turnId === turnId) return message;
-  }
-  return undefined;
 }
 
 function runtimeTerminalFactToRecoveryDecision(
@@ -5520,7 +5470,11 @@ function buildAgentOutputCommittedResult(input: {
     };
   }
 
-  const codePoints = Array.from(text);
+  const codePoints: string[] = [];
+  for (const point of text) {
+    if (codePoints.length >= input.maxBytes) break;
+    codePoints.push(point);
+  }
   let low = 0;
   let high = codePoints.length;
   let best: AgentOutputCommittedResult = { ...withoutText, textTruncated: true };

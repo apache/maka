@@ -44,7 +44,7 @@ import {
   type ToolActivityItem,
   type ToolOutputChunk,
 } from './materialize.js';
-import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
+import { isConnectorTool, resolveToolDisplayName, workHubControlStatus } from './tool-activity/display-name.js';
 import {
   computerActionLabel,
   computerActionLabelIncludesTarget,
@@ -180,9 +180,11 @@ function loadToolGroupIcon(kind: LoadToolGroupKind): LucideIcon {
  */
 export function ToolCallDetail({
   item,
+  activityObserved = true,
   onSwitchToBypassAndRetry,
 }: {
   item: ToolActivityItem;
+  activityObserved?: boolean;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
@@ -192,7 +194,7 @@ export function ToolCallDetail({
   // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
-  const running = isInFlightToolStatus(toolActivityPresentationStatus(item));
+  const running = activityObserved && isInFlightToolStatus(toolActivityPresentationStatus(item));
   const outputActionIdentity = [
     computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     item.intent ? formatToolIntent(item.intent) : undefined,
@@ -332,16 +334,18 @@ export function ToolCallDetail({
  */
 export function ToolTrow({
   items,
+  activityObserved = true,
   onOpenLinkedSession,
   onSwitchToBypassAndRetry,
 }: {
   items: ToolActivityItem[];
+  activityObserved?: boolean;
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const segments = toolTrowSegments(items, locale, onSwitchToBypassAndRetry);
+  const segments = toolTrowSegments(items, locale, activityObserved, onSwitchToBypassAndRetry);
 
   // ChatToolCalls owns expandable tool evidence. Linked child sessions are
   // navigation targets instead, so they render through Astryx's compact List:
@@ -352,6 +356,7 @@ export function ToolTrow({
         <ChatToolCalls
           key={segment.key}
           className="maka-tool-activity-card"
+          data-activity-observed={activityObserved}
           data-maka-transcript-boundary="large"
           calls={segment.calls}
         />
@@ -359,6 +364,7 @@ export function ToolTrow({
         <LinkedAgentList
           key={segment.key}
           rows={segment.rows}
+          activityObserved={activityObserved}
           locale={locale}
           onOpenLinkedSession={onOpenLinkedSession}
         />
@@ -394,6 +400,7 @@ type ToolTrowSegment =
 function toolTrowSegments(
   items: ToolActivityItem[],
   locale: UiLocale,
+  activityObserved: boolean,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
@@ -411,6 +418,7 @@ function toolTrowSegments(
     const call = standardToolCall(
       item,
       locale,
+      activityObserved,
       isComputerTool(item) && !computerActionLabelIncludesTarget(item)
         ? computerTarget
         : undefined,
@@ -423,6 +431,7 @@ function toolTrowSegments(
 }
 
 function LinkedAgentList(props: {
+  activityObserved: boolean;
   rows: LinkedAgentRow[];
   locale: UiLocale;
   onOpenLinkedSession?: (sessionId: string) => void;
@@ -444,7 +453,7 @@ function LinkedAgentList(props: {
               <StatusDot
                 variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
                 label={status}
-                isPulsing={row.status === 'running'}
+                isPulsing={props.activityObserved && row.status === 'running'}
               />
             )}
             label={(
@@ -483,6 +492,7 @@ function LinkedAgentList(props: {
 function standardToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
+  activityObserved: boolean,
   inferredTarget?: string,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ChatToolCallItem {
@@ -505,6 +515,7 @@ function standardToolCall(
       <ToolDetailReveal>
         <ToolCallDetail
           item={item}
+          activityObserved={activityObserved}
           onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
         />
       </ToolDetailReveal>
@@ -525,6 +536,7 @@ function collapsedToolTarget(
   locale: UiLocale,
   preferred?: string,
 ): string | undefined {
+  if (workHubControlStatus(item)) return undefined;
   if (item.intent) return formatToolIntent(item.intent);
   const line = preferred ?? formatToolInvocationLine(item, locale);
   if (!line) return undefined;

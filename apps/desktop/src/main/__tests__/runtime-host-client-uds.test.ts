@@ -259,6 +259,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
+      mainWindowController: {
+        showSaveDialog: async () => ({ canceled: true }),
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      },
       attachmentApprovals: createAttachmentApprovalRegistry(),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
@@ -269,7 +273,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         computerUseTools: Object.assign([], {
           clearSession() {},
         }) as unknown as ComputerUseToolSet,
-        releaseComputerUseSession() {},
+        releaseDesktopInteractionSession() {},
       },
       botRegistry: {} as BotRegistry,
       resolveBotCreateTarget: async () => ({
@@ -277,7 +281,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       }),
       resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
-      completeComputerUseTurn() {},
+      completeDesktopInteractionTurn() {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
         rejectCreation: async () => undefined,

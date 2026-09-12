@@ -33,6 +33,7 @@ import {
   type WorkHubDelegationStopResolvedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
 
 test('atomically commits one WorkHub assignment and target admission', async () => {
@@ -82,17 +83,133 @@ test('atomically commits one WorkHub assignment and target admission', async () 
     ]);
     const coordination = await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
     assert.equal(coordination.lastMessageAt, request.assignment.ts);
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [request.admission.messageId],
-      turnId: request.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, request);
     const replayAfterConsumption = await store.assignWorkHubMessage(request);
     assert.equal(replayAfterConsumption.kind, 'existing');
     assert.deepEqual(replayAfterConsumption.assignment, request.assignment);
     assert.deepEqual(await store.readActiveWorkHubAssignmentsByTarget([target.id]), [
       request.assignment,
     ]);
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('atomically binds delegated text and copied attachments while preserving source authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-delegated-content-'));
+  let store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const base = assignmentRequest('delegated-content', target.id, 'Payments', 'target-turn');
+    const sourceAttachment = {
+      kind: 'other' as const,
+      name: 'requirements.txt',
+      mimeType: 'text/plain',
+      bytes: 12,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        relativePath: 'source-file',
+      },
+    };
+    const targetAttachment = {
+      ...sourceAttachment,
+      ref: { kind: 'session_file' as const, sessionId: target.id, relativePath: 'copied-file' },
+    };
+    const content = normalizeMessageContent({
+      text: 'Fix the payment retry state',
+      attachments: [targetAttachment],
+    });
+    const request = {
+      ...base,
+      assignment: {
+        ...base.assignment,
+        userText: 'Continue Payments and explain the result here',
+        delegationText: content.text,
+        attachments: [sourceAttachment],
+        targetAttachments: [targetAttachment],
+      },
+      admission: {
+        ...base.admission,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+      },
+    };
+    const wrongContent = normalizeMessageContent({
+      text: request.assignment.userText,
+      attachments: [targetAttachment],
+    });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        admission: {
+          ...request.admission,
+          content: wrongContent,
+          submittedContentDigest: messageContentDigest(wrongContent),
+        },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, targetAttachments: [sourceAttachment] },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    assert.equal(await store.readWorkHubAssignment(request.assignment.actionId), undefined);
+    assert.equal(
+      await store.readMessageAdmission(target.id, request.admission.messageId),
+      undefined,
+    );
+    assert.equal((await store.assignWorkHubMessage(request)).kind, 'assigned');
+    assert.deepEqual(
+      (await store.readMessageAdmission(target.id, request.admission.messageId))?.content,
+      content,
+    );
+    await store.close?.();
+    store = createSessionStore(root);
+    assert.deepEqual((await store.assignWorkHubMessage(request)).assignment, request.assignment);
+    const changed = normalizeMessageContent({ ...content, text: 'Different delegated work' });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, delegationText: changed.text },
+        admission: {
+          ...request.admission,
+          content: changed,
+          submittedContentDigest: messageContentDigest(changed),
+        },
+      }),
+      /different assignment/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: {
+          ...request.assignment,
+          attachments: [
+            {
+              ...sourceAttachment,
+              ref: { ...sourceAttachment.ref, relativePath: 'another-source' },
+            },
+          ],
+        },
+      }),
+      /different assignment/,
+    );
+    assert.deepEqual(
+      await store.readWorkHubAssignment(request.assignment.actionId),
+      request.assignment,
+    );
   } finally {
     await store.close?.();
     await rm(root, { recursive: true, force: true });
@@ -126,11 +243,7 @@ test('scans every target Message lifecycle once and preserves Coordination order
       assignmentRequest('unrelated-action', unrelated.id, 'Login', 'unrelated-turn'),
     );
     await store.assignWorkHubMessage(middle);
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [middle.admission.messageId],
-      turnId: middle.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, middle);
     await store.assignWorkHubMessage(newest);
     assert.equal(
       await store.claimMessageAdmissionCancellation(
@@ -169,11 +282,7 @@ test('keeps target assignments reachable when their Message lifecycle changes', 
       .sort((left, right) => left.admission.messageId.localeCompare(right.admission.messageId));
     for (const request of requests) await store.assignWorkHubMessage(request);
 
-    await store.markMessagesHandedOff({
-      sessionId: target.id,
-      messageIds: [requests[1]!.admission.messageId],
-      turnId: requests[1]!.admission.turnId,
-    });
+    await handOffToRootTurn(store, root, requests[1]!);
     assert.equal(
       await store.claimMessageAdmissionCancellation(
         target.id,
@@ -720,6 +829,49 @@ async function createCoordinationSession(
 
 function terminalSuffix(delegationId: string): string {
   return createHash('sha256').update(delegationId, 'utf8').digest('hex').slice(0, 48);
+}
+
+/**
+ * Hand a Message off the way a Turn does: the Root admission that consumed it
+ * is what keeps its identity durable once the pending admission is retired.
+ */
+async function handOffToRootTurn(
+  store: ReturnType<typeof createSessionStore>,
+  root: string,
+  request: AssignmentRequest,
+): Promise<void> {
+  const runStore = createSqliteAgentRunStore(root);
+  try {
+    await runStore.admitRootTurn({
+      sessionId: request.admission.sessionId,
+      turnId: request.admission.turnId,
+      proposedRunId: request.admission.runId,
+      proposedUserMessageId: request.admission.messageId,
+      execution: {
+        kind: 'external_message',
+        inputDigest: request.admission.submittedContentDigest,
+      },
+      previousRootTurnId: null,
+      normalizedInput: request.admission.content,
+      sourceMessages: [
+        {
+          messageId: request.admission.messageId,
+          content: request.admission.content,
+          submittedContentDigest: request.admission.submittedContentDigest,
+          placement: request.admission.placement,
+          disposition: request.admission.disposition,
+        },
+      ],
+      admittedAt: request.admission.admittedAt,
+    });
+  } finally {
+    runStore.close?.();
+  }
+  await store.markMessagesHandedOff({
+    sessionId: request.admission.sessionId,
+    messageIds: [request.admission.messageId],
+    turnId: request.admission.turnId,
+  });
 }
 
 type AssignmentRequest = ReturnType<typeof assignmentRequest>;

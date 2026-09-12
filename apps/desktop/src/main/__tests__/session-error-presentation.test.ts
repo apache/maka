@@ -21,21 +21,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { describeSessionErrorReason } from '../../renderer/session-error-presentation.js';
-import { sessionEventErrorMessage } from '../../renderer/model-connection-errors.js';
 import { describeTurnErrorClass } from '../../renderer/session-status-presentation.js';
 
 describe('provider capacity presentation', () => {
   it('uses capacity-specific copy instead of the unknown error fallback', () => {
     assert.match(describeSessionErrorReason('provider_capacity', 'zh-CN') ?? '', /满载/);
     assert.match(describeSessionErrorReason('provider_capacity', 'en') ?? '', /at capacity/);
-    assert.match(describeTurnErrorClass('provider_capacity', 'zh-CN'), /满载/);
-    assert.match(describeTurnErrorClass('provider_capacity', 'en'), /at capacity/);
-  });
-
-  it('does not recommend an immediate direct retry', () => {
-    const label = describeTurnErrorClass('provider_capacity', 'zh-CN');
-    assert.match(label, /等几分钟|换一个模型/);
-    assert.doesNotMatch(label, /直接重试/);
+    assert.equal(describeTurnErrorClass('provider_capacity', 'zh-CN'), '模型服务暂时满载。');
+    assert.equal(describeTurnErrorClass('provider_capacity', 'en'), 'The model service is temporarily at capacity.');
   });
 });
-

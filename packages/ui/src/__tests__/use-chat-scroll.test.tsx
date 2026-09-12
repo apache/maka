@@ -29,6 +29,7 @@ import {
   type TranscriptScrollAuthority,
 } from '../transcript-scroll-authority.js';
 import { useChatScroll } from '../use-chat-scroll.js';
+import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
@@ -40,12 +41,22 @@ const originalGlobals = {
   Node: globalThis.Node,
   ResizeObserver: globalThis.ResizeObserver,
   window: globalThis.window,
+  requestAnimationFrame: globalThis.requestAnimationFrame,
 };
 const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 }).IS_REACT_ACT_ENVIRONMENT;
 
 let mountedRoot: ReturnType<typeof createRoot> | undefined;
+
+function wheel(target: HTMLElement, deltaY: number): void {
+  const event = new window.Event('wheel', { bubbles: true });
+  Object.defineProperties(event, {
+    deltaY: { value: deltaY },
+    composedPath: { value: () => [target] },
+  });
+  target.dispatchEvent(event);
+}
 
 afterEach(async () => {
   if (mountedRoot) await act(() => mountedRoot?.unmount());
@@ -56,96 +67,514 @@ afterEach(async () => {
   });
 });
 
-test('pages only toward reader input, including wheels at a bounded edge', async () => {
-  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
-  const scroller = document.querySelector<HTMLElement>('#scroller')!;
-  let scrollTop = 0;
-  Object.defineProperties(scroller, {
-    clientHeight: { value: 600 },
-    scrollHeight: { value: 2400 },
-    scrollTop: {
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = Math.max(0, Math.min(value, 1800)); },
-    },
-  });
-  scroller.getBoundingClientRect = () => ({ top: 0, bottom: 600 } as DOMRect);
-  for (let index = 0; index < 4; index++) {
-    const turn = document.createElement('article');
-    turn.dataset.turnId = `turn-${index}`;
-    turn.getBoundingClientRect = () => ({
-      top: index * 600 - scrollTop, bottom: (index + 1) * 600 - scrollTop,
-    } as DOMRect);
-    scroller.append(turn);
+/**
+ * Installs the globals the scroll hook reads onto the LinkeDOM window, either
+ * queueing rAF frames for explicit flushes or running them inline.
+ */
+const installScrollTestEnvironment = (
+  document: Document,
+  window: ReturnType<typeof parseHTML>['window'],
+  { queueFrames = true }: { queueFrames?: boolean } = {},
+): {
+  frames: Map<number, FrameRequestCallback>;
+  resizeCallbacks: ResizeObserverCallback[];
+  /** Delivers a resize to whoever is observing `target` at this moment. */
+  deliverResizeOf: (target: unknown) => void;
+} => {
+  let frameId = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const resizeCallbacks: ResizeObserverCallback[] = [];
+  const observers: TestResizeObserver[] = [];
+  class TestResizeObserver {
+    readonly targets = new Set<unknown>();
+    constructor(readonly callback: ResizeObserverCallback) {
+      resizeCallbacks.push(callback);
+      observers.push(this);
+    }
+    disconnect() { this.targets.clear(); }
+    observe(target: unknown) { this.targets.add(target); }
+    unobserve(target: unknown) { this.targets.delete(target); }
   }
-  class Observer { disconnect() {} observe() {} }
+  class TestMutationObserver {
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+    takeRecords(): MutationRecord[] { return []; }
+  }
+  Object.assign(window, {
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    requestAnimationFrame: queueFrames
+      ? (callback: FrameRequestCallback) => {
+          const id = ++frameId;
+          frames.set(id, callback);
+          return id;
+        }
+      : (callback: FrameRequestCallback) => {
+          callback(0);
+          return 0;
+        },
+  });
   Object.assign(globalThis, {
-    document, window, HTMLElement: window.HTMLElement, Element: window.Element,
-    MutationObserver: Observer, ResizeObserver: Observer,
-    getComputedStyle: () => ({ overflowY: 'auto' }),
+    CSS: { escape: (value: string) => value },
+    document,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    getComputedStyle: () => ({ overflowY: 'visible' }),
+    MutationObserver: TestMutationObserver,
+    Node: window.Node,
+    ResizeObserver: TestResizeObserver,
+    window,
+    requestAnimationFrame: window.requestAnimationFrame,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
-  const calls: Array<{ direction: string; anchor?: string }> = [];
-  let authority!: TranscriptScrollAuthority;
-  function Harness({ more }: { more: boolean }) {
-    const scrollRef = useRef(scroller);
-    authority = useTranscriptScrollAuthority();
+  return {
+    frames,
+    resizeCallbacks,
+    deliverResizeOf: (target: unknown): void => {
+      for (const observer of [...observers]) {
+        if (observer.targets.has(target)) observer.callback([], observer as unknown as ResizeObserver);
+      }
+    },
+  };
+};
+
+function boxOf(top: number, bottom: number): DOMRect {
+  return {
+    top,
+    bottom,
+    height: bottom - top,
+    left: 0,
+    right: 800,
+    width: 800,
+    x: 0,
+    y: top,
+    toJSON: () => undefined,
+  } as DOMRect;
+}
+
+/**
+ * A scroller of `turnCount` equal Turns whose geometry the test drives. Turn
+ * boxes are derived from the current offset, so a scroll moves every box the
+ * way a real one does.
+ */
+function createTranscript(
+  document: Document,
+  window: ReturnType<typeof parseHTML>['window'],
+  options: { clientHeight: number; turnHeight: number; turnCount: number },
+) {
+  const scroller = document.querySelector<HTMLElement>('#scroller');
+  assert.ok(scroller);
+  let scrollTop = 0;
+  let turnCount = options.turnCount;
+  let clientHeight = options.clientHeight;
+  const contentHeight = (): number =>
+    Math.max(clientHeight, turnCount * options.turnHeight);
+  Object.defineProperties(scroller, {
+    clientHeight: { get: () => clientHeight },
+    scrollHeight: { get: () => contentHeight() },
+    scrollTop: {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, contentHeight() - clientHeight));
+      },
+    },
+  });
+  scroller.getBoundingClientRect = () => boxOf(0, clientHeight);
+  const install = (): void => {
+    scroller.replaceChildren();
+    for (let index = 0; index < turnCount; index += 1) {
+      const turn = document.createElement('article');
+      turn.dataset.turnId = `turn-${index}`;
+      const start = index * options.turnHeight;
+      turn.getBoundingClientRect = () =>
+        boxOf(start - scrollTop, start + options.turnHeight - scrollTop);
+      turn.scrollIntoView = () => { scroller.scrollTop = start; };
+      scroller.append(turn);
+    }
+  };
+  install();
+  return {
+    scroller,
+    get scrollTop(): number { return scrollTop; },
+    /** The viewport alone changes; a real one re-clamps its offset too. */
+    setClientHeight(next: number): void {
+      clientHeight = next;
+      scroller.scrollTop = scrollTop;
+    },
+    setTurnCount(next: number): void {
+      turnCount = next;
+      install();
+      // A real scroller clamps its offset the moment its content shrinks.
+      scroller.scrollTop = scrollTop;
+    },
+    /** A reader gesture and the scroll it produces, in that order. */
+    readerScrollTo(top: number): void {
+      const delta = top - scrollTop;
+      if (delta === 0) return;
+      wheel(scroller, delta);
+      scroller.scrollTop = top;
+      scroller.dispatchEvent(new window.Event('scroll'));
+    },
+  };
+}
+
+test('history loads follow the reader band, in both directions, once per direction', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 4,
+  });
+
+  const calls: string[] = [];
+  const resolvers: Array<() => void> = [];
+  const load = (direction: string) => (): Promise<boolean> => {
+    calls.push(direction);
+    return new Promise<boolean>((resolve) => resolvers.push(() => resolve(true)));
+  };
+  let history = { older: true, newer: true };
+  function Harness({ older, newer }: { older: boolean; newer: boolean }) {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
     useChatScroll({
-      scrollRef, sessionId: 'guest', messages: [], behavior: 'auto',
-      hasOlderHistory: more, hasNewerHistory: more,
-      onLoadEarlierHistory: (anchor) => { calls.push({ direction: 'up', anchor }); },
-      onLoadLaterHistory: (anchor) => { calls.push({ direction: 'down', anchor }); },
+      scrollRef,
+      sessionId: 'session-band',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: older,
+      hasNewerHistory: newer,
+      onPrefetchHistory: (edge) => load(edge === 'older' ? 'up' : 'down')(),
     });
     return null;
   }
   mountedRoot = createRoot(document.querySelector('#mount')!);
-  const render = async (more: boolean) => act(() => mountedRoot!.render(
-    <TranscriptScrollAuthorityProvider><Harness more={more} /></TranscriptScrollAuthorityProvider>,
+  const render = async (): Promise<void> => act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider>
+      <Harness older={history.older} newer={history.newer} />
+    </TranscriptScrollAuthorityProvider>,
   ));
-  await render(true);
-  assert.deepEqual(calls, [], 'mounting at a partial tail is not a request');
-  scroller.scrollTop = 900;
-  scroller.dispatchEvent(new window.Event('scroll'));
-  scroller.scrollTop = 1000;
-  scroller.dispatchEvent(new window.Event('scroll'));
-  assert.deepEqual(calls, [
-    { direction: 'up', anchor: 'turn-1' },
-    { direction: 'down', anchor: 'turn-2' },
-  ], 'overlapping edge bands must not reverse the requested direction');
 
-  scroller.scrollTop = 1800;
-  scroller.dispatchEvent(new window.Event('scroll'));
-  assert.equal(authority.getSnapshot().pinned, false, 'a partial tail must not follow a page fill');
-  const wheel = (target: HTMLElement, deltaY: number) => {
-    const event = new window.Event('wheel', { bubbles: true });
-    Object.defineProperty(event, 'deltaY', { value: deltaY });
-    target.dispatchEvent(event);
-  };
+  await render();
+  // Opened at the tail: nothing lies below, so the newer edge is inside the
+  // band even though the reader never moved.
+  assert.equal(transcript.scrollTop, 1_800);
+  assert.deepEqual(calls, ['down']);
+
   calls.length = 0;
-  wheel(scroller, 100);
-  assert.deepEqual(calls, [{ direction: 'down', anchor: 'turn-3' }]);
+  transcript.readerScrollTo(900);
+  // 900px above and 900px below, both inside two screens. The downward fetch
+  // is already in flight, so only the older edge is asked.
+  assert.deepEqual(calls, ['up']);
+  transcript.readerScrollTo(800);
+  assert.deepEqual(calls, ['up'], 'a direction with a request in flight is not asked again');
 
-  const nested = document.createElement('div');
-  Object.defineProperties(nested, {
-    clientHeight: { value: 100 }, scrollHeight: { value: 500 }, scrollTop: { value: 100 },
+  // Both pages land, and the edges they established close the transcript.
+  history = { older: false, newer: false };
+  await render();
+  await act(async () => {
+    for (const resolve of resolvers.splice(0)) resolve();
   });
-  scroller.append(nested);
   calls.length = 0;
-  wheel(nested, 100);
-  assert.deepEqual(calls, [], 'scrolling a nested tool output must not page the transcript');
+  transcript.readerScrollTo(200);
+  assert.deepEqual(calls, [], 'no request beyond an authoritative history edge');
 
-  scroller.scrollTop = 0;
-  scroller.dispatchEvent(new window.Event('scroll'));
-  calls.length = 0;
-  wheel(scroller, -100);
-  assert.deepEqual(calls, [{ direction: 'up', anchor: 'turn-0' }]);
-  assert.equal(scroller.scrollTop, 1, 'keep native anchoring enabled at the start');
-  await render(false);
-  calls.length = 0;
-  wheel(scroller, -100);
-  scroller.scrollTop = 1800;
-  scroller.dispatchEvent(new window.Event('scroll'));
-  wheel(scroller, 100);
-  assert.deepEqual(calls, [], 'do not request beyond authoritative history edges');
+  // Only the tail is open now: the reader moving up still asks for it,
+  // because what decides is the band, not the direction of the gesture.
+  history = { older: false, newer: true };
+  await render();
+  transcript.readerScrollTo(1_000);
+  assert.deepEqual(calls, ['down']);
+});
+
+test('a failed fill is not reissued until the reader moves again', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-failing',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests += 1;
+        return Promise.reject(new Error('the range read failed'));
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  await act(async () => { transcript.readerScrollTo(0); });
+  // A failed read leaves the geometry and the history flags exactly as they
+  // were, so re-checking on its own would ask again forever.
+  assert.equal(requests, 1);
+  await act(async () => {});
+  assert.equal(requests, 1);
+});
+
+test('a fill that issued no read is not chained into another one', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-idle',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      // The first read issued; the window it answered is then the window the
+      // next ask is made against, so the range refuses to read it again.
+      onPrefetchHistory: () => Promise.resolve(++requests === 1),
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  await act(async () => { transcript.readerScrollTo(0); });
+
+  assert.equal(requests, 2, 'the landed read chains one re-check, whose refusal ends it');
+});
+
+test('an older request at offset zero restores the browser anchoring the reader depends on', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-top',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests += 1;
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+  assert.equal(requests, 0, 'the tail of a deep transcript is nowhere near the older edge');
+
+  transcript.readerScrollTo(0);
+  assert.equal(requests, 1);
+  assert.equal(transcript.scrollTop, 1, 'keep native anchoring enabled at the start');
+});
+
+test('a transcript change re-reads the band while the reader stays at the tail', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness({ messages }: { messages: readonly StoredMessage[] }) {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-tail',
+      messages,
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests += 1;
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  const render = async (messages: readonly StoredMessage[]): Promise<void> =>
+    act(() => mountedRoot?.render(
+      <TranscriptScrollAuthorityProvider><Harness messages={messages} /></TranscriptScrollAuthorityProvider>,
+    ));
+
+  await render([{ id: 'message-1' }] as StoredMessage[]);
+  assert.equal(requests, 0);
+  assert.equal(transcript.scrollTop, 4_200);
+
+  // A trim leaves the reader pinned at a tail with barely a screen above it.
+  // Nobody scrolled, so only the transcript itself can report the band.
+  transcript.setTurnCount(2);
+  transcript.scroller.scrollTop = transcript.scroller.scrollHeight;
+  await render([{ id: 'message-2' }] as StoredMessage[]);
+  assert.equal(requests, 1);
+});
+
+test('the retained window is the band around the reader, and an unmounted bookmark cannot freeze it', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 20,
+  });
+
+  const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
+  function Harness({
+    messages,
+    unavailable,
+  }: { messages: readonly StoredMessage[]; unavailable: boolean }) {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-window',
+      messages,
+      restoreTarget: { turnId: 'turn-never-mounted', unavailable },
+      behavior: 'auto',
+      onRetainWindow: (value) => { retained.push(value); },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  const render = async (
+    messages: readonly StoredMessage[],
+    unavailable: boolean,
+  ): Promise<void> => act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider>
+      <Harness messages={messages} unavailable={unavailable} />
+    </TranscriptScrollAuthorityProvider>,
+  ));
+
+  // A bookmark whose Turn is not mounted cannot be trimmed away, so waiting
+  // for it would only let the window grow without a bound. The window is four
+  // screens of Turns around a scrollport 20 screens deep.
+  await render([{ id: 'message-1' }] as StoredMessage[], false);
+  assert.equal(transcript.scrollTop, 11_400);
+  assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-14', lastTurnId: 'turn-19' });
+
+  retained.length = 0;
+  await render([{ id: 'message-2' }] as StoredMessage[], true);
+  assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-14', lastTurnId: 'turn-19' });
+
+  retained.length = 0;
+  transcript.readerScrollTo(6_000);
+  assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-5', lastTurnId: 'turn-15' });
+
+  // Six screens is the threshold: with less than that beyond the scrollport in
+  // both directions there is nothing worth dropping.
+  transcript.setTurnCount(8);
+  transcript.readerScrollTo(2_000);
+  retained.length = 0;
+  transcript.readerScrollTo(2_100);
+  assert.deepEqual(retained, []);
+});
+
+test('a viewport that grows fills the band it just widened, without a reader gesture', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const { deliverResizeOf } = installScrollTestEnvironment(document, window, {
+    queueFrames: false,
+  });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 400, turnHeight: 600, turnCount: 10,
+  });
+
+  const edges: string[] = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-grow',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: (edge) => {
+        edges.push(edge);
+        return new Promise<boolean>(() => undefined);
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  transcript.readerScrollTo(1_000);
+  assert.deepEqual(edges, [], '1000px above is outside two 400px screens');
+
+  transcript.setClientHeight(800);
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(edges, ['older'], 'the same 1000px is inside two 800px screens');
+
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(edges, ['older'], 'the in-flight guard still holds across resizes');
+});
+
+test('a viewport that shrinks trims what it just pushed beyond the band', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const { deliverResizeOf } = installScrollTestEnvironment(document, window, {
+    queueFrames: false,
+  });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 1_000, turnHeight: 600, turnCount: 18,
+  });
+
+  const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-shrink',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      onRetainWindow: (value) => { retained.push(value); },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  transcript.readerScrollTo(4_000);
+  retained.length = 0;
+  transcript.readerScrollTo(4_100);
+  assert.deepEqual(retained, [], 'nothing lies six 1000px screens away');
+
+  transcript.setClientHeight(400);
+  await act(async () => { deliverResizeOf(transcript.scroller); });
+  assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-4', lastTurnId: 'turn-10' });
 });
 
 test('a session switch restores a Turn anchor after async fill and preserves tail intent', async () => {
@@ -160,9 +589,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   let scrollHeight = 600;
   let scrollTop = 0;
   let dispatchCommandScroll = true;
-  let frameId = 0;
-  const frames = new Map<number, FrameRequestCallback>();
-  const resizeCallbacks: ResizeObserverCallback[] = [];
   Object.defineProperties(scroller, {
     clientHeight: { value: 600 },
     scrollHeight: { get: () => scrollHeight },
@@ -173,50 +599,9 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       },
     },
   });
-  scroller.getBoundingClientRect = () => ({
-    bottom: 600,
-    height: 600,
-    left: 0,
-    right: 800,
-    top: 0,
-    width: 800,
-    x: 0,
-    y: 0,
-    toJSON: () => undefined,
-  });
+  scroller.getBoundingClientRect = () => boxOf(0, 600);
 
-  class TestResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      resizeCallbacks.push(callback);
-    }
-    disconnect() {}
-    observe() {}
-    unobserve() {}
-  }
-  class TestMutationObserver {
-    disconnect() {}
-    observe() {}
-    takeRecords(): MutationRecord[] { return []; }
-  }
-  Object.assign(window, {
-    cancelAnimationFrame: (id: number) => frames.delete(id),
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      const id = ++frameId;
-      frames.set(id, callback);
-      return id;
-    },
-  });
-  Object.assign(globalThis, {
-    CSS: { escape: (value: string) => value },
-    document,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    MutationObserver: TestMutationObserver,
-    Node: window.Node,
-    ResizeObserver: TestResizeObserver,
-    window,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
+  const { frames, resizeCallbacks } = installScrollTestEnvironment(document, window);
 
   const installTranscript = (
     height: number,
@@ -227,17 +612,8 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
     for (const turn of turns) {
       const element = document.createElement('article');
       element.dataset.turnId = turn.id;
-      element.getBoundingClientRect = () => ({
-        bottom: turn.start + turn.height - scrollTop,
-        height: turn.height,
-        left: 0,
-        right: 800,
-        top: turn.start - scrollTop,
-        width: 800,
-        x: 0,
-        y: turn.start - scrollTop,
-        toJSON: () => undefined,
-      });
+      element.getBoundingClientRect = () =>
+        boxOf(turn.start - scrollTop, turn.start + turn.height - scrollTop);
       element.scrollIntoView = (options?: boolean | ScrollIntoViewOptions) => {
         const block = typeof options === 'object' ? options.block : undefined;
         scroller.scrollTop = block === 'center'
@@ -266,6 +642,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
 
   const anchors = new Map<string, string>();
   const handledTargets: number[] = [];
+  const viewportNavigation = createTranscriptViewportNavigation();
   const unavailableRestores = new Map<string, string>();
   let authority: TranscriptScrollAuthority | undefined;
   let messageRevision = 0;
@@ -285,6 +662,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       target,
       restoreTarget,
       onTargetHandled: (nonce) => handledTargets.push(nonce),
+      viewportNavigation,
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
         if (turnId) anchors.set(sessionId, turnId);
@@ -313,6 +691,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await renderSession('session-a');
   assert.equal(scroller.scrollTop, 2_400);
 
+  wheel(scroller, -100);
   scroller.scrollTop = 900;
   scroller.dispatchEvent(new window.Event('scroll'));
   assert.equal(anchors.get('session-a'), 'turn-a-2');
@@ -400,4 +779,90 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await flushFrames();
   assert.equal(authority?.getSnapshot().pinned, true);
   assert.equal(anchors.has('session-b'), false);
+
+  // A send/return-to-latest clears a pending bookmark. Its old frame must not
+  // scroll to the historical Turn if that Turn arrives in a later batch.
+  anchors.set('session-a', 'turn-a-2');
+  collapseTranscript();
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false);
+  anchors.delete('session-a');
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false, 'clearing a bookmark is not a viewport command');
+  await act(() => viewportNavigation.followLatest('session-a'));
+  installTranscript(3_000, [
+    { id: 'turn-a-2', start: 0, height: 800 },
+    { id: 'turn-a-latest', start: 800, height: 2_200 },
+  ]);
+  await renderSession('session-a');
+  deliverResize();
+  await flushFrames();
+  assert.equal(authority?.getSnapshot().pinned, true);
+  assert.equal(scroller.scrollTop, 2_400);
+  assert.equal(anchors.has('session-a'), false);
+
+  wheel(scroller, -100);
+  scroller.scrollTop = 1_000;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(anchors.get('session-a'), 'turn-a-latest');
+  scroller.dispatchEvent(new window.Event('scrollend'));
+  installTranscript(800, [{ id: 'geometry-resident', start: 0, height: 800 }]);
+  scroller.scrollTop = scroller.scrollTop;
+  await renderSession('session-a');
+  deliverResize();
+  assert.equal(authority?.getSnapshot().pinned, false);
+  assert.equal(authority?.getSnapshot().awayFromTail, false);
+  assert.equal(anchors.get('session-a'), 'turn-a-latest', 'range geometry does not report a new reading intent');
+});
+
+test('a target lands on the render that mounts its Turn, whatever moved the range', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const { frames } = installScrollTestEnvironment(document, window);
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 3,
+  });
+
+  // The Renderer owns the window now: a jump to an unloaded Turn changes the
+  // resident range without touching the message list the shell passes down.
+  const messages = [{ id: 'message-1' }] as StoredMessage[];
+  const handledTargets: number[] = [];
+  let highlighted: string | null = null;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    const result = useChatScroll({
+      scrollRef,
+      sessionId: 'session-jump',
+      messages,
+      target: { turnId: 'turn-5', nonce: 7 },
+      onTargetHandled: (nonce) => handledTargets.push(nonce),
+      behavior: 'auto',
+    });
+    highlighted = result.highlightedTurnId;
+    return null;
+  }
+  const render = async (): Promise<void> => act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+  const flushFrames = async (): Promise<void> => {
+    await act(() => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+    });
+  };
+
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await render();
+  await flushFrames();
+  assert.equal(highlighted, null, 'a Turn that is not mounted cannot be revealed yet');
+  assert.deepEqual(handledTargets, []);
+
+  transcript.setTurnCount(8);
+  await render();
+  await flushFrames();
+  assert.equal(highlighted, 'turn-5');
+  assert.deepEqual(handledTargets, [7]);
+  assert.equal(transcript.scrollTop, 3_000, 'the reveal puts the Turn at the top edge');
 });

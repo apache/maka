@@ -91,6 +91,7 @@ describe('streaming display redaction', () => {
       `Authorization:${' '.repeat(2_048)}Bearer arbitrary-secret-value tail`,
       'Authorization:\n\nBearer newline-secret-value tail',
       'x-api-key\n:\nnewline-api-key-value tail',
+      'https://alice:hunter2@internal.example.com/repo.git tail',
     ];
     for (const input of cases) {
       for (const sizes of [[1], [3], [7], [20], [64], [1, 31, 2, 127, 5]]) {

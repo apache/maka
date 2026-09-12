@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, test, expect } from './fixtures';
+import { awaitSendReady, COMPOSER_INPUT, test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,6 +25,7 @@ import { join } from 'node:path';
 async function openGitChanges(page: Page) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create review session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: create review session/)).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
@@ -36,6 +37,7 @@ async function openGitChanges(page: Page) {
 async function createSession(page: Page, prompt: string) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(prompt);
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
@@ -51,22 +53,6 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
-test('the composer usage action opens Task trace in the right workbar', async ({
-  accessibilityNarrativeWindow: page,
-}) => {
-  const action = page.getByRole('button', { name: '打开用量追踪' });
-  await expect(action).toBeVisible();
-
-  await action.click();
-
-  const rightPanel = page.locator(
-    '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
-  );
-  await expect(
-    rightPanel.locator('[data-maka-contract="session-inspector"]'),
-  ).toBeVisible();
-});
-
 test('right workbar visibility belongs to each Session and survives reload', async ({
   window: page,
 }) => {
@@ -77,8 +63,10 @@ test('right workbar visibility belongs to each Session and survives reload', asy
     .getByRole('list', { name: '打开工具' })
     .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '追踪', exact: true }).click();
+  await page.getByRole('button', { name: '打开用量追踪' }).click();
+  await expect(page.locator(
+    '.maka-session-workbar-panel[data-overlay][data-placement="right"] [data-maka-contract="session-inspector"]',
+  )).toBeVisible();
   await expect(panel).toBeVisible();
   await first.sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   const second = await createSession(page, 'second workbar owner');
@@ -219,6 +207,7 @@ test('Terminal ownership follows the active Session and stops the old resource',
     .not.toBe('running');
 
   await composer.fill('create replacement session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: create replacement session')).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();

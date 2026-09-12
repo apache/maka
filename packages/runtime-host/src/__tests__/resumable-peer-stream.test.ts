@@ -23,6 +23,7 @@ import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test';
 import { connect, createServer, type Socket } from 'node:net';
 import { once } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import { createRuntimeHostPeerListener } from '../server/peer-listener.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
 import { LOCAL_OWNER_CONNECTION_AUTHORITY } from '../server/connection-authority.js';
@@ -468,6 +469,19 @@ test('close has a hard deadline even when a healthy peer never drains its receiv
 test('failed proactive upgrade preserves transit; a later direct attachment keeps the logical stream', {
   timeout: 13_000,
 }, async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const advance = async (milliseconds: number): Promise<void> => {
+    const target = now + milliseconds;
+    while (now < target) {
+      const step = Math.min(250, target - now);
+      now += step;
+      t.mock.timers.tick(step);
+      // Flush real duplex I/O between heartbeats instead of simulating a blackhole.
+      await tick();
+    }
+  };
   let right!: ResumablePeerStream;
   let upgrades = 0;
   const left = new ResumablePeerStream({
@@ -515,10 +529,16 @@ test('failed proactive upgrade preserves transit; a later direct attachment keep
   });
   await left.write(Buffer.from('before-upgrade'));
   assert.deepEqual(await right.read(), Buffer.from('before-upgrade'));
+  await advance(4_999);
+  assert.equal(upgrades, 0);
+  await advance(1);
   assert.deepEqual(await left.read(), Buffer.from('rejected-upgrade-retains-old'));
   assert.equal(left.path?.kind, 'transit');
   await left.write(Buffer.from('old-path-still-live'));
   assert.deepEqual(await right.read(), Buffer.from('old-path-still-live'));
+  await advance(4_999);
+  assert.equal(upgrades, 1);
+  await advance(1);
   assert.deepEqual(await left.read(), Buffer.from('during-path-change'));
   assert.equal(left.path?.kind, 'direct');
   assert.equal(upgrades, 2);

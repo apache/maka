@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog } from '@maka/core/ui-locale';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,6 +32,7 @@ import type {
   Rectangle,
 } from 'electron';
 import { resolveOverlayAssetDir } from './overlay-assets.js';
+import { focusWindow, type WindowRevealMode } from './window-reveal.js';
 
 const RESPONSE_URL_PREFIX = 'maka-dialog://response/';
 const DIALOG_WIDTH = 520;
@@ -42,10 +44,16 @@ const DIALOG_DESIGN_TOKENS_FILE = 'browser-dialog-design-tokens.css';
 let cachedDialogDesignTokens: string | undefined;
 let activeBrowserMessageBoxPresentations = 0;
 
-export interface BrowserMessageBoxAppearance {
+/** Everything the rendered dialog document needs; nothing about revealing it. */
+export interface BrowserMessageBoxTheme {
   readonly locale: UiLocale;
   readonly palette?: ThemePalette;
   readonly dark?: boolean;
+}
+
+export interface BrowserMessageBoxAppearance extends BrowserMessageBoxTheme {
+  /** How far this run may go when the dialog asks to be seen. */
+  readonly revealMode: WindowRevealMode;
 }
 
 export interface BrowserMessageBoxRuntime {
@@ -222,9 +230,11 @@ async function presentBrowserMessageBox(
             true,
           );
           if (settled || win.isDestroyed()) return;
-          win.show();
-          win.focus();
+          focusWindow(win, appearance.revealMode);
           clearPresentationTimeout();
+          // A run that may not reveal the dialog has nobody to answer it.
+          // Settle it as a cancel rather than leave the caller pending forever.
+          if (appearance.revealMode === 'hidden') finish(presentation.cancelId);
         })
         .catch(fail);
     });
@@ -248,7 +258,7 @@ interface BrowserMessageBoxPresentation {
 
 function normalizeBrowserMessageBoxPresentation(
   options: MessageBoxOptions,
-  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
+  appearance: BrowserMessageBoxTheme & { readonly dark: boolean },
 ): BrowserMessageBoxPresentation {
   const buttons = options.buttons?.length ? [...options.buttons] : ['OK'];
   const cancelId = validButtonId(options.cancelId, buttons.length) ? options.cancelId : 0;
@@ -339,7 +349,7 @@ export function parseBrowserMessageBoxResponse(
 
 export function buildBrowserMessageBoxHtml(
   options: MessageBoxOptions,
-  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
+  appearance: BrowserMessageBoxTheme & { readonly dark: boolean },
 ): string {
   return renderBrowserMessageBoxHtml(
     normalizeBrowserMessageBoxPresentation(options, appearance),
@@ -348,7 +358,7 @@ export function buildBrowserMessageBoxHtml(
 
 function renderBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
   const nonce = randomUUID().replaceAll('-', '');
-  const closeLabel = input.locale === 'zh-CN' ? '关闭' : input.locale === 'zh-TW' ? '關閉' : 'Close';
+  const closeLabel = CLOSE_LABEL[input.locale];
   const closeButton = `<button class="window-close" type="button" data-response="${input.cancelId}" aria-label="${closeLabel}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
   </button>`;
@@ -638,3 +648,5 @@ function escapeHtml(value: string): string {
     return entities[character] ?? character;
   });
 }
+
+const CLOSE_LABEL = { 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close' } satisfies UiCatalog<string>;

@@ -75,8 +75,6 @@ export interface SessionTranscriptPage {
 
 export interface SessionTranscriptBootstrap {
   readonly throughSequence: number | null;
-  /** Whether every durable sequence is present or policy projection may leave gaps. */
-  readonly durableCoverage: 'complete' | 'projected';
   readonly overlayMessageCount: number;
   readonly durable: SessionTranscriptPage;
   readonly overlay: SessionTranscriptPage;
@@ -194,7 +192,6 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
   const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
     'throughSequence',
-    'durableCoverage',
     'overlayMessageCount',
     'durable',
     'overlay',
@@ -203,9 +200,6 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
     bootstrap.throughSequence === null
       ? null
       : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
-  if (bootstrap.durableCoverage !== 'complete' && bootstrap.durableCoverage !== 'projected') {
-    throw invalidProtocolFrame('Invalid Session transcript durable coverage');
-  }
   const overlayMessageCount = requireCount(
     bootstrap.overlayMessageCount,
     'Session transcript overlay message count',
@@ -230,7 +224,6 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
   }
   return {
     throughSequence,
-    durableCoverage: bootstrap.durableCoverage,
     overlayMessageCount,
     durable,
     overlay,
@@ -275,10 +268,8 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
   const rawBytes = requireCount(result.rawBytes, 'Session transcript page bytes');
   if (
     rawBytes > SESSION_TRANSCRIPT_PAGE_MAX_BYTES ||
-    fragments.reduce(
-      (total, fragment) => total + Buffer.from(fragment.data, 'base64').byteLength,
-      0,
-    ) !== rawBytes
+    fragments.reduce((total, fragment) => total + Buffer.byteLength(fragment.data, 'base64'), 0) !==
+      rawBytes
   ) {
     throw invalidProtocolFrame('Invalid Session transcript page byte count');
   }
@@ -367,7 +358,7 @@ function decodeSessionTranscriptFragment(
   const byteOffset = requireCount(exact.byteOffset, 'Session transcript fragment byte offset');
   const totalBytes = requireCount(exact.totalBytes, 'Session transcript fragment total bytes');
   const data = requireBase64Fragment(exact.data);
-  const dataBytes = Buffer.from(data, 'base64').byteLength;
+  const dataBytes = Buffer.byteLength(data, 'base64');
   if (
     totalBytes === 0 ||
     dataBytes === 0 ||

@@ -26,11 +26,15 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import { DEFAULT_MAX_ITERATIONS, type GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
-import type {
-  GoalProjection,
-  SessionDomainChange,
+import type { PlanSessionState } from '@maka/core/plan';
+import {
+  type GoalProjection,
+  type OperationOutput,
+  type PlanControlErrorCode,
+  type SessionDomainChange,
 } from '@maka/runtime-host/protocol';
-import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
+import { type AgentGraphEpochDirectory, RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import {
@@ -189,21 +193,29 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   ipcMain.handle(
     'plan-mode:requestRevision',
-    async (_event, sessionId: unknown, proposalId: unknown) => {
+    async (_event, sessionId: unknown, proposalId: unknown): Promise<PlanControlIpcResult<PlanSessionState>> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.client.controlPlan({
-        kind: 'request_revision',
-        sessionId: normalizedSessionId,
-        proposalId: requiredId(proposalId, 'Plan proposal'),
-        operationId: newId(),
-      });
+      try {
+        await deps.client.controlPlan({
+          kind: 'request_revision',
+          sessionId: normalizedSessionId,
+          proposalId: requiredId(proposalId, 'Plan proposal'),
+          operationId: newId(),
+        });
+      } catch (error) {
+        const failure = planControlIpcFailure(error);
+        if (failure) return failure;
+        throw error;
+      }
       deps.emitModeChanged(normalizedSessionId);
-      return deps.client.getPlanState(normalizedSessionId);
+      return { ok: true, value: await deps.client.getPlanState(normalizedSessionId) };
     },
   );
   ipcMain.handle(
     'plan-mode:abandon',
-    async (_event, sessionId: unknown, proposalId: unknown) => {
+    // The app-shell exit path is the only caller and is token-frozen, so this
+    // channel keeps its throwing shape: an envelope here would reach no reader.
+    async (_event, sessionId: unknown, proposalId: unknown): Promise<PlanSessionState> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
       await deps.client.controlPlan({
         kind: 'abandon_proposal',
@@ -217,58 +229,79 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   ipcMain.handle(
     'plan-mode:approve',
-    async (_event, sessionId: unknown, value: unknown) => {
+    async (_event, sessionId: unknown, value: unknown): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
       const input = planApprovalInput(value);
-      const result = await deps.client.startPlanTurn({
-        kind: 'approve_proposal',
-        sessionId: normalizedSessionId,
-        proposalId: input.proposalId,
-        expectedRevision: input.expectedRevision,
-        expectedStoreVersion: input.expectedStoreVersion,
-        turnId: input.turnId,
-      });
-      if (result.plan.executionId === null) {
+      const result = await deps.client
+        .startPlanTurn({
+          kind: 'approve_proposal',
+          sessionId: normalizedSessionId,
+          proposalId: input.proposalId,
+          expectedRevision: input.expectedRevision,
+          expectedStoreVersion: input.expectedStoreVersion,
+          turnId: input.turnId,
+        })
+        .then(
+          (output): PlanControlIpcResult<OperationOutput<'plan.turn.start'>> => ({
+            ok: true,
+            value: output,
+          }),
+          (error: unknown) => planControlIpcFailure(error) ?? Promise.reject(error),
+        );
+      if (!result.ok) return result;
+      if (result.value.plan.executionId === null) {
         throw new Error('Plan approval did not create an execution');
       }
       deps.emitModeChanged(normalizedSessionId);
       return {
-        turnId: input.turnId,
-        executionId: result.plan.executionId,
+        ok: true,
+        value: { turnId: input.turnId, executionId: result.value.plan.executionId },
       };
     },
   );
   ipcMain.handle(
     'plan-mode:resume',
-    async (_event, sessionId: unknown, executionId: unknown, turnId: unknown) => {
+    async (_event, sessionId: unknown, executionId: unknown, turnId: unknown): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
       const normalizedExecutionId = requiredId(executionId, 'Plan execution');
       const normalizedTurnId = requiredId(turnId, 'Turn');
-      await deps.client.startPlanTurn({
-        kind: 'resume_execution',
-        sessionId: normalizedSessionId,
-        executionId: normalizedExecutionId,
-        turnId: normalizedTurnId,
-      });
+      try {
+        await deps.client.startPlanTurn({
+          kind: 'resume_execution',
+          sessionId: normalizedSessionId,
+          executionId: normalizedExecutionId,
+          turnId: normalizedTurnId,
+        });
+      } catch (error) {
+        const failure = planControlIpcFailure(error);
+        if (failure) return failure;
+        throw error;
+      }
       deps.emitModeChanged(normalizedSessionId);
       return {
-        turnId: normalizedTurnId,
-        executionId: normalizedExecutionId,
+        ok: true,
+        value: { turnId: normalizedTurnId, executionId: normalizedExecutionId },
       };
     },
   );
   ipcMain.handle(
     'plan-mode:abandonExecution',
-    async (_event, sessionId: unknown, executionId: unknown) => {
+    async (_event, sessionId: unknown, executionId: unknown): Promise<PlanControlIpcResult<PlanSessionState>> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.client.controlPlan({
-        kind: 'cancel_execution',
-        sessionId: normalizedSessionId,
-        executionId: requiredId(executionId, 'Plan execution'),
-        operationId: newId(),
-      });
+      try {
+        await deps.client.controlPlan({
+          kind: 'cancel_execution',
+          sessionId: normalizedSessionId,
+          executionId: requiredId(executionId, 'Plan execution'),
+          operationId: newId(),
+        });
+      } catch (error) {
+        const failure = planControlIpcFailure(error);
+        if (failure) return failure;
+        throw error;
+      }
       deps.emitModeChanged(normalizedSessionId);
-      return deps.client.getPlanState(normalizedSessionId);
+      return { ok: true, value: await deps.client.getPlanState(normalizedSessionId) };
     },
   );
   handleReconnectableRead(
@@ -554,4 +587,21 @@ function planApprovalInput(value: unknown): {
     expectedStoreVersion: record.expectedStoreVersion as number,
     turnId: requiredId(record.turnId, 'Turn'),
   };
+}
+
+/**
+ * Convert a thrown plan-control rejection into the IPC envelope: expected
+ * plan-control codes keep their structured code across the boundary, and any
+ * other failure keeps rejecting so it takes the unexpected-diagnostics path.
+ */
+function planControlIpcFailure(
+  error: unknown,
+): { readonly ok: false; readonly error: { readonly code: PlanControlErrorCode; readonly message: string } } | undefined {
+  if (error instanceof RuntimeHostOperationError && error.operation.startsWith('plan.')) {
+    return {
+      ok: false,
+      error: { code: error.code as PlanControlErrorCode, message: error.message },
+    };
+  }
+  return undefined;
 }

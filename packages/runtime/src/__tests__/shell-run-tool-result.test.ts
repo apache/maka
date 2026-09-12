@@ -131,8 +131,8 @@ describe('shell run sandbox denial projection', () => {
 
   test('round-trips the producer sandbox denial through strict FileSessionStore recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-shell-result-recovery-'));
+    const store = createSessionStore(root);
     try {
-      const store = createSessionStore(root);
       const session = await store.create({
         cwd: '/workspace',
         llmConnectionSlug: 'fake',
@@ -154,10 +154,11 @@ describe('shell run sandbox denial projection', () => {
         content,
       });
 
-      const messages = await store.readMessagesForRecovery(session.id);
+      const messages = await store.readMessages(session.id);
       const result = messages.find((message) => message.id === 'tool-result-1');
       assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, content);
     } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });

@@ -1191,6 +1191,24 @@ describe('renderer architecture checker fixtures', () => {
     );
   });
 
+  it('allows replacing a legacy dependency with a platform adapter without growing imports', async () => {
+    const target = 'src/renderer/platform/desktop/transcript.ts';
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `import { transcript } from './platform/desktop/transcript.js'; export const legacySessionHelper = transcript;`,
+        { [target]: 'export const transcript = 1;' },
+      ),
+      (desktopRoot) => {
+        const current = generateArchitectureConfig(desktopRoot, transitiveAppShellSeedConfig());
+        const base = structuredClone(current);
+        base.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = { './legacy-transcript.js': 1 };
+        assert.deepEqual(violationsFor(desktopRoot, current, base), []);
+        base.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+        assertHasViolation(violationsFor(desktopRoot, current, base), /new dependency debt/u);
+      },
+    );
+  });
+
   it('rejects a stale AppShell closure ledger when another legacy file becomes reachable', async () => {
     const newlyReachablePath = 'src/renderer/legacy-session-store.ts';
     await withDesktopFixture(
@@ -1415,6 +1433,30 @@ describe('renderer architecture checker fixtures', () => {
         assert.deepEqual(checkRendererArchitecture({ config, desktopRoot }), []);
       },
     );
+  });
+
+  it('allows a WorkHub query on the pinned document, but rejects another surface or document', async () => {
+    for (const variant of ['workhub', 'arbitrary-surface', 'alternate-document']) {
+      const files = rendererEntryContractFiles();
+      files['src/main/main-renderer-loader.ts'] = files['src/main/main-renderer-loader.ts'].replace(
+        'rendererEntry: MainRendererEntry,\n      ): Promise<void> {',
+        `rendererEntry: MainRendererEntry,
+        surface?: '${variant === 'arbitrary-surface' ? 'other' : 'workhub'}',
+      ): Promise<void> {
+        if (surface) {
+          const url = new URL(${variant === 'alternate-document' ? "'https://other.example'" : 'rendererEntry.url'});
+          url.searchParams.set('surface', surface);
+          await mainWindow.loadURL(url.href);
+          return;
+        }`,
+      );
+      await withDesktopFixture(files, (desktopRoot) => {
+        const config = generateArchitectureConfig(desktopRoot, rendererEntrySeedConfig());
+        const violations = checkRendererArchitecture({ config, desktopRoot });
+        if (variant === 'workhub') assert.deepEqual(violations, []);
+        else assertHasViolation(violations, /renderer loader must load only the pinned/u);
+      });
+    }
   });
 
   it('rejects replacing the pinned renderer module entry with an alternate source', async () => {

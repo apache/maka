@@ -29,7 +29,7 @@ import { useExternalStoreSelector } from './use-external-store-selector.js';
 import { useAppShellSessionList } from './use-app-shell-session-list.js';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease.js';
 import { hasNewTaskReloadIntent } from './new-task-reload-intent.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   createSessionWorkspaceActions,
   type SessionWorkspaceActions,
@@ -51,9 +51,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const sessionUiController = useAppShellSessionUiState();
   const sessionList = useAppShellSessionList(toastApi, {
     catalog,
-    activeIdRef,
-    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
-    clearTurnTransientStateIfCurrent: sessionUiController.clearTurnTransientStateIfCurrent,
   });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);

@@ -636,6 +636,17 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       if (!options.slowAppendMessage) return;
       for (let i = 0; i < 5; i += 1) await flushMacrotask();
     },
+    // A note is a runtime event now. The fixture records it in the shape the
+    // read model projects back, so these assertions still read the row a
+    // transcript would show.
+    recordSystemNote: async (kind, turnId, data) => {
+      messages.push({
+        type: 'system_note',
+        kind,
+        turnId,
+        ...(data !== undefined ? { data } : {}),
+      });
+    },
     connection: {
       ...connection(),
       ...(options.providerNative
@@ -1380,6 +1391,33 @@ describe('reactive overflow recovery in the streaming backend', () => {
         estimatedTokens: checkpoint.estimatedTokens,
       },
     ]);
+  });
+
+  test('a passive replay of a held checkpoint writes no context_compacted note (#3587)', async () => {
+    // Explicit compaction writes its own `context_compacted` note on the
+    // compaction turn (the kernel). A later normal send passively replays that
+    // checkpoint — `priorReplay / replaced`, re-emitted on every matching send —
+    // and must NOT re-note it, or the row duplicates once per send after a
+    // compaction. The compaction turn's own note is the single retained row.
+    let carried: HistoryCompactCheckpoint | undefined;
+    const fixture = buildReactiveFixture({
+      script: ['done'],
+      midTurnEnabled: false,
+      bigPriors: true,
+      loadCheckpoint: () => carried,
+    });
+    carried = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: sectionedSummary('EARLIER_TURN_SUMMARY'),
+    });
+    await runTurn(fixture);
+    const compactedNotes = fixture.messages.filter(
+      (message) =>
+        (message as { type?: string }).type === 'system_note' &&
+        (message as { kind?: string }).kind === 'context_compacted',
+    );
+    assert.equal(compactedNotes.length, 0, 'a passive replay must not re-note the checkpoint');
   });
 
   test('a loaded checkpoint the projection refused is not reported as the boundary', async () => {

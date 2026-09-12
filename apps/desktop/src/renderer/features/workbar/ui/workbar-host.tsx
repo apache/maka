@@ -127,7 +127,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
   const toast = useToast();
   const copy = getShellCopy(locale).app;
   const style = {
-    '--maka-session-workbar-width': `${props.rightWidth}px`,
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
   } as CSSProperties;
 

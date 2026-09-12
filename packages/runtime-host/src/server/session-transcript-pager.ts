@@ -140,7 +140,6 @@ export async function createSessionTranscriptBootstrap(input: {
     });
     const bootstrap: SessionTranscriptBootstrap = {
       throughSequence: input.throughSequence,
-      durableCoverage: projection === 'shared' ? 'projected' : 'complete',
       overlayMessageCount: overlayMessages.length,
       durable: pageFromSelection(
         state,
@@ -247,7 +246,11 @@ export async function readSessionTranscriptPage(input: {
           position.rangeBoundarySequence,
         )
       : await input.reader.readDurablePage(state.sessionId, durableRequest);
-  const selected = storageSelection(storage);
+  const selected = selectionThroughRangeBoundary(
+    storageSelection(storage),
+    request.direction,
+    position.rangeBoundarySequence,
+  );
   const rangeEdges = await readRangeEdges({
     reader: input.reader,
     state,
@@ -433,7 +436,7 @@ async function readRangeEdges(input: {
           return {
             fragments,
             rawBytes: fragments.reduce(
-              (sum, fragment) => sum + Buffer.from(fragment.data, 'base64').byteLength,
+              (sum, fragment) => sum + Buffer.byteLength(fragment.data, 'base64'),
               0,
             ),
             next: { position: rangeRecords[retainedEnd]!.sequence, byteOffset: null },
@@ -641,6 +644,37 @@ function storageSelection(
     })),
     rawBytes: storage.rawBytes,
     next: storage.next,
+  };
+}
+
+function selectionThroughRangeBoundary(
+  selected: SelectedFragments,
+  direction: SessionTranscriptPageDirection,
+  rangeBoundarySequence: number | null,
+): SelectedFragments {
+  if (rangeBoundarySequence === null) return selected;
+  // RuntimeEvent-backed message sequences are sparse, so a continuation's
+  // message limit cannot infer how many records remain from sequence distance.
+  const firstOmittedIndex = selected.fragments.findIndex(
+    (fragment) =>
+      fragment.kind === 'durable' &&
+      (direction === 'older'
+        ? fragment.sequence < rangeBoundarySequence
+        : fragment.sequence > rangeBoundarySequence),
+  );
+  if (firstOmittedIndex === -1) return selected;
+  const firstOmitted = selected.fragments[firstOmittedIndex]!;
+  if (firstOmitted.kind !== 'durable') {
+    throw new Error('Session transcript durable range contained an overlay fragment');
+  }
+  const fragments = selected.fragments.slice(0, firstOmittedIndex);
+  return {
+    fragments,
+    rawBytes: fragments.reduce(
+      (sum, fragment) => sum + Buffer.from(fragment.data, 'base64').byteLength,
+      0,
+    ),
+    next: { position: firstOmitted.sequence, byteOffset: null },
   };
 }
 

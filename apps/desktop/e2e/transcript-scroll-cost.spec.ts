@@ -37,21 +37,54 @@
 
 import type { CDPSession, Page } from '@playwright/test';
 import { PROMPT_RAIL_PROMPT_COUNT } from '../src/main/e2e-fixture/seed-helpers';
-import { DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS } from '../src/preload/transcript-contract';
 import { expect, test } from './fixtures';
 
 const SCROLLER = '[data-chat-scroll-container="true"]';
 const TURN = '.maka-transcript-turn';
 
+/**
+ * Generous on purpose: the property worth guarding is that paging through the
+ * whole history stops adding Turns, and a range that kept everything it paged
+ * in would mount all of them.
+ */
+const MOUNTED_TURNS_MAX = 40;
+
+/**
+ * How far a range boundary is allowed to move the reader, in CSS pixels.
+ *
+ * A boundary both installs a page and drops the far side of the band, and the
+ * two settle within the same quiet frame, so what is measurable is their sum.
+ * Not a tolerance for "close enough" motion: anchoring holds that sum to a
+ * fraction of a Turn, where a frame that lost the reader lands a Turn away or
+ * more.
+ */
+const BOUNDARY_DISPLACEMENT_MAX_PX = 40;
+
 declare global {
   interface Window {
-    __makaTranscriptCost?: {
-      transitionRuns: number;
-      animationStarts: number;
-      skipped: WeakSet<Element>;
-      skippedCount: number;
+    __makaTranscriptDisplacement?: {
+      boundaries: TranscriptBoundary[];
+      record(on: boolean): void;
+      stop(): void;
     };
   }
+}
+
+/**
+ * One frame where the mounted range changed: a page installed, or the band
+ * trimmed, or both.
+ */
+interface TranscriptBoundary {
+  readonly firstBefore: string;
+  readonly firstAfter: string;
+  readonly mountedBefore: number;
+  readonly mountedAfter: number;
+  readonly grewPx: number;
+  readonly scrolledPx: number;
+  /** Turns present in both frames, so a reader position can be compared. */
+  readonly carried: number;
+  readonly worstTurnId: string | null;
+  readonly worstPx: number;
 }
 
 /**
@@ -85,71 +118,159 @@ async function wheel(
 }
 
 /**
- * Count every transition and animation the page starts, and track which Turns
- * the browser is currently skipping.
+ * Watch every frame for a change in the mounted range, and measure what that
+ * change did to the reader.
  *
- * `contentvisibilityautostatechange` rather than
- * `checkVisibility({ contentVisibilityAuto: true })`: the flag that method
- * reads is updated during rendering, so a synchronous call right after a
- * scroll reports every Turn visible even when the browser is skipping most of
- * them. Measured on this fixture, the method returned 0 skipped Turns in every
- * position the event reported between 1 and 8.
+ * What must not move is where a Turn sits ON SCREEN, so the measurement is its
+ * viewport `top` and nothing else. Its position in the DOCUMENT is expected to
+ * move — installing a page above the reader is exactly what shifts it — and
+ * scroll anchoring answers that by adding the same amount to `scrollTop`, which
+ * is why the reader sees nothing. Measuring the document position instead would
+ * report every correctly absorbed page as a displacement the size of the page.
+ *
+ * Sampled per frame rather than per gesture: the frame that installs a page is
+ * the only one where the reader can be lost, and a per-gesture reading would
+ * subtract the reader's own scrolling back out and see nothing.
  */
-async function observe(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const state = {
-      transitionRuns: 0,
-      animationStarts: 0,
-      skipped: new WeakSet<Element>(),
-      skippedCount: 0,
+async function observeDisplacement(page: Page): Promise<void> {
+  await page.evaluate((scrollerSelector) => {
+    const scroller = document.querySelector(scrollerSelector);
+    if (!scroller) throw new Error('the chat scroll container is missing');
+    const read = () => {
+      const tops = new Map<string, number>();
+      for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+        const turnId = turn.dataset.turnId;
+        if (turnId) tops.set(turnId, turn.getBoundingClientRect().top);
+      }
+      return {
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        tops,
+        key: [...tops.keys()].join(','),
+      };
     };
-    window.__makaTranscriptCost = state;
-    document.addEventListener('transitionrun', () => { state.transitionRuns += 1; }, true);
-    document.addEventListener('animationstart', () => { state.animationStarts += 1; }, true);
-    const bound = new WeakSet<Element>();
-    const bind = (): void => {
-      for (const turn of document.querySelectorAll('.maka-transcript-turn')) {
-        if (bound.has(turn)) continue;
-        bound.add(turn);
-        turn.addEventListener('contentvisibilityautostatechange', (event) => {
-          const skipped = (event as Event & { skipped: boolean }).skipped;
-          if (skipped === state.skipped.has(turn)) return;
-          if (skipped) state.skipped.add(turn);
-          else state.skipped.delete(turn);
-          state.skippedCount += skipped ? 1 : -1;
+    // Only frames the reader is not scrolling through can be compared: a wheel
+    // tick moves every Turn on screen by its own delta, which is
+    // indistinguishable from a page that moved them. Which frames those are is
+    // told, not inferred — the gesture and the rAF that reads it land in the
+    // same frame in an order nothing here controls, and a reading that catches
+    // one tick reports exactly one tick of displacement.
+    let recording = false;
+    const state: {
+      boundaries: unknown[];
+      record(on: boolean): void;
+      stop(): void;
+    } = {
+      boundaries: [],
+      record: (on: boolean) => {
+        recording = on;
+        previous = read();
+        settled = null;
+      },
+      stop: () => { running = false; },
+    };
+    let running = true;
+    let previous = read();
+    // The last frame before the range started changing. Held across a run of
+    // changing frames so the measurement spans settled state to settled state:
+    // scroll anchoring corrects after layout, so a reading taken inside the
+    // change would report a correction that never reached the screen.
+    let settled: ReturnType<typeof read> | null = null;
+    const tick = (): void => {
+      if (!running) return;
+      const current = read();
+      if (!recording) {
+        settled = null;
+        previous = current;
+        requestAnimationFrame(tick);
+        return;
+      }
+      if (current.key !== previous.key) {
+        if (!settled) settled = previous;
+      } else if (settled) {
+        const before = settled;
+        settled = null;
+        const scrolled = current.scrollTop - before.scrollTop;
+        let carried = 0;
+        let worstPx = 0;
+        let worstTurnId: string | null = null;
+        for (const [turnId, top] of current.tops) {
+          const wasAt = before.tops.get(turnId);
+          if (wasAt === undefined) continue;
+          carried += 1;
+          const displaced = Math.abs(top - wasAt);
+          if (displaced > worstPx) {
+            worstPx = displaced;
+            worstTurnId = turnId;
+          }
+        }
+        state.boundaries.push({
+          firstBefore: before.key.split(',')[0] ?? '',
+          firstAfter: current.key.split(',')[0] ?? '',
+          mountedBefore: before.tops.size,
+          mountedAfter: current.tops.size,
+          grewPx: current.scrollHeight - before.scrollHeight,
+          scrolledPx: scrolled,
+          carried,
+          worstTurnId,
+          worstPx,
         });
       }
+      previous = current;
+      requestAnimationFrame(tick);
     };
-    bind();
-    new MutationObserver(bind).observe(document.body, { childList: true, subtree: true });
-  });
+    window.__makaTranscriptDisplacement = state as never;
+    requestAnimationFrame(tick);
+  }, SCROLLER);
 }
 
-interface CostSample {
-  transitionRuns: number;
-  animationStarts: number;
-  unfinished: number;
-  skippedTurns: number;
-  mountedTurns: number;
+/** Opens the measurement window, or closes it around the reader's own gesture. */
+async function recordDisplacement(page: Page, on: boolean): Promise<void> {
+  await page.evaluate((value) => {
+    const state = window.__makaTranscriptDisplacement;
+    if (!state) throw new Error('the transcript displacement probe is missing');
+    state.record(value);
+  }, on);
 }
 
-async function sample(page: Page): Promise<CostSample> {
+async function displacement(page: Page): Promise<readonly TranscriptBoundary[]> {
   return page.evaluate(() => {
-    const state = window.__makaTranscriptCost;
-    if (!state) throw new Error('the transcript cost observer is missing');
-    return {
-      transitionRuns: state.transitionRuns,
-      animationStarts: state.animationStarts,
-      unfinished: document.body
-        .getAnimations({ subtree: true })
-        .filter((animation) => animation.playState !== 'finished').length,
-      skippedTurns: state.skippedCount,
-      mountedTurns: document.querySelectorAll('[data-turn-id]').length,
-    };
+    const state = window.__makaTranscriptDisplacement;
+    if (!state) throw new Error('the transcript displacement probe is missing');
+    state.stop();
+    return state.boundaries;
   });
+}
+
+/**
+ * A transcript opened at its tail keeps fetching older history until two
+ * screens of it sit above the reader, and trims what falls outside the band it
+ * retains, so the mounted rows churn for as long as that runs. Wait for the
+ * window to stop moving before touching a row: a locator resolved mid-churn
+ * points at an element the Renderer has already unmounted.
+ *
+ * Timed out against that ramp rather than the suite's 10s default, which is
+ * sized for UI already on screen.
+ */
+async function settled(page: Page): Promise<void> {
+  const mounted = async (): Promise<string> => page.evaluate(() => {
+    const turns = document.querySelectorAll('[data-turn-id]');
+    return `${turns.length}:${turns[0]?.getAttribute('data-turn-id')}`;
+  });
+  let previous = await mounted();
+  await expect
+    .poll(async () => {
+      await page.waitForTimeout(250);
+      const current = await mounted();
+      const stable = current === previous;
+      previous = current;
+      return stable;
+    }, { timeout: 30_000 })
+    .toBe(true);
 }
 
 async function moveToTail(page: Page): Promise<void> {
+  await settled(page);
   await page.locator(TURN).last().scrollIntoViewIfNeeded();
   await page.evaluate(() => new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -172,71 +293,23 @@ async function returnToLatest(page: Page): Promise<void> {
 }
 
 /**
- * The fixture's own motion contract, asserted as the count it is.
+ * The scenario #5163 was reported from: quit Desktop, start it again, open a
+ * long Session, and scroll upward through history without stopping. The reader
+ * perceives stalls or jumps around range boundaries.
  *
- * `[data-maka-e2e-fixture]` collapses motion so a fixture render does not
- * depend on the millisecond it settles. It used to do that with
- * `transition-duration: 0.01ms`, which is not "no transition": the initial
- * `transition-property` is `all`, so every element kept a live transition on
- * every animatable property and fired transitionrun/start/end on every style
- * recalculation — measured here, ~1,200 transitions for one sweep over ten
- * mounted Turns, and tens of thousands over a long one. Every timing number
- * the replaced suite reported was mostly that.
+ * A mounted-range bound alone does not say
+ * where the reader ended up while a page was installing, which is the whole of
+ * what that report is about. This one measures it: every frame the mounted
+ * range changes, whatever Turn the reader can still see must hold its viewport
+ * position.
  *
- * Nothing downstream can measure the product while the harness generates work
- * of its own, so the harness asserts zero.
+ * Displacement in pixels rather than frame timings on purpose — see this file's
+ * header for what happened to the timing assertions this suite replaced. A
+ * stall and a jump have the same cause here (a page boundary that moves
+ * content out from under the reader) and only one of them can be asserted
+ * without a clock.
  */
-test('a scroll through the fixture transcript starts no transitions', async ({
-  promptRailWindow: page,
-}) => {
-  await page.setViewportSize({ width: 1_000, height: 700 });
-  await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
-    .toHaveCount(1);
-  const cdp = await page.context().newCDPSession(page);
-  await observe(page);
-  await moveToTail(page);
-  await wheel(page, cdp, { ticks: 40, deltaY: -120 });
-  await wheel(page, cdp, { ticks: 40, deltaY: 120 });
-
-  const cost = await sample(page);
-  expect(cost.transitionRuns).toBe(0);
-  expect(cost.animationStarts).toBe(0);
-  // The reason the declaration exists: a fixture render is a settled state,
-  // never an entry frame. `none` serves that strictly better than a near-zero
-  // duration did — that one left transitions still running at sample time.
-  expect(cost.unfinished).toBe(0);
-});
-
-/**
- * Containment is engaging at all. A `content-visibility: auto` that stops
- * skipping — a Turn that gains a property forcing layout, a container query,
- * an ancestor that breaks the containment chain — costs nothing that a timing
- * threshold would notice on a ten-Turn range, and everything on a long one.
- */
-test('the browser skips the Turns the reader has scrolled past', async ({
-  promptRailWindow: page,
-}) => {
-  await page.setViewportSize({ width: 1_000, height: 700 });
-  await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
-    .toHaveCount(1);
-  const cdp = await page.context().newCDPSession(page);
-  await observe(page);
-  await moveToTail(page);
-  // Two viewports up and back: enough for the Turns at the far end of the
-  // mounted range to leave the browser's relevance margin in both directions.
-  await wheel(page, cdp, { ticks: 20, deltaY: -120 });
-  await wheel(page, cdp, { ticks: 20, deltaY: 120 });
-
-  expect((await sample(page)).skippedTurns).toBeGreaterThan(0);
-});
-
-/**
- * The bound the Desktop transcript is built on: paging back through a history
- * far longer than the active range mounts a bounded number of Turns, not a
- * growing one. Sampled at every page rather than only at the end, because a
- * range that overshoots and is trimmed afterwards is the regression.
- */
-test('paging back through the whole history keeps the mounted range bounded', async ({
+test('Host history paging stays bounded, preserves the reader and returns to latest', async ({
   promptRailWindow: page,
 }) => {
   test.setTimeout(120_000);
@@ -245,17 +318,25 @@ test('paging back through the whole history keeps the mounted range bounded', as
     .toHaveCount(1);
   const cdp = await page.context().newCDPSession(page);
   const turns = page.locator('[data-turn-id]');
-  let mountedMax = 0;
+  await moveToTail(page);
+  await observeDisplacement(page);
   let pages = 0;
+  let mountedMax = await turns.count();
 
   for (let iteration = 0; iteration < PROMPT_RAIL_PROMPT_COUNT; iteration += 1) {
     const firstBefore = await turns.first().getAttribute('data-turn-id');
     if (firstBefore === 'turn-prompt-rail-1') break;
-    // The product asks for history on an upward wheel near the start, so the
-    // gesture that pages is the gesture a reader makes.
-    await wheel(page, cdp, { ticks: 12, deltaY: -120 });
     await expect
-      .poll(async () => turns.first().getAttribute('data-turn-id'))
+      .poll(async () => {
+        await recordDisplacement(page, false);
+        await wheel(page, cdp, { ticks: 12, deltaY: -120 });
+        // The hand comes off the wheel here. A page requested by the gesture
+        // lands in the quiet that follows — which is also when a reader would
+        // see it move — so that quiet is the whole of what is measured.
+        await recordDisplacement(page, true);
+        await page.waitForTimeout(150);
+        return turns.first().getAttribute('data-turn-id');
+      })
       .not.toBe(firstBefore);
     pages += 1;
     mountedMax = Math.max(mountedMax, await turns.count());
@@ -263,14 +344,21 @@ test('paging back through the whole history keeps the mounted range bounded', as
 
   expect(pages).toBeGreaterThan(0);
   await expect(turns.first()).toHaveAttribute('data-turn-id', 'turn-prompt-rail-1');
-  expect(mountedMax).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(mountedMax).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 
-  // Coming back from the far end is a range reload, not a scroll: the Host
-  // resolves a new window around the tail and the renderer mounts it. The
-  // suite's 10s expect timeout is sized for UI that is already on screen, and
-  // this step measured past it on a loaded CI runner.
+  const boundaries = await displacement(page);
+  // The probe has to have seen the thing it measures: a run that paged nothing,
+  // or one where every boundary replaced the range wholesale and carried no
+  // Turn across, proves nothing about the reader.
+  expect(boundaries.length).toBeGreaterThan(0);
+  expect(boundaries.filter((boundary) => boundary.carried > 0).length).toBeGreaterThan(0);
+
+  const displaced = boundaries.filter((boundary) => boundary.worstPx > BOUNDARY_DISPLACEMENT_MAX_PX);
+  expect(displaced, `range boundaries moved the reader: ${JSON.stringify(displaced)}`)
+    .toEqual([]);
+
   await returnToLatest(page);
   await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
     .toHaveCount(1, { timeout: 30_000 });
-  expect(await turns.count()).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(await turns.count()).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 });

@@ -38,11 +38,18 @@ type Covers<Expected extends string, Actual extends string> =
 export interface ExactObjectShape {
   readonly required: readonly string[];
   readonly allowed: ReadonlySet<string>;
+  readonly retired?: ReadonlySet<string>;
 }
 
 /**
  * Defines a JSON object shape while making schema additions a type error until
  * both the required and optional key lists are updated.
+ *
+ * `retired` names keys older writers persisted that this type no longer has.
+ * They are accepted on read and dropped by {@link pickShape}, so what the shape
+ * emits may shrink freely while what it accepts only grows. Removing a key from
+ * `optional` without listing it here makes every stored record carrying it fail
+ * validation outright.
  */
 export function defineObjectShape<T extends object>() {
   return <
@@ -51,9 +58,11 @@ export function defineObjectShape<T extends object>() {
   >(
     required: Required & Covers<RequiredKey<T>, Required[number]>,
     optional: Optional & Covers<OptionalKey<T>, Optional[number]>,
+    retired: readonly string[] = [],
   ): ExactObjectShape => ({
     required,
     allowed: new Set([...required, ...optional]),
+    retired: new Set(retired),
   });
 }
 
@@ -64,7 +73,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function hasExactShape(value: Record<string, unknown>, shape: ExactObjectShape): boolean {
   return (
     shape.required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => shape.allowed.has(key))
+    Object.keys(value).every((key) => shape.allowed.has(key) || shape.retired?.has(key) === true)
   );
 }
 

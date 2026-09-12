@@ -21,8 +21,8 @@ import { useState, type FormEvent } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
-import { Button, HStack, NumberInput, TextInput, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../features/connection-settings';
+import { Button, HStack, TextInput, useUiLocale } from '@maka/ui';
+import { getProviderSettingsCopy, parseContextWindowInput } from '../features/connection-settings';
 
 /**
  * Introduce a model by exact id, for a provider whose catalog cannot grow on
@@ -50,7 +50,8 @@ export function AddModelDialog(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   const [id, setId] = useState('');
-  const [contextWindow, setContextWindow] = useState<number | null>(null);
+  const [contextWindowInput, setContextWindowInput] = useState('');
+  const contextWindow = parseContextWindowInput(contextWindowInput);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isSaving, setSaving] = useState(false);
 
@@ -64,11 +65,13 @@ export function AddModelDialog(props: {
   // budget, and guessing higher on the user's behalf would trade a wasted
   // window for requests the provider rejects outright. Whoever types an exact
   // model id is reading the provider's own model page, where this is stated.
-  const contextWindowError = contextWindow ? null : copy.addModelContextWindowRequired;
+  const contextWindowError = !contextWindowInput.trim()
+    ? copy.addModelContextWindowRequired
+    : contextWindow === null ? copy.contextWindowInputInvalid : null;
 
   function close() {
     setId('');
-    setContextWindow(null);
+    setContextWindowInput('');
     setSubmitAttempted(false);
     props.onOpenChange(false);
   }
@@ -129,15 +132,15 @@ export function AddModelDialog(props: {
                     submitAttempted && idError ? { type: 'error', message: idError } : undefined
                   }
                 />
-                <NumberInput
+                <TextInput
                   label={copy.addModelContextWindow}
                   description={copy.addModelContextWindowHelp}
                   isRequired
-                  value={contextWindow}
+                  value={contextWindowInput}
                   hasClear
-                  isIntegerOnly
-                  min={1}
-                  onChange={setContextWindow}
+                  placeholder="128000 / 128K / 1M"
+                  onChange={setContextWindowInput}
+                  isDisabled={isSaving}
                   status={
                     submitAttempted && contextWindowError
                       ? { type: 'error', message: contextWindowError }

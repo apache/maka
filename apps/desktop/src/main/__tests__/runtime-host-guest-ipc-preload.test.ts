@@ -44,6 +44,7 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
       switch (channel) {
         case 'runtime-host:activeIdentity': return owner;
         case 'runtime-host:identities': return [owner, guest];
+        case 'session-local:catalog': return [{ scope: owner, sessions: [], authoritative: true }];
         case 'onboarding:getSnapshot': return {
           state: { kind: 'ready_empty' }, milestones: [], sessions: [], connections: [],
           defaultSlug: null, chatModelChoices: [], sessionSendOutcomes: {},

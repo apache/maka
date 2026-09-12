@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod lifetime;
 mod muxer;
 mod signaling;
 mod transport;

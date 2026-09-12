@@ -804,6 +804,21 @@ export const StaticCatalogConnectionDetail: Story = {
       autoOpen="detail-static"
     />
   ),
+  // The row carries two controls; they read 配置参数 then 开启. The editor
+  // trigger comes first and the enable switch is the row's trailing edge.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const configure = await canvas.findByRole('button', {
+      name: detailCopy.declareCapabilitiesAria('deepseek-v4-pro-beta'),
+    });
+    const end = configure.closest('.settingsRowEnd');
+    if (!end) throw new Error('model row end slot is missing');
+    const enable = end.querySelector<HTMLElement>('[role="switch"]');
+    if (!enable) throw new Error('model enable switch is missing');
+    expect(configure.getBoundingClientRect().right).toBeLessThanOrEqual(
+      enable.getBoundingClientRect().left,
+    );
+  },
 };
 
 // Real path: 设置 → 模型 → click a custom relay — several enabled models, each

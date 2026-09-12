@@ -10,6 +10,7 @@
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
+    "./canonical-json": "./dist/canonical-json.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-handoff": "./dist/runtime-handoff.js",
     "./runtime-logical-execution": "./dist/runtime-logical-execution.js",
@@ -55,6 +56,7 @@
     "./user-question": "./dist/user-question.js",
     "./connections": "./dist/connections.js",
     "./context-offload": "./dist/context-offload.js",
+    "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
@@ -82,8 +84,6 @@
     "./deep-research-client-progress": "./dist/deep-research-client-progress.js",
     "./daily-review": "./dist/daily-review.js",
     "./work-board": "./dist/work-board.js",
-    "./workhub-creation-intent": "./dist/workhub-creation-intent.js",
-    "./workhub-session-resolver": "./dist/workhub-session-resolver.js",
     "./deep-research": "./dist/deep-research.js",
     "./session-start-mode": "./dist/session-start-mode.js",
     "./long-term-memory": "./dist/long-term-memory.js",
@@ -156,7 +156,9 @@
     "./unified-diff": "./dist/unified-diff.js",
     "./dev-single-instance": "./dist/dev-single-instance.js",
     "./maka-wordmark": "./dist/maka-wordmark.js",
-    "./test-only/async-primitives": "./dist/test-only/async-primitives.js"
+    "./test-only/async-primitives": "./dist/test-only/async-primitives.js",
+    "./workhub-action-result": "./dist/workhub-action-result.js",
+    "./workhub-routing": "./dist/workhub-routing.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/model-metadata.generated.ts",

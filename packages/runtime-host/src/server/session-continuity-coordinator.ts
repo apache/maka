@@ -42,6 +42,7 @@ import {
   type SessionDomainChangedFrame,
   type SessionEventFrame,
   type SessionRuntimeResourcePtyDataFrame,
+  type OrderedSubscriptionFrame,
   type SessionSteeringEvent,
   type SessionToolEvent,
   type SessionTranscriptAdvancedFrame,
@@ -146,12 +147,11 @@ interface ConnectionState {
   sink: SessionContinuityFrameSink;
   subscriptionIds: Set<string>;
   pendingOpenCount: number;
-  readonly closed: Promise<void>;
-  resolveClosed(): void;
+  readonly closed: AbortController;
 }
 
 interface QueuedSubscriptionFrame {
-  frame: SubscriptionFrame;
+  frame: OrderedSubscriptionFrame;
   encodedBytes: number;
 }
 
@@ -169,6 +169,10 @@ interface Subscriber {
   queue: QueuedSubscriptionFrame[];
   queuedBytes: number;
   pumping: boolean;
+  ptyQueue: { frame: SessionRuntimeResourcePtyDataFrame; encodedBytes: number }[];
+  ptyQueuedBytes: number;
+  ptyPumping: boolean;
+  ptyInterests: Set<string>;
   terminalQueued: boolean;
   transcript?: SubscriberTranscriptState;
   retainedTranscriptOverlay?: RetainedTranscriptOverlay;
@@ -236,6 +240,27 @@ interface PendingSessionDomainChanges {
 
 export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly handlers: SessionContinuityOperationHandlerMap = {
+    'subscription.pty_interest.set': async (input, context) => {
+      const subscriber = this.#ownedSubscriber(context.connectionId, input.subscriptionId);
+      if (!subscriber || !this.#canObserve(subscriber, subscriber.sessionId)) {
+        return {
+          ok: false,
+          error: { code: 'not_found', message: 'Session subscription was not found' },
+        };
+      }
+      subscriber.ptyInterests = new Set(input.refs);
+      // An already writing frame may finish. Everything else belongs to the
+      // current visible set; reacquiring uses a fresh terminal snapshot.
+      subscriber.ptyQueue = subscriber.ptyQueue.filter(
+        (entry, index) =>
+          (index === 0 && subscriber.ptyPumping) || subscriber.ptyInterests.has(entry.frame.ref),
+      );
+      subscriber.ptyQueuedBytes = subscriber.ptyQueue.reduce(
+        (bytes, entry) => bytes + entry.encodedBytes,
+        0,
+      );
+      return { ok: true, result: { subscriptionId: input.subscriptionId } };
+    },
     'subscription.open': async (input, context) => {
       const result = await this.#open(context, input);
       return result.ok
@@ -328,13 +353,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (this.#connections.has(connectionId)) {
       throw new Error(`Duplicate Runtime Host connection: ${connectionId}`);
     }
-    const closed = signal();
     this.#connections.set(connectionId, {
       sink,
       subscriptionIds: new Set(),
       pendingOpenCount: 0,
-      closed: closed.promise,
-      resolveClosed: closed.resolve,
+      closed: new AbortController(),
     });
     let attached = true;
     return {
@@ -478,42 +501,40 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
   }
 
-  /** Publish live PTY bytes on the same ordered Session subscription as its durable projection. */
+  /** PTY congestion never consumes Session sequence numbers or its queue budget. */
   async enqueueRuntimeResourcePtyData(event: {
     sessionId: string;
     ref: string;
     sequence: number;
     data: string;
   }): Promise<void> {
-    if (
-      this.#closed ||
-      Buffer.byteLength(event.data, 'utf8') > SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES
-    ) {
-      return;
-    }
+    if (this.#closed) return;
     try {
-      await this.sessionAdmission.enqueueDetached(event.sessionId, () => {
-        if (this.#closed) return;
-        const state = this.#sessions.get(event.sessionId);
-        if (!state) return;
-        for (const subscriber of state.subscribers.values()) {
-          const frame: SessionRuntimeResourcePtyDataFrame = {
-            kind: 'subscription.runtime_resource_pty_data',
-            hostEpoch: this.#hostEpoch,
-            subscriptionId: subscriber.subscriptionId,
-            sequence: subscriber.nextSequence,
-            sessionId: event.sessionId,
-            ref: event.ref,
-            ptySequence: event.sequence,
-            data: event.data,
-          };
-          if (
-            Buffer.byteLength(JSON.stringify(frame), 'utf8') <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES
-          ) {
-            this.#enqueue(subscriber, frame);
-          }
+      const state = this.#sessions.get(event.sessionId);
+      if (!state) return;
+      for (const subscriber of state.subscribers.values()) {
+        if (!this.#canObserve(subscriber, event.sessionId)) {
+          this.#closeSubscriber(subscriber, 'access_revoked');
+          continue;
         }
-      });
+        if (!subscriber.ptyInterests.has(event.ref)) continue;
+        const frame: SessionRuntimeResourcePtyDataFrame = {
+          kind: 'subscription.runtime_resource_pty_data',
+          hostEpoch: this.#hostEpoch,
+          subscriptionId: subscriber.subscriptionId,
+          sessionId: event.sessionId,
+          ref: event.ref,
+          ptySequence: event.sequence,
+          ...(Buffer.byteLength(event.data, 'utf8') > SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES
+            ? { data: '', reset: true as const }
+            : { data: event.data }),
+        };
+        if (
+          Buffer.byteLength(JSON.stringify(frame), 'utf8') <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES
+        ) {
+          this.#enqueuePty(subscriber, frame);
+        }
+      }
     } catch (error) {
       this.onPublicationFailure(error);
     }
@@ -842,7 +863,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     | { ok: true; value: SubscriptionOpenResult }
     | {
         ok: false;
-        code: 'not_found' | 'operation_conflict' | 'operation_unavailable' | 'persistence_failed';
+        code:
+          | 'not_found'
+          | 'operation_conflict'
+          | 'operation_unavailable'
+          | 'persistence_failed'
+          | 'transcript_preparing';
         message: string;
       }
   > {
@@ -923,12 +949,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                     preparationPermit,
                   );
                   cachedTranscriptOverlay.pendingConsumers += 1;
-                  retainedTranscriptOverlay = await Promise.race([
+                  retainedTranscriptOverlay = await waitForConnectionOpen(
                     cachedTranscriptOverlay.prepared,
-                    connection.closed.then(() => {
-                      throw new Error('Runtime Host connection closed during subscription open');
-                    }),
-                  ]);
+                    connection.closed.signal,
+                  );
                   const snapshot = projectSessionSnapshot(committed.value, identity.principalKind);
                   const created = await createSessionTranscriptBootstrap({
                     reader: this.#transcriptReader,
@@ -1007,6 +1031,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                 nextSequence: 1,
                 lastFlushedSequence: 0,
                 queue: [],
+                ptyQueue: [],
+                ptyInterests: new Set(),
+                ptyQueuedBytes: 0,
+                ptyPumping: false,
                 queuedBytes: 0,
                 pumping: false,
                 terminalQueued: false,
@@ -1209,12 +1237,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const ticket = this.#queueTranscriptOverlayPreparation();
     let release: () => void;
     try {
-      release = await Promise.race([
-        ticket.ready,
-        connection.closed.then(() => {
-          throw new Error('Runtime Host connection closed during subscription open');
-        }),
-      ]);
+      release = await waitForConnectionOpen(ticket.ready, connection.closed.signal);
     } catch (error) {
       this.#cancelTranscriptOverlayPreparation(ticket.waiter);
       throw error;
@@ -1413,6 +1436,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (!subscriber || subscriber.activated || subscriber.phase === 'closed') return;
     subscriber.activated = true;
     this.#pump(subscriber);
+    this.#pumpPty(subscriber);
   }
 
   #abortSubscription(connectionId: string, subscriptionId: string): void {
@@ -1438,7 +1462,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #closeConnection(connectionId: string): void {
     const connection = this.#connections.get(connectionId);
     if (!connection) return;
-    connection.resolveClosed();
+    connection.closed.abort(new Error('Runtime Host connection closed during subscription open'));
     for (const subscriptionId of [...connection.subscriptionIds]) {
       const subscriber = this.#ownedSubscriber(connectionId, subscriptionId);
       if (subscriber) this.#removeSubscriber(subscriber);
@@ -1446,7 +1470,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#connections.delete(connectionId);
   }
 
-  #enqueue(subscriber: Subscriber, frame: SubscriptionFrame): void {
+  #enqueue(subscriber: Subscriber, frame: OrderedSubscriptionFrame): void {
     if (subscriber.phase !== 'open' || subscriber.terminalQueued) return;
     let encodedBytes: number;
     try {
@@ -1467,7 +1491,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (tail && (!subscriber.pumping || subscriber.queue.length > 1)) {
       const mergedText = mergeableAssistantDeltaText(tail.frame, frame);
       if (mergedText !== undefined && tail.frame.kind === 'subscription.session_delta') {
-        const merged: SubscriptionFrame = {
+        const merged: OrderedSubscriptionFrame = {
           ...tail.frame,
           delta: { ...tail.frame.delta, text: mergedText },
         };
@@ -1506,6 +1530,46 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   #evictSlowSubscriber(subscriber: Subscriber): void {
     this.#closeSubscriber(subscriber, 'slow_consumer');
+  }
+
+  #enqueuePty(subscriber: Subscriber, frame: SessionRuntimeResourcePtyDataFrame): void {
+    if (subscriber.phase !== 'open' || subscriber.terminalQueued) return;
+    let encodedBytes = encodeProtocolMessage(frame).byteLength;
+    if (subscriber.ptyQueue.length >= 8 || subscriber.ptyQueuedBytes + encodedBytes > 128 * 1024) {
+      // Reset is session-wide for terminal consumers, so one marker covers
+      // every omitted resource without an unbounded per-resource dirty set.
+      const inFlight = subscriber.ptyPumping ? subscriber.ptyQueue[0] : undefined;
+      subscriber.ptyQueue = inFlight ? [inFlight] : [];
+      subscriber.ptyQueuedBytes = inFlight?.encodedBytes ?? 0;
+      frame = { ...frame, data: '', reset: true };
+      encodedBytes = encodeProtocolMessage(frame).byteLength;
+    }
+    subscriber.ptyQueue.push({ frame, encodedBytes });
+    subscriber.ptyQueuedBytes += encodedBytes;
+    this.#pumpPty(subscriber);
+  }
+
+  #pumpPty(subscriber: Subscriber): void {
+    if (subscriber.ptyPumping || !subscriber.activated || subscriber.phase !== 'open') return;
+    const queued = subscriber.ptyQueue[0];
+    if (!queued) return;
+    subscriber.ptyPumping = true;
+    void Promise.resolve()
+      .then(() => {
+        if (subscriber.phase !== 'open') return;
+        return subscriber.sink.send(queued.frame);
+      })
+      .then(
+        () => {
+          subscriber.ptyPumping = false;
+          if (subscriber.ptyQueue[0] === queued) {
+            subscriber.ptyQueue.shift();
+            subscriber.ptyQueuedBytes -= queued.encodedBytes;
+          }
+          this.#pumpPty(subscriber);
+        },
+        () => this.#removeSubscriber(subscriber),
+      );
   }
 
   #closeSubscriber(subscriber: Subscriber, reason: 'slow_consumer' | 'access_revoked'): void {
@@ -1717,6 +1781,8 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber.phase = 'closed';
     subscriber.queue = [];
     subscriber.queuedBytes = 0;
+    subscriber.ptyQueue = [];
+    subscriber.ptyQueuedBytes = 0;
     const state = this.#sessions.get(subscriber.sessionId);
     const removed = state?.subscribers.delete(subscriber.subscriptionId);
     this.#subscriptions.delete(subscriber.subscriptionId);
@@ -2195,10 +2261,22 @@ function toolStartShellRunRef(
   }
 }
 
-function signal(): { readonly promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
+function waitForConnectionOpen<T>(task: Promise<T>, closed: AbortSignal): Promise<T> {
+  // A race against a connection-lifetime Promise retains every winning overlay
+  // until disconnect. Remove the close listener as soon as this wait finishes.
+  return new Promise<T>((resolve, reject) => {
+    const onClose = () => reject(closed.reason);
+    if (closed.aborted) onClose();
+    else closed.addEventListener('abort', onClose, { once: true });
+    void task.then(
+      (value) => {
+        closed.removeEventListener('abort', onClose);
+        resolve(value);
+      },
+      (error: unknown) => {
+        closed.removeEventListener('abort', onClose);
+        reject(error);
+      },
+    );
   });
-  return { promise, resolve };
 }

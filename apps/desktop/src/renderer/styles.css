@@ -74,3 +74,5 @@
 @import "./styles/custom-pet-companion.css" layer(components);
 @import "./styles/workhub.css" layer(components);
 @import "./styles/astryx-mount.css" layer(components);
+
+@import "./styles/desktop-assistant.css" layer(components);

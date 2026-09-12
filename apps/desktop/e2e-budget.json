@@ -14,8 +14,8 @@
       "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
     },
     "new-task-reload.spec.ts": {
-      "tests": 1,
-      "electron": "renderer reload is the whole contract: an explicit new task must not reopen history"
+      "tests": 2,
+      "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
     },
     "partial-history-notice.spec.ts": {
       "tests": 1,
@@ -37,13 +37,17 @@
       "tests": 1,
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
     },
+    "session-local-recovery.spec.ts": {
+      "tests": 3,
+      "electron": "SQLite admission crosses preload and main, survives both renderer reload and complete Electron restart, and cached history must render when the live IPC endpoint is unavailable"
+    },
     "session-workbar.spec.ts": {
-      "tests": 6,
-      "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, a first send that has to reach the Host, and per-Session collapse persisted across a renderer reload; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"
+      "tests": 5,
+      "electron": "Git changes re-read on native window focus; terminal PTY ownership changes across Sessions; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings.spec.ts": {
-      "tests": 4,
-      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
+      "tests": 2,
+      "electron": "Code Mode reads back Host settings through IPC; opening Settings commits a pending title rename to the Host, with workbar hide/restore asserted in that same Session."
     },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
@@ -62,16 +66,20 @@
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
     "transcript-scroll-cost.spec.ts": {
-      "tests": 3,
-      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"
+      "tests": 1,
+      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Chromium containment and fixture motion run in the TranscriptRenderCost story."
     },
     "workhub-layout.spec.ts": {
-      "tests": 1,
-      "electron": "Coordination startup failure comes from the Host, and recovery needs a default model written back to it"
+      "tests": 2,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility and pointer dragging verifies model-wheel scrolling and release snapping; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
+      "tests": 1,
+      "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
+    },
+    "workhub-return-rail.spec.ts": {
       "tests": 2,
-      "electron": "delegation linkage is rebuilt by the Host across navigation and across Sessions"
+      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

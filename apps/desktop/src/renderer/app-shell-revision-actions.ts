@@ -81,8 +81,10 @@ export interface AppShellRevisionActions {
  *
  * If normal send fails after a revision was prepared, that version remains
  * active with the edited text and a second send retries there instead of
- * creating another version. Attachment-bearing source or retained context is
- * rejected until the revision copier can preserve those references losslessly.
+ * creating another version. Attachment-bearing source messages are rejected
+ * until the revision draft can carry their target-owned references (#5109);
+ * retained historical attachments are fine — the Host revision copier
+ * rewrites their Session refs losslessly.
  */
 export function createAppShellRevisionActions(deps: {
   uiLocale: UiLocale;
@@ -153,27 +155,10 @@ export function createAppShellRevisionActions(deps: {
       return;
     }
 
-    const turnOrder: string[] = [];
-    const seenTurns = new Set<string>();
-    const turnHasAttachments = new Set<string>();
-    for (const message of messages) {
-      const messageTurnId = (message as { turnId?: string }).turnId;
-      if (messageTurnId && !seenTurns.has(messageTurnId)) {
-        seenTurns.add(messageTurnId);
-        turnOrder.push(messageTurnId);
-      }
-      if (message.type === 'user' && message.attachments && message.attachments.length > 0) {
-        turnHasAttachments.add(message.turnId);
-      }
-    }
-    const sourceIndex = turnOrder.indexOf(turnId);
-    const retainedAttachmentTurn = turnOrder
-      .slice(0, Math.max(0, sourceIndex))
-      .find((candidate) => turnHasAttachments.has(candidate));
-    if (
-      (userMessage.attachments && userMessage.attachments.length > 0) ||
-      retainedAttachmentTurn
-    ) {
+    if (userMessage.attachments && userMessage.attachments.length > 0) {
+      // Attachment references are session-owned and their rewritten targets
+      // are not exposed to clients yet, so those stay explicitly rejected.
+      // Quotes never reach this point: chat-turn's editDisabled gate excludes them.
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
       return;
     }

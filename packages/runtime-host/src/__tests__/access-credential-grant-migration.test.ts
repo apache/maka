@@ -135,6 +135,30 @@ test('a released operation is dropped from the record and reported as accounted 
   assert.deepEqual(unresolvedPersistedGrants(file), []);
 });
 
+test('retired WorkHub grants are released without granting active-turn authority', async () => {
+  const original = storedCredential([
+    'host.status',
+    'workhub.coordination.act',
+    'workhub.coordination.record',
+  ]);
+  const path = await writeAccessFile({
+    schemaVersion: 3,
+    credentials: [original],
+    sessionGrants: [],
+    turnAccessRequests: [],
+  });
+
+  const file = await readAccessCredentialFile(path);
+  const credential = file.credentials[0];
+  assert.ok(credential);
+  assert.deepEqual(unresolvedPersistedGrants(file), []);
+  assert.deepEqual(effectiveOperationGrants(credential), ['host.status']);
+
+  await writeAccessCredentialFile(path, file);
+  const rewritten = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(rewritten.credentials, [{ ...original, operationGrants: ['host.status'] }]);
+});
+
 test('a Session Guest holds the current guest policy, not what its record says', async () => {
   const path = await writeAccessFile({
     schemaVersion: 3,

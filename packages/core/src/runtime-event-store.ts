@@ -157,6 +157,18 @@ export interface RuntimeEventStore {
     upToEventSeq?: number;
   }): Promise<ImmutableRuntimePrefixV1>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /**
+   * Renumber a Session's event ordinals in the order its invocations opened.
+   *
+   * Ordinals are minted at append time, which is the conversation's order for
+   * every run this build starts. It is not the order of a run converted from
+   * the legacy transcript: that turn was said before runs already on the
+   * ledger, and it is appended after them. The transcript conversion is the
+   * only caller and the only writer that can know this, and it runs while the
+   * Session still has no ordinal reader, so these numbers are recomputed
+   * rather than moved out from under anyone.
+   */
+  resequenceSessionEventOrdinals(sessionId: string): Promise<void>;
 }
 
 /** One invocation by run id, through the store's fast path when it has one. */

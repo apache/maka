@@ -17,14 +17,18 @@
  * under the License.
  */
 
-import type { WorkBoardStoreErrorCode } from '@maka/storage/work-board-store';
+import type { WorkBoardMutationOptions, WorkBoardStoreErrorCode } from '@maka/storage/work-board-store';
+export type { WorkBoardMutationOptions };
+
+export type WorkBoardErrorCode = WorkBoardStoreErrorCode | 'unknown';
 
 export type WorkBoardIpcResult<T> =
   | { readonly ok: true; readonly value: T }
   | {
       readonly ok: false;
-      readonly code: WorkBoardStoreErrorCode | 'unknown';
-      readonly message: string;
+      readonly error: {
+        readonly code: WorkBoardErrorCode;
+      };
     };
 
 export interface WorkBoardChangedEvent {

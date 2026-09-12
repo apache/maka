@@ -37,6 +37,7 @@ import { RuntimeKernel } from '../runtime-kernel.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { FakeBackend } from '../test-only/fake-backend.js';
 import { prepareConversationRuntimeLedgerCopy } from '../conversation-copy.js';
+import { projectRuntimeEventUserMessage } from '../runtime-event-read-model.js';
 
 for (const decision of [
   'commit',
@@ -130,7 +131,7 @@ for (const decision of [
         override async stop(): Promise<void> {
           executionAbort.abort();
         }
-      })({ sessionId: ctx.sessionId, header: ctx.header, store: ctx.store });
+      })({ sessionId: ctx.sessionId });
       fixtureBackend = backend;
       return backend;
     });
@@ -253,11 +254,17 @@ for (const decision of [
         events.some((event) => event.type === 'complete' || event.type === 'error'),
         false,
       );
+      const sourceEvents = await runtimeEventStore.readRuntimeEvents(session.id, 'original-run');
       await assert.rejects(
         prepareConversationRuntimeLedgerCopy({
           sourceSessionId: session.id,
-          sourceEvents: await runtimeEventStore.readRuntimeEvents(session.id, 'original-run'),
-          copiedMessages: await store.readMessages(session.id),
+          sourceEvents,
+          // The paused run carries no terminal status yet, so the read model
+          // refuses to project the Session; the copy only reads the Turn its
+          // messages name.
+          copiedMessages: sourceEvents
+            .map((event) => projectRuntimeEventUserMessage(event, event.id))
+            .filter((message) => message !== undefined),
           runStore,
           runtimeEventStore,
         }),

@@ -198,6 +198,8 @@ export interface ModelCallAttempt {
 
   /** Runtime tool-loop step index within the turn. */
   step: number;
+  /** Logical request-composition snapshot used by this step and all of its retries. */
+  requestCompositionId?: string;
   /** Retry ordinal within the logical call; 0 is the first dispatch. */
   attempt: number;
 
@@ -276,6 +278,7 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
   [
     'connectionSlug',
     'historyCompactRoute',
+    'requestCompositionId',
     'contextWindow',
     'captureArtifactId',
     'promptComposition',
@@ -553,6 +556,7 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
     isNonEmptyString(value.runId) &&
     isNonEmptyString(value.turnId) &&
     isNonNegativeInteger(value.step) &&
+    isOptionalString(value.requestCompositionId) &&
     isNonNegativeInteger(value.attempt) &&
     (MODEL_CALL_KINDS as readonly unknown[]).includes(value.callKind) &&
     (value.historyCompactRoute === undefined ||

@@ -116,9 +116,13 @@ function installCatalogRenderer(t: TestContext) {
       assert.ok(observation);
       return observation;
     },
-    async render(sessionId: string, skillCatalogRevision = 0) {
+    pendingRequestCount() {
+      return pending.length;
+    },
+    async render(sessionId: string, skillCatalogRevision = 0, projectPath?: string) {
       await act(() => root.render(createElement(ComposerMentionsProvider, {
         sessionId,
+        projectPath,
         skillCatalogRevision,
         children: createElement(Consumer, { sessionId }),
       })));
@@ -192,4 +196,20 @@ test('a same-context refresh keeps the settled skills visible until it resolves'
     loading: false,
     unavailable: false,
   });
+});
+
+test('resolving the project path for an existing session keeps its catalog settled', async (t) => {
+  const renderer = installCatalogRenderer(t);
+  await renderer.render('session-a');
+  await renderer.settleNext('session-a', [skillA]);
+
+  await renderer.render('session-a', 0, '/workspace/project-a');
+
+  assert.deepEqual(renderer.latest(), {
+    sessionId: 'session-a',
+    skills: [skillA],
+    loading: false,
+    unavailable: false,
+  });
+  assert.equal(renderer.pendingRequestCount(), 0);
 });

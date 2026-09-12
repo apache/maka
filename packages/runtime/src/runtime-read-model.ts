@@ -28,8 +28,8 @@ import type {
   CanonicalPermissionOutcomeRecord,
 } from './interaction-authority.js';
 import {
+  activePresentationRuntimeEvents,
   classifyRuntimeEventTerminalFact,
-  compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
   type RuntimeEventReadModelDiagnostic,
@@ -42,13 +42,8 @@ import {
 
 const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
 
-export interface RuntimeReadModelProjectionCache {
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
-}
-
 export interface RuntimeReadModelDeps {
   runtimeEventStore: RuntimeEventStore;
-  projectionCache?: RuntimeReadModelProjectionCache;
   canonicalPermissionOutcomes?: CanonicalPermissionOutcomeReader;
 }
 
@@ -132,29 +127,12 @@ export class RuntimeReadModel {
       }
 
       // No terminal event yet: the invocation is still open, or the process died
-      // holding it. Either way the ledger is the whole truth about it, so the
-      // in-flight projection cache supplies the rows a live turn has not
-      // committed instead of a status field claiming otherwise.
+      // holding it. Either way its own events are the whole truth about it, read
+      // as a running turn reads — the arriving text presented as settled. No
+      // durable ordinals exist for them yet, so they keep ledger order.
       if (!invocation.terminalEvent) {
-        diagnostics.push(
-          readModelDiagnostic(
-            'incomplete_event',
-            'active run is using the in-flight projection cache',
-            { runId: invocation.runId, turnId: invocation.turnId },
-          ),
-        );
         inFlightTurnIds.add(invocation.turnId);
-        if (!this.deps.projectionCache) {
-          throw new RuntimeReadModelError('RuntimeEvent ledger is incomplete for an active run', [
-            readModelDiagnostic(
-              'incomplete_event',
-              'active run has no stable RuntimeEvent read projection',
-              { runId: invocation.runId, turnId: invocation.turnId },
-            ),
-          ]);
-        }
-        const overlayEvents = runEvents.flatMap(activeInteractionOverlayEvent);
-        appendOrderedEvents(ordered, overlayEvents, runIndex);
+        appendOrderedEvents(ordered, activePresentationRuntimeEvents(runEvents), runIndex);
         continue;
       }
 
@@ -222,46 +200,12 @@ export class RuntimeReadModel {
       throw new RuntimeReadModelError('RuntimeEvent read projection is incomplete', diagnostics);
     }
 
-    const sessionId = input.invocations[0]?.sessionId;
-    let cachedMessages: StoredMessage[] | undefined;
-    if (sessionId && this.deps.projectionCache) {
-      try {
-        cachedMessages = await this.deps.projectionCache.readMessages(sessionId);
-      } catch (error) {
-        const diagnostic = readModelDiagnostic(
-          'unsupported_event',
-          'SessionProjectionCache.readMessages failed',
-          {
-            error: errorMessage(error),
-          },
-        );
-        diagnostics.push(diagnostic);
-        if (input.inFlightTurnIds && input.inFlightTurnIds.size > 0) {
-          throw new RuntimeReadModelError(
-            'RuntimeEvent active projection cache read failed',
-            diagnostics,
-          );
-        }
-      }
-    }
-
-    const messages =
-      input.inFlightTurnIds && input.inFlightTurnIds.size > 0
-        ? mergeInFlightProjectionCache(
-            projected.messages,
-            cachedMessages ?? [],
-            input.inFlightTurnIds,
-          )
-        : projected.messages;
-
-    diagnostics.push(
-      ...this.compareProjectionCache(messages, cachedMessages, canonicalPermissionRead.outcomes),
-    );
+    const messages = projected.messages;
 
     return {
       source: 'runtime_events',
       messages,
-      turns: deriveTurnRecords(messages),
+      turns: runningTurnRecords(deriveTurnRecords(messages), input.inFlightTurnIds),
       events: input.events,
       invocations: input.invocations,
       diagnostics,
@@ -315,82 +259,35 @@ export class RuntimeReadModel {
     );
     return { outcomes, diagnostics };
   }
-
-  private compareProjectionCache(
-    messages: readonly StoredMessage[],
-    cached: readonly StoredMessage[] | undefined,
-    canonicalPermissionOutcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>,
-  ): RuntimeEventReadModelDiagnostic[] {
-    if (!cached) return [];
-    const canonicalRequestIds = new Set(canonicalPermissionOutcomes.keys());
-    const excludesCanonicalPermission = (message: StoredMessage): boolean =>
-      message.type === 'permission_decision' && canonicalRequestIds.has(message.id);
-    return compareRuntimeReadModelMessages(
-      messages.filter((message) => !excludesCanonicalPermission(message)),
-      cached.filter((message) => !excludesCanonicalPermission(message)),
-    ).diagnostics;
-  }
 }
 
 /**
- * The interaction facts an active run must keep even while its messages come
- * from the in-flight projection cache. Permission prompts were always carried
- * here; sandbox boundary requests and decisions belong for the same reason
- * (#1612): they are the only durable record that a prompt was raised and how
- * it settled, so dropping them makes a pending request invisible to anything
- * reading the view instead of the live backend.
+ * A turn whose invocation has not ended is running.
+ *
+ * The transcript has no row that says so, and it should not: "still running" is
+ * the absence of the terminal event, read off the invocation itself. Rows are
+ * what the turn produced, and a turn that has produced an answer but not ended
+ * would otherwise read as finished.
  */
-function activeInteractionOverlayEvent(event: RuntimeEvent): RuntimeEvent[] {
-  const permissionRequest = event.actions?.permissionRequest;
-  const permissionAnswerAccepted = event.actions?.permissionAnswerAccepted;
-  const permissionClosureAccepted = event.actions?.permissionClosureAccepted;
-  const sandboxBoundaryRequest = event.actions?.stateDelta?.sandboxBoundaryRequest;
-  const sandboxBoundaryDecision = event.actions?.stateDelta?.sandboxBoundaryDecision;
-  if (
-    !permissionRequest &&
-    !permissionAnswerAccepted &&
-    !permissionClosureAccepted &&
-    sandboxBoundaryRequest === undefined &&
-    sandboxBoundaryDecision === undefined
-  ) {
-    return [];
+function runningTurnRecords(
+  turns: readonly TurnRecord[],
+  inFlightTurnIds: ReadonlySet<string> | undefined,
+): TurnRecord[] {
+  if (!inFlightTurnIds || inFlightTurnIds.size === 0) return [...turns];
+  const running = new Set(inFlightTurnIds);
+  const marked = turns.map((turn) => {
+    if (!running.delete(turn.turnId)) return turn;
+    return { ...turn, status: 'running' as const, statusSource: 'recorded' as const };
+  });
+  // An invocation that has opened but produced nothing yet still has a turn.
+  for (const turnId of running) {
+    marked.push({
+      turnId,
+      status: 'running',
+      statusSource: 'recorded',
+    });
   }
-  const overlay = { ...event };
-  delete overlay.content;
-  delete overlay.status;
-  const stateDelta = {
-    ...(sandboxBoundaryRequest !== undefined ? { sandboxBoundaryRequest } : {}),
-    ...(sandboxBoundaryDecision !== undefined ? { sandboxBoundaryDecision } : {}),
-  };
-  overlay.actions = {
-    ...(permissionRequest ? { permissionRequest } : {}),
-    ...(permissionAnswerAccepted ? { permissionAnswerAccepted } : {}),
-    ...(permissionClosureAccepted ? { permissionClosureAccepted } : {}),
-    ...(Object.keys(stateDelta).length > 0 ? { stateDelta } : {}),
-  };
-  return [overlay];
-}
-
-function mergeInFlightProjectionCache(
-  runtimeMessages: readonly StoredMessage[],
-  cachedMessages: readonly StoredMessage[],
-  inFlightTurnIds: ReadonlySet<string>,
-): StoredMessage[] {
-  const merged = runtimeMessages.map((message, index) => ({ message, index }));
-  const seenIds = new Set(runtimeMessages.map((message) => message.id));
-  for (const cached of cachedMessages) {
-    const turnId = messageTurnId(cached);
-    if (!turnId || !inFlightTurnIds.has(turnId) || seenIds.has(cached.id)) continue;
-    seenIds.add(cached.id);
-    merged.push({ message: cached, index: merged.length });
-  }
-  return merged
-    .sort((a, b) => a.message.ts - b.message.ts || a.index - b.index)
-    .map((entry) => entry.message);
-}
-
-function messageTurnId(message: StoredMessage): string | undefined {
-  return 'turnId' in message && typeof message.turnId === 'string' ? message.turnId : undefined;
+  return marked;
 }
 
 function readModelDiagnostic(

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+/// <reference lib="es2023.collection" />
+
 import { Context, type Fiber, FiberState, type Inject, type Plugin } from './plugin-kernel.js';
 import {
   fiberStateName,
@@ -70,7 +72,15 @@ export class MakaCompositionLoader {
   readonly #packages = new Map<string, MakaPluginPackage>();
   readonly #roots = new Map<MakaPluginRootId, LiveRoot>();
   readonly #entries = new Map<string, LiveEntry>();
-  readonly #isolationLabels = new Map<string, symbol>();
+  // Contexts and services can outlive their entries, so intern by symbol lifetime.
+  readonly #isolationLabels = new Map<string, WeakRef<symbol>>();
+  readonly #isolationLabelFinalizer = new FinalizationRegistry<{
+    label: string;
+    reference: WeakRef<symbol>;
+  }>(({ label, reference }) => {
+    // An old finalizer must not evict a newer incarnation of the same label.
+    if (this.#isolationLabels.get(label) === reference) this.#isolationLabels.delete(label);
+  });
   readonly #transaction?: (context: Context) => MakaPluginTransaction | undefined;
   #compositionGeneration = 0;
   #fiberGeneration = 0;
@@ -974,10 +984,12 @@ export class MakaCompositionLoader {
   }
 
   #isolationLabel(label: string): symbol {
-    let symbol = this.#isolationLabels.get(label);
+    let symbol = this.#isolationLabels.get(label)?.deref();
     if (!symbol) {
       symbol = Symbol(label);
-      this.#isolationLabels.set(label, symbol);
+      const reference = new WeakRef(symbol);
+      this.#isolationLabels.set(label, reference);
+      this.#isolationLabelFinalizer.register(symbol, { label, reference });
     }
     return symbol;
   }

@@ -40,14 +40,11 @@ import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
 import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
+import { readTextLineWindow } from './text-line-window.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-export type WorkspaceIsolationKind = ToolExecutionFacts['isolation'];
-export type WorkspaceWriteBackMode = ToolExecutionFacts['writeBack'];
-export type WorkspaceNetworkMode = ToolExecutionFacts['network'];
-export type WorkspaceSecretMode = ToolExecutionFacts['secrets'];
 export type WorkspaceExecutorFacts = ToolExecutionFacts;
 
 export const LOCAL_WORKSPACE_EXECUTOR_FACTS: WorkspaceExecutorFacts = {
@@ -328,11 +325,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       return await readWorkspaceImage(input.path);
     }
     const content = await fs.readFile(input.path, 'utf8');
-    if (input.offset === undefined && input.limit === undefined) return { content };
-    const lines = content.split('\n');
-    const start = input.offset ?? 0;
-    const end = input.limit ? start + input.limit : lines.length;
-    return { content: lines.slice(start, end).join('\n') };
+    return { content: readTextLineWindow(content, input.offset, input.limit) };
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {

@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  SESSION_CATALOG_PAGE_MAX_ITEMS,
+  type SessionCatalogQueryResult,
+  type SessionCatalogQueryInput,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,6 +68,7 @@ import {
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 type CatalogStores = HostSessionCatalogCoordinatorOptions['stores'];
+type CatalogTurnIndex = HostSessionCatalogCoordinatorOptions['turnIndex'];
 type RuntimePolicy = HostSessionCatalogCoordinatorOptions['runtimePolicy'];
 type ConfigurationAuthority = HostSessionCatalogCoordinatorOptions['manager'];
 type SessionContinuity = HostSessionCatalogCoordinatorOptions['continuity'];
@@ -104,8 +112,8 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
   }));
   const requestedLimits: number[] = [];
   const fixture = createFixture({
-    stores: {
-      readTurnContributionsSnapshot: async (_sessionId, _watermark, position, limit) => {
+    turnIndex: {
+      readDurableTurnContributions: async (_sessionId, _watermark, position, limit) => {
         requestedLimits.push(limit);
         const end = Math.min(position + limit, contributions.length);
         return {
@@ -146,6 +154,107 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
     contributions.map((contribution) => contribution.turnId),
   );
   assert.ok(requestedLimits.some((limit) => limit < 128));
+});
+
+test('read marker clears unread only at the ledger transcript tail', async () => {
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async () => ({
+        throughSequence: 1,
+        records: [
+          {
+            sequence: 1,
+            message: {
+              type: 'assistant',
+              id: 'message-2',
+              turnId: 'turn-1',
+              ts: 20,
+              text: 'answer',
+              modelId: 'fake-model',
+            },
+          },
+          {
+            sequence: 0,
+            message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
+          },
+        ],
+        nextPosition: null,
+      }),
+    },
+  });
+  const setReadMarker = async (readThroughMessageId: string) => {
+    const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+      { sessionId: fixture.sessionId, readThroughMessageId },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+    return outcome.result;
+  };
+
+  const behind = await setReadMarker('message-1');
+  assert.equal(behind.hasUnread, true);
+  assert.equal(behind.lastReadMessageId, undefined);
+
+  const caughtUp = await setReadMarker('message-2');
+  assert.equal(caughtUp.hasUnread, false);
+  assert.equal(caughtUp.lastReadMessageId, 'message-2');
+});
+
+test('read marker pages past a hidden tail to reach the newest visible message', async () => {
+  // A Turn that ends on tool traffic can put more hidden records at the tail
+  // than one page holds. Stopping at the page boundary would read the Session
+  // as never caught up and leave it unread for good.
+  const hiddenTail = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 2,
+        message: {
+          type: 'turn_state' as const,
+          id: 'turn-state-1',
+          turnId: 'turn-1',
+          ts: 30,
+          status: 'completed' as const,
+        },
+      },
+    ],
+    nextPosition: 1,
+  };
+  const visiblePage = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 1,
+        message: {
+          type: 'assistant' as const,
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 20,
+          text: 'answer',
+          modelId: 'fake-model',
+        },
+      },
+    ],
+    nextPosition: null,
+  };
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async (_sessionId, request) =>
+        request.position === undefined ? hiddenTail : visiblePage,
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+    { sessionId: fixture.sessionId, readThroughMessageId: 'message-2' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+  assert.equal(outcome.result.hasUnread, false);
+  assert.equal(outcome.result.lastReadMessageId, 'message-2');
 });
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
@@ -505,6 +614,40 @@ test('ordinary configuration rejects the WorkHub Coordination Session identity',
   });
   assert.equal(reads, 0);
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('WorkHub model authority preserves its execution policy and uses versioned runtime configuration', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+      orchestrationMode: 'default',
+      model: 'old-model',
+    },
+  });
+  const input = {
+    expectedRevision: fixture.revision(),
+    modelTarget: {
+      kind: 'explicit' as const,
+      connectionId: 'connection-1',
+      connectionSlug: 'test',
+      model: 'model-1',
+    },
+  };
+  const outcome = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(fixture.header().model, 'model-1');
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
+  assert.equal(fixture.header().orchestrationMode, 'default');
+  const stale = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(stale.ok && stale.result.kind, 'revision_conflict');
+  const corrupt = createFixture();
+  const rejected = await corrupt.coordinator.configureWorkHubModel(input);
+  assert.equal(rejected.ok, false);
+  assert.equal(corrupt.revision(), 3);
 });
 
 test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {
@@ -888,6 +1031,74 @@ test('creation rejects explore permission without a declared mode', async () => 
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('new tasks snapshot the current global Code Mode setting', async () => {
+  let enabled = true;
+  const runtimePolicy: RuntimePolicy = {
+    ...runtimePolicyFixture({}),
+    runtimePolicy: {
+      getSnapshot: async () => ({
+        revision: 1,
+        policy: {
+          ...createDefaultRuntimePolicy(),
+          chatDefaults: { permissionMode: 'ask', codeModeEnabled: enabled },
+        },
+      }),
+    },
+  };
+  const modes: unknown[] = [];
+  const fixture = createFixture({
+    runtimePolicy,
+    stores: {
+      createStableSession: async (request) => {
+        modes.push(request.input.toolMode);
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, []), 3),
+        };
+      },
+    },
+  });
+  for (const value of [true, false]) {
+    enabled = value;
+    const expectedMode = value ? 'code_mode' : 'direct';
+    assert.equal(
+      (await fixture.coordinator.resolveExternalSessionImportTarget()).toolMode,
+      expectedMode,
+    );
+    assert.equal((await fixture.coordinator.resolveDefaultCreateTarget()).toolMode, expectedMode);
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+  }
+  assert.deepEqual(modes, ['code_mode', 'direct']);
+  // A scheduled task carries its frozen mode through the internal creation
+  // path even when the user's global default has since changed.
+  await fixture.coordinator.createForHost(
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    'code_mode',
+  );
+  enabled = true;
+  await fixture.coordinator.createForHost(
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    'direct',
+  );
+  assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
+});
+
 test('creation materializes Deep Research semantics inside the Host transaction', async () => {
   let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
   const fixture = createFixture({
@@ -980,6 +1191,55 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(outcome.result.session.collaborationMode, 'plan');
   assert.equal(fixture.header().llmConnectionId, 'connection-1');
   assert.equal(fixture.header().collaborationMode, 'plan');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('permission-only Host updates select the live boundary transition path', async () => {
+  const observed: boolean[] = [];
+  const fixture = createFixture({
+    manager: {
+      transitionSessionConfiguration: async (_sessionId, input) => {
+        observed.push(input.permissionModeOnly);
+        if (!input.permissionModeOnly) {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session configuration cannot change while a linked Turn is active',
+          );
+        }
+        return headerSnapshot(
+          { ...fixture.header(), permissionMode: input.configuration.permissionMode },
+          fixture.revision() + 1,
+        );
+      },
+    },
+  });
+
+  const widening = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+  const mixed = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass', collaborationMode: 'plan' },
+    },
+    context,
+  );
+
+  assert.equal(widening.ok, true);
+  assert.deepEqual(mixed, {
+    ok: false,
+    error: {
+      code: 'session_busy',
+      message: 'Session configuration cannot change while a linked Turn is active',
+    },
+  });
+  assert.deepEqual(observed, [true, false]);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -1356,11 +1616,11 @@ test('same-workspace relocation still enters Runtime eligibility authority', asy
   });
 });
 
-test('catalog paging stops before the encoded 48 KiB result boundary', async () => {
-  const records = Array.from({ length: 32 }, (_, index) => {
+test('catalog paging preserves the byte-limited prefix and storage continuation cursor', async () => {
+  const records = Array.from({ length: 40 }, (_, index) => {
     const header = {
       ...sessionHeader(
-        `session-${index}`,
+        `session-${String(index).padStart(3, '0')}`,
         Array.from({ length: 32 }, (_, label) => `label-${label}-${'x'.repeat(110)}`),
       ),
       name: `Session ${index} ${'n'.repeat(280)}`,
@@ -1369,30 +1629,60 @@ test('catalog paging stops before the encoded 48 KiB result boundary', async () 
   });
   const fixture = createFixture({
     stores: {
-      listCatalogPage: async () => ({
-        kind: 'page',
-        revision: 'sha256:test',
-        records,
-        hasMore: false,
-      }),
+      listCatalogPage: async (_filter, cursor, limit) => {
+        const offset = cursor
+          ? records.findIndex((record) => record.header.id === cursor.sessionId) + 1
+          : 0;
+        return {
+          kind: 'page',
+          revision: 'sha256:test',
+          records: records.slice(offset, offset + limit),
+          hasMore: offset + limit < records.length,
+        };
+      },
     },
   });
-
-  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
-    { kind: 'list_start' },
-    context,
+  const pages: Extract<SessionCatalogQueryResult, { kind: 'page' }>[] = [];
+  let input: SessionCatalogQueryInput = { kind: 'list_start' };
+  let end = 0;
+  const cursorAt = (end: number) =>
+    end === records.length
+      ? null
+      : Buffer.from(
+          JSON.stringify({
+            version: 1,
+            activityAt: records[end - 1]!.activityAt,
+            sessionId: records[end - 1]!.header.id,
+          }),
+        ).toString('base64url');
+  do {
+    const outcome = await fixture.coordinator.handlers['session.catalog.query'](input, context);
+    assert.ok(outcome.ok && outcome.result.kind === 'page');
+    const page = outcome.result;
+    assert.ok(page.sessions.length > 0);
+    pages.push(page);
+    end += page.sessions.length;
+    assert.equal(page.nextCursor, cursorAt(end));
+    if (page.nextCursor === null) break;
+    input = { kind: 'list_continue', revision: page.revision, cursor: page.nextCursor };
+  } while (end < records.length);
+  const items = pages.flatMap((page) => page.sessions);
+  assert.deepEqual(
+    items.map((item) => item.id),
+    records.map((record) => record.header.id),
   );
-
-  assert.equal(outcome.ok, true);
-  if (!outcome.ok || outcome.result.kind !== 'page') {
-    assert.fail('Catalog query did not return a page');
-  }
-  assert.ok(outcome.result.sessions.length > 0);
-  assert.ok(outcome.result.sessions.length < records.length);
-  assert.ok(outcome.result.nextCursor);
   assert.ok(
-    Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= SESSION_CATALOG_RESULT_MAX_BYTES,
+    items.every((item) => !('kind' in item)),
+    'fixture must exercise ordinary Session projections',
   );
+  assert.ok(pages.length > 1);
+  assert.ok(pages[0]!.sessions.length < SESSION_CATALOG_PAGE_MAX_ITEMS);
+  assertMaximalJsonPages(pages, items, {
+    maxBytes: SESSION_CATALOG_RESULT_MAX_BYTES,
+    maxItems: SESSION_CATALOG_PAGE_MAX_ITEMS,
+    items: (page) => page.sessions,
+    candidate: (page, sessions, end) => ({ ...page, sessions, nextCursor: cursorAt(end) }),
+  });
 });
 
 test('rejects a legacy cursor that carries a Session catalog filter', async () => {
@@ -1596,6 +1886,7 @@ function createFixture(
     readonly labels?: readonly string[];
     readonly cwd?: string;
     readonly stores?: Partial<CatalogStores>;
+    readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
@@ -1628,17 +1919,10 @@ function createFixture(
       records: [catalogRecord(header, revision)],
       hasMore: false,
     }),
-    markSessionReadThroughMessage: async () => headerSnapshot(header, revision),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
-    readTurnContributionsSnapshot: async () => ({
-      throughSequence: null,
-      contributions: [],
-      nextPosition: null,
-    }),
-    readTurnLandmarksSnapshot: async () => ({ throughSequence: null, landmarks: [] }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);
@@ -1648,6 +1932,16 @@ function createFixture(
       return headerSnapshot(header, revision);
     },
     ...options.stores,
+  };
+  const turnIndex: CatalogTurnIndex = {
+    readDurableRecords: async () => ({ throughSequence: null, records: [], nextPosition: null }),
+    readDurableTurnContributions: async () => ({
+      throughSequence: null,
+      contributions: [],
+      nextPosition: null,
+    }),
+    readDurableTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
+    ...options.turnIndex,
   };
   const runtimePolicy = options.runtimePolicy ?? runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
@@ -1677,6 +1971,7 @@ function createFixture(
   };
   const coordinator = new HostSessionCatalogCoordinator({
     stores,
+    turnIndex,
     runtimePolicy,
     manager,
     admission: new SessionAdmissionGate(),

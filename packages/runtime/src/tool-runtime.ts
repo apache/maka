@@ -20,6 +20,7 @@
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import {
   type CreateSandboxBoundaryRequest,
   type ExecutionBoundary,
@@ -47,7 +48,6 @@ import type {
   ToolUncertainOutcomeSignal,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
-import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
   HostedFormSettlement,
   HostedInteractionBridge,
@@ -320,7 +320,6 @@ export interface MakaToolContext {
   ) => Promise<SandboxBoundarySettlement>;
 }
 
-export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
 /**
@@ -375,8 +374,8 @@ export interface ToolRuntimeInput {
   header: SessionHeader;
   connection: RuntimeExecutionConnection;
   modelId: string;
-  appendMessage: AppendMessageFn;
   readExecutionBoundary: () => Promise<ExecutionBoundary>;
+  readPermissionMode: () => Promise<PermissionMode>;
   createSandboxBoundaryRequest?: (
     input: CreateSandboxBoundaryRequest,
   ) => Promise<SandboxBoundaryRequest>;
@@ -602,6 +601,7 @@ export class ToolRuntime {
   private readonly durableToolAttempts = new Map<string, DurableToolAttempt>();
   private readonly activeToolSettlements = new Set<Promise<unknown>>();
   private readonly readExecutionBoundary: NonNullable<ToolRuntimeInput['readExecutionBoundary']>;
+  private readonly readPermissionMode: NonNullable<ToolRuntimeInput['readPermissionMode']>;
   private readonly stepAdmissions = new Map<
     string,
     { callCount: number; exclusiveToolName?: string }
@@ -609,6 +609,9 @@ export class ToolRuntime {
   constructor(private readonly input: ToolRuntimeInput) {
     if (!input.readExecutionBoundary) {
       throw new Error('ToolRuntime requires explicit execution boundary authority');
+    }
+    if (!input.readPermissionMode) {
+      throw new Error('ToolRuntime requires explicit permission mode authority');
     }
     const hosted = input.hostedInteraction;
     if (hosted && (hosted.sessionId !== input.sessionId || hosted.turnId !== input.turnId)) {
@@ -620,6 +623,23 @@ export class ToolRuntime {
     this.hostedInteraction = hosted;
     this.readExecutionBoundary = input.readExecutionBoundary;
     this.sandboxBoundaryDenied = input.inheritedSandboxBoundaryDenied === true;
+    this.readPermissionMode = input.readPermissionMode;
+  }
+
+  /**
+   * The permission mode in force for this dispatch.
+   *
+   * A Bypass boundary is an unambiguous live grant. A managed boundary is not:
+   * an approved path or network expansion changes its structural display mode
+   * without changing the mode the user selected. Keep that selection live in
+   * its own authority, then apply the collaboration overlay for this backend.
+   */
+  private async livePermissionMode(boundary: ExecutionBoundary): Promise<PermissionMode> {
+    const permissionMode = boundary.kind === 'bypass' ? 'bypass' : await this.readPermissionMode();
+    return resolveCollaborationPermissionMode({
+      collaborationMode: this.input.header.collaborationMode ?? 'agent',
+      permissionMode,
+    });
   }
 
   async endTurn(reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
@@ -1081,17 +1101,6 @@ export class ToolRuntime {
         this.input.sessionId,
       ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
     const durableOutcome = await durableAttempt?.commitOutcome(content, true, modelProjection);
-    const msg: ToolResultMessage = {
-      type: 'tool_result',
-      id: this.input.newId(),
-      turnId,
-      ts: this.input.now(),
-      toolUseId,
-      isError: true,
-      content,
-      ...activityIdentity,
-    };
-    await this.input.appendMessage(msg);
     queue.push({
       type: 'tool_result',
       id: durableOutcome?.id ?? this.input.newId(),
@@ -1285,29 +1294,6 @@ export class ToolRuntime {
       queue.push(event);
       callEventPublished = true;
     };
-    const callMsg: ToolCallMessage = {
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      ts: now,
-      toolName: tool.name,
-      ...activityIdentity,
-      ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
-      ...(tool.displayName ? { displayName: tool.displayName } : {}),
-      args: structuredClone(persistedArgs),
-      ...(ctx.providerOptions !== undefined
-        ? { providerOptions: structuredClone(ctx.providerOptions) }
-        : {}),
-      // Persist the same step id the tool_start event carries so the UI
-      // timeline and post-restart backfill can pair this call with its step.
-      ...(stepId !== undefined ? { stepId } : {}),
-    };
-    let callMessageAppended = false;
-    const appendCallMessage = async (): Promise<void> => {
-      if (callMessageAppended) return;
-      await this.input.appendMessage(callMsg);
-      callMessageAppended = true;
-    };
     const emitToolStartedTrace = (): void => {
       trace?.emit('tool', 'tool_started', 'Tool execution started', {
         toolUseId,
@@ -1324,7 +1310,6 @@ export class ToolRuntime {
       text: string,
       sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
     ): Promise<void> => {
-      await appendCallMessage();
       publishCallEvent(buildCallEvent('preflight'));
       emitToolStartedTrace();
       await this.writeSyntheticToolResult(
@@ -1495,10 +1480,12 @@ export class ToolRuntime {
     }
 
     let clientCapabilityBoundary: ExecutionBoundary | undefined;
+    let clientCapabilityPermissionMode: PermissionMode | undefined;
     let preparedExecution: PreparedMakaToolExecution | undefined;
     if (tool.hostAdmission === 'client_capability') {
       try {
         clientCapabilityBoundary = await this.readExecutionBoundary();
+        clientCapabilityPermissionMode = await this.livePermissionMode(clientCapabilityBoundary);
       } catch (error) {
         const reason = formatSyntheticToolErrorText(error);
         await refuseBeforeDispatch(reason);
@@ -1513,7 +1500,7 @@ export class ToolRuntime {
       }
       const admissionFailure = !tool.prepareExecution
         ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
-        : clientCapabilityBoundary.kind !== 'bypass' && this.input.header.permissionMode !== 'ask'
+        : clientCapabilityBoundary.kind !== 'bypass' && clientCapabilityPermissionMode !== 'ask'
           ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
           : undefined;
       if (admissionFailure) {
@@ -1542,7 +1529,7 @@ export class ToolRuntime {
           ...(runId ? { runId } : {}),
           cwd: this.input.header.cwd,
           executionBoundary: clientCapabilityBoundary,
-          permissionMode: this.input.header.permissionMode,
+          permissionMode: clientCapabilityPermissionMode,
           toolCallId: toolUseId,
           abortSignal: ctx.abortSignal,
         });
@@ -1627,7 +1614,6 @@ export class ToolRuntime {
       await disposeManagedMutationAdmission(managedMutationAdmission);
       throw error;
     }
-    await appendCallMessage();
     publishCallEvent(buildCallEvent('dispatch'));
     emitToolStartedTrace();
     if (durableAttempt) {
@@ -1664,6 +1650,8 @@ export class ToolRuntime {
       try {
         const runId = this.input.runId;
         const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
+        const permissionMode =
+          clientCapabilityPermissionMode ?? (await this.livePermissionMode(executionBoundary));
         const toolContext: MakaToolContext = {
           sessionId: this.input.sessionId,
           turnId,
@@ -1673,7 +1661,7 @@ export class ToolRuntime {
             : {}),
           cwd: this.input.header.cwd,
           executionBoundary,
-          permissionMode: this.input.header.permissionMode,
+          permissionMode,
           toolCallId: toolUseId,
           // The id the call event actually carries, not the candidate: by here
           // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
@@ -1939,18 +1927,6 @@ export class ToolRuntime {
             },
           );
         }
-        const resultMsg: ToolResultMessage = {
-          type: 'tool_result',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          isError: toolResultStatus !== 'success',
-          content,
-          durationMs,
-          ...activityIdentity,
-        };
-        await this.input.appendMessage(resultMsg);
         queue.push({
           type: 'tool_result',
           id: durableOutcome?.id ?? this.input.newId(),
@@ -2090,18 +2066,6 @@ export class ToolRuntime {
           modelProjection,
           durationMs,
         );
-        const resultMsg: ToolResultMessage = {
-          type: 'tool_result',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          isError: true,
-          content: terminalFailure.content,
-          durationMs,
-          ...activityIdentity,
-        };
-        await this.input.appendMessage(resultMsg);
         queue.push({
           type: 'tool_result',
           id: durableOutcome?.id ?? this.input.newId(),

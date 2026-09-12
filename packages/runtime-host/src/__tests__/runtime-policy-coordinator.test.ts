@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -368,17 +370,22 @@ test('production policy mutation drains and poisons activation when cached backe
     if (!started.ok) return;
     assert.equal(started.result.kind, 'started');
     if (started.result.kind !== 'started') return;
+    const host = composition;
     let snapshot = started.result.turn;
-    for (let attempt = 0; attempt < 100 && !isTerminalTurnStatus(snapshot.status); attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      const queried = await composition.handlers['turn.query'](
-        { sessionId: session.id, turnId: firstTurnId },
-        context,
-      );
-      assert.equal(queried.ok, true);
-      if (!queried.ok) return;
-      snapshot = queried.result;
-    }
+    await pollFor(
+      async () => {
+        if (isTerminalTurnStatus(snapshot.status)) return true;
+        const queried = await host.handlers['turn.query'](
+          { sessionId: session.id, turnId: firstTurnId },
+          context,
+        );
+        assert.equal(queried.ok, true);
+        if (!queried.ok) return false;
+        snapshot = queried.result;
+        return isTerminalTurnStatus(snapshot.status);
+      },
+      { timeoutMs: 5_000, pollMs: 20 },
+    );
     assert.equal(isTerminalTurnStatus(snapshot.status), true);
 
     disposalSpy = mock.method(FakeBackend.prototype, 'dispose', async () => {
@@ -1225,6 +1232,27 @@ test('reconstructs a large catalog with revision-pinned pages and rejects stale 
       pages.flatMap((page) => page.items),
       expectedCatalogItems(snapshot),
     );
+
+    const expectedItems = expectedCatalogItems(snapshot);
+    assertMaximalJsonPages(pages, expectedItems, {
+      maxBytes: CONNECTION_CATALOG_PAGE_MAX_BYTES,
+      maxItems: CONNECTION_CATALOG_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => {
+        const next = expectedItems[end];
+        const nextCursor =
+          next === undefined
+            ? null
+            : next.kind === 'connection'
+              ? { connectionIndex: next.connectionIndex, part: 'connection' }
+              : {
+                  connectionIndex: next.connectionIndex,
+                  part: next.kind,
+                  itemIndex: next.itemIndex,
+                };
+        return { ...page, items, nextCursor };
+      },
+    });
 
     const staleCursor = first.result.nextCursor;
     assert.ok(staleCursor);

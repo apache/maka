@@ -57,7 +57,6 @@ const backgroundUpdate: ShellRunUpdate = {
 function streamingTurn(text: string): LiveTurnProjection {
   return {
     turnId: 'turn-3',
-    phase: 'streamed',
     steps: [{
       stepId: 'step-1',
       contentOrder: ['text'],
@@ -91,19 +90,36 @@ describe('incremental transcript projection', () => {
 
     assert.equal(
       english[0]?.notes[0]?.text,
-      'Context compacted to keep this session within the model window.',
+      'Earlier context compacted.',
     );
     assert.equal(
       chinese[0]?.notes[0]?.text,
-      '已压缩较早的对话内容，以适应模型上下文窗口。',
+      '已压缩较早的上下文。',
     );
     assert.notStrictEqual(chinese, english);
+  });
+
+  test('a locale change updates the live context-compaction row text', () => {
+    const projection = createTranscriptProjection();
+    // Empty messages keep the settled turns reference stable (NO_TURNS) across
+    // the locale switch, so only the overlay locale guard can re-localize the
+    // live "compacting" row.
+    const liveTurn: LiveTurnProjection = {
+      turnId: 'turn-compact',
+      steps: [],
+      rootExecutionKind: 'context_compact',
+      startedAt: 1,
+    };
+    const english = projection.project({ sessionId: SESSION, messages: [], liveTurns: liveTurn ? [liveTurn] : undefined, locale: 'en' });
+    const chinese = projection.project({ sessionId: SESSION, messages: [], liveTurns: liveTurn ? [liveTurn] : undefined, locale: 'zh-CN' });
+    assert.equal(english[0]?.notes[0]?.text, 'Compacting context…');
+    assert.equal(chinese[0]?.notes[0]?.text, '正在压缩上下文…');
   });
 
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
     const projection = createTranscriptProjection();
     const messages = history();
-    const base = { locale: 'en' as const, sessionId: SESSION, messages, liveTurn: streamingTurn('he') };
+    const base = { locale: 'en' as const, sessionId: SESSION, messages, liveTurns: streamingTurn('he') ? [streamingTurn('he')] : undefined };
     const settled = projection.project({ ...base, shellRunUpdates: [backgroundUpdate] });
 
     // A new update object carrying an already-merged revision says nothing new.
@@ -184,7 +200,7 @@ describe('incremental transcript projection', () => {
       locale: 'en',
       sessionId: SESSION,
       messages: [...history(), { type: 'user', id: 'u3', turnId: 'turn-3', ts: 7, text: 'third' }],
-      liveTurn: streamingTurn('half an ans'),
+      liveTurns: streamingTurn('half an ans') ? [streamingTurn('half an ans')] : undefined,
     });
     assert.equal(live[2]?.timeline.some((item) => item.kind === 'text' && item.live === true), true);
 
@@ -264,7 +280,7 @@ describe('incremental transcript projection', () => {
       locale: 'en',
       sessionId: SESSION,
       messages: counted,
-      liveTurn: streamingTurn('h'),
+      liveTurns: streamingTurn('h') ? [streamingTurn('h')] : undefined,
       shellRunUpdates: [backgroundUpdate],
     });
     // Bounded, not merely non-zero: the first projection walks the log a small
@@ -280,7 +296,7 @@ describe('incremental transcript projection', () => {
         locale: 'en',
         sessionId: SESSION,
         messages: counted,
-        liveTurn: streamingTurn(text),
+        liveTurns: streamingTurn(text) ? [streamingTurn(text)] : undefined,
         shellRunUpdates: [backgroundUpdate],
       });
     }
@@ -386,15 +402,14 @@ describe('incremental transcript projection', () => {
       locale: 'en',
       sessionId: SESSION,
       messages: [],
-      liveTurn: {
+      liveTurns: [{
         turnId: 'turn-live',
-        phase: 'streamed',
         steps: [{
           stepId: 'tool:bash-live',
           contentOrder: ['tools'],
           tools: [{ toolUseId: 'bash-live', toolName: 'Bash', status: 'running', args: { command: 'job', pty: true } }],
         }],
-      },
+      }],
       shellRunUpdates: [{
         sessionId: SESSION,
         ownership: { kind: 'source_owned', sourceSessionId: 'source', ownerSessionId: 'source' },
@@ -418,7 +433,7 @@ describe('turn identity moves across structural change classes', () => {
   const base: StoredMessage[] = [
     { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask' },
     { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-1' },
-    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', partialOutputRetained: false },
+    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed' },
   ];
 
   const cases: Array<{
@@ -435,8 +450,13 @@ describe('turn identity moves across structural change classes', () => {
       field: 'status',
       refresh: [
         ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', partialOutputRetained: false },
+        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed' },
       ],
+    },
+    {
+      field: 'failureMessage',
+      from: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit' }],
+      refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
     },
     {
       field: 'assistant',

@@ -56,19 +56,19 @@ test('GitHub output matches the selections consumed by CI', () => {
   assert.deepEqual(outputKeys, consumedKeys);
 });
 
-test('one unconditional job carries the required context on every pull request', () => {
+test('one job remains the only required-check authority', () => {
   const workflow = readWorkflow('ci.yml');
 
   // `.asf.yaml` requires `test`. A paths filter would stop the workflow and
-  // leave that check pending forever, and a second job would make the same
-  // pull request queue for a scarce runner twice to reach one verdict.
+  // leave that check pending forever, and a second job would create another
+  // authority. Metadata-only edits may skip this job under a different name;
+  // the retarget contract below proves that exception cannot impersonate it.
   assert.doesNotMatch(triggerBlock('ci.yml'), /\bpaths(-ignore)?:/u);
 
   const jobsBlock = workflow.slice(workflow.indexOf('\njobs:'));
   const jobs = [...jobsBlock.matchAll(/^ {2}([a-z0-9_-]+):$/gmu)].map((match) => match[1]);
   assert.deepEqual(jobs, ['test']);
   assert.doesNotMatch(jobsBlock, /^ {4}needs:/mu);
-  assert.doesNotMatch(jobsBlock, /^ {4}if:/mu);
 });
 
 test('comparison precedes planning and every later gate uses plan outputs', () => {
@@ -114,6 +114,25 @@ test('every core diff gate consumes the shared comparison without resolving anot
     );
   }
   assert.match(workflow, /HEAD_SHA: \$\{\{ steps\.comparison\.outputs\.head \}\}/u);
+});
+
+test('core CI runs on base retargets without letting metadata edits replace the required check', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.match(workflow, /types: \[opened, synchronize, reopened, edited\]/u);
+  assert.match(
+    workflow,
+    /group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\$\{\{ github\.event\.action == 'edited' && github\.event\.changes\.base\.ref\.from == '' && format\('-ignored-\{0\}', github\.run_id\) \|\| '' \}\}/u,
+  );
+  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
+  assert.match(
+    workflow,
+    /name: \$\{\{ github\.event_name == 'pull_request' && github\.event\.action == 'edited' && github\.event\.changes\.base\.ref\.from == '' && 'ignored-edit' \|\| 'test' \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /if: \$\{\{ github\.event_name != 'pull_request' \|\| github\.event\.action != 'edited' \|\| github\.event\.changes\.base\.ref\.from != '' \}\}/u,
+  );
 });
 
 test('core CI uses the Windows inventory package-script authority', () => {
@@ -475,6 +494,13 @@ test('Rust build caches publish immutable source generations only from the defau
       name,
     );
     assert.doesNotMatch(workflow, /kache report [^\n]*--since/u, name);
+    const reports = [...workflow.matchAll(/^\s+(?:run: )?(kache report[^\n]*)$/gmu)].map(
+      ([, command]) => command,
+    );
+    assert.equal(reports.length, 1, name);
+    // The report must reach the raw log, not only the rendered summary panel.
+    assert.equal(reports[0], 'kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"', name);
+    assert.match(workflow, /run: \|\n\s+set -o pipefail\n\s+kache report/u, name);
   }
 });
 
@@ -906,8 +932,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 91/u);
-  assert.match(recovery, /# pass 91/u);
+  assert.match(recovery, /# tests 93/u);
+  assert.match(recovery, /# pass 93/u);
   assert.match(recovery, /# skipped 0/u);
 });
 
@@ -953,6 +979,16 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
     'python3 harbor/test_egress_filter_live.py',
   );
   assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
+});
+
+test('core CI rebuilds the DeepSeek Harness tree before accepting a new fingerprint', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.match(workflow, /name: Verify DeepSeek Harness toolchain fingerprint/u);
+  assert.match(workflow, /if: steps\.plan\.outputs\.deepseek_harness_toolchain == 'true'/u);
+  assert.match(workflow, /prepare-deepseek-harness-toolchain\.mjs --out/u);
+  assert.match(workflow, /TOOLCHAIN_IDENTITIES\["deepseek-harness"\]\.fingerprint/u);
+  assert.match(workflow, /cd "\$toolchain_root" && sha256sum --check --quiet checksums\.sha256/u);
 });
 
 test('everything that runs before dependency setup imports only node builtins', () => {

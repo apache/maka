@@ -426,6 +426,7 @@ export class ProviderRequestTracker {
    * that call, not new calls, so they share this id.
    */
   private readonly logicalCallIdByStep = new Map<number, string>();
+  private readonly requestCompositionIdByStep = new Map<number, string>();
 
   constructor(private readonly input: ProviderRequestTrackerInput) {}
 
@@ -433,8 +434,11 @@ export class ProviderRequestTracker {
     return this.input.traceId;
   }
 
-  setStep(step: number): void {
+  setStep(step: number, requestCompositionId?: string): void {
     this.step = step;
+    if (requestCompositionId !== undefined) {
+      this.requestCompositionIdByStep.set(step, requestCompositionId);
+    }
   }
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
@@ -603,6 +607,9 @@ export class ProviderRequestTracker {
             ? { connectionSlug: accounting.connectionSlug }
             : {}),
           step: Math.max(0, step),
+          ...(this.requestCompositionIdByStep.get(step)
+            ? { requestCompositionId: this.requestCompositionIdByStep.get(step) }
+            : {}),
           attempt: Math.max(0, attempt - 1),
           callKind: accounting.callKind,
           ...((input.historyCompactRoute ?? accounting.historyCompactRoute) !== undefined

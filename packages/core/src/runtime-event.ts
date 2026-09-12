@@ -33,6 +33,7 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -68,7 +69,11 @@ import {
   type OrchestrationMode,
 } from './orchestration.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
-import type { PersistedBackendKind } from './session.js';
+import {
+  isRuntimeSystemNoteKind,
+  type PersistedBackendKind,
+  type RuntimeSystemNoteKind,
+} from './session.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
@@ -224,6 +229,22 @@ export interface RuntimeEventFunctionResponseContent {
   modelProjection?: DurableToolResultProjection;
 }
 
+/**
+ * A note the runtime wrote about what happened during an invocation — context
+ * was compacted, the step cap was reached, the turn was aborted.
+ *
+ * It is a transcript row, not a model-facing payload: nothing replays it to a
+ * provider. It lives here because it is a fact of the invocation, and the
+ * invocation's events are the only record of those. Notes that happen between
+ * turns have no invocation, so they stay Session transcript rows.
+ */
+export interface RuntimeEventSystemNoteContent {
+  kind: 'system_note';
+  note: RuntimeSystemNoteKind;
+  /** Shape depends on `note`, exactly as it does on the transcript row. */
+  data?: unknown;
+}
+
 export interface RuntimeEventErrorContent {
   kind: 'error';
   retry?: ModelRetryDecision;
@@ -356,6 +377,7 @@ export type RuntimeEventContent =
   | RuntimeEventFunctionCallContent
   | RuntimeEventFunctionResponseContent
   | RuntimeEventErrorContent
+  | RuntimeEventSystemNoteContent
   | RuntimeEventInvocationOpenedContent;
 
 export const RUNTIME_EVENT_CONTENT_KINDS = [
@@ -364,6 +386,7 @@ export const RUNTIME_EVENT_CONTENT_KINDS = [
   'function_call',
   'function_response',
   'error',
+  'system_note',
   'invocation_opened',
 ] as const;
 export type RuntimeEventContentKind = (typeof RUNTIME_EVENT_CONTENT_KINDS)[number];
@@ -384,6 +407,12 @@ export interface RuntimeEventTokenUsage extends TokenUsageFields {}
  */
 export interface RuntimeEventPermissionDecision extends PermissionResponse {
   toolName?: string;
+  /**
+   * What the prompt told the user they were approving. Normally read off the
+   * paired request; carried here when the decision is the only surviving
+   * evidence that the prompt happened.
+   */
+  hint?: string;
 }
 
 export const TOOL_BOUNDARY_PROTOCOL_V1 = 't1_after_preflight_v1' as const;
@@ -508,6 +537,8 @@ export interface RuntimeEventPermissionClosureAccepted {
  * event without `actions.endInvocation` MUST assert a terminal `status`.
  */
 export interface RuntimeEventActions {
+  /** Host coordination receipt linked to this admitted Run. */
+  coordination?: WorkHubActionReceipt;
   /** Durable physical pause; does not complete or cancel the owning logical Turn. */
   handoffPause?: RuntimeHandoffPause;
   /** Patch applied to invocation-scoped runtime state. */
@@ -717,6 +748,10 @@ const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
   ['code', 'reason', 'details', 'retry'],
 );
+const SYSTEM_NOTE_CONTENT_SHAPE = defineObjectShape<RuntimeEventSystemNoteContent>()(
+  ['kind', 'note'],
+  ['data'],
+);
 const INVOCATION_OPENED_CONTENT_SHAPE = defineObjectShape<RuntimeEventInvocationOpenedContent>()(
   ['kind', 'protocol', 'route', 'configuration', 'root', 'source'],
   ['lineage'],
@@ -806,6 +841,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
   [
     'handoffPause',
+    'coordination',
     'stateDelta',
     'artifactDelta',
     'permissionRequest',
@@ -840,7 +876,7 @@ const PERMISSION_CLOSURE_ACCEPTED_SHAPE =
   defineObjectShape<RuntimeEventPermissionClosureAccepted>()(['requestId', 'reason'], []);
 const RUNTIME_PERMISSION_DECISION_SHAPE = defineObjectShape<RuntimeEventPermissionDecision>()(
   ['requestId', 'decision'],
-  ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'toolName'],
+  ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'toolName', 'hint'],
 );
 const UTF8 = new TextEncoder();
 const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>()(
@@ -1061,6 +1097,12 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.message === 'string' &&
         (value.details === undefined || isStringArray(value.details) || isRecord(value.details))
       );
+    case 'system_note':
+      return (
+        hasExactShape(value, SYSTEM_NOTE_CONTENT_SHAPE) &&
+        typeof value.note === 'string' &&
+        isRuntimeSystemNoteKind(value.note)
+      );
     case 'invocation_opened':
       return isRuntimeInvocationOpened(value);
     default:
@@ -1234,6 +1276,7 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
   }
   return (
     (value.handoffPause === undefined || isRuntimeHandoffPause(value.handoffPause)) &&
+    (value.coordination === undefined || isWorkHubActionReceipt(value.coordination)) &&
     (value.stateDelta === undefined || isRecord(value.stateDelta)) &&
     (value.artifactDelta === undefined ||
       (isRecord(value.artifactDelta) &&
@@ -1312,7 +1355,8 @@ function isRuntimeEventPermissionDecision(value: unknown): value is RuntimeEvent
     (value.toolName === undefined ||
       (typeof value.toolName === 'string' &&
         value.toolName.length > 0 &&
-        UTF8.encode(value.toolName).byteLength <= INTERACTION_TOOL_NAME_MAX_BYTES))
+        UTF8.encode(value.toolName).byteLength <= INTERACTION_TOOL_NAME_MAX_BYTES)) &&
+    isOptionalString(value.hint)
   );
 }
 
@@ -1531,6 +1575,7 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
     case 'function_response':
       return true;
     case 'error':
+    case 'system_note':
     case 'invocation_opened':
       return false;
   }

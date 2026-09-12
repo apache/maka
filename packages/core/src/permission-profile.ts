@@ -153,6 +153,26 @@ export function isReadOnlyPermissionProfile(profile: PermissionProfileManaged): 
   );
 }
 
+/**
+ * True only for the canonical Explore policy, independently of its display name.
+ * A read-only profile may still grant extra read paths that restoring Explore
+ * would revoke. Treat every other policy conservatively as a possible narrowing.
+ * Storage and Runtime must agree on which policy an Explore reset preserves.
+ */
+export function isCanonicalReadOnlyPermissionProfile(profile: PermissionProfileManaged): boolean {
+  const { fileSystem, network } = profile;
+  const entry = fileSystem.entries[0];
+  return (
+    fileSystem.kind === 'restricted' &&
+    fileSystem.protectedMetadata === undefined &&
+    fileSystem.entries.length === 1 &&
+    entry?.kind === 'special' &&
+    entry.access === 'read' &&
+    entry.special === ':workspace_roots' &&
+    network.kind === 'restricted'
+  );
+}
+
 export function createWorkspaceWritePermissionProfile(): PermissionProfileManaged {
   return {
     type: 'managed',

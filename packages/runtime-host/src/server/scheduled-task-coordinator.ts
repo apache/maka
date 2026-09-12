@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
@@ -63,8 +65,10 @@ import {
 } from '../protocol/index.js';
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
+import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NATIVE_PROVIDER_RETRY_MS = 5_000;
@@ -93,11 +97,11 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly root: ScheduledTaskRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly nativeEffects: ScheduledTaskNativeEffects;
-  readonly createSession: (input: SessionCreateInput) => Promise<void>;
+  readonly createSession: (input: SessionCreateInput, toolMode: ToolMode) => Promise<void>;
   readonly changes: {
     publish(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void;
   };
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -143,7 +147,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   readonly #nativeEffects: ScheduledTaskNativeEffects;
   readonly #createSession: HostScheduledTaskCoordinatorInput['createSession'];
   readonly #changes: HostScheduledTaskChangeServiceLike;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostScheduledTaskCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #newId: () => string;
@@ -561,24 +565,32 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   }
 
   async #refresh(): Promise<void> {
-    await this.#exclusive(async () => {
-      if (this.#handoffHeld || this.#draining) return;
-      for (const claim of await this.#store.listPendingFires()) {
-        if (this.#handoffHeld || this.#draining) break;
-        if (claim.nativeState === 'waiting_for_provider') {
-          await this.#fulfill(claim, true);
+    if (this.#handoffHeld || this.#draining) return;
+    // Cover claim admission, native delivery, and persistence, while an idle
+    // schedule or a read-only catalog query does not claim active work.
+    const residency = this.#acquireResidency();
+    try {
+      await this.#exclusive(async () => {
+        if (this.#handoffHeld || this.#draining) return;
+        for (const claim of await this.#store.listPendingFires()) {
+          if (this.#handoffHeld || this.#draining) break;
+          if (claim.nativeState === 'waiting_for_provider') {
+            await this.#fulfill(claim, true);
+          }
         }
-      }
-      while (!this.#draining && !this.#handoffHeld) {
-        const scan = await this.#store.claimNextDue(this.#now());
-        for (const expired of scan.expired) this.#publish('updated', expired.id);
-        const claim = scan.claim;
-        if (!claim) break;
-        await this.#refreshResidency();
-        await this.#fulfill(claim, false);
-      }
-      await this.#refreshSchedule();
-    });
+        while (!this.#draining && !this.#handoffHeld) {
+          const scan = await this.#store.claimNextDue(this.#now());
+          for (const expired of scan.expired) this.#publish('updated', expired.id);
+          const claim = scan.claim;
+          if (!claim) break;
+          await this.#refreshResidency();
+          await this.#fulfill(claim, false);
+        }
+        await this.#refreshSchedule();
+      });
+    } finally {
+      residency.release();
+    }
   }
 
   async #fulfill(
@@ -713,25 +725,30 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     } catch (error) {
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
     }
-    await this.#createSession({
-      sessionId: identity.sessionId,
-      workspace:
-        execution.projectId != null && execution.projectId !== ''
-          ? { kind: 'project', projectId: execution.projectId }
-          : { kind: 'host_path', path: execution.cwd },
-      name: task.title,
-      labels: ['scheduled-task'],
-      modelTarget: {
-        kind: 'explicit',
-        connectionId: connection.connectionId,
-        connectionSlug: execution.llmConnectionSlug,
-        model: execution.model,
+    await this.#createSession(
+      {
+        sessionId: identity.sessionId,
+        workspace:
+          execution.projectId != null && execution.projectId !== ''
+            ? { kind: 'project', projectId: execution.projectId }
+            : { kind: 'host_path', path: execution.cwd },
+        name: task.title,
+        labels: ['scheduled-task'],
+        modelTarget: {
+          kind: 'explicit',
+          connectionId: connection.connectionId,
+          connectionSlug: execution.llmConnectionSlug,
+          model: execution.model,
+        },
+        ...(execution.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: execution.thinkingLevel }),
+        permissionMode: execution.permissionMode,
+        collaborationMode: execution.collaborationMode,
+        orchestrationMode: execution.orchestrationMode,
       },
-      ...(execution.thinkingLevel === undefined ? {} : { thinkingLevel: execution.thinkingLevel }),
-      permissionMode: execution.permissionMode,
-      collaborationMode: execution.collaborationMode,
-      orchestrationMode: execution.orchestrationMode,
-    });
+      execution.toolMode ?? DEFAULT_TOOL_MODE,
+    );
   }
 
   async #resolveAgentRunConnection(
@@ -876,7 +893,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       !this.#draining &&
       (claims.length > 0 ||
         tasks.some((task) => task.status === 'active' && task.nextFireAt !== null));
-    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency();
+    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency('idle');
     if (!shouldHold) this.#releaseResidency();
   }
 
@@ -940,6 +957,7 @@ function executionTemplateFromHeader(header: SessionHeader): ScheduledTaskExecut
     permissionMode: header.permissionMode,
     collaborationMode: header.collaborationMode ?? 'agent',
     orchestrationMode: header.orchestrationMode ?? 'default',
+    toolMode: header.toolMode ?? DEFAULT_TOOL_MODE,
   };
 }
 
@@ -949,19 +967,18 @@ function createScheduledTaskPage(
   offset: number,
 ) {
   const page: ScheduledTask[] = [];
+  const budget = new JsonArrayPageBudget(SCHEDULED_TASK_RESULT_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    tasks: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < tasks.length; index += 1) {
     if (page.length >= SCHEDULED_TASK_PAGE_MAX_ITEMS) break;
     const task = tasks[index];
     if (!task) throw new Error('ScheduledTask page index is invalid');
-    const candidate = [...page, task];
-    const nextOffset = offset + candidate.length;
-    const result = {
-      kind: 'page' as const,
-      revision,
-      tasks: candidate,
-      nextCursor: nextOffset < tasks.length ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > SCHEDULED_TASK_RESULT_MAX_BYTES) {
+    const nextOffset = offset + page.length + 1;
+    if (!budget.tryAppend(task, nextOffset < tasks.length ? String(nextOffset) : null)) {
       break;
     }
     page.push(task);

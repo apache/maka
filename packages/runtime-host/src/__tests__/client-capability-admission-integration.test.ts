@@ -150,9 +150,9 @@ test('cancels managed approval owners and joiners with the canonical provider id
         header: sessionHeader(),
         connection: llmConnection(),
         modelId: 'model-1',
-        appendMessage: async () => undefined,
         readExecutionBoundary: async () =>
           createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+        readPermissionMode: async () => 'ask',
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,

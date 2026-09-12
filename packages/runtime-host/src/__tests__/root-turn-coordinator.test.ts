@@ -20,6 +20,12 @@
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import { GoalManager } from '@maka/runtime/goal-state';
+import {
+  GoalContinuationCoordinator,
+  volatileGoalDurability,
+} from '@maka/runtime/goal-continuation';
+import { HostGoalExecutionCoordinator } from '../server/goal-execution-coordinator.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import {
@@ -101,6 +107,7 @@ import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import {
   continuationSafetyDigest,
   RootTurnCoordinator,
+  type HostWorkHubRoutingDecisionPreparation,
   type TurnStartOutcome,
 } from '../server/root-turn-coordinator.js';
 import {
@@ -112,6 +119,7 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import { HostTurnControlCoordinator } from '../server/turn-control-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { PROCESS_TIMEOUT_MS } from './fixtures/execution-host-suite.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
@@ -134,6 +142,148 @@ function assertStartedTurn(outcome: TurnStartOutcome): asserts outcome is Starte
   if (!outcome.ok || outcome.result.kind !== 'started') {
     assert.fail('Expected a started Turn outcome');
   }
+}
+
+for (const cancel of [false, true]) {
+  test(`Goal admission retains activity across the Session gate (${cancel ? 'cancel' : 'complete'})`, async () => {
+    const admissionGate = deferred<void>();
+    const backendStarted = deferred<void>();
+    const finishBackend = deferred<void>();
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            new (class extends FakeBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                backendStarted.resolve();
+                await finishBackend.promise;
+                yield* super.send(input);
+              }
+            })(context),
+        ),
+    });
+    const goals = new GoalManager({ generateId: randomUUID, now: Date.now });
+    const executions = new HostGoalExecutionCoordinator({
+      executions: fixture.coordinator,
+      runtime: fixture.manager,
+      matchesActive: (sessionId, checkpoint, lease) =>
+        goals.matchesActive(sessionId, checkpoint) && goals.matchesControlLease(sessionId, lease),
+    });
+    let goalActivities = 0;
+    const continuation = new GoalContinuationCoordinator({
+      goalManager: goals,
+      acquireActivity: () => {
+        goalActivities++;
+        const residency = fixture.acquireResidency();
+        return {
+          release: () => {
+            goalActivities--;
+            residency.release();
+          },
+        };
+      },
+      evaluator: {
+        evaluate: async () =>
+          '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"done"}',
+      },
+      getRecentContext: async () => '',
+      durability: volatileGoalDurability,
+      admitTurn: (...args) => executions.admitTurn(...args),
+    });
+    const blocker = fixture.sessionAdmission.run(fixture.sessionId, () => admissionGate.promise);
+    try {
+      const queued = fixture.sessionAdmission.waitForNextQueuedRun();
+      goals.create(fixture.sessionId, 'finish work');
+      continuation.recoverActiveGoal(fixture.sessionId);
+      await queued;
+      await waitUntil(() => goalActivities === 0);
+      assert.equal(
+        fixture.liveResidencies(),
+        1,
+        'Hosted admission must own activity after the Goal drain has finished',
+      );
+
+      if (cancel) goals.pause(fixture.sessionId);
+      admissionGate.resolve();
+      await blocker;
+      if (!cancel) {
+        await backendStarted.promise;
+        // Admission must release its temporary lease while the execution remains live.
+        await waitUntil(() => fixture.liveResidencies() === 1);
+        const hold = continuation.holdForHandoff();
+        assert.ok(hold);
+        await withTimeout(hold.settled(), 1_000, 'Goal handoff must not await the full execution');
+        finishBackend.resolve();
+        await fixture.coordinator.whenIdle(fixture.sessionId);
+        hold.release();
+      }
+      await waitUntil(() => fixture.liveResidencies() === 0);
+      assert.equal(fixture.drainRequested(), false);
+      assert.equal(goals.get(fixture.sessionId)?.status, cancel ? 'paused' : 'achieved');
+    } finally {
+      admissionGate.resolve();
+      finishBackend.resolve();
+      await blocker;
+      executions.beginDrain();
+      await continuation.close();
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
+}
+
+for (const prepared of [false, true]) {
+  test(`Hosted admission releases activity after a rejected gate (${prepared ? 'prepared' : 'direct'})`, async () => {
+    const gate = deferred<'executing' | 'cancelled'>();
+    const entered = deferred<void>();
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: randomUUID(),
+      runId: randomUUID(),
+      userMessageId: randomUUID(),
+      execution: { kind: 'goal' as const, goalId: randomUUID() },
+      content: { text: 'continue' },
+      admitExecution: () => {
+        entered.resolve();
+        return gate.promise;
+      },
+      start: () => assert.fail('Rejected admission must never start execution'),
+    };
+    const preparation = prepared ? fixture.coordinator.prepare(fixture.sessionId) : undefined;
+    if (preparation) assert.equal(preparation.kind, 'prepared');
+    const admission =
+      preparation?.kind === 'prepared'
+        ? preparation.admission.admit(input)
+        : fixture.coordinator.admit(input);
+    const rejected = assert.rejects(admission, /admission gate failed/);
+    try {
+      await entered.promise;
+      assert.equal(fixture.liveResidencies(), 1);
+      gate.reject(new Error('admission gate failed'));
+      await rejected;
+      assert.equal(fixture.liveResidencies(), 0);
+      assert.equal(fixture.coordinator.whenIdle(fixture.sessionId), undefined);
+      assert.equal(fixture.drainRequested(), false);
+      // A consumed preparation rejects without acquiring a second lease.
+      if (preparation?.kind === 'prepared') {
+        await assert.rejects(preparation.admission.admit(input), /already consumed/);
+        preparation.admission.release();
+        assert.equal(fixture.liveResidencies(), 0);
+      }
+    } finally {
+      gate.reject(new Error('admission gate failed'));
+      await rejected;
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
 }
 
 test('turn.start rejects the reserved WorkHub Coordination Session identity', async () => {
@@ -410,9 +560,9 @@ test('uses the submitted Turn identity for the canonical external user message',
     assertStartedTurn(started);
     await fixture.coordinator.whenIdle(fixture.sessionId);
 
-    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.type === 'user' && message.turnId === turnId,
-    );
+    const user = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === turnId);
     assert.equal(user?.id, turnId);
   } finally {
     await fixture.coordinator.close();
@@ -480,7 +630,7 @@ test('startup recovery replays one admitted safe-boundary continuation without a
       'completed',
     );
     assert.equal(
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)).some(
         (message) => message.type === 'user' && message.turnId === pending.targetTurnId,
       ),
       false,
@@ -521,14 +671,6 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
       admittedAt,
     });
     assert.equal(admission.kind, 'admitted');
-    await fixture.stores.sessionStore.appendMessage(fixture.sessionId, {
-      type: 'user',
-      id: userMessageId,
-      turnId,
-      ts: admittedAt,
-      text: 'Continue the scheduled work.',
-      origin: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
-    });
     await seedInvocation(fixture.stores.runtimeEventStore, {
       sessionId: fixture.sessionId,
       invocationId: runId,
@@ -554,6 +696,22 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
         root: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
       },
     });
+    await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, runId, {
+      id: userMessageId,
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      ts: admittedAt,
+      partial: false,
+      role: 'user',
+      author: 'host',
+      content: {
+        kind: 'text',
+        text: 'Continue the scheduled work.',
+        origin: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
+      },
+    });
 
     recovery = fixture.createRecoveryCoordinator();
     await recovery.prepareRecovery();
@@ -565,6 +723,92 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
     assert.equal(runtimeInvocationOutcome(run), 'failed');
     assert.equal(runtimeInvocationFailureClass(run), 'app_restarted');
     assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup recovery commits the catalog facts a crashed Turn wrote no projection for', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const turnId = 'turn-catalog-projection-lost';
+  const runId = 'run-catalog-projection-lost';
+  const userMessageId = 'message-catalog-projection-lost';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    assert.equal(session.connectionLocked, false);
+    const admittedAt = Date.now();
+    const admission = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Say what the catalog never heard.' },
+      sourceMessages: [],
+      admittedAt,
+    });
+    assert.equal(admission.kind, 'admitted');
+    await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      openedAt: admittedAt,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: session.llmConnectionId!,
+          llmConnectionSlug: session.llmConnectionSlug,
+          modelId: session.model,
+        },
+        configuration: {
+          cwd: session.cwd,
+          permissionMode: session.permissionMode,
+          collaborationMode: session.collaborationMode ?? 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'user' },
+      },
+    });
+    // The ledger append and the catalog commit are two writes; this is the state
+    // a crash between them leaves, and the one the message-missing check misses.
+    await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, runId, {
+      id: userMessageId,
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      ts: admittedAt,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Say what the catalog never heard.' },
+    });
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+    await recovery.recover();
+
+    const recovered = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    assert.equal(recovered.connectionLocked, true);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.readRuntimeEvents(fixture.sessionId, runId)).filter(
+        (event) => event.id === userMessageId,
+      ).length,
+      1,
+    );
   } finally {
     await recovery?.close();
     await fixture.messages.close();
@@ -698,7 +942,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
       1,
     );
     assert.equal(
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).filter(
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)).filter(
         (message) => message.type === 'user' && message.turnId === pending.targetTurnId,
       ).length,
       0,
@@ -1305,7 +1549,10 @@ test('idle Skill admission persists a canonical draft without history before roo
       displayText: '/skill:writer Draft this.',
       inlineReferences: [],
     });
-    assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
+    assert.deepEqual(
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId),
+      [],
+    );
   } finally {
     await fixture.dispose();
   }
@@ -2116,9 +2363,9 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
     });
     assert.equal(graphRun.opening.configuration.orchestrationMode, 'graph');
     assert.equal(graphRun.opening.configuration.orchestrationSource, 'turn_override');
-    const userMessage = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.id === graphAdmission?.userMessageId,
-    );
+    const userMessage = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.id === graphAdmission?.userMessageId);
     assert.ok(userMessage?.type === 'user');
     if (userMessage?.type === 'user') {
       assert.deepEqual(userMessage.origin, {
@@ -2303,7 +2550,7 @@ test('manual context compact uses durable root query, stop, and exact retry auth
     assert.deepEqual(admission?.execution, { kind: 'context_compact' });
     assert.equal(admission?.userMessageId, null);
     assert.equal(
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)).some(
         (message) => message.type === 'user' && message.turnId === turnId,
       ),
       false,
@@ -2524,7 +2771,10 @@ test('Agent Graph supervisor wake revalidates freshness before durable root admi
       await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId),
       [],
     );
-    assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
+    assert.deepEqual(
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId),
+      [],
+    );
     assert.equal(fixture.drainRequested(), false);
   } finally {
     await fixture.coordinator.close();
@@ -2582,9 +2832,9 @@ test('Agent Graph supervisor recovery closes a durable admission that has no Run
     });
     assert.equal(run.opening.configuration.orchestrationMode, 'graph');
     assert.equal(run.opening.configuration.orchestrationSource, 'turn_override');
-    const message = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (candidate) => candidate.id === userMessageId,
-    );
+    const message = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((candidate) => candidate.id === userMessageId);
     assert.ok(message?.type === 'user');
     if (message?.type === 'user') {
       assert.deepEqual(message.origin, {
@@ -3406,6 +3656,311 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
   }
 });
 
+test('WorkHub v2 requires binding evidence before admission while v1 stays unbound', async () => {
+  for (const [toolProfile, missingEvidence] of [
+    ['workhub-coordination-v1', false],
+    ['workhub-coordination-v2', false],
+    ['workhub-coordination-v2', true],
+  ] as const) {
+    const capabilities = new HostClientCapabilityCoordinator({
+      ...clientCapabilityCoordinatorTestAdmission(),
+      activation: new RuntimePolicyActivationGate(),
+      onModelToolsChanged: () => undefined,
+    });
+    const bindings: [string, string | undefined][] = [];
+    capabilities.bindSession = async (sessionId, connectionId) => {
+      bindings.push([sessionId, connectionId]);
+      return missingEvidence
+        ? { ok: true }
+        : { ok: false, message: 'Desktop capability unavailable' };
+    };
+    const fixture = await createFailureFixture({
+      clientCapabilities: capabilities,
+      withInteractions: true,
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile,
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+        },
+      });
+      const turnId = 'workhub-binding-turn';
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          execution: { kind: 'workhub_coordination', inputDigest: `sha256:${'b'.repeat(64)}` },
+          archivedMessage: 'Archived',
+          prepareFreshContent: async () => ({ kind: 'ready', content: { text: 'Hello' } }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop-requester'),
+      );
+      const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+      );
+      if (toolProfile === 'workhub-coordination-v2') {
+        assert.deepEqual(bindings, [[WORKHUB_COORDINATION_SESSION_ID, 'desktop-requester']]);
+        assert.equal(started.ok, false);
+        assert.equal(admission, undefined);
+      } else {
+        assert.deepEqual(bindings, []);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        assert.ok(admission);
+      }
+    } finally {
+      await fixture.coordinator.close();
+      await capabilities.close();
+      await fixture.dispose();
+    }
+  }
+});
+
+test('active WorkHub authority reads the admitted v2 input and refuses other or completed Turns', async () => {
+  for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
+    let backend: BlockingRootBackend | undefined;
+    const consumed: string[] = [];
+    const sent: BackendSendInput[] = [];
+    const successorReady = [deferred<void>(), deferred<void>()];
+    const successorRelease = [deferred<void>(), deferred<void>()];
+    const preparedRouting: Array<{ turnId: string; text: string }> = [];
+    const capabilities = new HostClientCapabilityCoordinator({
+      ...clientCapabilityCoordinatorTestAdmission(),
+      activation: new RuntimePolicyActivationGate(),
+      onModelToolsChanged: () => undefined,
+    });
+    capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
+      send: async () => {},
+    });
+    const fixture = await createFailureFixture({
+      clientCapabilities: capabilities,
+      ...(toolProfile === 'workhub-coordination-v2'
+        ? {
+            prepareWorkHubRoutingDecision: async (input: HostWorkHubRoutingDecisionPreparation) => {
+              preparedRouting.push({ turnId: input.turnId, text: input.content.text });
+              return { kind: 'routing' as const, disposition: 'answer_here' as const };
+            },
+          }
+        : {}),
+      registerBackend: (backends) => {
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            (backend = new (class extends BlockingRootBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                sent.push(input);
+                const successorIndex = sent.length - 2;
+                if (successorIndex >= 0) {
+                  successorReady[successorIndex]!.resolve();
+                  await successorRelease[successorIndex]!.promise;
+                  this.release();
+                }
+                for await (const event of super.send(input)) {
+                  for (const lease of (await input.pullSteering?.()) ?? []) {
+                    yield {
+                      type: 'steering_message',
+                      id: randomUUID(),
+                      turnId: input.turnId,
+                      ts: Date.now(),
+                      messageId: lease.messageId,
+                      content: lease.content,
+                      submittedContentDigest: lease.submittedContentDigest,
+                    };
+                    input.ackSteering?.([lease.id]);
+                    consumed.push(lease.messageId);
+                  }
+                  yield event;
+                }
+              }
+            })(context.sessionId)),
+        );
+      },
+    });
+    try {
+      const registered = await capabilities.handlers['client.capability.replace'](
+        {
+          registrationId: 'workhub-tools',
+          offers: [
+            {
+              offerId: 'desktop-workhub',
+              version: '0',
+              affinity: 'session',
+              hostPathAccess: 'none',
+              label: 'Desktop WorkHub',
+              tools: ['control', 'tasks'].map((name) => ({
+                serverId: 'desktop_workhub',
+                name,
+                inputSchema: { type: 'object', additionalProperties: false },
+              })),
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'c'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile,
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+        },
+      });
+      const submit = (
+        messageId: string,
+        placement: 'current_turn' | 'next_turn' = 'current_turn',
+      ) =>
+        fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            messageId,
+            content: { text: messageId },
+            placement,
+          },
+          operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+        );
+      assert.equal(
+        (await submit('idle-steering')).ok,
+        false,
+        'idle WorkHub cannot start an ordinary Turn',
+      );
+      const turnId = 'live-workhub-turn';
+      const content = { text: 'Continue Payments and explain the result here' };
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          archivedMessage: 'Archived',
+          execution: { kind: 'workhub_coordination', inputDigest: `sha256:${'d'.repeat(64)}` },
+          prepareFreshContent: async () => ({ kind: 'ready', content }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      await backend?.started.promise;
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRequest(turnId),
+        toolProfile === 'workhub-coordination-v2' ? content : undefined,
+      );
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRoutingRequest(turnId),
+        toolProfile === 'workhub-coordination-v2'
+          ? { content, decision: { kind: 'routing', disposition: 'answer_here' } }
+          : undefined,
+      );
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
+      const submitted = await submit('workhub-steering');
+      assert.equal(
+        submitted.ok && submitted.result.disposition,
+        toolProfile === 'workhub-coordination-v2' ? 'steering' : false,
+      );
+      assert.equal(
+        (await submit('workhub-followup', 'next_turn')).ok,
+        toolProfile === 'workhub-coordination-v2',
+        'only active v2 WorkHub can queue a coordination successor',
+      );
+      if (toolProfile === 'workhub-coordination-v2') {
+        assert.equal((await submit('workhub-followup-second', 'next_turn')).ok, true);
+        backend!.release();
+        await withTimeout(
+          successorReady[0]!.promise,
+          5_000,
+          'first WorkHub successor did not start',
+        );
+        assert.equal(sent.length, 2);
+        assert.equal(sent[1]!.text, 'workhub-followup');
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[1]!.turnId), {
+          text: 'workhub-followup',
+        });
+        assert.deepEqual(
+          await fixture.coordinator.readActiveWorkHubRoutingRequest(sent[1]!.turnId),
+          {
+            content: { text: 'workhub-followup' },
+            decision: { kind: 'routing', disposition: 'answer_here' },
+          },
+        );
+        assert.deepEqual(
+          fixture.messages
+            .projection(WORKHUB_COORDINATION_SESSION_ID)
+            .followup.map((entry) => entry.messageId),
+          ['workhub-followup-second'],
+        );
+        successorRelease[0]!.resolve();
+        await withTimeout(
+          successorReady[1]!.promise,
+          5_000,
+          'second WorkHub successor did not start',
+        );
+        assert.equal(sent[2]!.text, 'workhub-followup-second');
+        assert.notEqual(sent[1]!.turnId, sent[2]!.turnId);
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[2]!.turnId), {
+          text: 'workhub-followup-second',
+        });
+        assert.deepEqual(preparedRouting, [
+          { turnId, text: content.text },
+          { turnId: sent[1]!.turnId, text: 'workhub-followup' },
+          { turnId: sent[2]!.turnId, text: 'workhub-followup-second' },
+        ]);
+        successorRelease[1]!.resolve();
+        await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+        assert.deepEqual(consumed, ['workhub-steering']);
+        assert.equal(
+          (await submit('workhub-steering')).ok,
+          true,
+          'a lost reply is recovered from durable admission after completion',
+        );
+      }
+      await fixture.coordinator.stopRoot({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+        runId: started.result.runId,
+      });
+      await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+      assert.equal((await submit('completed-steering')).ok, false);
+      if (toolProfile === 'workhub-coordination-v2') {
+        await fixture.coordinator.close();
+        const recovery = fixture.createRecoveryCoordinator();
+        try {
+          await recovery.recover();
+        } finally {
+          await recovery.close();
+        }
+        assert.equal(
+          fixture.drainRequested(),
+          false,
+          'queued coordination admissions remain valid during recovery',
+        );
+      }
+    } finally {
+      backend?.release();
+      for (const release of successorRelease) release.resolve();
+      await fixture.coordinator.close();
+      await capabilities.close();
+      await fixture.dispose();
+    }
+  }
+});
+
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),
@@ -3705,7 +4260,7 @@ test('mixed-Client queued follow-ups use separate Session successors without con
       [[], ['followup-from-provider-b'], ['followup-from-provider-a']],
     );
     assert.deepEqual(
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId))
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId))
         .filter((message) => message.type === 'user' && message.id.startsWith('followup-from-'))
         .map((message) => message.id),
       ['followup-from-provider-b', 'followup-from-provider-a'],
@@ -5319,7 +5874,7 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
               entered[attempt]!.resolve();
               await release[attempt]!.promise;
               assert.ok(input.pullSteering, 'successors retain the logical message owner');
-              const leases = input.pullSteering();
+              const leases = await input.pullSteering();
               assert.equal(leases.length, 1);
               for (const lease of leases) {
                 yield {
@@ -5592,6 +6147,9 @@ async function createFailureFixture(options: {
     admission: RootTurnAdmission,
     state: 'pending_fire_required' | 'run_recorded',
   ): Promise<void>;
+  prepareWorkHubRoutingDecision?(
+    input: HostWorkHubRoutingDecisionPreparation,
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -5662,6 +6220,8 @@ async function createFailureFixture(options: {
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission, commitAdmission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission, commitAdmission),
+    startRecoveredMessages: (input, admission) =>
+      requireCoordinator(coordinator).startRecoveredMessages(input, admission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
@@ -5796,6 +6356,7 @@ async function createFailureFixture(options: {
       options.agentGraphEpochs,
       undefined,
       options.directoryHostId,
+      options.prepareWorkHubRoutingDecision,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({
@@ -5914,9 +6475,9 @@ test('directory references enforce Host identity without reading the filesystem'
     );
     assert.equal(accepted.ok, true, JSON.stringify(accepted));
     await fixture.coordinator.whenIdle(fixture.sessionId);
-    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.type === 'user' && message.id === 'local-directory',
-    );
+    const user = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.id === 'local-directory');
     assert.equal(user?.type, 'user');
     if (user?.type !== 'user') throw new Error('Expected directory user message');
     assert.equal(user.text, 'inspect local directory');
@@ -5977,7 +6538,7 @@ test('turn start and regeneration preserve one Host-bound directory reference', 
       assert.deepEqual(input.directoryReferences, [reference]);
     }
     const regeneratedUser = (
-      await fixture.stores.sessionStore.readMessages(fixture.sessionId)
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
     ).find((message) => message.type === 'user' && message.turnId === 'directory-regenerated');
     assert.equal(regeneratedUser?.type, 'user');
     if (regeneratedUser?.type !== 'user') throw new Error('Expected regenerated user message');
@@ -6054,16 +6615,19 @@ test('queued directory references survive text editing and next-Turn delivery', 
     release.resolve();
     await fixture.coordinator.whenIdle(fixture.sessionId);
     await waitUntil(async () =>
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)).some(
         (message) => message.type === 'user' && message.text === 'edited inspection',
       ),
     );
-    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.type === 'user' && message.text === 'edited inspection',
-    );
+    const user = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.text === 'edited inspection');
     assert.equal(user?.type, 'user');
     if (user?.type !== 'user') throw new Error('Expected queued directory user message');
     assert.deepEqual(user.directoryReferences, [reference]);
+    // The ledger carries the delivered message before its Turn ends; close only
+    // once that Turn has, so shutdown does not race its terminal fact.
+    await fixture.coordinator.whenIdle(fixture.sessionId);
   } finally {
     release.resolve();
     await fixture.coordinator.close();

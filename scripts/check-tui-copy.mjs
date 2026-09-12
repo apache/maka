@@ -43,6 +43,7 @@ export const COVERED_FILES = [
   'packages/cli/src/tui-copy-command.ts',
   'packages/cli/src/tui-shortcut-copy.ts',
   'packages/cli/src/pi-tui-layout.ts',
+  'packages/cli/src/pi-tui-todo.ts',
 ];
 
 export const EXCLUDED_TUI_FILES = [
@@ -54,6 +55,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-context-refresh.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
+  'packages/cli/src/tui-editor-render.ts',
   'packages/cli/src/tui-mcp-control.ts',
   'packages/cli/src/tui-mcp-remote-publication.ts',
 ];
@@ -101,8 +103,6 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Recap: ${…}',
     'Compacting context…',
     'Resuming from the latest safe boundary…',
-    'Resume Session',
-    'Tab scope · ↑↓ move · Enter select · Esc close',
     'Permissions: ${…}',
     'Keep Auto',
     'Turn on full access',

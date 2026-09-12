@@ -97,18 +97,6 @@ function messageAdmittedEvent(
   return { type: 'message_admission', id, messageId, turnId, ts, outcome: 'admitted' };
 }
 
-function recoverableErrorEvent(id: string, turnId: string, ts: number): SessionEvent {
-  return {
-    type: 'error',
-    id,
-    turnId,
-    ts,
-    recoverable: true,
-    reason: 'connection_closed',
-    message: 'connection closed',
-  };
-}
-
 function installDom() {
   const parsed = parseHTML('<html><body><div id="root"></div></body></html>');
   const { document, window } = parsed;
@@ -203,14 +191,20 @@ async function renderOwnershipProbe(
   let stop!: () => Promise<void>;
   let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
   let eventHandler: ((event: SessionEvent) => void) | undefined;
+  let executionHandler: Parameters<WorkbarServices['sideChat']['subscribeEvents']>[4];
+  let observationError: Parameters<WorkbarServices['sideChat']['subscribeEvents']>[3];
+  let executionSessionId = '';
   const subscribeEvents = sideChat.subscribeEvents;
   const rendered = await renderProbe(
     {
       ...sideChat,
-      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) => {
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError, onExecution) => {
+        executionHandler = onExecution;
+        observationError = onSeedError;
+        executionSessionId = sessionId;
         eventHandler = handler;
         if (subscribeEvents) {
-          return subscribeEvents(sessionId, handler, onSeeded, onSeedError);
+          return subscribeEvents(sessionId, handler, onSeeded, onSeedError, onExecution);
         }
         onSeeded?.();
         return () => undefined;
@@ -231,6 +225,13 @@ async function renderOwnershipProbe(
     steer: (text: string) => steer(text),
     stop: () => stop(),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
+    hostTurn(turnId: string | null, status: 'running' | 'completed' = 'running', available = true) {
+      assert.ok(executionHandler);
+      executionHandler({ type: 'host_execution', available,
+        rootTurn: turnId ? { sessionId: executionSessionId, turnId, runId: turnId,
+          ...(status === 'completed' ? { status, terminalEventId: 'terminal' } : { status }) } : null });
+    },
+    failObservation() { observationError?.(new Error('connection closed')); },
     emit(event: SessionEvent) {
       assert.ok(eventHandler);
       eventHandler(event);
@@ -415,6 +416,7 @@ test('a first send shows the question bubble immediately but arms Stop only once
   await act(async () => {
     branch.resolve({ ok: true as const, session: session('side-conversation') });
     assert.equal(await sendResult, true);
+    rendered.hostTurn('first-turn');
     await Promise.resolve();
   });
   await awaitCompanion(rendered.container);
@@ -424,6 +426,7 @@ test('a first send shows the question bubble immediately but arms Stop only once
 
   // The running state rides the whole turn and only retires on completion.
   await act(async () => {
+    rendered.hostTurn('first-turn', 'completed');
     rendered.emit(completeEvent('c1', 'first-turn', 2));
     await Promise.resolve();
   });
@@ -589,6 +592,28 @@ test('releases an async companion compaction after a Host interruption', async (
   assert.equal(compactionErrors.length, 1);
   assert.equal(compactionErrors[0]?.sessionId, 'side-conversation');
   assert.equal((compactionErrors[0]?.error as SessionEvent | undefined)?.type, 'abort');
+});
+
+test('consecutive compactions each stop their observed Host Turn', async () => {
+  let count = 0;
+  const stopped: unknown[] = [];
+  const h = await renderOwnershipProbe({
+    compact: async (sessionId) => ({ kind: 'started', turn: {
+      sessionId, turnId: `compact-${++count}`, runId: `run-${count}`, status: 'running',
+    } }),
+    stop: async (_id, target) => { stopped.push(target); },
+  });
+  await commitIdleCompanion(h);
+  for (let n = 1; n <= 2; n++) {
+    await act(async () => { assert.equal(await h.send('/compact'), true); h.hostTurn(`compact-${n}`); });
+    await act(async () => { await h.stop(); });
+    assert.deepEqual(stopped.at(-1), { kind: 'turn', turnId: `compact-${n}` });
+    await act(async () => {
+      h.emit({ type: 'abort', id: `abort-${n}`, turnId: `compact-${n}`, ts: n, reason: 'user_stop' });
+      h.hostTurn(null);
+    });
+  }
+  assert.equal(stopped.length, 2);
 });
 
 test('does not settle a pending companion compaction from another turn outcome', async () => {
@@ -1011,7 +1036,7 @@ test('source model readiness requires the exact Connection id, slug, and model',
 
 test('keeps Side Conversation events owned by the Host-admitted turn across an admission race', async () => {
   const pendingSend = deferred<{ ok: true; turnId: string }>();
-  const { container, emit, send } = await renderOwnershipProbe({
+  const { container, emit, send, hostTurn } = await renderOwnershipProbe({
     send: async () => pendingSend.promise,
   });
 
@@ -1029,6 +1054,7 @@ test('keeps Side Conversation events owned by the Host-admitted turn across an a
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'true');
 
   await act(async () => {
+    hostTurn('host-admitted-turn');
     emit(textDeltaEvent('new-text-before-response', 'host-admitted-turn', 2, 'answer'));
     await Promise.resolve();
   });
@@ -1057,7 +1083,7 @@ test('binds a busy-raced Side Conversation send through its Host-admitted messag
     turnId: string;
     messageId: string;
   }>();
-  const { container, emit, send } = await renderOwnershipProbe(
+  const { container, emit, send, hostTurn } = await renderOwnershipProbe(
     {
       send: async (_sessionId, command) => {
         admissionId = command.turnId;
@@ -1123,6 +1149,7 @@ test('binds a busy-raced Side Conversation send through its Host-admitted messag
         admissionId as string,
       ),
     );
+    hostTurn('host-active-turn');
     emit(textDeltaEvent('accepted-text', 'host-active-turn', 3, 'answer after steering'));
     await Promise.resolve();
   });
@@ -1195,7 +1222,7 @@ test('replays queued Side Conversation text after Host assigns the ticket to a s
     reason: 'outcome_unknown';
     messageId: string;
   }>();
-  const { container, emit, send } = await renderOwnershipProbe({
+  const { container, emit, send, hostTurn } = await renderOwnershipProbe({
     send: async (_sessionId, command) => {
       admissionId = command.turnId;
       return pendingSend.promise;
@@ -1249,7 +1276,7 @@ test('binds an unproven Side Conversation send through the durable transcript', 
   // The Host opened a root Turn under its own identity and the answer was lost.
   // No `message_admission` event exists for a root Message, so the transcript is
   // the only thing that can tie the sent identity back to the Turn.
-  const { container, emit, send } = await renderOwnershipProbe({
+  const { container, emit, send, hostTurn } = await renderOwnershipProbe({
     send: async (_sessionId, command) => {
       admissionId = command.turnId;
       return pendingSend.promise;
@@ -1356,7 +1383,7 @@ test('clears a stopped Side Conversation admission when its live retraction is l
 test('keeps a Side Conversation admission when Host stop outcome is unknown', async () => {
   let admissionId: string | undefined;
   const pendingStop = deferred<undefined>();
-  const { container, emit, send, stop } = await renderOwnershipProbe({
+  const { container, emit, send, stop, hostTurn } = await renderOwnershipProbe({
     send: async (_sessionId, command) => {
       admissionId = command.turnId;
       return {
@@ -1378,6 +1405,7 @@ test('keeps a Side Conversation admission when Host stop outcome is unknown', as
     await Promise.resolve();
   });
   await act(async () => {
+    hostTurn('admitted-after-unknown-stop');
     emit(
       messageAdmittedEvent(
         'admitted-during-unknown-stop',
@@ -1417,7 +1445,7 @@ test('keeps a Side Conversation admission when Host stop outcome is unknown', as
 
 test('stops a bound Side Conversation by its exact Host Turn identity', async () => {
   let stoppedTarget: SideChatStopTarget;
-  const { send, stop } = await renderOwnershipProbe({
+  const { send, stop, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'host-turn-1' }),
     stop: async (_sessionId, target) => {
       stoppedTarget = target;
@@ -1425,6 +1453,7 @@ test('stops a bound Side Conversation by its exact Host Turn identity', async ()
   });
   await act(async () => {
     assert.equal(await send('start this exact turn'), true);
+    hostTurn('host-turn-1');
     await Promise.resolve();
   });
   await act(async () => {
@@ -1442,7 +1471,7 @@ test('releases a queued Side Conversation admission from the Host queue retract'
     turnId: string;
     messageId: string;
   }>();
-  const { container, emit, send } = await renderOwnershipProbe({
+  const { container, emit, send, hostTurn } = await renderOwnershipProbe({
     send: async (_sessionId, command) => {
       admissionId = command.turnId;
       return pendingSend.promise;
@@ -1483,10 +1512,10 @@ test('releases a queued Side Conversation admission from the Host queue retract'
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'false');
 });
 
-test('keeps the same Side Conversation admission across a recoverable subscription error', async () => {
+test('keeps the same Side Conversation admission across an observation failure', async () => {
   let subscriptionCount = 0;
   const pendingSend = deferred<{ ok: true; turnId: string }>();
-  const { container, emit, send } = await renderOwnershipProbe({
+  const { container, failObservation, emit, send } = await renderOwnershipProbe({
     subscribeEvents: (_sessionId, _handler, onSeeded) => {
       subscriptionCount += 1;
       onSeeded?.();
@@ -1504,7 +1533,7 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
   // The lazy fork subscribes exactly once, when the first send commits it.
   assert.equal(subscriptionCount, 1);
   await act(async () => {
-    emit(recoverableErrorEvent('recoverable-subscription-error', 'old-turn', 1));
+    failObservation();
     await Promise.resolve();
   });
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'true');
@@ -1520,13 +1549,36 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
     await Promise.resolve();
   });
   await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'false');
+  await act(async () => {
+    assert.equal(await send('retry after observation failure'), false);
+  });
+  assert.equal(subscriptionCount, 2, 'the next send must reopen observation before dispatch');
+});
+
+test('Side Chat stops presenting execution on observation loss while retaining the Stop target', async () => {
+  const stopped: unknown[] = [];
+  const h = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'running-turn' }),
+    stop: async (_sessionId, target) => { stopped.push(target); },
+  });
+  await act(async () => {
+    assert.equal(await h.send('initial prompt'), true);
+    h.hostTurn('running-turn');
+  });
+  const probe = h.container.firstElementChild!;
+  assert.equal(probe.getAttribute('data-active-turn'), 'running-turn');
+  await act(async () => { h.hostTurn('running-turn', 'running', false); });
+  assert.equal(probe.getAttribute('data-active-turn'), '');
+  assert.equal(probe.getAttribute('data-streaming'), 'true');
+  await act(async () => { await h.stop(); });
+  assert.deepEqual(stopped, [{ kind: 'turn', turnId: 'running-turn' }]);
 });
 
 test('keeps the active Side Conversation streaming when Stop retracts a queued steer', async () => {
   const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
   let admissionId: string | undefined;
   let steerCalls = 0;
-  const { container, emit, send, steer, stop } = await renderOwnershipProbe({
+  const { container, emit, send, steer, stop, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     steer: async (_sessionId, _text, requestedAdmissionId) => {
       steerCalls += 1;
@@ -1538,6 +1590,7 @@ test('keeps the active Side Conversation streaming when Stop retracts a queued s
 
   await act(async () => {
     assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
     await Promise.resolve();
   });
   await waitUntil(() => container.firstElementChild?.getAttribute('data-streaming') === 'true');
@@ -1579,7 +1632,7 @@ test('stops the active Side Conversation after retracting its queued steer', asy
   const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
   let admissionId: string | undefined;
   const stoppedTargets: SideChatStopTarget[] = [];
-  const { send, steer, stop } = await renderOwnershipProbe({
+  const { send, steer, stop, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     steer: async (_sessionId, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
@@ -1595,6 +1648,7 @@ test('stops the active Side Conversation after retracting its queued steer', asy
 
   await act(async () => {
     assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
     await Promise.resolve();
   });
   let steerResult!: Promise<boolean>;
@@ -1629,7 +1683,7 @@ test('does not let an older Stop failure release a newer active Turn Stop', asyn
   const activeStop = deferred<undefined>();
   let admissionId: string | undefined;
   const stoppedTargets: SideChatStopTarget[] = [];
-  const { emit, send, steer, stop } = await renderOwnershipProbe({
+  const { emit, send, steer, stop, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     steer: async (_sessionId, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
@@ -1643,6 +1697,7 @@ test('does not let an older Stop failure release a newer active Turn Stop', asyn
 
   await act(async () => {
     assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
     await Promise.resolve();
   });
   let steerResult!: Promise<boolean>;
@@ -1688,7 +1743,7 @@ test('does not let an older Stop failure release a newer active Turn Stop', asyn
 test('continues projecting the active Turn while a steer awaits Host admission', async () => {
   const pendingSteer = deferred<{ kind: 'queued'; messageId: string }>();
   let admissionId: string | undefined;
-  const { container, emit, send, steer } = await renderOwnershipProbe({
+  const { container, emit, send, steer, hostTurn } = await renderOwnershipProbe({
     send: async () => ({ ok: true as const, turnId: 'old-turn' }),
     steer: async (_sessionId, _text, requestedAdmissionId) => {
       admissionId = requestedAdmissionId;
@@ -1698,6 +1753,7 @@ test('continues projecting the active Turn while a steer awaits Host admission',
 
   await act(async () => {
     assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
     await Promise.resolve();
   });
   let steerResult!: Promise<boolean>;
@@ -2039,9 +2095,10 @@ function QuoteCompanionOwnershipProbe(props: {
   return createElement('div', {
     'data-companion-id': companion.companionSession?.id ?? '',
     'data-error': companion.error ?? '',
-    'data-live-turn-id': companion.liveTurn?.turnId ?? '',
-    'data-live-text': companion.liveTurn?.steps.find((step) => step.text)?.text?.text ?? '',
+    'data-live-turn-id': companion.liveTurns?.at(-1)?.turnId ?? '',
+    'data-live-text': companion.liveTurns?.at(-1)?.steps.find((step) => step.text)?.text?.text ?? '',
     'data-streaming': String(companion.streaming),
+    'data-active-turn': companion.activeTurn?.turnId ?? '',
     'data-processing': String(companion.processing),
     'data-model-ready': String(companion.modelReady),
     'data-permission-mode': companion.permissionMode ?? '',
@@ -2088,11 +2145,11 @@ function choiceFor(
 }
 
 function settledTurn(turnId: string): TurnRecord {
-  return { turnId, status: 'completed', partialOutputRetained: false };
+  return { turnId, status: 'completed' };
 }
 
 function runningTurn(turnId: string): TurnRecord {
-  return { turnId, status: 'running', partialOutputRetained: false };
+  return { turnId, status: 'running' };
 }
 
 async function waitUntil(predicate: () => boolean, diagnostics?: () => string): Promise<void> {
