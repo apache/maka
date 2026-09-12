@@ -4005,7 +4005,10 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   const skills = {
     readCanonicalModelInventory: async () => {
       inventoryReads += 1;
-      return { inventory };
+      return {
+        inventory,
+        workspaceSkillDirectory: '/maka-dev/workspaces/default/skills',
+      };
     },
   } as unknown as HostSkillCatalogCoordinator;
   const memory = {
@@ -4032,6 +4035,10 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   const firstPrompt = (await composition.resolveSystemPrompt(firstContext)).text;
   assert.match(firstPrompt ?? '', /^You are Maka,/);
   assert.match(firstPrompt ?? '', /OLD_DESCRIPTION/);
+  assert.match(
+    firstPrompt ?? '',
+    /authoritative install directory for a default workspace Skill is \/maka-dev\/workspaces\/default\/skills/u,
+  );
   assert.match(firstPrompt ?? '', /MEMORY_BODY/);
   assert.equal(inventoryReads, 1);
 
