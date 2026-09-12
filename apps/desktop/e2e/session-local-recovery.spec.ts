@@ -261,7 +261,8 @@ test('a failed message restores its durable attachment without replacing a newer
   await expect(page.getByText('Fake backend waiting for the test to stop the Turn.', { exact: true })).toBeVisible();
   await page.locator(COMPOSER_INPUT).fill('queued recovery follow-up');
   await page.locator(COMPOSER_INPUT).press('Enter');
-  await expect(page.getByText('已排队，等待下一轮回复', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-queue-placement="next_turn"]')
+    .getByText('queued recovery follow-up', { exact: true })).toBeVisible();
   await page.locator(COMPOSER_INPUT).press('Escape');
   await expect(page.getByText('已中断', { exact: true })).toBeVisible();
   await page.locator(COMPOSER_INPUT).fill('continue after recovery stop');
@@ -384,7 +385,8 @@ test('durable cancellation proof survives a real Host restart after local cleanu
   const sessionId = (await page.locator('[data-session-id]:has([aria-current="page"])').getAttribute('data-session-id'))!;
   await page.locator(COMPOSER_INPUT).fill('cancelled across Host restart');
   await page.locator(COMPOSER_INPUT).press('Enter');
-  await expect(page.getByText('已排队，等待下一轮回复', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-queue-placement="next_turn"]')
+    .getByText('cancelled across Host restart', { exact: true })).toBeVisible();
   const before = await app.evaluate(() => {
     const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
     const { DesktopSessionLocalService } = require(require('node:path').resolve('dist/main/session-local-service.js'));
