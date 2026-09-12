@@ -884,6 +884,41 @@ export const ModelCapabilities: Story = {
   },
 };
 
+// Settings → disabled model → edit → save while focused → reopen → cancel.
+// Chromium owns the focus/submit ordering and native dialog focus restoration.
+export const ModelParameterSave: Story = {
+  render: ModelCapabilities.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const configure = await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*gemini-3\.8-flash/i });
+    const enable = canvas.getByRole('switch', { name: /gemini-3\.8-flash/i });
+    expect(enable).not.toBeChecked();
+    await userEvent.click(configure);
+    const field = await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i });
+    const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
+    await userEvent.clear(field);
+    await userEvent.type(field, '1MB');
+    expect(save).toBeDisabled();
+    await userEvent.clear(field);
+    await userEvent.type(field, '128K');
+    expect(field).toHaveFocus();
+    expect(save).toBeEnabled();
+    await userEvent.click(save);
+    await waitFor(() => expect(configure).toHaveFocus());
+    expect(enable).not.toBeChecked();
+    await userEvent.click(configure);
+    const reopened = await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i });
+    expect(reopened).toHaveValue('128000');
+    await userEvent.clear(reopened);
+    await userEvent.type(reopened, '256K');
+    await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
+    await waitFor(() => expect(configure).toHaveFocus());
+    await userEvent.click(configure);
+    expect(await body.findByRole('textbox', { name: /^(上下文窗口|Context window)$/i })).toHaveValue('128000');
+  },
+};
+
 // Settings → Models → relay → refresh the remote catalog, then configure a disabled discovery.
 export const RefreshModelCatalog: Story = {
   render: () => (
