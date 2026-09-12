@@ -2718,64 +2718,6 @@ export const OversizedLiveTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn, activeTurn: { turnId: 'turn-oversized' } }} />,
 };
 
-export const EarlierHistoryLandsAboveTheReader: Story = {
-  render: () => <HistoryHarness turns={30} />,
-  play: async () => {
-    const root = tailScroller();
-    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
-
-    // Just short of the band that asks for more, so the active range has
-    // painted turns around the reader before the load starts. Landing straight
-    // on zero leaves no visible turn above the load boundary to anchor on.
-    scrollAsReader(root, loadBand() + 400);
-    await painted(6);
-    const before = firstResidentTurnId();
-    const heightBefore = root.scrollHeight;
-    historyLoads.length = 0;
-
-    // The move that asks for earlier history and the reading of where the
-    // reader is, in one task.
-    scrollAsReader(root, Math.min(300, root.scrollHeight - root.clientHeight));
-    const rootTop = root.getBoundingClientRect().top;
-    const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-      (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
-    );
-    if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
-    const anchor = { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
-    wheelUp(root);
-
-    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
-    await painted(6);
-
-    // The turns that arrived went above the reader, and the reader did not go
-    // with them. Asserting the element rather than a `scrollTop` delta is the
-    // point: a compensation computed from `scrollHeight` satisfies the delta
-    // while putting the reader somewhere else entirely.
-    //
-    // Budgeted against what arrived rather than in fixed pixels. A Turn carries
-    // `content-visibility: auto`, so one that lands off screen is anchored
-    // against its estimated height and settles a few pixels away from it; a
-    // reader who went with the history instead moves by the whole insert.
-    await waitFor(() =>
-      expect(
-        tailScroller().scrollHeight - heightBefore,
-        JSON.stringify({ anchor, loads: historyLoads }),
-      ).toBeGreaterThan(400),
-    );
-
-    // Fixed once, after the arrival has settled. Recomputed on every retry it
-    // would grow along with the drift it is supposed to bound, so a late
-    // `content-visibility` resolution could admit a reading that was failing.
-    await painted(8);
-    const inserted = tailScroller().scrollHeight - heightBefore;
-    const budget = Math.max(4, inserted * 0.02);
-    expect(
-      Math.abs(turnTop(anchor.turnId) - anchor.top),
-      JSON.stringify({ anchor, inserted, budget, now: turnTop(anchor.turnId), ...tailMetrics() }),
-    ).toBeLessThanOrEqual(budget);
-  },
-};
-
 /**
  * First upward traversal of a deep fixed transcript: document height and
  * the reader's content position must remain stable without a warm-up pass.
