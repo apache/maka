@@ -56,40 +56,63 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
  * structure — degrades to unnumbered meta rows.
  */
 export function parseUnifiedDiffRows(diff: string): UnifiedDiffRow[] {
-  const lines = diff.split('\n');
-  // A trailing newline terminates the diff rather than starting an empty row.
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
-
   const rows: UnifiedDiffRow[] = [];
+  scanUnifiedDiff(diff, rows);
+  return rows;
+}
+
+/** Green `+N` / red `-N` counts, without materializing display rows or body text. */
+export function countDiffLineStats(diff: string): { additions: number; deletions: number } {
+  return scanUnifiedDiff(diff);
+}
+
+/**
+ * One structural scan for both consumers. The optional output array keeps
+ * display objects and body substrings out of the count-only path.
+ */
+function scanUnifiedDiff(
+  diff: string,
+  rows?: UnifiedDiffRow[],
+): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
   let oldLine = 0;
   let newLine = 0;
   let remainingOld = 0;
   let remainingNew = 0;
   let inHunk = false;
+  let offset = 0;
 
-  for (const line of lines) {
+  // Visit an empty input once, but do not invent a row after a trailing newline.
+  do {
+    const start = offset;
+    const newline = diff.indexOf('\n', start);
+    const end = newline === -1 ? diff.length : newline;
+    offset = end + 1;
     if (inHunk && remainingOld + remainingNew > 0) {
-      const marker = line.charAt(0);
+      const marker = diff.charAt(start);
       if (marker === '\\') {
         // `\ No newline at end of file` annotates the previous row without
         // consuming a line on either side.
-        rows.push({ kind: 'meta', text: line });
+        rows?.push({ kind: 'meta', text: diff.slice(start, end) });
         continue;
       }
       if (marker === '-') {
-        rows.push({ kind: 'del', text: line, oldLine });
+        rows?.push({ kind: 'del', text: diff.slice(start, end), oldLine });
+        deletions += 1;
         oldLine += 1;
         remainingOld -= 1;
         continue;
       }
       if (marker === '+') {
-        rows.push({ kind: 'add', text: line, newLine });
+        rows?.push({ kind: 'add', text: diff.slice(start, end), newLine });
+        additions += 1;
         newLine += 1;
         remainingNew -= 1;
         continue;
       }
       // ' ' context, and the bare empty line some generators emit for one.
-      rows.push({ kind: 'ctx', text: line, oldLine, newLine });
+      rows?.push({ kind: 'ctx', text: diff.slice(start, end), oldLine, newLine });
       oldLine += 1;
       newLine += 1;
       remainingOld -= 1;
@@ -98,6 +121,7 @@ export function parseUnifiedDiffRows(diff: string): UnifiedDiffRow[] {
     }
     inHunk = false;
 
+    const line = diff.slice(start, end);
     const hunk = HUNK_HEADER.exec(line);
     if (hunk) {
       oldLine = Number(hunk[1]);
@@ -105,28 +129,17 @@ export function parseUnifiedDiffRows(diff: string): UnifiedDiffRow[] {
       remainingOld = hunk[2] === undefined ? 1 : Number(hunk[2]);
       remainingNew = hunk[4] === undefined ? 1 : Number(hunk[4]);
       inHunk = true;
-      rows.push({ kind: 'hunk', text: line });
+      rows?.push({ kind: 'hunk', text: line });
       continue;
     }
     if (line.startsWith('diff ')) {
-      rows.push({ kind: 'meta', text: line });
+      rows?.push({ kind: 'meta', text: line });
       continue;
     }
     if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('index ')) {
       continue;
     }
-    rows.push({ kind: 'meta', text: line });
-  }
-  return rows;
-}
-
-/** Green `+N` / red `-N` counts, from the structural parse. */
-export function countDiffLineStats(diff: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const row of parseUnifiedDiffRows(diff)) {
-    if (row.kind === 'add') additions += 1;
-    else if (row.kind === 'del') deletions += 1;
-  }
+    rows?.push({ kind: 'meta', text: line });
+  } while (offset < diff.length);
   return { additions, deletions };
 }
