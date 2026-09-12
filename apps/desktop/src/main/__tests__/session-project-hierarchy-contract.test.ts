@@ -31,18 +31,30 @@ if (!sidebarCssUrl) throw new Error('Could not locate renderer/styles/sidebar.cs
 const sidebarCss = readFileSync(sidebarCssUrl, 'utf8');
 
 describe('project-grouped session hierarchy', () => {
-  it('aligns session titles with the project name', () => {
+  it('shares the project row left edge with its sessions', () => {
     const projectChildrenRule = sidebarCss.match(
       /\.maka-project-row\s*>\s*div\s*>\s*\[role=["']group["']\]\s*>\s*div\s*\{([^}]*)\}/,
     );
 
     assert.ok(projectChildrenRule, 'project children must have an explicit hierarchy rule');
-    // Product contract: 8px nest so session titles share the project title's x.
-    // SideNav's default spacing-6 is a fixed child inset, not that alignment.
+    // Product contract: session rows sit on the project row's left edge, so
+    // the two hover/selected fills start on the same x rather than the 8px
+    // nest that used to offset only the session rows. SideNav's default
+    // spacing-6 is a fixed child inset, not that alignment.
     assert.match(
       projectChildrenRule[1] ?? '',
-      /padding-inline-start:\s*var\(--spacing-2\)\s*!important;/,
-      'project sessions must keep an 8px hierarchical nest',
+      /padding-inline-start:\s*0\s*!important;/,
+      'project sessions must not be inset from the project row',
+    );
+
+    // The gutter that replaces the nest: the same 1rem box as the project
+    // folder icon, so titles still share one x.
+    const signalRule = sidebarCss.match(/\.maka-session-row-signal\s*\{([^}]*)\}/);
+    assert.ok(signalRule, 'the session status gutter must be declared');
+    assert.match(
+      signalRule[1] ?? '',
+      /width:\s*1rem;/,
+      'the session status gutter must match the project folder icon width',
     );
   });
 });
