@@ -303,6 +303,10 @@ test('uses human conversation context instead of raw ids in action names', async
   const actionNames = [...container.querySelectorAll('[aria-label]')]
     .map((element) => element.getAttribute('aria-label'))
     .filter((label): label is string => label !== null);
+  assert.match(
+    container.querySelector('.maka-assistant-answer')?.getAttribute('aria-label') ?? '',
+    /^Maka's response · Summarize the accessibility findings/,
+  );
   assert.ok(actionNames.some((label) => label.startsWith(
     'Copy message: Summarize the accessibility findings',
   )));

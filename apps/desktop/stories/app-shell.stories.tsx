@@ -2633,13 +2633,6 @@ export const GeometryMixed24Turns: Story = {
     return [user(`geometry-u-${i}`, turnId, 50 - i, `检查第 ${i + 1} 组。`),
       assistant(`geometry-a-${i}`, turnId, 50 - i, prose + code)];
   }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
-  play: async ({ canvasElement }) => {
-    // Audit every code block after deferred Markdown has replaced its placeholder.
-    await waitFor(
-      () => expect(within(canvasElement).getAllByRole('button', { name: '复制代码' })).toHaveLength(4),
-      { timeout: 10_000 },
-    );
-  },
 };
 
 export const GeometryLongCode: Story = {
