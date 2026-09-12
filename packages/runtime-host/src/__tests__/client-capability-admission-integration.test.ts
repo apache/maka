@@ -354,7 +354,8 @@ function createInteractionCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => undefined,
     onPoison: () => undefined,
-    onSandboxBoundarySettled: async () => undefined,
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => undefined,
   };
   return new HostInteractionCoordinator(options);
 }
