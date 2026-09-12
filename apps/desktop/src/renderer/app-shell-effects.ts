@@ -314,9 +314,9 @@ export function useActiveSessionEvents(options: {
   observationAuthorityRevision: number;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
-  setExecution?: (sessionId: string, projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void;
-  beginObservationSeed?: (sessionId: string) => number;
-  completeObservationSeed?: (sessionId: string, generation?: number) => void;
+  setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
+  beginObservationSeed: (sessionId: string) => number;
+  completeObservationSeed: (sessionId: string, generation?: number) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
@@ -375,15 +375,8 @@ export function useActiveSessionEvents(options: {
     });
     options.handleEvent(sessionId, event);
   });
-  const beginObservationSeed = useEffectEvent((sessionId: string) => {
-    return options.beginObservationSeed?.(sessionId) ?? 0;
-  });
-  const completeObservationSeed = useEffectEvent((
-    sessionId: string,
-    generation?: number,
-  ) => {
-    options.completeObservationSeed?.(sessionId, generation);
-  });
+  const beginObservationSeed = useEffectEvent(options.beginObservationSeed);
+  const completeObservationSeed = useEffectEvent(options.completeObservationSeed);
   const markSessionEventStreamClosed = useEffectEvent((sessionId: string) => {
     options.setSessionEventHealthBySession((current) => {
       const previous = current[sessionId];
@@ -442,7 +435,6 @@ export function useActiveSessionEvents(options: {
     );
     options.transcriptRangeRef.current = controller;
     const subscribeSessionEvents = () => {
-      options.setExecution?.(activeId, undefined);
       const attempt = ++observationAttempt;
       const observationGeneration = beginObservationSeed(activeId);
       let unsubscribeRequested = false;
@@ -468,8 +460,9 @@ export function useActiveSessionEvents(options: {
           else completeObservationSeed(activeId);
         },
         () => {
-          if (disposed || attempt !== observationAttempt) return;
+          if (attempt !== observationAttempt) return;
           controller.observationChanged('pending');
+          options.setExecution(activeId, undefined);
           unsubscribeCurrent();
           observationFailures += 1;
           const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);
@@ -479,7 +472,7 @@ export function useActiveSessionEvents(options: {
           }, retryDelayMs);
         },
         (projection) => {
-          if (!disposed && attempt === observationAttempt) options.setExecution?.(activeId, projection);
+          if (attempt === observationAttempt) options.setExecution(activeId, projection);
         },
       );
       unsubscribeCurrent = unsubscribe;
@@ -499,6 +492,7 @@ export function useActiveSessionEvents(options: {
       void controller.close();
       unsubscribeTranscript();
       unsubscribeSessionEvents();
+      options.setExecution(activeId, undefined);
       markSessionEventStreamClosed(activeId);
     };
   }, [activeId, options.observationAuthorityRevision]);

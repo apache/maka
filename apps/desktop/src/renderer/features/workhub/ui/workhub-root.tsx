@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { chatTurnActivity } from '../../../../shared/session-execution-projection.js';
+import { chatTurnActivity } from '../../../application/contracts/session-execution.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';

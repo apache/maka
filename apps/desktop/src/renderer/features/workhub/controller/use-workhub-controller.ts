@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { activeHostTurn, type SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
+import { activeHostTurn, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,

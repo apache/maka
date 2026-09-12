@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { activeHostTurn } from '../shared/session-execution-projection.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
@@ -71,10 +70,10 @@ import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
+import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
-import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
@@ -106,7 +105,6 @@ import {
 import {
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
-  resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
 import {
   PlanExecutionPanel,
@@ -708,7 +706,7 @@ function AppShellContent({
   const petActivityState = derivePetActivityState({
     hasActiveSession: activeSession !== undefined,
     hasActiveInteraction: activeInteraction !== undefined,
-    turnActive,
+    turnActive: activeExecution?.available === true && turnActive,
     sessionStatus: activeSession?.status,
   });
   // Surface a credential-lifecycle alert directly in the chat header when
@@ -1481,7 +1479,7 @@ function AppShellContent({
     uiLocale,
     getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
-      return activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
+      return Conversation.activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -1619,22 +1617,14 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
-    // Read the synchronous live-turn store at submit time. React's rendered
-    // `streaming` prop can lag one commit behind a just-started turn, which
-    // previously sent a second root turn and surfaced duplicate session_busy
-    // errors during burst input.
+    // Message placement expresses user intent; Host decides admission.
     const sessionId = activeIdRef.current;
     const workspaceFileReferences = mergeWorkspaceReferences(
       text,
       metadata?.workspaceFileReferences,
       sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
     );
-    const execution = sessionId ? sessionUiController.getState().executionBySession[sessionId] : undefined;
-    const followUpAtSubmit = resolveFollowUpModeAtSubmit({
-      requestedMode: metadata?.followUpMode,
-      hasActiveTurn: Boolean(activeHostTurn(execution)),
-      slashCommand,
-    });
+    const followUpAtSubmit = slashCommand ? undefined : metadata?.followUpMode;
     if (sessionId && followUpAtSubmit) {
       const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
         ...metadata,
@@ -2670,6 +2660,7 @@ function AppShellContent({
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
+                activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 hasOlderHistory={activeTranscriptRange?.hasOlder}
                 hasNewerHistory={activeTranscriptRange?.hasNewer}
                 onPrefetchHistory={(edge) =>

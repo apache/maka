@@ -18,8 +18,8 @@
  */
 
 import type { LiveTurnProjection } from '@maka/ui';
-import { activeHostTurn, type SessionExecutionProjection } from '../shared/session-execution-projection.js';
-import { hasInFlightToolActivity } from './session-event-health.js';
+import { activeHostTurn, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 
 /**
  * The low-entropy reading of a live turn: everything the shell derives from the
@@ -75,7 +75,7 @@ export function deriveLiveTurnSnapshot(projection: LiveTurnProjection | undefine
     streamingMessageId: streamingTextComplete ? textStep?.stepId : undefined,
     hasThinkingText: (thinkingStep?.thinking?.text.length ?? 0) > 0,
     hasLiveTools: steps.some((step) => step.tools.length > 0),
-    hasInFlightTools: steps.some((step) => hasInFlightToolActivity(step.tools)),
+    hasInFlightTools: steps.some((step) => step.tools.some((tool) => isInFlightToolStatus(tool.status))),
   };
 }
 

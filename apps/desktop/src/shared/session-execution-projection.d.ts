@@ -22,8 +22,6 @@ import type { TurnSnapshot } from '@maka/runtime-host/protocol';
 /** Desktop observation data, never a Runtime event or a client execution claim. */
 export interface SessionExecutionProjection {
   readonly type: 'host_execution';
-  readonly hostEpoch: string;
-  readonly revision: number;
   readonly available: boolean;
   readonly rootTurn: TurnSnapshot | null;
 }
@@ -32,20 +30,3 @@ export type SessionObservationMessage = SessionExecutionProjection | {
   readonly type: 'host_observation_error';
   readonly message: string;
 };
-
-export function activeHostTurn(projection: SessionExecutionProjection | undefined) {
-  const turn = projection?.rootTurn;
-  return turn && turn.status !== 'completed' && turn.status !== 'failed' && turn.status !== 'cancelled'
-    ? turn : undefined;
-}
-
-/** Presentation fields only; the Host retains ownership of the lifecycle. */
-export function chatTurnActivity(projection: SessionExecutionProjection | undefined) {
-  if (!projection?.available) return undefined;
-  const turn = activeHostTurn(projection);
-  return turn ? {
-    turnId: turn.turnId,
-    awaitingInput: turn.status === 'waiting_for_user',
-    compacting: turn.rootExecutionKind === 'context_compact',
-  } : undefined;
-}

@@ -325,7 +325,6 @@ export function createAppShellChatActions(deps: {
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
-    const steeringTurnId = initialSessionId && !exactTurn ? deps.getRunningTurnId?.(initialSessionId) : undefined;
     const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -383,14 +382,14 @@ export function createAppShellChatActions(deps: {
         return submitAndProject({
           sessionId,
           messageId,
-          placement: 'current_turn',
+          placement: exactTurn ? 'current_turn' : 'next_turn',
           command: {
             ...sendCommand,
             ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
-          pendingSteering: Boolean(steeringTurnId),
+          pendingSteering: false,
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -454,7 +453,6 @@ export function createAppShellChatActions(deps: {
       optimisticMessageId = messageId;
       publishTransientUserMessage(sessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
-        ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
         inlineReferences: [],

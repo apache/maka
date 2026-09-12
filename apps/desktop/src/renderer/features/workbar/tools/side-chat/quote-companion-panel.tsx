@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { chatTurnActivity } from '../../../../../shared/session-execution-projection.js';
+import { chatTurnActivity } from '../../../../application/contracts/session-execution.js';
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {

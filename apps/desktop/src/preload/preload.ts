@@ -3879,7 +3879,7 @@ const makaBridge = {
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
-  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'sessions.observe' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   let nextSessionObservationError: Error | undefined;
@@ -3917,17 +3917,16 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   ) => {
     const nextError = nextSessionObservationError;
     nextSessionObservationError = undefined;
-    if (!nextError) {
-      return subscribeSessionEvents(
-        sessionId,
-        handler,
-        onSeeded,
-        onObservationSeed,
-        onSeedError,
-        onExecution,
-      );
-    }
     let disposed = false;
+    if (!nextError) {
+      let unsubscribe = () => {};
+      void waitForLatch('sessions.observe').then(() => {
+        if (!disposed) unsubscribe = subscribeSessionEvents(
+          sessionId, handler, onSeeded, onObservationSeed, onSeedError, onExecution,
+        );
+      });
+      return () => { disposed = true; unsubscribe(); };
+    }
     void Promise.resolve().then(() => {
       if (!disposed) onSeedError?.(nextError);
     });

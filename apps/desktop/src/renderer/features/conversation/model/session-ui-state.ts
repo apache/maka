@@ -81,18 +81,6 @@ type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSI
 const allSessionUiMapsAreListed: Record<MissingSessionUiMapKey, never> = {};
 void allSessionUiMapsAreListed;
 
-// An authoritative session-list refresh heals a session whose turn ended while
-// its SessionEvent stream wasn't being followed, and must drop only the live
-// projection. The independently-scoped maps (message load error / retry, the
-// permission queue, stop-pending) each have
-// their own lifecycle and must survive a mere turn settle — a full
-// `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
-// Event-stream health is scoped the same way but lives outside this state; see
-// `sessionEventHealthBySessionRef`.
-const TURN_TRANSIENT_MAP_KEYS = [
-  'liveTurnBySession',
-] as const satisfies readonly AppShellSessionUiStateMapKey[];
-
 export function createInitialAppShellSessionUiState(): AppShellSessionUiState {
   return Object.fromEntries(SESSION_UI_MAP_KEYS.map((key) => [key, {}])) as unknown as AppShellSessionUiState;
 }
@@ -129,17 +117,6 @@ export function clearAppShellSessionUiStateForSession(
 ): AppShellSessionUiState {
   let nextState = state;
   for (const key of SESSION_UI_MAP_KEYS) {
-    nextState = clearSessionUiStateMap(nextState, key, sessionId);
-  }
-  return nextState;
-}
-
-export function clearAppShellTurnTransientForSession(
-  state: AppShellSessionUiState,
-  sessionId: string,
-): AppShellSessionUiState {
-  let nextState = state;
-  for (const key of TURN_TRANSIENT_MAP_KEYS) {
     nextState = clearSessionUiStateMap(nextState, key, sessionId);
   }
   return nextState;

@@ -227,7 +227,7 @@ async function renderOwnershipProbe(
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
     hostTurn(turnId: string | null, status: 'running' | 'completed' = 'running') {
       assert.ok(executionHandler);
-      executionHandler({ type: 'host_execution', available: true, hostEpoch: 'test-host', revision: 1,
+      executionHandler({ type: 'host_execution', available: true,
         rootTurn: turnId ? { sessionId: executionSessionId, turnId, runId: turnId,
           ...(status === 'completed' ? { status, terminalEventId: 'terminal' } : { status }) } : null });
     },

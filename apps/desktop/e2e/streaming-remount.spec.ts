@@ -34,6 +34,8 @@ interface SessionObservationLatchWindow extends Window {
   /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
   makaE2eLatch?: {
     rejectNextSessionObservation(message: string): void;
+    arm(key: 'sessions.observe'): void;
+    release(key: 'sessions.observe'): void;
     rejectNextTranscriptOpen(message: string): void;
   };
 }
@@ -49,28 +51,45 @@ async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
   await composer.press('Shift+Enter');
 }
 
-test('a failed first observation seed reconnects to the live Turn', async ({ window: page }) => {
-  const latchInstalled = await page.evaluate(() => {
-    const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
-    if (!latch) return false;
+test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {
+  const nextPrompt = 'do this only after the current answer';
+  const sessionId = await page.evaluate(async ({ prompt, nextPrompt }) => {
+    const session = await window.maka.sessions.create({ name: 'Observation recovery' });
+    const result = await window.maka.sessions.submitMessage(session.id, 'next_turn', {
+      messageId: crypto.randomUUID(), text: prompt,
+    }, { waitForHostAdmission: true });
+    if (!result.ok) throw new Error('Failed to start the background Turn');
+    const evidence = { queued: false, steered: false };
+    (window as typeof window & { admissionEvidence?: typeof evidence }).admissionEvidence = evidence;
+    // This independent reader records the actual Host queue, without writing AppShell state.
+    await new Promise<void>((resolve) => {
+      window.maka.sessions.subscribeEvents(session.id, (event) => {
+        if (event.type !== 'queue_update') return;
+        evidence.queued ||= event.followupEntries?.some((entry) => entry.content.text === nextPrompt) ?? false;
+        evidence.steered ||= event.steeringEntries?.some((entry) => entry.content.text === nextPrompt) ?? false;
+      }, resolve);
+    });
+    const latch = (window as SessionObservationLatchWindow).makaE2eLatch!;
+    latch.arm('sessions.observe');
     latch.rejectNextSessionObservation('forced first observation failure');
-    return true;
-  });
-  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
-
+    return session.id;
+  }, { prompt: FAKE_HOLD_OPEN_PROMPT, nextPrompt });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await ensureSidebarExpanded(page);
+  await sessionRow(sidebar, sessionId).click();
+  // No execution snapshot has reached this surface. Sending must still express next-turn intent.
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.fill(nextPrompt);
   await awaitSendReady(page);
   await composer.press('Enter');
-
-  await expect(page.locator('.maka-bubble-streaming')).toContainText(
-    'Fake backend waiting',
-    { timeout: 20_000 },
-  );
-  await page.getByRole('button', { name: '停止' }).click();
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
-  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { admissionEvidence?: { queued: boolean; steered: boolean } }).admissionEvidence,
+  )).toEqual({ queued: true, steered: false });
+  await page.evaluate(() => (window as SessionObservationLatchWindow).makaE2eLatch!.release('sessions.observe'));
+  await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting', { timeout: 20_000 });
+  await page.getByRole('button', { name: '停止', exact: true }).click();
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 20_000 });
 });
 
 test('a failed transcript open recovers when its Session observation becomes ready', async ({
@@ -326,4 +345,8 @@ test('returning to a live conversation settles output accumulated while away', a
     text.includes('background output') && !text.includes(backgroundSteering)
   )).toBe(false);
   expect(backgroundRestoreObserved?.maxActiveAnimations).toBe(0);
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await page.evaluate((sessionId) => window.maka.sessions.stop(sessionId), originalSessionId!);
+  await expect(sessionRow(sidebar, originalSessionId!).getByLabel('正在响应', { exact: true })).toHaveCount(0);
+
 });

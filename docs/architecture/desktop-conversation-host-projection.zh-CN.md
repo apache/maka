@@ -75,7 +75,7 @@ Host projector 继续为内容、交互和现有 CLI 消费者提供适配。它
 
 扩展现有 Session observer 的交付契约，使同一观察范围交付三类信息：
 
-- 已接收的 `rootTurn`，连同 `hostEpoch`、`projectionRevision` 和观察可用性，以 `host_execution` 在现有 Session 事件通道交付。直接复用协议 `TurnSnapshot`；queue、interactions 沿原有投影路径交付，不再复制一份。
+- 已接收的 `rootTurn` 和观察可用性，以 `host_execution` 在现有 Session 事件通道交付。直接复用协议 `TurnSnapshot`；Host epoch 和 revision 的接纳由既有 Main owner/replica 完成，不向 Renderer 透传无人消费的水位。queue、interactions 沿原有投影路径交付，不再复制一份。
 - 内容事件，保留其 Turn/Message/Step 归属，沿既有观察范围交付。内容缓冲不决定当前 Run；历史补交和当前增量按消息身份与 offset 去重。
 - 观察可用性与错误，不伪装为 Runtime 的 error/abort/complete。
 
@@ -88,6 +88,7 @@ Host projector 继续为内容、交互和现有 CLI 消费者提供适配。它
 3. 执行快照只经观察事件通道交付，初始 invoke 回包不写执行状态。回包中的内容 seed 按原 Turn/Message 身份归并，不覆盖后来轮次的缓冲。
 4. preload 沿用目标作用域和 Host profile 筛选，把 Session 身份投影为 Desktop 身份；不靠 event.id 字符串解析恢复身份。
 5. 观察失败通过 `host_observation_error` 进入观察错误回调，不进入 Runtime reducer。pending 将最后快照标记为不可用，停止工作动画并保留最后停止目标；新的已接纳快照恢复观察事实。
+6. 释放会话观察时同步撤销快照可用性，保留原 Turn 内容供再次打开时交接。目录不替观察订阅清理内容，也不能让已撤销的观察继续驱动侧栏脉冲。
 
 尚未取得快照与快照明确 `rootTurn:null` 是两个不同事实，不能都编码成 undefined/false 后再靠目录补猜。断线保留的上次快照必须标记过期。
 
@@ -96,6 +97,10 @@ Host projector 继续为内容、交互和现有 CLI 消费者提供适配。它
 在现有 Conversation/session UI 容器中接纳快照。Main/preload 完成范围与顺序检查，Renderer 不自己推进 admitted → running → completed。
 
 共享纯展示投影从快照和对应内容计算 UI；主对话、Side Chat、WorkHub 使用同一个规则。保留各领域的命令、未知结果恢复和资源关闭职责，不合并成一个全能 controller。
+
+Desktop 传输类型只声明消息形状；跨功能的纯执行投影由 application/contracts 提供。Conversation 拥有状态选择，Shell 合并订阅执行与低频内容摘要，正文独立订阅内容缓冲，不重复订阅同一执行事实。
+
+普通 Enter 提交 `next_turn`，显式插话提交 `current_turn`。Host 在空闲时立即启动普通消息，在运行时将它排入下一轮；Renderer 不根据有无执行快照改写这份意图。首发建会话、修订和要求精确执行的 orchestration 保留各自准备约束，不以新增 `auto` 协议或等待快照的状态机替代已有接纳职责。
 
 Shell 订阅低频执行与交付信息，正文订阅高频内容。会话目录仍服务导航列表和跨会话汇总，不再负责活动对话的执行判定与 live buffer 终止。
 

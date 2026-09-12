@@ -74,7 +74,7 @@ test('execution and observation failures stay separate from Runtime events', asy
   await ready.promise;
   try {
     events.emit('sessions:event:session-1', {}, owner, {
-      type: 'host_execution', available: true, hostEpoch: 'host-1', revision: 2,
+      type: 'host_execution', available: true,
       rootTurn: { sessionId: 'session-1', turnId: 'new-turn', runId: 'run-1', status: 'running' },
     });
     assert.equal(projections.at(-1)?.rootTurn?.sessionId, sessionId);
@@ -84,7 +84,7 @@ test('execution and observation failures stay separate from Runtime events', asy
     events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_error', message: 'connection lost' });
     assert.equal(failures.length, 1);
     events.emit('sessions:event:session-1', {}, owner, {
-      type: 'host_execution', available: true, hostEpoch: 'host-2', revision: 1, rootTurn: null,
+      type: 'host_execution', available: true, rootTurn: null,
     });
     assert.equal(projections.at(-1)?.rootTurn, null);
     assert.equal(projections.at(-1)?.available, true);

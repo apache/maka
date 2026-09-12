@@ -937,8 +937,6 @@ export class RuntimeHostSessionObserver {
       group.target.send(sessionEventChannel(state.sessionId), {
         type: 'host_execution',
         available: true,
-        hostEpoch: state.replica.hostEpoch,
-        revision: state.snapshot.projectionRevision,
         rootTurn: state.snapshot.rootTurn,
       });
     } catch {

@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useRef } from 'react';
-import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -34,7 +34,7 @@ import {
   selectSessions,
   type SessionCatalogController,
 } from './session-catalog-state.js';
-import { sessionIdSetsEqual } from './live-turn-snapshot.js';
+import { sessionIdSetsEqual } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './use-external-store-selector.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 
@@ -74,7 +74,6 @@ export function useAppShellSessionList(
 
   if (!refresherRef.current) {
     refresherRef.current = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: () => window.maka.sessions.list(),
       currentSessions: () => sessionsRef.current,
       commitSessions: (next) => commitSessions(next.map(normalizeSessionSummaryForDisplay)),

@@ -19,7 +19,7 @@
 
 /**
  * #1954 busy-race settlement: a submitted Message that raced a root turn
- * another client opened can come back `steered` (the send owns no turn) or
+ * another client opened can come back queued (the send owns no turn) or
  * under a Host-chosen turnId. Both results must be interpreted identically by the
  * new-chat and existing-session branches, and a rebind must never overwrite
  * an authoritative live projection that beat the IPC response.
@@ -39,6 +39,22 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('busy-raced send settlement', () => {
+  it('submits ordinary messages as next-turn intent without an execution witness', async () => {
+    const restoreWindow = installWindow({ sessions: {
+      submitMessage: async (_sessionId: string, placement: string) => {
+        assert.equal(placement, 'next_turn');
+        return { ok: true, disposition: 'followup', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
+      },
+    } });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(), activeIdRef: { current: 'session-a' },
+        getRunningTurnId: () => { throw new Error('Message intent must not depend on observation'); },
+      });
+      assert.equal(await actions.send('do this after the current answer'), true);
+    } finally { restoreWindow(); }
+  });
+
   it('keeps steering pending while the Host admits it', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
@@ -342,42 +358,12 @@ describe('busy-raced send settlement', () => {
     }
   });
 
-  it('keeps one local row when Host admits the message as steering', async () => {
-    const activeIdRef = { current: 'session-a' as string | undefined };
-    const transientState = createTransientState();
-    const restoreWindow = installWindow({
-      sessions: {
-        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
-          ok: true,
-          disposition: 'steering',
-          messageId: command.messageId,
-          attachments: [],
-          inlineReferences: [],
-          skillInvocation: EMPTY_SKILL_INVOCATION,
-        }),
-      },
-    });
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef,
-        ...transientState.deps,
-      });
-      assert.equal(await actions.send('also check the tests'), true);
-      // One row for one Message, still under the identity the client sent it
-      // with: steering admission names no Turn to re-key it to.
-      assert.equal(transientState.rows.size, 1);
-    } finally {
-      restoreWindow();
-    }
-  });
-
   it('does not turn a Host-started admission into a renderer-owned LiveTurn', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const transientState = createTransientState();
     const restoreWindow = installWindow({
       sessions: {
-        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'turn_started',
           messageId: command.messageId,
@@ -403,7 +389,7 @@ describe('busy-raced send settlement', () => {
     }
   });
 
-  it('keeps the new-chat message through navigation when Host admits it as steering', async () => {
+  it('keeps the new-chat message through navigation when a raced Host queues it', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const transientState = createTransientState();
     const activated: string[] = [];
@@ -416,9 +402,9 @@ describe('busy-raced send settlement', () => {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
           ok: true,
-          disposition: 'steering',
+          disposition: 'followup',
           messageId: command.messageId,
           attachments: [],
           inlineReferences: [],
@@ -456,7 +442,7 @@ describe('busy-raced send settlement', () => {
         create: async () => ({ id: 'session-new' }),
       },
       sessions: {
-        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'turn_started',
           messageId: command.messageId,

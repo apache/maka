@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import type { LiveTurnSnapshot } from './live-turn-snapshot.js';
-import { activeHostTurn, type SessionExecutionProjection } from '../shared/session-execution-projection.js';
+import type { LiveTurnSnapshot } from './features/conversation/index.js';
+import { activeHostTurn, type SessionExecutionProjection } from './application/contracts/session-execution.js';
 
 /** Shell observes execution at low frequency; content never establishes liveness. */
 export function useShellLiveTurn(options: {

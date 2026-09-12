@@ -20,7 +20,7 @@
 import { useEffect } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
+import { selectLiveTurn } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './use-external-store-selector';
 
 /**

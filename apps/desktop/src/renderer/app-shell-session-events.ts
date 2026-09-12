@@ -28,7 +28,7 @@ import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
 } from '@maka/ui';
-import type { LiveTurnBuffer, InteractionQueues } from '@maka/ui';
+import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
@@ -270,8 +270,8 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
-  function terminalRefreshOptions(projection: import('@maka/ui').LiveTurnProjection | undefined): RefreshMessagesOptions | undefined {
-    const messageId = [...(projection?.steps ?? [])].reverse().find((step) => step.text)?.stepId;
+  function terminalRefreshOptions(projection: LiveTurnProjection | undefined): RefreshMessagesOptions | undefined {
+    const messageId = projection?.steps.filter((step) => step.text).pop()?.stepId;
     return messageId ? { requiredAssistantMessageId: messageId } : undefined;
   }
 
