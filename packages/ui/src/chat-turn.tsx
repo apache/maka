@@ -366,7 +366,7 @@ function MessageCopyButton(props: {
  * "message stack + tools panel at end" layout so the user sees the
  * narrative of "ask → tools fired → answer" as one work unit.
  */
-export const TurnView = memo(function TurnView(props: {
+export const TurnView = memo(function TurnView(inputProps: {
   turn: TurnViewModel;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
@@ -456,7 +456,15 @@ export const TurnView = memo(function TurnView(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
-  const { turn } = props;
+  const { turn } = inputProps;
+  // Live state is a separate projection and may lag the durable transcript.
+  // Once that transcript records a terminal outcome, normalize the input so
+  // every downstream surface uses the durable state. Inferred `completed`
+  // remains eligible because active legacy turns use it.
+  const props =
+    turn.statusSource === 'recorded' && turn.status !== 'running'
+      ? { ...inputProps, liveStreaming: undefined }
+      : inputProps;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   // A recorded conversational terminal turn owns presentation beyond its
@@ -465,7 +473,7 @@ export const TurnView = memo(function TurnView(props: {
   // internal operations do not carry enough evidence for a recovery action.
   const showAssistantMessage =
     turn.timeline.length > 0 ||
-    !!props.liveStreaming ||
+    !!inputProps.liveStreaming ||
     (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
   // #1307: the collapsed "Processing" fold is derived at render time from the
   // flat timeline. Settled turn identities are stable (memoized projections),
