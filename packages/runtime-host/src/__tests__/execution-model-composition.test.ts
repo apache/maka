@@ -2341,6 +2341,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
               content,
               submittedContentDigest: digest,
               submittedPlacement: 'next_turn',
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
               placement: 'next_turn',
               disposition: 'followup',
             },

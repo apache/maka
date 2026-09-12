@@ -70,6 +70,7 @@ import {
   normalizeRootTurnAdmission,
   orderRootTurnAdmissionChain,
   rootTurnAdmissionPayloadsEqual,
+  rootTurnSourceMessagePayloadsEqual,
   sanitizeJson,
 } from './agent-run-store-contract.js';
 export {
@@ -78,6 +79,7 @@ export {
   ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES,
   ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
   type RootTurnSourceMessage,
+  rootTurnSourceMessagePayloadsEqual,
   type RootTurnAdmission,
   type RootTurnAdmissionAuthorization,
   type RootTurnStartRejection,
