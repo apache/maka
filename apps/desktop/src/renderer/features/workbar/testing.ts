@@ -49,6 +49,7 @@ export * from './tools/side-chat/quote-companion-visibility.js';
 export {
   useQuoteCompanion,
 } from './tools/side-chat/use-quote-companion.js';
+export * from './tools/terminal/terminal-interaction-policy.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
