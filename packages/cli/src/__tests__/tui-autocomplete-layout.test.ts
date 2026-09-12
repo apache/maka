@@ -36,6 +36,8 @@ test('an overlay hides the composer cursor and preserves its draft and border co
 
   // Emit color even under NO_COLOR so accidental style loss remains detectable.
   const borderColor = (text: string) => `${CYAN_FOREGROUND}${text}${RESET_FOREGROUND}`;
+  const normalizeAdjacentColorRuns = (text: string) =>
+    text.replaceAll(`${RESET_FOREGROUND}${CYAN_FOREGROUND}`, '');
   const terminal = new FakeTerminal(WIDTH, 4);
   const tui = new TuiMainScreen(terminal);
   t.after(() => tui.stop());
@@ -59,11 +61,14 @@ test('an overlay hides the composer cursor and preserves its draft and border co
     const expectedScreenRows = expectedRows.map(plainTerminalOutput);
     assert.deepEqual(actualScreenRows, expectedScreenRows);
 
-    // The real render retains the cursor, IME marker and per-character border colors.
-    const actualComposerRows = composerRenderSpy.mock.calls.at(-1)?.result;
+    // The real render retains the cursor, IME marker and border colors. pi-tui
+    // may encode one color run per glyph or coalesce adjacent glyphs.
+    const actualComposerRows = composerRenderSpy.mock.calls
+      .at(-1)
+      ?.result?.map(normalizeAdjacentColorRuns);
     const expectedComposerRows = expectedRows
       .slice(1)
-      .map((line) => line.replaceAll('─', borderColor('─')));
+      .map((line) => normalizeAdjacentColorRuns(line.replaceAll('─', borderColor('─'))));
     assert.deepEqual(actualComposerRows, expectedComposerRows);
   };
 

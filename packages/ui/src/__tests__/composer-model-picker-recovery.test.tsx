@@ -55,6 +55,7 @@ test('the recovery handle opens the existing exact account-and-model picker', as
   const original = {
     document: globalThis.document,
     window: globalThis.window,
+    HTMLElement: globalThis.HTMLElement,
     matchMedia: globalThis.matchMedia,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -68,10 +69,14 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     writingMode: 'horizontal-tb',
     getPropertyValue: () => '',
   }) as unknown as CSSStyleDeclaration;
+  window.getSelection = () => null;
+  const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  Object.assign(window, { matchMedia });
   Object.assign(globalThis, {
     document,
     window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    HTMLElement: window.HTMLElement,
+    matchMedia,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,

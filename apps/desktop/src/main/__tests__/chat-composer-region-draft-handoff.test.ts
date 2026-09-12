@@ -68,12 +68,19 @@ async function mountRegion(): Promise<{
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const storage = new Map<string, string>();
-  Object.assign(document, {
-    getSelection: () => ({
-      removeAllRanges() {},
-      addRange() {},
-    }),
+  const selection = {
+    rangeCount: 0,
+    removeAllRanges() {},
+    addRange() {},
+  };
+  const createRange = () => ({
+    selectNodeContents() {},
+    collapse() {},
   });
+  const getSelection = () => selection as unknown as Selection;
+  const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  Object.assign(document, { createRange, getSelection });
+  Object.assign(window, { getSelection, matchMedia });
   Object.assign(globalThis, {
     document,
     window,
@@ -86,7 +93,7 @@ async function mountRegion(): Promise<{
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
     },
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    matchMedia,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,
