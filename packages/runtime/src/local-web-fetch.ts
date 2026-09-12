@@ -61,6 +61,13 @@ const VOID_HTML_ELEMENTS = new Set([
   'wbr',
 ]);
 const RAW_TEXT_HTML_ELEMENTS = new Set(['script', 'style', 'textarea', 'title']);
+/** Closing-tag matchers for the raw-text elements, compiled once: a page with
+ *  dozens of script/style tags would otherwise recompile the same four
+ *  regexes per element. Sharing an instance is safe because `lastIndex` is
+ *  assigned immediately before every exec. */
+const RAW_TEXT_CLOSING_TAGS = new Map(
+  [...RAW_TEXT_HTML_ELEMENTS].map((name) => [name, new RegExp(`</${name}\\s*>`, 'gi')]),
+);
 export const WEB_FETCH_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 export const WEB_FETCH_TIMEOUT_MS = 30_000;
 
@@ -197,8 +204,8 @@ function assertSafeHtmlNesting(html: string): void {
       continue;
     }
     if (source.endsWith('/>') || VOID_HTML_ELEMENTS.has(name)) continue;
-    if (RAW_TEXT_HTML_ELEMENTS.has(name)) {
-      const closingTag = new RegExp(`</${name}\\s*>`, 'gi');
+    const closingTag = RAW_TEXT_CLOSING_TAGS.get(name);
+    if (closingTag) {
       closingTag.lastIndex = tags.lastIndex;
       const closingMatch = closingTag.exec(html);
       if (closingMatch) tags.lastIndex = closingTag.lastIndex;
