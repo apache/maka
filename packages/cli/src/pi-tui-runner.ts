@@ -96,6 +96,7 @@ import {
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
+  type SessionResumeAvailability,
 } from './session-driver.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
@@ -445,6 +446,8 @@ function sessionConnectionIdentityNotice(
   }
   return undefined;
 }
+
+const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
@@ -1976,7 +1979,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
-  const goToSession = async (sessionId: string): Promise<void> => {
+  const goToSession = async (sessionId: string): Promise<boolean> => {
     const pair = sideConversation;
     if (
       pair &&
@@ -1984,24 +1987,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (sessionId === pair.parentSessionId || sessionId === pair.sideSessionId)
     ) {
       await toggleSideConversation();
-      return;
+      return true;
     }
     const leavesPair =
       pair !== undefined && sessionId !== pair.parentSessionId && sessionId !== pair.sideSessionId;
     if (!turnRunning) {
+      let switched = false;
       await runControl(async () => {
         await switchSession(sessionId);
+        switched = true;
         if (leavesPair) await discardCurrentSidePair();
       });
-      return;
+      return switched;
     }
     // One detach at a time (#3380): a second mid-turn switch while the first
     // is still handing the view over would clear `detaching` early, reopen
     // the interrupt window, and double-apply the adoption.
-    if (detaching) return;
-    await switchAwayMidTurn(sessionId)
-      .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
-      .catch(reportError);
+    if (detaching) return false;
+    try {
+      await switchAwayMidTurn(sessionId);
+      if (leavesPair) await discardCurrentSidePair();
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
+    }
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
@@ -2895,7 +2905,35 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  let sessionListPromise: Promise<SessionSummary[]> | undefined;
+  let activeResumeAvailabilityChecks = 0;
+  const queuedResumeAvailabilityChecks: Array<() => void> = [];
+  const runResumeAvailabilityCheck = async <T>(task: () => Promise<T>): Promise<T> => {
+    if (activeResumeAvailabilityChecks >= SESSION_RESUME_AVAILABILITY_CONCURRENCY) {
+      await new Promise<void>((resolve) => queuedResumeAvailabilityChecks.push(resolve));
+    }
+    activeResumeAvailabilityChecks += 1;
+    try {
+      return await task();
+    } finally {
+      activeResumeAvailabilityChecks -= 1;
+      queuedResumeAvailabilityChecks.shift()?.();
+    }
+  };
+  const listSessions = (): Promise<SessionSummary[]> => {
+    if (!sessionListPromise) {
+      sessionListPromise = input.driver.listSessions().finally(() => {
+        sessionListPromise = undefined;
+      });
+    }
+    return sessionListPromise;
+  };
+
   const resumeSession = async () => {
+    if (!input.driver.getSessionId()) {
+      await showSessionList({ onlyResumable: true });
+      return;
+    }
     if (!input.driver.resumeLatest) {
       throw new Error('Safe-boundary resume is unavailable on this runtime.');
     }
@@ -2930,8 +2968,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const showSessionList = async () => {
-    const sessions = await input.driver.listSessions();
+  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
+    const sessions = await listSessions();
     const sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
@@ -2940,24 +2978,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
+    const checkSessionAvailability = async (
+      session: SessionSummary,
+    ): Promise<readonly [string, SessionResumeAvailability]> => {
+      try {
+        return await runResumeAvailabilityCheck(async () => {
+          if (!session.cwd) {
+            return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+          }
+          const availability = options.onlyResumable
+            ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+              (await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)))
+            : ((await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)));
+          return [session.id, availability] as const;
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return [session.id, { available: false, reason: detail }] as const;
+      }
+    };
+    const sessionsToCheck =
+      sessionListScope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
     // Maka-session availability and the foreign scan are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
     const [availabilityEntries, foreignScan] = await Promise.all([
-      Promise.all(
-        sessions.map(async (session) => {
-          return [
-            session.id,
-            (await input.driver.getSessionResumeAvailability?.(session)) ??
-              (await inspectSessionResumeAvailability(session)),
-          ] as const;
-        }),
-      ),
+      Promise.all(sessionsToCheck.map(checkSessionAvailability)),
       // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
       // Session and hands off a turn, which cannot detach from the running
       // one (#3380). Skip the scan mid-turn instead of offering rows whose
       // selection would silently no-op on importForeignSession's busy guard.
-      input.foreignSessions && !turnRunning
+      !options.onlyResumable && input.foreignSessions && !turnRunning
         ? input.foreignSessions.listSessions({ cwd }).then(
             (summaries) => ({ summaries }),
             (error: unknown) => ({ error }),
@@ -2965,6 +3018,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         : Promise.resolve({ summaries: [] as ForeignSessionSummary[] }),
     ]);
     const availability = new Map(availabilityEntries);
+    const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
+      const scopeSessions =
+        scope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
+      const missingSessions = scopeSessions.filter((session) => !availability.has(session.id));
+      if (missingSessions.length === 0) return;
+      for (const [sessionId, sessionAvailability] of await Promise.all(
+        missingSessions.map(checkSessionAvailability),
+      )) {
+        availability.set(sessionId, sessionAvailability);
+      }
+    };
     // Foreign (Claude Code / Codex) sessions for the current cwd, keyed by a
     // prefixed select value so they never collide with Maka session ids. A scan
     // error is surfaced (not silently swallowed): degrade to no rows but tell
@@ -2997,7 +3061,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
+      const selectableSessions = options.onlyResumable
+        ? visibleSessions.filter(({ session }) => availability.get(session.id)?.available === true)
+        : visibleSessions;
+      const choices: SessionSearchChoice[] = selectableSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
@@ -3027,18 +3094,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             .toLocaleLowerCase(),
         };
       });
-      // Foreign sessions are cwd-scoped; show them in both scope views (they
-      // belong to this project) so a Tab toggle never makes them vanish.
-      for (const [value, summary] of foreignByValue) {
-        choices.push({
-          item: {
-            value,
-            label: summary.title,
-            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
-          },
-          searchText:
-            `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
-        });
+      if (!options.onlyResumable) {
+        // Foreign sessions are cwd-scoped; show them in both scope views (they
+        // belong to this project) so a Tab toggle never makes them vanish.
+        for (const [value, summary] of foreignByValue) {
+          choices.push({
+            item: {
+              value,
+              label: summary.title,
+              description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+            },
+            searchText:
+              `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
+          });
+        }
       }
       const closeOverlay = () => {
         sessionPickerOverlayOpen = false;
@@ -3051,9 +3120,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           void importForeignSession(foreign);
           return;
         }
-        if (availability.get(item.value)?.available === false) return;
+        const itemAvailability = availability.get(item.value);
+        if (
+          itemAvailability?.available === false &&
+          itemAvailability.reason === 'Missing working directory'
+        ) {
+          return;
+        }
         closeOverlay();
-        void goToSession(item.value);
+        void (async () => {
+          const switched = await goToSession(item.value);
+          if (switched && options.onlyResumable) await runControl(resumeSession);
+        })().catch(reportError);
       };
       const scopeLabel =
         sessionListScope === 'current'
@@ -3071,14 +3149,44 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onSelect,
         onCancel: closeOverlay,
         onToggleScope: () => {
-          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-          renderScope();
+          const nextScope = sessionListScope === 'current' ? 'all' : 'current';
+          void ensureAvailabilityForScope(nextScope)
+            .then(() => {
+              sessionListScope = nextScope;
+              renderScope();
+            })
+            .catch(reportError);
         },
       });
       sessionPickerOverlayOpen = true;
       overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
+  };
+
+  const announceResumeAvailability = async (): Promise<void> => {
+    const sessionId = input.driver.getSessionId();
+    try {
+      if (!input.driver.getSessionResumeCandidateAvailability) return;
+      const sessions = await listSessions();
+      const session =
+        sessions.find((candidate) => candidate.id === sessionId) ??
+        sessions.find((candidate) => candidate.cwd === cwd);
+      if (!session) return;
+      const availability = await runResumeAvailabilityCheck(() =>
+        input.driver.getSessionResumeCandidateAvailability!(session),
+      );
+      if (availability.available) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: pickerCopy.resumeAvailabilityNotice,
+        });
+        requestRender();
+      }
+    } catch {
+      // Resume discovery is advisory and must never prevent the TUI from starting.
+    }
   };
 
   const showRewindPicker = async () => {
@@ -4578,6 +4686,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // line discipline and leaks onto the screen as a stray `^[[I` on launch.
     terminal.write(ENABLE_FOCUS_REPORTING);
     if (input.firstRun) void showSetupWizard();
+    setTimeout(() => void announceResumeAvailability(), 0);
   } catch (error) {
     beginClose(error instanceof Error ? error : new Error(String(error)));
   }
