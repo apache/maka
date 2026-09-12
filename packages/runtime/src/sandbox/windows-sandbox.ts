@@ -64,8 +64,14 @@ export interface WindowsBrokerManifest {
     readonly exactWriteRoots: readonly string[];
     readonly network: 'restricted' | 'enabled';
     readonly environment: Readonly<Record<string, string>>;
-    /** Serialized last so manifests without it keep their historical digest. */
+    /** Kept in its historical position and omitted only by older producers. */
     readonly timeoutMs: number;
+    /** Optional W1 Glob admission mode; serialized last only when requested. */
+    readonly nonFollowingReadRoot?: string;
+    /** Original final path entry, checked without following before ACL grants. */
+    readonly nonFollowingReadRootSource?: string;
+    /** Finite directory traversal depth; absent for GLOBSTAR patterns. */
+    readonly nonFollowingReadRootMaxDepth?: number;
   };
 }
 
@@ -181,6 +187,15 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
           MAKA_WINDOWS_SANDBOX: '1',
         }),
         timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
+        ...(plan.policy.nonFollowingReadRoot
+          ? {
+              nonFollowingReadRoot: plan.policy.nonFollowingReadRoot.enforcementPath,
+              nonFollowingReadRootSource: plan.policy.nonFollowingReadRoot.sourcePath,
+              ...(plan.policy.nonFollowingReadRoot.maxDepth !== undefined
+                ? { nonFollowingReadRootMaxDepth: plan.policy.nonFollowingReadRoot.maxDepth }
+                : {}),
+            }
+          : {}),
       };
       manifestPath = this.options.writeManifest({
         version: 1,

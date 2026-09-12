@@ -55,6 +55,18 @@ export interface SandboxPathContext {
   }[];
   /** Profile roots observed as unavailable while preparing this invocation. */
   unavailableProfilePaths?: readonly string[];
+  /**
+   * Windows-only recursive read root whose operation contract does not
+   * follow reparse points. `enforcementPath` remains the canonical authority,
+   * while `sourcePath` preserves the final path entry before realpath so the
+   * broker can reject a root junction before granting ACLs.
+   */
+  windowsNonFollowingReadRoot?: {
+    readonly enforcementPath: string;
+    readonly sourcePath: string;
+    /** Omitted when a GLOBSTAR makes traversal depth unbounded. */
+    readonly maxDepth?: number;
+  };
   /** Profile roots pinned by open host descriptors until sandbox launch. */
   pinnedProfilePaths?: readonly {
     path: string;

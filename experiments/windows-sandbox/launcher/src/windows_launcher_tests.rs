@@ -42,6 +42,9 @@ mod tests {
             network: NetworkMode::Restricted,
             environment: BTreeMap::new(),
             timeout_ms: None,
+            non_following_read_root: None,
+            non_following_read_root_source: None,
+            non_following_read_root_max_depth: None,
         }
     }
 
