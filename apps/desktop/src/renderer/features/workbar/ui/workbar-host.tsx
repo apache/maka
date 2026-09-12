@@ -154,23 +154,21 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
           label={copy.resizeWorkbar}
         />
       )}
-      {props.activeId && (
         <div className="maka-workbar-layout-vars" style={style}>
           <Suspense
             fallback={
               <SessionWorkbarFallback
-                hidden={props.hidden}
+                hidden={props.hidden || !props.activeId}
                 rightCollapsed={props.rightCollapsed}
                 bottomOpen={props.bottomOpen}
               />
             }
           >
             <WorkbarSurface
-              key={props.activeId}
               sessionId={props.activeId}
               projectId={props.projectId}
               projectAliases={props.projectAliases}
-              hidden={props.hidden}
+              hidden={props.hidden || !props.activeId}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}
               rightCollapsed={props.rightCollapsed}
@@ -195,7 +193,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             />
           </Suspense>
         </div>
-      )}
       <SideChatCloseConfirmation
         key={props.closeConfirmation.key}
         open={props.closeConfirmation.open}

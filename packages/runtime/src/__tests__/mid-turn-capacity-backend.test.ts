@@ -498,7 +498,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ],
       ...(options.withoutContextWindow || options.declareContextWindow === false
         ? {}
-        : { relayModelProfiles: { 'mock-model-id': { contextWindow } } }),
+        : { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }),
     },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',

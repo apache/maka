@@ -20,15 +20,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  # `edited` also covers title and body changes. Isolate those no-op runs so
-  # they cannot cancel the check for the current pull request revision.
-  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'edited' && github.event.changes.base.ref.from == '' && format('-ignored-{0}', github.run_id) || '' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -45,10 +42,6 @@ jobs:
   # Renaming it would leave that check unreported on every open pull request
   # until the rename merged, and nothing could merge while it was unreported.
   test:
-    # A base-ref edit keeps the protected `CI / test` name. Other edits create
-    # only a differently named skipped check, so they cannot satisfy it.
-    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '' && 'ignored-edit' || 'test' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
     # Pinned, not `ubuntu-latest`. The two resolve to the same image, but only
     # the alias makes this required context wait at the tail, and the steps
     # below already assume this image. `ci-workflow-policy.test.mjs` holds the
@@ -262,7 +255,7 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
           if [[ -n "$BASE_SHA" ]]; then
-            npm run check:renderer-architecture -- --base "$BASE_SHA"
+            npm run check:renderer-architecture -- --base "$BASE_SHA" --strict-base
           else
             npm run check:renderer-architecture
           fi
@@ -431,9 +424,11 @@ jobs:
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
 
+      # The smoke only launches headless; the full Chrome build was downloaded
+      # and never opened. The headed consumer (perf/storybook.mjs) self-installs.
       - name: Install Playwright Chromium
         if: steps.plan.outputs.storybook == 'true'
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps --only-shell chromium
 
       - name: Build Storybook
         if: steps.plan.outputs.storybook == 'true'
@@ -442,6 +437,12 @@ jobs:
       - name: Storybook smoke
         if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
+
+      - name: Transcript geometry invariants
+        if: steps.plan.outputs.storybook == 'true'
+        env:
+          GEOMETRY_REPETITIONS: '1'
+        run: xvfb-run -a node scripts/perf/geometry-ablation.mjs --assert-stable
 
       - name: Update stable Rust for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'

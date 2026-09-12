@@ -75,13 +75,16 @@ export function createFakeWorkbarServices(
       subscribeSessionEvents: noopSubscription,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: noopSubscription,
+      subscribeUpdates: noopSubscription,
       start: async () => {
         throw new Error('Fake terminal.start is not configured');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => null,
       detach: async () => undefined,
-      write: async () => null,
+      write: async () => undefined,
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
@@ -96,7 +99,6 @@ export function createFakeWorkbarServices(
       close: async () => undefined,
       getState: async () => null,
       subscribeState: noopSubscription,
-      subscribeLive: noopSubscription,
     },
     artifacts: {
       list: async () => [],
@@ -138,9 +140,16 @@ export function createFakeWorkbarServices(
       },
       send: async () => ({ ok: false, reason: 'not configured' }),
       stop: async () => undefined,
-      steer: async () => {
-        throw new Error('Fake sideChat.steer is not configured');
+      submitFollowUp: async () => {
+        throw new Error('Fake sideChat.submitFollowUp is not configured');
       },
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');
       },

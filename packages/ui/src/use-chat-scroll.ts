@@ -22,14 +22,13 @@
  * authority that owns it (`transcript-scroll-authority.ts`).
  *
  * A command is one-shot — jump to a turn the reader picked, ask for the history
- * above them — and it releases the pin first, because the authority writes
- * nothing while the pin is released and so a command can never be fighting a
- * policy. That was the shape every previous round of this code had.
+ * above them — and it releases the pin first, so explicit navigation does not
+ * fight following. The authority also owns range publication and its one-shot
+ * reading-anchor restoration.
  *
  * What decides whether the reader wants either thing is never re-derived here.
  * "They have left the tail" is the pin, and the pin has one owner. Nothing here
- * compensates for content that lands above them either; `overflow-anchor: auto`
- * does that continuously, and for free.
+ * compensates for content that lands above them; that belongs to the authority.
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
@@ -109,6 +108,10 @@ export function useChatScroll(input: {
   // which lands after passive effects, so this is still installed in time.
   useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
 
+  useEffect(() => input.sessionId
+    ? input.viewportNavigation?.attachCommitScheduler(input.sessionId, authority)
+    : undefined, [authority, input.sessionId, input.viewportNavigation]);
+
   // A new conversation either resumes a semantic reading position or arrives
   // at its tail. Releasing before an async fill is essential: an empty
   // transcript clamps every pixel offset to zero, but it cannot erase a Turn
@@ -181,18 +184,13 @@ export function useChatScroll(input: {
       : input.hasNewerHistory === true && canPrefetch;
     const requestHistory = (direction: 'up' | 'down'): void => {
       if (inFlight[direction]) return;
-      // The browser anchors the reader against everything that lands above
-      // them, with one exception: it declines while the scroller sits at zero.
-      if (direction === 'up' && !authority.getSnapshot().pinned && root.scrollTop < 1) {
-        root.scrollTop = 1;
-      }
       inFlight[direction] = true;
       void Promise.resolve(prefetchRef.current?.(direction === 'up' ? 'older' : 'newer'))
         .then(
           // Chaining pages needs a re-check here, because the render that the
           // landed rows caused ran while this direction still counted as in
           // flight. A prefetch that issued no read has nothing to chain from.
-          (issued) => { inFlight[direction] = false; if (issued) check(); },
+          (issued) => { inFlight[direction] = false; if (issued && !authority.isInputActive()) check(); },
           () => { inFlight[direction] = false; },
         );
     };
@@ -203,6 +201,9 @@ export function useChatScroll(input: {
       const below = root.scrollHeight - root.clientHeight - root.scrollTop;
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
+      // Source pages may have arrived without entering the DOM yet. Its old
+      // IDs cannot trim that source; settled rechecks after publication.
+      if (authority.isInputActive()) return;
       if (above <= screen * 6 && below <= screen * 6) return;
       const rect = root.getBoundingClientRect();
       const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];
@@ -228,7 +229,12 @@ export function useChatScroll(input: {
     bandCheck.current = check;
     // Both phases matter: a gesture at an edge moves nothing and so reports
     // only `input`, and that is exactly where the next page is wanted.
-    const stopWatchingReader = authority.subscribeToReaderScroll(() => check());
+    const stopWatchingReader = authority.subscribeToReaderScroll((phase, direction) => {
+      check();
+      // An existing fill also satisfies this request. Preserve the gesture
+      // while giving the authority the intent that pixels alone cannot tell.
+      return phase === 'input' && direction === 'up' && canLoad('up');
+    });
     // A resize redefines the band itself — the screen it counts in is the
     // root's own height — while the reader and the messages stand still. The
     // authority publishes only when its snapshot changes, so a resize that

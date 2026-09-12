@@ -42,12 +42,9 @@
   width: 100%;
 }
 
-/* Inserting earlier turns above the reader must not move what they are
-   reading. The browser's scroll anchoring does exactly that, so state the
-   dependency on the scroller that runs it rather than inheriting the `auto`
-   default: Maka reads no geometry and restores no position of its own. The
-   one case anchoring declines is a scroller sitting at zero, compensated in
-   useChatScroll after the turns land. */
+/* Native anchoring handles ordinary content growth. The scroll authority
+   disables it during following and atomic range replacement, when it owns
+   the position write itself. */
 [data-chat-scroll-container='true'] {
   overflow-anchor: auto;
 }
@@ -66,8 +63,8 @@
   width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 280px;
+  /* Resident Turns contribute their real size before the first scroll. */
+  contain: layout style paint;
 }
 
 .maka-chat-message-loading {
@@ -137,49 +134,10 @@
   gap: var(--space-1);
 }
 
-/* A transcript range is bounded by complete Turns, so one unusually large
-   Turn can still be much taller than the scrollport. The outer Turn's
-   content-visibility boundary stops helping as soon as any part of that Turn
-   becomes relevant. Keep the stable timeline blocks inside it independently
-   skippable so Chromium does not lay out and paint every Markdown, reasoning,
-   and tool subtree while the reader crosses one nearby block.
-
-   Renderers apply the marker at the source of each timeline block, including
-   the children of a Processing fold. `auto` retains the measured block size
-   after first paint, preserving native scroll
-   anchoring when a skipped block leaves and re-enters the viewport. */
+/* Keep containment without skipping layout: first visibility must not replace
+   an estimate and change the scroll range. Window membership bounds residency. */
 .maka-chat-message-list [data-maka-transcript-boundary] {
-  content-visibility: auto;
-  /* First-paint intrinsic-size ESTIMATE for scroll-anchor stability, not a
-     fixed height: `auto <n>px` still grows to the block's real size after
-     paint. 96px is the single-line answer baseline; tall multi-line blocks
-     override it below. */
-  contain-intrinsic-block-size: auto 96px;
-}
-
-/* A long prompt can put even the first answer beyond the relevance margin.
-   The streaming frontier must contribute its real height before following;
-   completed blocks in the same active Turn still retain lazy layout. */
-.maka-chat-message-list [data-maka-transcript-boundary][data-live-streaming='true'] {
-  content-visibility: visible;
-}
-
-/* Container blocks — a Processing sequence, a linked-agent list — hold many
-   entries, so their first-paint estimate stays multi-line. It remains an
-   estimate rather than a clamp: the block grows to its measured size after
-   paint. */
-.maka-chat-message-list [data-maka-transcript-boundary="large"] {
-  contain-intrinsic-block-size: auto 320px;
-}
-
-/* Collapsed disclosures are the exception among the "large" sites: a folded
-   reasoning run or tool/activity card renders as one summary row measuring
-   24–32px, and a 320px estimate materializes as a ~290px collapse under a
-   reader scrolling up cold — the anchor-jump the cold-scroll story gates.
-   Estimate them at their collapsed height; `auto` still remembers the real
-   expanded size once a reader opens one. */
-.maka-chat-message-list :is(.maka-deep-thinking, .maka-tool-activity-card)[data-maka-transcript-boundary='large'] {
-  contain-intrinsic-block-size: auto 32px;
+  contain: layout style paint;
 }
 
 /* An expanded reasoning header stays reachable while its own detail is being

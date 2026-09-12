@@ -1203,6 +1203,12 @@ export const TUI_COPY_RESOURCES = {
         'Rewound to before this turn (branched into a new task; the original task is kept). The input box already had unsent content and was left untouched; the turn’s prompt was saved to input history — press ↑ to recall it.',
       noTargets: 'No turns to rewind to.',
       busy: 'Cannot rewind: another action is in progress — wait for it to finish, or interrupt (Esc) and retry.',
+      unsupportedQuotes:
+        'Cannot rewind to this turn: it carries quoted excerpts, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
+      unsupportedAttachments:
+        'Cannot rewind to this turn: it carries attachments, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
+      unsupportedDirectoryReferences:
+        'Cannot rewind to this turn: it carries directory references, and the TUI cannot restore those into the replacement prompt yet. Rewind to an earlier plain-text turn instead.',
       pickerHint:
         'Return to before the selected turn (discards it and later turns; the prompt refills the input box) · enter select / esc cancel',
     },
@@ -1215,6 +1221,12 @@ export const TUI_COPY_RESOURCES = {
         '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
       noTargets: '没有可回退的轮次。',
       busy: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+      unsupportedQuotes:
+        '无法回退到这一轮：它携带引用摘录，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
+      unsupportedAttachments:
+        '无法回退到这一轮：它携带附件，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
+      unsupportedDirectoryReferences:
+        '无法回退到这一轮：它携带目录引用，TUI 暂时无法把它们还原进替换 prompt。请改为回退到更早的纯文本轮次。',
       pickerHint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
     },
     'zh-TW': {
@@ -1226,6 +1238,12 @@ export const TUI_COPY_RESOURCES = {
         '已回退到該輪之前（分支為新任務，原任務保留）。輸入框已有未傳送內容，未覆蓋；該輪 prompt 已存入輸入歷史，可按 ↑ 找回。',
       noTargets: '沒有可回退的輪次。',
       busy: '無法回退：目前有正在進行的操作 — 請等待完成，或中斷（Esc）後重試。',
+      unsupportedQuotes:
+        '無法回退到這一輪：它攜帶引用摘錄，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
+      unsupportedAttachments:
+        '無法回退到這一輪：它攜帶附件，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
+      unsupportedDirectoryReferences:
+        '無法回退到這一輪：它攜帶目錄參照，TUI 暫時無法把它們還原進替換 prompt。請改為回退到更早的純文字輪次。',
       pickerHint: '回到選定輪次之前（捨棄該輪及之後，prompt 回填輸入框） · enter 選擇 / esc 取消',
     },
   },

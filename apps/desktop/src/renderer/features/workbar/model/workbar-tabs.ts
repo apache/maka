@@ -56,6 +56,25 @@ export interface SessionWorkbarPanelsState {
   focusedPanel: SessionWorkbarPlacement;
 }
 
+/** Visibility is a projection of the open tools, never a command to close them. */
+export function projectWorkbarPanelsForSession(
+  panels: SessionWorkbarPanelsState,
+  sessionId: string | undefined,
+  sideChatTabIds: ReadonlySet<string>,
+): SessionWorkbarPanelsState {
+  let projected = panels;
+  for (const placement of ['right', 'bottom'] as const) {
+    const hiddenIds = panels[placement].tabs.filter((tab) =>
+      (tab.kind === 'terminal' && tab.ownerSessionId !== sessionId) ||
+      (tab.kind === 'side-chat' && !sideChatTabIds.has(tab.id)),
+    ).map((tab) => tab.id);
+    if (hiddenIds.length) {
+      projected = reduceWorkbarPanels(projected, { type: 'close', placement, tabIds: hiddenIds });
+    }
+  }
+  return projected;
+}
+
 export type WorkbarPanelsAction =
   | { type: 'open'; placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }
   | { type: 'activate'; placement: SessionWorkbarPlacement; tabId: string }

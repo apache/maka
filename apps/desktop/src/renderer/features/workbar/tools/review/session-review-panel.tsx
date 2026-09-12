@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
@@ -48,6 +48,25 @@ function boundedDiff(diff: string) {
     hiddenLines: lines.length - REVIEW_DIFF_LINE_CAP,
   };
 }
+
+// Snapshot reads allocate new file objects. Only changed diff text should
+// repeat redaction, parsing and rendering for an existing file.
+const ReviewDiff = memo(function ReviewDiff(props: { path: string; diff: string }) {
+  const copy = getDesktopConversationCopy(useUiLocale()).reviewPanel;
+  const preview = boundedDiff(props.diff);
+  return <>
+    <DiffCodePreview
+      diff={preview.body}
+      paths={[props.path]}
+      className="maka-session-review-diff"
+    />
+    {preview.hiddenLines > 0 ? (
+      <Text type="supporting" color="secondary" display="block">
+        {copy.hiddenLines(preview.hiddenLines)}
+      </Text>
+    ) : null}
+  </>;
+});
 
 export function SessionReviewPanel(props: {
   sessionId: string;
@@ -87,17 +106,23 @@ export function SessionReviewPanel(props: {
   useEffect(() => {
     if (!props.active) return;
     let timer: number | undefined;
+    const scheduleRefresh = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void load();
+      }, 250);
+    };
     const unsubscribe = review.subscribeSessionEvents(
       props.sessionId,
       (event) => {
         if (event.type !== 'tool_result' && event.type !== 'complete') return;
-        if (timer !== undefined) window.clearTimeout(timer);
-        timer = window.setTimeout(() => void load(), 250);
+        scheduleRefresh();
       },
     );
     const refreshAfterExternalChange = () => {
       if (document.visibilityState === 'hidden') return;
-      void load();
+      scheduleRefresh();
     };
     window.addEventListener('focus', refreshAfterExternalChange);
     document.addEventListener('visibilitychange', refreshAfterExternalChange);
@@ -133,9 +158,6 @@ export function SessionReviewPanel(props: {
               ? copy.invalidBaseBranch
               : copy.gitFailed;
   const empty = !loading && !error && !sourceError && gitFiles.length === 0;
-  useEffect(() => {
-    setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
-  }, [gitSnapshot?.revision]);
 
   return (
     <Section
@@ -223,7 +245,6 @@ export function SessionReviewPanel(props: {
         {gitFiles.length > 0 ? (
           <div className="maka-session-review-list">
             <CollapsibleGroup
-              key={gitSnapshot?.revision}
               type="single"
               hasDividers
               density="compact"
@@ -231,10 +252,9 @@ export function SessionReviewPanel(props: {
               aria-label={copy.changedFiles(gitFiles.length)}
             >
               {visibleGitFiles.map((file) => {
-                const preview = boundedDiff(file.diff);
                 return (
                   <Collapsible
-                    key={`${gitSnapshot?.revision}:${file.path}`}
+                    key={file.path}
                     value={file.path}
                     className="maka-session-review-file"
                     role="listitem"
@@ -282,16 +302,7 @@ export function SessionReviewPanel(props: {
                       </HStack>
                     }
                   >
-                    <DiffCodePreview
-                      diff={preview.body}
-                      paths={[file.path]}
-                      className="maka-session-review-diff"
-                    />
-                    {preview.hiddenLines > 0 ? (
-                      <Text type="supporting" color="secondary" display="block">
-                        {copy.hiddenLines(preview.hiddenLines)}
-                      </Text>
-                    ) : null}
+                    <ReviewDiff path={file.path} diff={file.diff} />
                   </Collapsible>
                 );
               })}

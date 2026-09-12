@@ -370,7 +370,7 @@ async function seedModelConnection(
         ...(model.thinkingLevels.length === 0
           ? {}
           : {
-              relayModelProfiles: {
+              modelOverrides: {
                 [model.id]: { thinkingLevels: model.thinkingLevels },
               },
             }),

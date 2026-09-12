@@ -23,7 +23,7 @@ import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
-import { ToastProvider } from '@maka/ui';
+import { ToastProvider, useUiLocale } from '@maka/ui';
 import type {
   ConnectionTestResult,
   IdentifiedLlmConnection,
@@ -40,7 +40,7 @@ import type {
 } from '../../src/renderer/features/connection-settings';
 import { getProviderSettingsCopy } from '../../src/renderer/features/connection-settings';
 
-const NOW = Date.parse('2026-07-01T08:00:00Z');
+const NOW = Date.parse('2026-09-12T08:00:00Z');
 const detailCopy = getProviderSettingsCopy('zh-CN').detail;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -155,7 +155,7 @@ const alibabaTokenPlanConnections = [
 // A provider whose key cannot call a model-list endpoint: refresh replays the
 // array this build shipped, so 添加模型 replaces 更新模型目录 as the only way the
 // catalog can grow. `deepseek-v4-pro-beta` is a model added that way — absent
-// from `models`, declared in `relayModelProfiles` (#1584).
+// from `models`, declared in `modelOverrides` (#1584).
 const staticCatalogConnections = [
   {
     ...makeConnection({
@@ -168,16 +168,10 @@ const staticCatalogConnections = [
       modelSource: 'fetched',
     }),
     enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
-    relayModelProfiles: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
+    modelOverrides: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
   },
 ];
 
-// A custom relay fronting one model family. Capability declarations are a
-// relay-only surface — a built-in provider's thinking support comes from
-// bundled metadata — and the family shares one `reasoning_effort` vocabulary,
-// which is the case the bulk control exists for. `deepseek-r2` already
-// declares two levels so the story shows partial coverage, not just the
-// all-or-nothing ends.
 const relayConnections = [
   {
     ...makeConnection({
@@ -185,18 +179,18 @@ const relayConnections = [
       name: 'House Relay',
       providerType: 'openai-compatible',
       baseUrl: 'https://relay.example.com/v1',
-      defaultModel: 'deepseek-r2',
+      defaultModel: 'gpt-5.6-luna',
       lastTestStatus: 'verified',
       models: [
-        { id: 'deepseek-r2' },
-        { id: 'deepseek-v4' },
-        { id: 'qwen3-max-thinking' },
-        { id: 'kimi-k2.6' },
+        { id: 'gpt-5.6-luna' },
+        { id: 'deepseek-v4-flash-0731' },
+        { id: 'glm-5.3-flash' },
+        { id: 'gemini-3.8-flash' },
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['deepseek-r2', 'deepseek-v4', 'qwen3-max-thinking', 'kimi-k2.6'],
-    relayModelProfiles: { 'deepseek-r2': { thinkingLevels: ['low', 'high'] as const } },
+    enabledModelIds: ['gpt-5.6-luna', 'deepseek-v4-flash-0731', 'glm-5.3-flash'],
+    modelOverrides: { 'gpt-5.6-luna': { thinkingLevels: ['low', 'high'] as const } },
   },
 ];
 
@@ -262,7 +256,10 @@ function createBridge(input: {
   failLoad?: boolean;
   loading?: boolean;
 }): StoryConnectionsBridge {
-  let connections = [...(input.connections ?? [])];
+  let connections: ProjectedLlmConnection[] = (input.connections ?? []).map((connection) => ({
+    ...connection,
+    catalogEntries: resolveConnectionModelCatalog(connection),
+  }));
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
@@ -296,23 +293,33 @@ function createBridge(input: {
       defaultSlug ??= connection.slug;
       return connection;
     },
-    async update(identity, patch) {
+    async update(identity, input) {
+      const patch = { ...input };
       const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
-      const updated: ProjectedLlmConnection = {
+      if (patch.modelOverride) {
+        const { modelId, value, enable } = patch.modelOverride;
+        patch.modelOverrides = { ...current.modelOverrides, [modelId]: value };
+        if (enable) patch.enabledModelIds = [...new Set([...(current.enabledModelIds ?? []), modelId])];
+      }
+      const nextConnection = {
         ...current,
         ...patch,
-        // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);
+        // UpdateConnectionInput.modelOverrides is tri-state (null clears);
         // a stored connection never carries null — clear maps to absent.
-        relayModelProfiles:
-          patch.relayModelProfiles === undefined
-            ? current.relayModelProfiles
-            : (patch.relayModelProfiles ?? undefined),
+        modelOverrides:
+          patch.modelOverrides === undefined
+            ? current.modelOverrides
+            : (patch.modelOverrides ?? undefined),
         requestBodyOverlay:
           patch.requestBodyOverlay === undefined
             ? current.requestBodyOverlay
             : (patch.requestBodyOverlay ?? undefined),
         updatedAt: NOW,
+      };
+      const updated: ProjectedLlmConnection = {
+        ...nextConnection,
+        catalogEntries: resolveConnectionModelCatalog(nextConnection),
       };
       connections = connections.map((connection) => connection.connectionId === identity.connectionId ? updated : connection);
       return updated;
@@ -333,13 +340,16 @@ function createBridge(input: {
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
     async fetchModels(identity) {
-      return {
-        models: [
-          { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
-          { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
-        ],
-        source: 'fetched',
-      };
+      const current = connections.find((connection) => connection.connectionId === identity.connectionId);
+      if (!current) throw new Error('Connection not found');
+      const models = current.slug === 'relay-house'
+        ? [...(current.models ?? []).filter((model) => model.id !== 'glm-5.3'), { id: 'glm-5.3' }]
+        : [...(current.models ?? [])];
+      const updated = { ...current, models, modelSource: 'fetched' as const, updatedAt: NOW };
+      connections = connections.map((connection) => connection.connectionId === identity.connectionId
+        ? { ...updated, catalogEntries: resolveConnectionModelCatalog(updated) }
+        : connection);
+      return { models, source: 'fetched', fetchedAt: NOW };
     },
     async hasSecret() {
       return true;
@@ -583,6 +593,7 @@ function ProviderStoryFrame(props: {
   autoOpen?: AutoOpenTarget;
   onOAuthComplete?: () => void;
 }) {
+  const copy = getProviderSettingsCopy(useUiLocale());
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
 
@@ -609,7 +620,7 @@ function ProviderStoryFrame(props: {
         data-maka-e2e-fixture="true"
         style={{
           gridTemplateColumns: 'minmax(0, 1fr)',
-          height: 700,
+          height: '100dvh',
           margin: '0 auto',
           maxWidth: 1040,
           minHeight: 0,
@@ -630,7 +641,7 @@ function ProviderStoryFrame(props: {
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">
                   <div className="settingsPageHeaderTitleStack">
-                    <h2>模型</h2>
+                    <h2>{copy.detail.modelManagement}</h2>
                   </div>
                 </div>
               </LayoutHeader>
@@ -821,11 +832,7 @@ export const StaticCatalogConnectionDetail: Story = {
   },
 };
 
-// Real path: 设置 → 模型 → click a custom relay — several enabled models, each
-// with a 配置参数 editor, and 批量设置思考档位 in the section's action cluster
-// writing into all of them at once. Opening its menu shows each level's
-// coverage across the table: `low` and `high` on 1 of 4, everything else on
-// none.
+// Settings → Models → a relay with several independently configured models.
 export const RelayConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -833,35 +840,10 @@ export const RelayConnectionDetail: Story = {
       autoOpen="detail-relay"
     />
   ),
-  // Opens the batch menu and asserts that partial coverage reaches assistive
-  // technology, not only the eye. The item carries its own `aria-label`, which
-  // replaces the accessible name the visible description would otherwise have
-  // joined — and the menu item does not wire `description` to
-  // `aria-describedby`. Without an explicit description, "1/4 个模型" and
-  // "全部未声明" both reach a screen reader as an unchecked box with the same
-  // name, which is exactly the state the count exists to distinguish.
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body);
-    const trigger = await body.findByRole('button', { name: /批量设置思考档位/ });
-    await userEvent.click(trigger);
-
-    // `low` is declared by one of the four models; `minimal` by none.
-    const partial = await body.findByRole('menuitemcheckbox', {
-      name: '批量设置思考档位 low',
-    });
-    const none = await body.findByRole('menuitemcheckbox', {
-      name: '批量设置思考档位 minimal',
-    });
-
-    // Both are unchecked — coverage is the only thing separating them.
-    await expect(partial).toHaveAttribute('aria-checked', 'false');
-    await expect(none).toHaveAttribute('aria-checked', 'false');
-    await expect(partial).toHaveAttribute('aria-description', '1/4 个模型');
-    await expect(none).toHaveAttribute('aria-description', '全部未声明');
-
-    await userEvent.keyboard('{Escape}');
     await userEvent.click(
-      body.getByRole('button', {
+      await body.findByRole('button', {
         name: `${detailCopy.edit}: ${detailCopy.requestHeaders}`,
       }),
     );
@@ -882,6 +864,112 @@ export const RelayConnectionDetail: Story = {
     expect(cell.getBoundingClientRect().height).toBeLessThanOrEqual(
       field.getBoundingClientRect().height + 1,
     );
+  },
+};
+
+// Settings → Models → relay → configure one enabled model.
+export const ModelCapabilities: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const configure = await within(canvasElement).findByRole('button', { name: /(?:参数|參數|parameters).*gpt-5.6-luna/i });
+    configure.click();
+    await waitFor(() => expect(document.querySelector('dialog[open] .astryx-form-layout')).not.toBeNull());
+    const pane = canvasElement.querySelector('.settingsMainPane');
+    if (pane) pane.scrollTop = 0;
+  },
+};
+
+// Chromium owns the focus/submit ordering and native dialog focus restoration.
+// Real path: Settings → Models → relay → disabled model → edit → save → reopen → cancel.
+export const ModelParameterSave: Story = {
+  render: ModelCapabilities.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const configure = await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*gemini-3\.8-flash/i });
+    const enable = canvas.getByRole('switch', { name: /gemini-3\.8-flash/i });
+    expect(enable).not.toBeChecked();
+    await userEvent.click(configure);
+    const field = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
+    const inputLimit = body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i });
+    const vision = () => body.getByRole('combobox', { name: /^(图片识别|圖片辨識|Send images to the model)$/i });
+    await userEvent.click(vision());
+    await userEvent.click(await body.findByRole('option', { name: /^(支持|支援|Allow images)$/i }));
+    const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
+    await userEvent.clear(field);
+    await userEvent.type(field, '1MB');
+    expect(save).toBeDisabled();
+    await userEvent.clear(field);
+    await userEvent.type(field, '128K');
+    expect(field).toHaveFocus();
+    await userEvent.type(inputLimit, '160K');
+    expect(save).toBeDisabled();
+    await userEvent.clear(inputLimit);
+    await userEvent.type(inputLimit, '64K');
+    expect(save).toBeEnabled();
+    await userEvent.click(save);
+    await waitFor(() => expect(configure).toHaveFocus());
+    expect(enable).not.toBeChecked();
+    await userEvent.click(configure);
+    const reopened = await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
+    expect(reopened).toHaveValue('128000');
+    expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
+    expect(vision()).toHaveTextContent(/^(支持|支援|Allow images)$/i);
+    await userEvent.click(vision());
+    await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
+    await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
+    await waitFor(() => expect(configure).toHaveFocus());
+    await userEvent.click(configure);
+    expect(vision()).toHaveTextContent(/^(自动|自動|Model information)/i);
+    expect(body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i })).toHaveValue('64000');
+    expect(enable).not.toBeChecked();
+    const editable = body.getByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i });
+    await userEvent.clear(editable);
+    await userEvent.type(editable, '256K');
+    await userEvent.click(body.getByRole('button', { name: /^(取消|Cancel)$/i }));
+    await waitFor(() => expect(configure).toHaveFocus());
+    await userEvent.click(configure);
+    expect(await body.findByRole('textbox', { name: /^(上下文窗口|上下文視窗|Context window)$/i })).toHaveValue('128000');
+  },
+};
+
+// Settings → Models → relay → refresh the remote catalog, then configure a disabled discovery.
+export const RefreshModelCatalog: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const refresh = await canvas.findByRole('button', { name: /^(?:更新模型目录|更新模型目錄|Update model catalog)$/i });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      refresh.click();
+      await canvas.findByRole('button', { name: /(?:参数|參數|parameters).*glm-5\.3$/i });
+      await waitFor(() => expect(canvas.getAllByRole('switch')).toHaveLength(5));
+      await waitFor(() => expect(refresh).not.toBeDisabled());
+    }
+    expect(canvas.getAllByRole('switch').filter((control) => (control as HTMLInputElement).checked)).toHaveLength(3);
+  },
+};
+
+export const AddModel: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const add = await within(canvasElement).findByRole('button', { name: /^(?:添加模型|新增模型|Add model)$/i });
+    add.click();
+    await waitFor(() => expect(document.querySelector('dialog[open]')).not.toBeNull());
   },
 };
 

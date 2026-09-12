@@ -1559,7 +1559,36 @@ describe('AiSdkBackend model history', () => {
     assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 32_768 - 1_024);
   });
 
-  test('leaves OpenAI-compatible output limits to their provider adapter', async () => {
+  test('rejects an output budget consumed entirely by fixed thinking before sending', async () => {
+    const model = completionModel();
+    const backend = createBackend({
+      connection: {
+        slug: 'kimi-coding-plan',
+        providerType: 'kimi-coding-plan',
+        defaultModel: 'kimi-for-coding',
+        modelOverrides: { 'kimi-for-coding': { maxOutputTokens: 1024 } },
+      },
+      modelId: 'kimi-for-coding',
+      providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } },
+      modelFactory: () => model,
+      tools: [],
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-current',
+      text: 'Hello',
+      context: [],
+    })) {
+      events.push(event);
+    }
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.match(
+      events.find((event) => event.type === 'error')?.message ?? '',
+      /Output budget must exceed/,
+    );
+  });
+
+  test('leaves catalog-derived OpenAI-compatible output limits to their provider adapter', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {

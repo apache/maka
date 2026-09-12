@@ -31,6 +31,15 @@ export interface OAuthPresentationExpectation {
   cancel(reason?: unknown): void;
 }
 
+/** Never crosses the Host protocol: raised and consumed inside the main process. */
+export class OAuthPresentationError extends Error {
+  name = 'OAuthPresentationError';
+}
+
+export class OAuthLoginInProgressError extends Error {
+  name = 'OAuthLoginInProgressError';
+}
+
 /** Bridges a Host-owned OAuth attempt to Desktop-owned system-browser presentation. */
 export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
   #pending: PendingPresentation | undefined;
@@ -38,7 +47,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
   constructor(private readonly openSystemBrowser: (url: string) => Promise<void>) {}
 
   expect(attemptId: string, expectedStateHint?: string): OAuthPresentationExpectation {
-    if (this.#pending) throw new Error('Another OAuth login is already in progress');
+    if (this.#pending) throw new OAuthLoginInProgressError('Another OAuth login is already in progress');
     let resolvePresented!: (presentation: OAuthExternalPresentation) => void;
     let rejectPresented!: (reason?: unknown) => void;
     let presentedSettled = false;
@@ -52,7 +61,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     const expire = () => {
       if (this.#pending !== pending) return;
       this.#pending = undefined;
-      rejectPresented(new Error('Runtime Host did not present OAuth authorization'));
+      rejectPresented(new OAuthPresentationError('Runtime Host did not present OAuth authorization'));
     };
     let timer = setTimeout(expire, PRESENTATION_TIMEOUT_MS);
     const pending: PendingPresentation = {
@@ -92,18 +101,25 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
     signal.throwIfAborted();
     const pending = this.#pending;
     if (!pending || !stateHint) {
-      throw new Error('Desktop has no matching OAuth presentation request');
+      throw new OAuthPresentationError('Desktop has no matching OAuth presentation request');
     }
     if (pending.expectedStateHint !== undefined && pending.expectedStateHint !== stateHint) {
-      throw new Error('Desktop OAuth presentation belongs to another attempt');
+      throw new OAuthPresentationError('Desktop OAuth presentation belongs to another attempt');
     }
+    let opened = false;
     try {
       await this.openSystemBrowser(url);
+      opened = true;
       signal.throwIfAborted();
       pending.resolve({ stateHint });
     } catch (error) {
-      pending.reject(error);
-      throw error;
+      // A browser that will not open is a Desktop-owned presentation failure;
+      // anything after it opened (an abort) keeps its own shape.
+      const failure = opened
+        ? error
+        : new OAuthPresentationError('Desktop could not open the system browser');
+      pending.reject(failure);
+      throw failure;
     }
   }
 

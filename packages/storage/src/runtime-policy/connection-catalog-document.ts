@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import { applyConnectionModelOverrides, modelLimitsConflict } from '@maka/core/model-thinking';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { LegacyModelFactsReader } from '../model-facts-store.js';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -54,7 +58,7 @@ import {
   providerReportsCompleteModelCatalog,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
-import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
+import { pruneModelOverrides } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
   codecError,
@@ -70,7 +74,7 @@ import {
 } from './document-io.js';
 
 const FILE = 'connection-catalog.json';
-const SCHEMA_VERSION = 1 as const;
+const SCHEMA_VERSION = 2 as const;
 
 export interface ConnectionCatalogDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -106,7 +110,7 @@ export class ConnectionCatalogDocumentOwner {
       'defaultTarget',
       'connections',
     ]);
-    if (raw.schemaVersion !== SCHEMA_VERSION) {
+    if (raw.schemaVersion !== SCHEMA_VERSION && raw.schemaVersion !== 1) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     if (
@@ -131,9 +135,81 @@ export class ConnectionCatalogDocumentOwner {
       });
       return false;
     });
-    const connections = maintainedConnections.map((item) =>
-      decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item)),
-    );
+    const legacyRead =
+      raw.schemaVersion === 1
+        ? await new LegacyModelFactsReader().readWithDiagnostics(root)
+        : undefined;
+    if (legacyRead?.diagnostic)
+      throw codecError(
+        'invalid_document',
+        `Cannot migrate model-facts.json: ${legacyRead.diagnostic}`,
+      );
+    const legacyFacts = legacyRead?.document.overrides;
+    const connections = maintainedConnections.map((item) => {
+      if (raw.schemaVersion !== 1)
+        return decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item));
+      const legacy = item as Record<string, any>;
+      const { relayModelProfiles, lastTestModelFactsFingerprint: _fingerprint, ...base } = legacy;
+      const overrides = new Map<string, Record<string, unknown>>();
+      for (const [id, profile] of Object.entries(relayModelProfiles ?? {}) as [
+        string,
+        Record<string, unknown>,
+      ][]) {
+        overrides.set(id, {
+          ...profile,
+          ...(profile.contextWindow === undefined
+            ? {}
+            : { compactionThreshold: profile.contextWindow }),
+        });
+      }
+      for (const id of new Set<string>([
+        ...(legacy.enabledModelIds ?? []),
+        ...(legacy.models ?? []).map((model: { id: string }) => model.id),
+      ])) {
+        const facts = legacyFacts?.[`${legacy.providerType}:${id}`];
+        if (!facts) continue;
+        const {
+          structuredOutput: _structured,
+          lastUpdated: _updated,
+          capabilities,
+          ...values
+        } = facts;
+        const { vision, ...otherCapabilities } = capabilities ?? {};
+        const profile = overrides.get(id) ?? {};
+        const inheritedModalities =
+          legacy.models?.find((model: { id: string }) => model.id === id)?.modalities ??
+          lookupModelMetadata(legacy.providerType, id).modalities;
+        overrides.set(id, {
+          ...values,
+          ...profile,
+          ...(facts.modalities === undefined
+            ? {}
+            : {
+                modalities: {
+                  input: facts.modalities.input ?? inheritedModalities?.input ?? ['text'],
+                  output: facts.modalities.output ?? inheritedModalities?.output ?? ['text'],
+                },
+              }),
+          ...(Object.keys(otherCapabilities).length ? { capabilities: otherCapabilities } : {}),
+          ...(profile.vision !== undefined ? {} : vision === undefined ? {} : { vision }),
+          ...(facts.contextWindow === undefined
+            ? {}
+            : {
+                contextWindow: facts.contextWindow,
+                compactionThreshold: Math.min(
+                  facts.contextWindow,
+                  facts.inputLimit ?? facts.contextWindow,
+                ),
+              }),
+        });
+      }
+      return decodePersistedDomain(() =>
+        decodeCanonicalConnectionCatalogEntry({
+          ...base,
+          ...(overrides.size ? { modelOverrides: Object.fromEntries(overrides) } : {}),
+        }),
+      );
+    });
     const catalogIdentities = [...retiredConnections, ...connections];
     unique(
       catalogIdentities.map((item) => item.slug),
@@ -218,6 +294,7 @@ export class ConnectionCatalogDocumentOwner {
         models: [],
       },
     ]);
+    assertModelLimits(next.connections.at(-1)!);
     await this.write(root, next);
     return committed(next);
   }
@@ -253,6 +330,14 @@ export class ConnectionCatalogDocumentOwner {
       endpointChanged ||
       previous.enabled !== changes.enabled ||
       !sameStringArray(previous.enabledModelIds, changes.enabledModelIds) ||
+      (changes.modelOverrides !== undefined &&
+        !sameConnectionTestModelBasis(
+          connectionTestModelBasis(previous),
+          connectionTestModelBasis({
+            ...previous,
+            modelOverrides: changes.modelOverrides ?? undefined,
+          }),
+        )) ||
       (changes.requestBodyOverlay !== undefined &&
         !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined));
     const connections = [...current.connections];
@@ -266,9 +351,6 @@ export class ConnectionCatalogDocumentOwner {
       enabled: changes.enabled,
       enabledModelIds: changes.enabledModelIds,
       // Profile-table semantics, in order:
-      //  - the store invariant: profiles exist only for enabled models, so a
-      //    selection change prunes whatever no longer qualifies (disabling a
-      //    model deletes its profile);
       //  - a table replaces wholesale — it wins even over an endpoint change
       //    in the same update, because a writer submitting a new endpoint and
       //    a new table declares that the table belongs to the new endpoint
@@ -278,18 +360,15 @@ export class ConnectionCatalogDocumentOwner {
       //    change retires it: declarations are endpoint-keyed like the model
       //    inventory, and the old table must not outlive the relay it
       //    described.
-      ...(changes.relayModelProfiles === undefined
-        ? endpointChanged || previous.relayModelProfiles === undefined
+      ...(changes.modelOverrides === undefined
+        ? endpointChanged || previous.modelOverrides === undefined
           ? {}
           : {
-              relayModelProfiles: pruneRelayModelProfiles(
-                previous.relayModelProfiles,
-                changes.enabledModelIds,
-              ),
+              modelOverrides: previous.modelOverrides,
             }
-        : changes.relayModelProfiles === null
+        : changes.modelOverrides === null
           ? {}
-          : { relayModelProfiles: changes.relayModelProfiles }),
+          : { modelOverrides: changes.modelOverrides }),
       ...(changes.requestBodyOverlay === undefined
         ? previous.requestBodyOverlay === undefined
           ? {}
@@ -309,6 +388,7 @@ export class ConnectionCatalogDocumentOwner {
         : { lastTest: previous.lastTest }),
     };
     const next = this.nextDocument(current, connections);
+    if (changes.modelOverrides !== undefined) assertModelLimits(connections[index]!);
     await this.write(root, next);
     return committed(next);
   }
@@ -383,9 +463,9 @@ export class ConnectionCatalogDocumentOwner {
       ? [...input.enabledModelIds]
       : previous.enabledModelIds.filter((id) => !retired.has(id));
     const connections = [...current.connections];
-    const relayModelProfiles = pruneRelayModelProfiles(
-      previous.relayModelProfiles,
-      migratedEnabledModelIds,
+    const modelOverrides = pruneModelOverrides(
+      previous.modelOverrides,
+      Object.keys(previous.modelOverrides ?? {}).filter((id) => !retired.has(id)),
     );
     connections[index] = {
       ...retained,
@@ -395,7 +475,7 @@ export class ConnectionCatalogDocumentOwner {
       ...(isLegacySeed || previous.modelSource === undefined
         ? {}
         : { modelSource: previous.modelSource, modelsFetchedAt: previous.modelsFetchedAt }),
-      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
     };
     const target = current.defaultTarget;
     const defaultTarget =
@@ -493,18 +573,11 @@ export class ConnectionCatalogDocumentOwner {
         'Model discovery reconciled a default outside its own selection',
       );
     }
-    // A refresh only ever migrates a renamed id now, but that rename still
-    // rekeys the selection, and this write path bypasses the canonical
-    // decoder — so prune here or the persisted document is un-loadable on
-    // next read.
-    const relayModelProfiles = pruneRelayModelProfiles(
-      previous.relayModelProfiles,
-      reconciled.enabledModelIds,
-    );
-    const { relayModelProfiles: _staleProfiles, ...previousWithoutProfiles } = previous;
+    const modelOverrides = previous.modelOverrides;
+    const { modelOverrides: _staleProfiles, ...previousWithoutProfiles } = previous;
     const discovered: ConnectionCatalogEntry = {
       ...previousWithoutProfiles,
-      ...(relayModelProfiles ? { relayModelProfiles } : {}),
+      ...(modelOverrides ? { modelOverrides } : {}),
       revision: nextRevision(previous.revision),
       enabledModelIds: reconciled.enabledModelIds,
       models: result.models,
@@ -607,14 +680,7 @@ export class ConnectionCatalogDocumentOwner {
     // does on the update path: declarations describe the relay that made
     // them, so a swapped URL must not inherit either.
     const endpointChanged = previous !== undefined && previous.baseUrl !== changes.baseUrl;
-    // Onboarding installs a new enabledModelIds authority, so a profile keyed
-    // by a model it dropped would violate the subset invariant. Like the
-    // refresh path above, this one bypasses the canonical decoder, so pruning
-    // has to happen here or the document is un-loadable on next read.
-    const relayModelProfiles =
-      previous && !endpointChanged
-        ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
-        : undefined;
+    const modelOverrides = previous && !endpointChanged ? previous.modelOverrides : undefined;
     const base: ConnectionCatalogEntry = previous ?? {
       connectionId,
       revision: 0,
@@ -625,13 +691,13 @@ export class ConnectionCatalogDocumentOwner {
       enabledModelIds: [],
       models: [],
     };
-    const { relayModelProfiles: _staleProfiles, ...baseWithoutProfiles } = base;
+    const { modelOverrides: _staleProfiles, ...baseWithoutProfiles } = base;
     const finalized: ConnectionCatalogEntry = {
       ...baseWithoutProfiles,
       // `changes.name` carries the edit-preserving / create-requested / provider
       // -label resolution — `base` alone would keep the provider label forever.
       name: changes.name,
-      ...(relayModelProfiles ? { relayModelProfiles } : {}),
+      ...(modelOverrides ? { modelOverrides } : {}),
       ...(changes.baseUrl !== undefined ? { baseUrl: changes.baseUrl } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
@@ -738,7 +804,6 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionTestSummary,
-    modelFactsFingerprint: string,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
     const index = findConnectionIndex(current, expected);
@@ -750,7 +815,6 @@ export class ConnectionCatalogDocumentOwner {
       ...previous,
       revision: nextRevision(previous.revision),
       lastTest: result,
-      lastTestModelFactsFingerprint: modelFactsFingerprint,
     });
   }
 
@@ -772,11 +836,7 @@ export class ConnectionCatalogDocumentOwner {
     // provider that can no longer be tested, so there is nothing to
     // invalidate.
     if (previous.lastTest === undefined || isRetiredProvider(previous.providerType)) return false;
-    const {
-      lastTest: _lastTest,
-      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
-      ...withoutLastTest
-    } = previous;
+    const { lastTest: _lastTest, ...withoutLastTest } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
       revision: nextRevision(previous.revision),
@@ -799,11 +859,7 @@ export class ConnectionCatalogDocumentOwner {
     if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
       if (!invalidates(connection)) return connection;
-      const {
-        lastTest: _lastTest,
-        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
-        ...withoutLastTest
-      } = connection;
+      const { lastTest: _lastTest, ...withoutLastTest } = connection;
       return {
         ...withoutLastTest,
         revision: nextRevision(connection.revision),
@@ -857,6 +913,23 @@ export class ConnectionCatalogDocumentOwner {
   }
 }
 
+function assertModelLimits(connection: ConnectionCatalogEntry): void {
+  for (const model of resolveConnectionModelCatalog({
+    ...connection,
+    models: [...connection.models],
+    enabledModelIds: [...connection.enabledModelIds],
+    defaultModel: connection.enabledModelIds[0] ?? '',
+  })) {
+    if (connection.modelOverrides?.[model.id] === undefined) continue;
+    if (modelLimitsConflict(model)) {
+      throw codecError(
+        'invalid_connection_input',
+        `Input limit exceeds the context window for ${model.id}`,
+      );
+    }
+  }
+}
+
 export function catalogSnapshot(document: ConnectionCatalogDocument): ConnectionCatalogSnapshot {
   return deepFreeze({
     revision: document.revision,
@@ -882,13 +955,19 @@ export function findConnection(
 export function connectionTestModelBasis(
   connection: ConnectionCatalogEntry,
 ): ConnectionTestModelBasis {
+  const models = new Map(
+    connection.enabledModelIds.map((id) => [
+      id,
+      { id, apiProtocol: undefined as ConnectionCatalogEntry['models'][number]['apiProtocol'] },
+    ]),
+  );
+  for (const model of applyConnectionModelOverrides(connection).models) {
+    models.set(model.id, { id: model.id, apiProtocol: model.apiProtocol });
+  }
   return {
     enabledModelIds: [...connection.enabledModelIds],
     modelSource: connection.modelSource,
-    models: connection.models.map((model) => ({
-      id: model.id,
-      apiProtocol: model.apiProtocol,
-    })),
+    models: [...models.values()].sort((a, b) => a.id.localeCompare(b.id)),
   };
 }
 

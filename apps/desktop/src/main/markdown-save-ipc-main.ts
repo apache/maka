@@ -19,16 +19,27 @@
 
 import type { IpcMain } from 'electron';
 import { saveMarkdownViaDialog } from './markdown-save-main.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { createMainWindowController } from './main-window.js';
+import { nativeFileDialogCopy } from './native-file-dialog-copy.js';
 
 export function registerMarkdownSaveIpc(input: {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
+  readonly resolveLocale: () => Promise<UiLocale>;
 }): void {
-  input.ipcMain.handle('daily-review:saveMarkdownToFile', (_event, value) =>
-    saveMarkdownViaDialog(input.mainWindowController, value, 'Save daily review'),
+  input.ipcMain.handle('daily-review:saveMarkdownToFile', async (_event, value) =>
+    saveMarkdownViaDialog(
+      input.mainWindowController,
+      value,
+      nativeFileDialogCopy(await input.resolveLocale()).saveDailyReview,
+    ),
   );
-  input.ipcMain.handle('chat:saveConversationToFile', (_event, value) =>
-    saveMarkdownViaDialog(input.mainWindowController, value, 'Save conversation'),
+  input.ipcMain.handle('chat:saveConversationToFile', async (_event, value) =>
+    saveMarkdownViaDialog(
+      input.mainWindowController,
+      value,
+      nativeFileDialogCopy(await input.resolveLocale()).saveConversation,
+    ),
   );
 }

@@ -91,13 +91,13 @@ export function createActionsDeps() {
     activateSessionForFirstSend: async (sessionId: string) => {
       activeIdRef.current = sessionId;
     },
-    setActiveId: () => undefined,
+    retireSession: (_sessionId: string) => undefined,
     setMessageLoadErrorBySession: () => undefined,
-    setMessages: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
+    isMessagePublished: (_message: unknown) => false,
     setInteractionBySession: () => undefined,
     respondToUserForm: async () => undefined,
     showModelSetupToast: () => undefined,

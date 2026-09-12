@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { applyConnectionModelOverrides } from '@maka/core/model-thinking';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -49,36 +50,63 @@ test('invalid zero input limits do not disable the context-window fallback', () 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 1_000);
 });
 
-test('a relay user declaration remains ahead of runtime and static model facts', () => {
+test('overriding total capacity preserves the independent input limit', () => {
   const connection = {
     slug: 'relay',
     providerType: 'openai-compatible' as const,
     defaultModel: 'relay-model',
-    models: [{ id: 'relay-model', contextWindow: 64_000, inputLimit: 128_000 }],
-    relayModelProfiles: { 'relay-model': { contextWindow: 32_000 } },
+    models: [{ id: 'relay-model', contextWindow: 64_000, inputLimit: 32_000 }],
+    modelOverrides: { 'relay-model': { contextWindow: 200_000 } },
   };
 
-  assert.equal(resolveSelectedModelContextWindow(connection, undefined), 32_000);
+  assert.equal(
+    resolveSelectedModelContextWindow(applyConnectionModelOverrides(connection), undefined),
+    32_000,
+  );
+  assert.equal(
+    resolveSelectedModelContextWindow(
+      {
+        ...connection,
+        modelOverrides: {
+          'relay-model': { contextWindow: 200_000, inputLimit: 160_000 },
+        },
+      },
+      undefined,
+    ),
+    160_000,
+  );
+  assert.throws(
+    () =>
+      resolveSelectedModelContextWindow(
+        {
+          ...connection,
+          modelOverrides: {
+            'relay-model': { contextWindow: 16_000 },
+          },
+        },
+        undefined,
+      ),
+    /input limit exceeds/i,
+  );
 });
 
-test('a model-facts context window is the authoritative user declaration', () => {
-  const connection = {
+test('capacity and compaction remain independent in the execution projection', () => {
+  const connection = applyConnectionModelOverrides({
     slug: 'relay',
     providerType: 'openai-compatible' as const,
-    defaultModel: 'relay-model',
-    models: [
-      {
-        id: 'relay-model',
-        contextWindow: 200_000,
-        inputLimit: 200_000,
-        factOverriddenFields: ['contextWindow', 'inputLimit'] as const,
-      },
-    ],
-    relayModelProfiles: { 'relay-model': { contextWindow: 8_192 } },
-  };
-
-  assert.equal(resolveSelectedModelContextWindow(connection, undefined), 200_000);
-  assert.equal(resolveDeclaredContextWindow(connection, undefined), 200_000);
+    defaultModel: 'custom',
+    models: [{ id: 'custom', contextWindow: 8192 }],
+    modelOverrides: { custom: { contextWindow: 200000, compactionThreshold: 160000 } },
+  });
+  assert.equal(resolveSelectedModelContextWindow(connection, undefined), 200000);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), 160000);
+  assert.equal(
+    resolveDeclaredContextWindow(
+      { ...connection, modelOverrides: { custom: { contextWindow: 200000 } } },
+      undefined,
+    ),
+    undefined,
+  );
 });
 
 test('a reported model context window is metadata, not a Maka declaration', () => {

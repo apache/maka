@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
@@ -191,6 +190,9 @@ export function createAppShellSessionUiStateController(
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
     transcriptViewportNavigation,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
+    clearMessageLoadError: (sessionId: string) => updateMap(
+      'messageLoadErrorBySession', (current) => omitSessionKey(current, sessionId),
+    ),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
@@ -223,23 +225,6 @@ export function createAppShellSessionUiStateController(
 }
 
 export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;
-
-/**
- * Owns the controller for the component's lifetime. Deliberately does NOT
- * subscribe: readers select what they need through
- * `useExternalStoreSelector`, so no single component re-renders for every
- * write to the store (#1985).
- *
- * Returns the controller itself rather than a bag of its members. The bag had
- * to name every setter, so did the workspace hook above it, and so did
- * AppShell's destructure — three places to edit for one new map, and three
- * chances for them to disagree about what the store offers.
- */
-export function useAppShellSessionUiState(): AppShellSessionUiStateController {
-  const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
-  controllerRef.current ??= createAppShellSessionUiStateController();
-  return controllerRef.current;
-}
 
 function createRuntimeSessionRegistry<T>() {
   const ref: { current: Record<string, T> } = { current: {} };

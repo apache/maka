@@ -963,8 +963,7 @@ export const ManyTurns: Story = {
   ),
 };
 
-// The same transcript and fixture CSS, with enough resident Turns for native
-// render skipping but no need to mount the 120-Turn catalog demonstration.
+// Exercise transcript motion without mounting the 120-Turn catalog demonstration.
 export const TranscriptRenderCost: Story = {
   render: () => <ComposedShell frameHeight={700} chat={{ messages: manyTurnMessages.slice(-64) }} />,
   play: async ({ canvasElement }) => {
@@ -975,7 +974,6 @@ export const TranscriptRenderCost: Story = {
     await frame();
     let transitions = 0;
     let animations = 0;
-    const skipped = new Set<Element>();
     const turns = [...canvasElement.querySelectorAll<HTMLElement>('.maka-transcript-turn')];
     expect(turns.length).toBeGreaterThan(0);
     for (const pseudo of [null, '::before', '::after']) {
@@ -983,35 +981,24 @@ export const TranscriptRenderCost: Story = {
       expect(style.transitionProperty).toBe('none');
       expect(style.animationName).toBe('none');
     }
-    const visibility = (event: Event) => {
-      if (event.target !== event.currentTarget) return;
-      const turn = event.currentTarget as Element;
-      if ((event as Event & { skipped: boolean }).skipped) skipped.add(turn);
-      else skipped.delete(turn);
-    };
-    for (const turn of turns) turn.addEventListener('contentvisibilityautostatechange', visibility);
     const transition = () => { transitions += 1; };
     const animation = () => { animations += 1; };
     canvasElement.addEventListener('transitionrun', transition, true);
     canvasElement.addEventListener('animationstart', animation, true);
     try {
       // No Host paging or wheel routing is under test: move the real Chromium
-      // scrollport to exercise the fixture CSS and browser render skipping.
-      // Two distant positions expose and skip resident Turns. Forty incremental
-      // paints added cost under CI contention without testing another contract.
+      // scrollport between two distant positions to exercise the fixture CSS.
       for (const direction of [-1, 1]) {
         scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 120, bubbles: true }));
         scroller.scrollTop = direction < 0 ? 0 : scroller.scrollHeight;
         await frame();
         await frame();
       }
-      await waitFor(() => expect(skipped.size).toBeGreaterThan(0));
       expect(transitions).toBe(0);
       expect(animations).toBe(0);
       expect(canvasElement.getAnimations({ subtree: true })
         .filter((animation) => animation.playState !== 'finished')).toHaveLength(0);
     } finally {
-      for (const turn of turns) turn.removeEventListener('contentvisibilityautostatechange', visibility);
       canvasElement.removeEventListener('transitionrun', transition, true);
       canvasElement.removeEventListener('animationstart', animation, true);
     }
@@ -1104,7 +1091,7 @@ export const WideAssistantProse: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const answers = await canvas.findAllByRole('article', { name: 'Maka 的回答' });
+    const answers = await canvas.findAllByRole('article', { name: /^Maka 的回答/ });
     const answer = answers.at(-1);
     if (!answer) throw new Error('Wide assistant answer did not render');
     const paragraph = await within(answer).findByRole('paragraph');
@@ -1115,7 +1102,6 @@ export const WideAssistantProse: Story = {
     const turnRect = turn.getBoundingClientRect();
     expect(turnRect.width).toBeGreaterThan(680);
     expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
-    expect(getComputedStyle(boundary).contentVisibility).toBe('auto');
     // Paint containment (`content-visibility: auto`, `contain: paint`,
     // `overflow` other than visible) clips to the rounded padding box, and
     // headless Chromium does not reproduce that clip, so pin the geometry:
@@ -2368,6 +2354,7 @@ function SettledTranscriptHarness({
  */
 function HistoryHarness({ turns }: { turns: number }) {
   const [range, setRange] = useState({ from: 0, count: turns });
+  const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
     historyLoads.length = 0;
   }, []);
@@ -2375,14 +2362,15 @@ function HistoryHarness({ turns }: { turns: number }) {
     <ComposedShell
       chat={{
         messages: transcriptTurns(range.from, range.count),
+        viewportNavigation,
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
         onPrefetchHistory: async (edge) => {
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
-          setRange((current) => ({
+          viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
             from: current.from - HISTORY_BATCH,
             count: current.count + HISTORY_BATCH,
-          }));
+          })));
           await painted(2);
           return true;
         },
@@ -2615,10 +2603,41 @@ export const Performance45Tools: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
 };
 
+// Fixed membership: geometry probes must not mistake history paging for lazy
+// layout. Mixed prose and long 100+ line CodeBlocks exercise all three
+// skipping boundaries (Turn, timeline block, Astryx line chunk).
+export const GeometryMixed24Turns: Story = {
+  render: () => <ComposedShell chat={{ messages: Array.from({ length: 24 }, (_, i) => {
+    const turnId = `geometry-${i}`;
+    const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
+      `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
+    ).join('\n\n');
+    const code = i % 6 === 0
+      ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
+          `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+        ).join('\n') + '\n```'
+      : '';
+    return [user(`geometry-u-${i}`, turnId, 50 - i, `检查第 ${i + 1} 组。`),
+      assistant(`geometry-a-${i}`, turnId, 50 - i, prose + code)];
+  }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
+};
+
+export const GeometryLongCode: Story = {
+  render: () => <ComposedShell chat={{ messages: [
+    user('geometry-code-u', 'geometry-code', 2, '检查完整长代码块的滚动尺寸。'),
+    assistant('geometry-code-a', 'geometry-code', 1, '```text\n' +
+      Array.from({ length: 1200 }, (_, line) =>
+        `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+      ).join('\n') + '\n```'),
+  ], hasOlderHistory: false, hasNewerHistory: false }} />,
+};
+
 export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,
   play: async () => {
     const root = tailScroller();
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     // A single Turn taller than several viewports is the point; without the
     // overflow the rest proves nothing.
@@ -2626,14 +2645,6 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       root.scrollHeight,
       JSON.stringify(tailMetrics()),
     ).toBeGreaterThan(root.clientHeight * 3);
-    // The containment claim itself, in the same Chromium the app ships:
-    // offscreen timeline blocks are genuinely skipped, not merely marked.
-    // (This carries the deleted Electron spec's assertion — #4825 moved this
-    // tier of coverage below Electron.)
-    const skipped = [...root.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
-      .filter((element) => !element.checkVisibility({ contentVisibilityAuto: true }))
-      .length;
-    expect(skipped, 'no offscreen boundary is skipped').toBeGreaterThan(0);
 
     // The visible block nearest the middle of the scrollport, re-chosen each
     // step so it is always one the reader can actually see.
@@ -2655,15 +2666,8 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       return anchor;
     };
 
-    // Cold: no warmup pass has rendered the blocks above, so each upward step
-    // materializes first-paint intrinsic-size estimates. The criterion is what
-    // the reader sees, so it is measured in viewport space: an anchor they were
-    // reading should move down by exactly the step they asked for. Native
-    // `overflow-anchor` compensates the materialization by adjusting
-    // `scrollTop`, so neither document-space growth nor the scrollTop delta may
-    // be the yardstick — comparing against either reports the (allowed)
-    // correction itself as a jump. Only `|viewport move − intended step|` is a
-    // jump the reader experiences.
+    // First traversal, without a preparatory scroll. The visible block must
+    // move by the requested distance, without an extra layout correction.
     let worstUnexpected = 0;
     const steps: Array<Record<string, number>> = [];
     for (let step = 0; step < 8 && root.scrollTop > 0; step += 1) {
@@ -2687,19 +2691,12 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
         grewBy: root.scrollHeight - heightBefore,
       });
     }
-    // On main this story reads 0 by construction — no sub-turn boundary exists
-    // to materialize. On this branch the error tracks materialization exactly:
-    // a zero-growth step read 0px, and with the folded-disclosure estimate at
-    // 320px against a 24–32px collapsed row, steps measured up to 244px — a
-    // reader-visible stall of a 240px scroll step. With the collapsed estimate
-    // corrected, the residual is the answer blocks' estimate error, which stays
-    // well under half a step. The bound is half a step: loose enough for
-    // per-run variance, tight enough that a stalled or reversed step can never
-    // pass again.
+    // Fixed content must move only by the requested distance, including on
+    // the first traversal. One CSS pixel allows rounding, not an estimate.
     expect(
       worstUnexpected,
       `worst unexpected reading-anchor move: ${Math.round(worstUnexpected)}px; steps: ${JSON.stringify(steps)}`,
-    ).toBeLessThanOrEqual(120);
+    ).toBeLessThanOrEqual(1);
   },
 };
 
@@ -2708,84 +2705,11 @@ export const OversizedLiveTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn, activeTurn: { turnId: 'turn-oversized' } }} />,
 };
 
-export const EarlierHistoryLandsAboveTheReader: Story = {
-  render: () => <HistoryHarness turns={30} />,
-  play: async () => {
-    const root = tailScroller();
-    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
-
-    // Just short of the band that asks for more, so the active range has
-    // painted turns around the reader before the load starts. Landing straight
-    // on zero leaves no visible turn above the load boundary to anchor on.
-    scrollAsReader(root, loadBand() + 400);
-    await painted(6);
-    const before = firstResidentTurnId();
-    const heightBefore = root.scrollHeight;
-    historyLoads.length = 0;
-
-    // The move that asks for earlier history and the reading of where the
-    // reader is, in one task.
-    scrollAsReader(root, Math.min(300, root.scrollHeight - root.clientHeight));
-    const rootTop = root.getBoundingClientRect().top;
-    const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-      (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
-    );
-    if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
-    const anchor = { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
-    wheelUp(root);
-
-    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
-    await painted(6);
-
-    // The turns that arrived went above the reader, and the reader did not go
-    // with them. Asserting the element rather than a `scrollTop` delta is the
-    // point: a compensation computed from `scrollHeight` satisfies the delta
-    // while putting the reader somewhere else entirely.
-    //
-    // Budgeted against what arrived rather than in fixed pixels. A Turn carries
-    // `content-visibility: auto`, so one that lands off screen is anchored
-    // against its estimated height and settles a few pixels away from it; a
-    // reader who went with the history instead moves by the whole insert.
-    await waitFor(() =>
-      expect(
-        tailScroller().scrollHeight - heightBefore,
-        JSON.stringify({ anchor, loads: historyLoads }),
-      ).toBeGreaterThan(400),
-    );
-
-    // Fixed once, after the arrival has settled. Recomputed on every retry it
-    // would grow along with the drift it is supposed to bound, so a late
-    // `content-visibility` resolution could admit a reading that was failing.
-    await painted(8);
-    const inserted = tailScroller().scrollHeight - heightBefore;
-    const budget = Math.max(4, inserted * 0.02);
-    expect(
-      Math.abs(turnTop(anchor.turnId) - anchor.top),
-      JSON.stringify({ anchor, inserted, budget, now: turnTop(anchor.turnId), ...tailMetrics() }),
-    ).toBeLessThanOrEqual(budget);
-  },
-};
-
 /**
- * The reader going *up* through Turns that have never rendered.
- *
- * A bound, not stillness. A Turn off screen is laid out at
- * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
- * the way past, so travelling through them moves things by construction —
- * about 8% of the transcript here. What the bound says is that one Turn owes
- * at most one estimate, keeping the correction proportional to Turns crossed
- * rather than to what is inside them.
+ * First upward traversal of a deep fixed transcript: document height and
+ * the reader's content position must remain stable without a warm-up pass.
  */
 const TRAVERSAL_STEP = 700;
-
-/** What one Turn is worth, measured after everything has rendered once. */
-function medianTurnHeight(): number {
-  const heights = [...tailScroller().querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .map((turn) => turn.getBoundingClientRect().height)
-    .sort((a, b) => a - b);
-  if (heights.length === 0) throw new Error('the transcript has no mounted turn');
-  return heights[Math.floor(heights.length / 2)];
-}
 
 /** The first Turn whose box is still on screen, and where it starts. */
 function anchorInView(): { turnId: string; top: number } {
@@ -2802,6 +2726,8 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
   render: () => <SettledTranscriptHarness turns={40} />,
   play: async () => {
     const root = tailScroller();
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     const heightBefore = root.scrollHeight;
     expect(
@@ -2827,20 +2753,15 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
     expect(steps, 'the traversal has to have taken real steps').toBeGreaterThan(6);
 
     const worstDrift = Math.max(...drifts.map(Math.abs));
-    const turnHeight = medianTurnHeight();
-    // No single step throws the reader past a whole exchange. One Turn's worth
-    // of correction is the most one Turn can owe.
-    expect(worstDrift, `per-step drift: ${drifts.join(' ')} against a Turn of ${turnHeight}`)
-      .toBeLessThanOrEqual(turnHeight);
+    expect(worstDrift, `per-step drift: ${drifts.join(' ')}`)
+      .toBeLessThanOrEqual(1);
 
-    // And over the whole traversal the corrections stay proportional to the
-    // Turns crossed. Measured at ~8% here; #4259's 63% is the failure this
-    // exists to catch.
+    // The fixed document keeps its full height throughout the traversal.
     const heightAfter = root.scrollHeight;
     expect(
-      Math.abs(heightAfter - heightBefore) / heightBefore,
-      JSON.stringify({ heightBefore, heightAfter, steps, turnHeight }),
-    ).toBeLessThanOrEqual(0.15);
+      Math.abs(heightAfter - heightBefore),
+      JSON.stringify({ heightBefore, heightAfter, steps }),
+    ).toBeLessThanOrEqual(1);
 
     // And the reader can still get back.
     dockButton().click();
@@ -2858,6 +2779,10 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
   render: () => <HistoryHarness turns={16} />,
   play: async () => {
     const root = tailScroller();
+    // Measure history publication against rendered content, not the cold
+    // Markdown module's temporary plain-text layout.
+    await document.fonts.ready;
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     // Writing zero while the scroller is still at zero is a no-op, so require
     // the initial pin to have provably moved before exercising the real one.
     await waitFor(() => {
@@ -2870,15 +2795,14 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     // The one position where the browser declines to anchor, and the one the
     // wheel-to-load path puts the reader in.
     scrollAsReader(root, 0);
+    const reading = anchorInView();
     wheelUp(root);
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
 
-    // Anchoring resumes at an offset of one pixel, so the offset itself is the
-    // evidence: left at zero the browser holds the scroller at the top and
-    // every turn that arrives pushes the reader's content down the viewport.
-    expect(tailScroller().scrollTop).toBeGreaterThanOrEqual(1);
+    expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
   },
 };
 

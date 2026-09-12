@@ -299,38 +299,40 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={(text) =>
+              onSend={(text, metadata) =>
                 dispatchQuoteCompanionInput({
                   text,
                   streaming: companion.streaming,
+                  followUpMode: metadata?.followUpMode,
                   compact: companion.compact,
+                  queue: companion.queue,
                   steer: async (text) => {
-                  // Same staged-attachment validation as `send`: an unusable
-                  // attachment rejects here with the localized toast instead
-                  // of dying later on the steer path.
-                  try {
-                    preflightAttachmentItems(pendingAttachments);
-                  } catch (error) {
-                    toast.error(
-                      copy.errors.sendRejected,
-                      localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
+                    // Same staged-attachment validation as `send`: an unusable
+                    // attachment rejects here with the localized toast instead
+                    // of dying later on the steer path.
+                    try {
+                      preflightAttachmentItems(pendingAttachments);
+                    } catch (error) {
+                      toast.error(
+                        copy.errors.sendRejected,
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
+                      );
+                      return false;
+                    }
+                    // Submitted attachments retire on the confirmed-admission
+                    // boundary, not on the hook's optimistic return: an unknown
+                    // outcome keeps them staged for retry (#4804).
+                    const submitted = pendingAttachments;
+                    const submittedItems =
+                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
+                    return companion.steer(
+                      text,
+                      submittedItems,
+                      submittedItems
+                        ? () => clearSubmittedAttachments(submitted)
+                        : undefined,
                     );
-                    return false;
-                  }
-                  // Submitted attachments retire on the confirmed-admission
-                  // boundary, not on the hook's optimistic return: an unknown
-                  // outcome keeps them staged for retry (#4804).
-                  const submitted = pendingAttachments;
-                  const submittedItems =
-                    submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
-                  return companion.steer(
-                    text,
-                    submittedItems,
-                    submittedItems
-                      ? () => clearSubmittedAttachments(submitted)
-                      : undefined,
-                  );
-                },
+                  },
                   send: async () => {
                     try {
                       preflightAttachmentItems(pendingAttachments);
@@ -363,6 +365,13 @@ export function QuoteCompanionPanel(props: {
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
+              queuedMessages={companion.queuedMessages}
+              pendingMessages={companion.transientMessages}
+              queuedMessageRevision={companion.queuedMessageRevision}
+              onPromoteQueuedEntry={companion.promoteQueuedEntry}
+              onUpdateQueuedEntry={companion.updateQueuedEntry}
+              onDeleteQueuedEntry={companion.deleteQueuedEntry}
+              onReorderQueuedEntries={companion.reorderQueuedEntries}
               draftKey={draftKey}
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}

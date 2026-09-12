@@ -82,24 +82,19 @@ describe('revision-family session row actions', () => {
   it('applies conversation metadata/lifecycle to versions but not ordinary branches', async () => {
     const calls: string[] = [];
     const cleared: string[] = [];
-    const selections: Array<string | undefined> = [];
     const root = summary('root');
     const version = summary('version', {
       revisionRootSessionId: 'root',
       revisionParentSessionId: 'root',
     });
     const branch = summary('branch', { parentSessionId: 'root', branchOfTurnId: 'turn-1' });
-    const activeIdRef = { current: 'root' as string | undefined };
     const actions = createSessionNavigationRowActions({
       uiLocale: 'en',
-      activeIdRef,
-      clearActiveMessages: () => undefined,
       clearSessionRendererState: (id) => { cleared.push(id); },
       pendingSessionRowActionsRef: { current: new Set<string>() },
       refreshSessions: async () => [root, version, branch],
       service: createService(calls),
       sessionsRef: { current: [root, version, branch] },
-      setActiveId: (id) => { selections.push(id); activeIdRef.current = id; },
       toastApi: {
         success: () => undefined,
         error: () => undefined,
@@ -110,7 +105,6 @@ describe('revision-family session row actions', () => {
     await actions.flagSession('version', true);
     await actions.renameSession('branch', 'Independent branch');
     await actions.archiveSession('version');
-    activeIdRef.current = 'version';
     await actions.deleteSession('root');
 
     assert.deepEqual(calls, [
@@ -124,7 +118,6 @@ describe('revision-family session row actions', () => {
       // requiring one would refuse every delete from the rail.
       'remove:root:true:false',
     ]);
-    assert.deepEqual(selections, [undefined, undefined]);
     assert.deepEqual(cleared, ['root', 'version', 'root', 'version']);
   });
 });
@@ -140,14 +133,11 @@ function deleteHarness(
   const successes: Array<{ title: string; description?: string }> = [];
   const actions = createSessionNavigationRowActions({
     uiLocale: 'en',
-    activeIdRef: { current: undefined },
-    clearActiveMessages: () => undefined,
     clearSessionRendererState: () => undefined,
     pendingSessionRowActionsRef: { current: new Set<string>() },
     refreshSessions: async () => [...sessions],
     service: createService(calls, { disposition, archivedSubtaskCount, preview }),
     sessionsRef: { current: [...sessions] },
-    setActiveId: () => undefined,
     toastApi: {
       success: (title, description) => { successes.push({ title, description }); },
       error: () => undefined,

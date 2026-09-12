@@ -243,6 +243,37 @@ test('WorkHub shows the submitted prompt before admission and keeps it until its
   h.latestRead.resolve();
 });
 
+test('WorkHub holds transcript and live handoff together until publication is admitted', async () => {
+  const h = await mountController();
+  let sent!: Promise<boolean>;
+  await act(() => { sent = h.controller.send('held prompt', []); });
+  const turnId = h.requests[0]!.turnId;
+  await act(async () => { h.admission.resolve({ turnId }); await sent; });
+  await act(() => h.emit({ type: 'text_delta', id: 'delta', turnId, messageId: 'answer', ts: 1, text: 'Answer' }));
+  let held = true;
+  let idle!: () => void;
+  const detach = h.controller.viewportNavigation.attachCommitScheduler(h.sessionId, {
+    commitIfIdle(commit) { if (held) return false; commit(); return true; },
+    subscribeToIdle(listener) { idle = listener; return () => {}; },
+  });
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'user', turnId, text: 'held prompt', ts: 1 },
+    { type: 'assistant', id: 'answer', turnId, text: 'Answer', ts: 2, modelId: 'fixture' },
+  ];
+  await act(() => h.publish(messages));
+  await act(() => h.emit({ type: 'complete', id: 'done', turnId, ts: 3, stopReason: 'end_turn' }));
+  await act(() => h.controller.streamingSettled('answer'));
+  assert.equal(h.controller.transcript.messages.length, 0);
+  assert.equal(h.controller.transientMessages.length, 1);
+  assert.ok(h.controller.liveTurn?.steps.some((step) => step.stepId === 'answer'));
+  await act(() => { held = false; idle(); });
+  assert.deepEqual(h.controller.transcript.messages, messages);
+  assert.equal(h.controller.transientMessages.length, 0);
+  assert.ok(!h.controller.liveTurn?.steps.some((step) => step.stepId === 'answer'));
+  detach();
+  h.latestRead.resolve();
+});
+
 test('WorkHub removes a failed submission from the conversation and preserves its retry identity', async () => {
   const h = await mountController();
   let sent!: Promise<boolean>;

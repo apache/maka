@@ -531,27 +531,24 @@ export function ChatView(props: {
   const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
   railClaimRef.current = railAlignment.claim;
   const scrollTargetTurn = railAlignment.target;
-  const inlineTransientMessages = tailTurnId
-    ? transientMessages.filter((message) => {
-        const turn = turns.find((candidate) => candidate.turnId === tailTurnId);
-        if (
-          turn === undefined
-          || turn.user !== undefined
-          || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
-        ) {
-          return false;
-        }
-        // An unbound row belongs to the Turn the user is looking at; a bound
-        // one only renders inline in the Turn the Host named.
-        return (
-          message.transientPlacement === 'current_turn'
-          && message.hostTurnId === tailTurnId
-        );
-      })
-    : [];
-  const inlineTransientMessageIds = new Set(
-    inlineTransientMessages.map((message) => message.id),
-  );
+  // Ownership also groups retained prompts after their Turn stops running or
+  // a successor starts. Execution recency must not move a prompt below its reply.
+  const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
+  const inlineTransientMessagesByTurn = new Map<string, TransientUserMessageProjection[]>();
+  const inlineTransientMessageIds = new Set<string>();
+  for (const message of transientMessages) {
+    const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
+    if (
+      message.transientPlacement !== 'current_turn'
+      || turn === undefined
+      || turn.user !== undefined
+      || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
+    ) continue;
+    const messages = inlineTransientMessagesByTurn.get(turn.turnId) ?? [];
+    messages.push(message);
+    inlineTransientMessagesByTurn.set(turn.turnId, messages);
+    inlineTransientMessageIds.add(message.id);
+  }
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -767,7 +764,7 @@ export function ChatView(props: {
                     <TurnView
                       turn={turn}
                       activityObserved={turn.turnId === props.activeTurn?.turnId}
-                      transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
+                      transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}

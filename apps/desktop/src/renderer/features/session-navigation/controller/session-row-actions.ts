@@ -89,26 +89,20 @@ export interface SessionNavigationRowActions {
 
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefObject<string | undefined>;
-  clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
   pendingSessionRowActionsRef: RefObject<Set<string>>;
   refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
   service: SessionNavigationSessionService;
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
-  setActiveId: (sessionId: string | undefined) => void;
   toastApi: SessionNavigationToastApi;
 }): SessionNavigationRowActions {
   const {
     uiLocale,
-    activeIdRef,
-    clearActiveMessages,
     clearSessionRendererState,
     pendingSessionRowActionsRef,
     refreshSessions,
     service,
     sessionsRef,
-    setActiveId,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionRowActions;
@@ -148,10 +142,6 @@ export function createSessionNavigationRowActions(deps: {
     return runSessionRowAction(sessionId, 'archive', copy.archiveFailedTitle, async () => {
       const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
       await service.archive(sessionId, { revisionFamily: true });
-      if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-        setActiveId(undefined);
-        clearActiveMessages();
-      }
       for (const id of familyIds) clearSessionRendererState(id);
       await refreshSessions();
     });
@@ -240,10 +230,6 @@ export function createSessionNavigationRowActions(deps: {
       requireArchived: options.requireArchived,
     });
     if (outcome.disposition === 'restored') return outcome;
-    if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-      setActiveId(undefined);
-      clearActiveMessages();
-    }
     for (const id of familyIds) clearSessionRendererState(id);
     return outcome;
   }
@@ -377,10 +363,6 @@ export function createSessionNavigationRowActions(deps: {
       try {
         const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
         await service.archive(sessionId, { revisionFamily: true });
-        if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
-          setActiveId(undefined);
-          clearActiveMessages();
-        }
         for (const id of familyIds) clearSessionRendererState(id);
         archived += 1;
       } catch (error) {

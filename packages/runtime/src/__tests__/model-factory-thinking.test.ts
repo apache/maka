@@ -843,7 +843,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const declared: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: {
+      modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
@@ -873,7 +873,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: {
+      modelOverrides: {
         'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
@@ -902,14 +902,14 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const chat: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: { 'fast-model': { serviceTier: 'fast' } },
+      modelOverrides: { 'fast-model': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(chat, 'fast-model'), {});
     const responses: LlmConnection = {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+      modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(responses, 'gpt-5-relay'), {
       openai: {
@@ -945,7 +945,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
         ...conn('openai-responses-compatible', 'my-responses-relay'),
         baseUrl: 'https://relay.example/v1',
         models: [{ id: modelId, apiProtocol: 'openai-responses' }],
-        relayModelProfiles: { [modelId]: { serviceTier: 'fast' } },
+        modelOverrides: { [modelId]: { serviceTier: 'fast' } },
       };
       assert.deepEqual(buildProviderOptions(connection, modelId), {
         openai: {
@@ -967,7 +967,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+      modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     const model = getAIModel({
       connection: modelConnection,
@@ -1016,7 +1016,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const declared: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: {
+      modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };

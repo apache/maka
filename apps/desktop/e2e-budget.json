@@ -9,10 +9,6 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
-    "context-window-save.spec.ts": {
-      "tests": 1,
-      "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
-    },
     "new-task-reload.spec.ts": {
       "tests": 2,
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
@@ -43,7 +39,7 @@
     },
     "session-workbar.spec.ts": {
       "tests": 5,
-      "electron": "Git changes re-read on native window focus; terminal PTY ownership changes across Sessions; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
+      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings.spec.ts": {
       "tests": 2,
@@ -52,6 +48,10 @@
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"
+    },
+    "side-chat-followups.spec.ts": {
+      "tests": 1,
+      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
     },
     "skill-draft-lifecycle.spec.ts": {
       "tests": 2,
@@ -67,7 +67,11 @@
     },
     "transcript-scroll-cost.spec.ts": {
       "tests": 1,
-      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Chromium containment and fixture motion run in the TranscriptRenderCost story."
+      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
+    },
+    "scroll-geometry.spec.ts": {
+      "tests": 1,
+      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
     },
     "workhub-layout.spec.ts": {
       "tests": 2,

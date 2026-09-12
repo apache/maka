@@ -32,7 +32,7 @@ import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
-import { type RelayModelProfile } from '@maka/core/model-thinking';
+import { type ModelOverride } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -700,7 +700,7 @@ test('ordinary metadata and configuration reject a corrupt Coordination role on 
 });
 
 test('creation on a relay connection honours declared levels via the catalog projection', async () => {
-  // The catalog entry carries the typed relayModelProfiles projection (never
+  // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
   // passes is exactly what execution rebuilds the runtime connection from.
   let createAttempts = 0;
@@ -711,7 +711,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
       providerType: 'openai-compatible',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
-      relayModelProfiles: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
+      modelOverrides: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
     },
     stores: {
       createStableSession: async (args) => {
@@ -2012,7 +2012,7 @@ type FixtureConnection = {
   // an empty one carries none — that is the row a connection has before its
   // first discovery run.
   readonly modelSource?: 'fetched' | 'fallback';
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
 };
 
 function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
@@ -2031,9 +2031,7 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
       : (overrides.models ?? [{ id: 'model-1' }]).length > 0
         ? { modelSource: 'fetched' as const }
         : {}),
-    ...(overrides.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: overrides.relayModelProfiles }),
+    ...(overrides.modelOverrides === undefined ? {} : { modelOverrides: overrides.modelOverrides }),
   };
   return {
     connectionCatalog: {

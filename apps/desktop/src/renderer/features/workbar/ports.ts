@@ -18,6 +18,7 @@
  */
 
 import type {
+  MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
   ShellRunUpdate,
@@ -47,6 +48,7 @@ import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
   ContextDiagnosticsResult,
+  TurnMessageExecutionQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
@@ -73,8 +75,12 @@ export interface WorkbarReviewService {
 }
 
 export interface WorkbarTerminalService {
+  /** Live, locally owned manual terminals; excludes model tools and inherited resources. */
+  recover(sessionId: string): Promise<import('../../../shared/runtime-host-identity.js').TerminalRecovery>;
+  subscribeCloseChanges(handler: (change: import('../../../shared/runtime-host-identity.js').TerminalCloseChange) => void): WorkbarUnsubscribe;
+  subscribeUpdates(handler: (update: ShellRunUpdate) => void): WorkbarUnsubscribe;
   start(sessionId: string): Promise<ShellRunUpdate>;
-  stop(input: { sessionId: string; ref: string }): Promise<ShellRunUpdate | null>;
+  stop(input: { sessionId: string; ref: string }): Promise<void>;
   attach(input: {
     sessionId: string;
     ref: string;
@@ -85,7 +91,7 @@ export interface WorkbarTerminalService {
     ref: string;
     input?: string;
     size?: { cols: number; rows: number };
-  }): Promise<ShellRunUpdate | null>;
+  }): Promise<void>;
   subscribePtyData(
     handler: (event: ShellRunPtyDataEvent) => void,
   ): WorkbarUnsubscribe;
@@ -106,9 +112,6 @@ export interface WorkbarBrowserService {
   getState(sessionId: string): Promise<BrowserState | null>;
   subscribeState(
     handler: (payload: { sessionId: string; state: BrowserState }) => void,
-  ): WorkbarUnsubscribe;
-  subscribeLive(
-    handler: (payload: { sessionIds: string[] }) => void,
   ): WorkbarUnsubscribe;
 }
 
@@ -192,9 +195,9 @@ export type SideChatSendResult =
   | { ok: false; reason: 'outcome_unknown'; messageId: string }
   | { ok: false; reason?: string; messageId?: never };
 
-export type SideChatSteerResult =
-  | { kind: 'queued'; messageId: string }
-  | { kind: 'outcome_unknown'; messageId: string }
+export type SideChatFollowUpResult =
+  | { kind: 'queued' }
+  | { kind: 'outcome_unknown' }
   | { kind: 'started'; turnId: string };
 
 export type SideChatStopTarget =
@@ -206,7 +209,7 @@ export interface SideChatSessionPort {
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   readSettledMessages(
     sessionId: string,
-    options?: { requiredAssistantMessageId?: string },
+    options?: { requiredAssistantMessageId?: string; requiredTurnId?: string },
   ): Promise<{ messages: StoredMessage[]; settled: boolean }>;
   branchFromTurn(
     sessionId: string,
@@ -237,12 +240,26 @@ export interface SideChatSessionPort {
     sessionId: string,
     target?: SideChatStopTarget,
   ): Promise<{ kind: 'retracted'; messageId: string } | undefined>;
-  steer(
+  submitFollowUp(
     sessionId: string,
+    placement: MessageQueuePlacement,
     text: string,
-    admissionId?: string,
+    admissionId: string,
     content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
-  ): Promise<SideChatSteerResult>;
+  ): Promise<SideChatFollowUpResult>;
+  queryMessageExecutions(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<TurnMessageExecutionQueryResult>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  updateQueueEntry(
+    sessionId: string,
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,
@@ -267,7 +284,8 @@ export interface SideChatSessionPort {
   subscribeEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
-    onSeeded?: () => void,
+    /** Called after the initial observation seed and each reconnect seed. */
+    onReady?: () => void,
     onSeedError?: (error: unknown) => void,
     onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): WorkbarUnsubscribe;

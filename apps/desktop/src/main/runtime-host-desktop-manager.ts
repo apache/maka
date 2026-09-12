@@ -62,6 +62,7 @@ import {
 } from './runtime-host-desktop-candidate.js';
 import { RuntimeHostReconnectingIpcMain } from './runtime-host-reconnecting-ipc-main.js';
 import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-observation-registry.js';
+import { TerminalCloseIntents } from './terminal-close-intents.js';
 import { canRepairManagedRuntimeHostStartup } from './runtime-host-startup-recovery.js';
 
 export interface RuntimeHostDesktopManager {
@@ -224,6 +225,7 @@ export type RuntimeHostWaitConflict =
   | Extract<DesktopRuntimeHostCandidateStartResult, { kind: 'incompatible' }>;
 
 interface DesktopRuntimeHostTargetGeneration {
+  readonly terminalCloses: TerminalCloseIntents;
   readonly epoch: string;
   readonly input: DesktopRuntimeHostCandidateStartInput;
   readonly target: ResolvedRuntimeHostProfile;
@@ -1135,6 +1137,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         result = await this.startCandidate(
           {
             ...target.input,
+            terminalCloses: target.terminalCloses,
             onExit: (details) => this.#reportCandidateExit(inheritedExit, details),
             ...(target.input.profileTarget
               ? {
@@ -1382,11 +1385,18 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         }
       : { profile: LOCAL_RUNTIME_HOST_PROFILE };
     const epoch = randomUUID();
-    return {
+    const generation: DesktopRuntimeHostTargetGeneration = {
       epoch,
       input,
       target,
       observations,
+      terminalCloses: new TerminalCloseIntents((change) => {
+        if (generation.valid && generation.hostId) {
+          input.renderer?.send('shell-runs:close-changed', {
+            hostId: generation.hostId, targetEpoch: epoch,
+          }, change);
+        }
+      }),
       state: {
         epoch,
         target,
@@ -1394,6 +1404,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       },
       valid: true,
     };
+    return generation;
   }
 
   async #closeObservations(observations: RuntimeHostSessionObservationRegistry): Promise<void> {

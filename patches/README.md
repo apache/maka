@@ -68,6 +68,26 @@ same execution budget semantics. Regression coverage lives in
 Promise.race progress, pending-host compute timeout, cumulative compute across
 awaits, and the existing cancellation/drain and resource-limit cases.
 
+## `@xterm/xterm@6.0.0`
+
+`RenderService.handleSelectionChanged` bypasses the renderer's existing hidden
+pause. Selection refreshes can therefore redraw a hidden DOM terminal in full;
+zero-width character measurements are not cached, causing repeated synchronous
+layout under output load. The patch retains the latest selection and reuses
+the existing selection/full-refresh flags to paint it when visibility resumes.
+It does not stop the PTY, parser, or output subscriptions. There is no public
+xterm API that intercepts this internal redraw before it runs.
+
+Both shipped entry points and their TypeScript source are patched. The large
+diff is the vendor's minified bundle lines, not an additional implementation.
+Against a disposable Electron fixture with CDP, run
+`node scripts/perf/xterm-hidden-selection.mjs <port>`: real Chromium verifies
+that hidden selection changes do not mutate rows and the latest selection is
+painted on resume without another write. It fails against the unpatched bundle.
+
+Delete when upstream routes selection changes through its paused-render
+contract and both bundle regressions pass without the patch.
+
 ## `@earendil-works/pi-tui@0.84.4`
 
 
@@ -147,6 +167,12 @@ unmount. Unknown labels keep their plain-text fallback, and known languages
 keep reusing compiled regexes. A call-site language filter would duplicate the
 dependency's language list, discard the displayed label, and miss the shared
 CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
+
+`CodeBlock` retains memoized line chunks, but lays them out without guessed
+intrinsic heights. Replacing those estimates on first visibility changed the
+transcript scroll range (#5184). Keep layout/style/paint containment. Remove
+this hunk when upstream offers equivalent stable geometry; the default-mode
+geometry CI covers 1200 lines without any ablation override.
 
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft

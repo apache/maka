@@ -1397,6 +1397,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
             id: modelId,
             capabilities: { chat: true, functionCalling: true },
             contextWindow: 32_768,
+            inputLimit: 31_744,
             maxOutputTokens: 1_024,
           },
         ],
@@ -2651,6 +2652,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
+        modelOverrides: { [MODEL_ID]: { compactionThreshold: 3_072 } },
       },
     });
     assert.equal(created.kind, 'committed');
@@ -2669,16 +2671,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
-    // The fetched /models value is metadata only. This explicit model-facts
-    // declaration is the Maka compaction target used by the long-session flow.
-    await writeFile(
-      join(root, 'model-facts.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
-      }),
-      'utf8',
-    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,

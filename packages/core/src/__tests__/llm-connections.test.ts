@@ -360,7 +360,7 @@ test('chat model choices keep provider metadata separate from user context decla
         { id: 'declared-model', contextWindow: 64_000, inputLimit: 48_000 },
         { id: 'reported-model', contextWindow: 128_000 },
       ],
-      relayModelProfiles: { 'declared-model': { contextWindow: 32_000 } },
+      modelOverrides: { 'declared-model': { compactionThreshold: 32_000 } },
       createdAt: 1,
       updatedAt: 1,
     },

@@ -17,10 +17,8 @@
  * under the License.
  */
 
-import { useRef, useState } from 'react';
-import type { StoredMessage } from '@maka/core/session';
-import type { TransientUserMessageProjection } from '@maka/ui';
-import { useAppShellSessionUiState } from './app-shell-session-ui-state.js';
+import { useRef } from 'react';
+import * as Conversation from './features/conversation/index.js';
 import {
   selectActiveSessionId,
   useSessionCatalogController,
@@ -39,37 +37,43 @@ type ToastApi = {
   error(title: string, description?: string): void;
 };
 
-type TransientUserMessage = TransientUserMessageProjection;
-
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   // The catalog and the selection are one authority, and it is a store: the
   // Session rail subscribes to it directly instead of receiving it from the
   // shell's render (#4109).
   const catalog = useSessionCatalogController();
-  const activeId = useExternalStoreSelector(catalog, selectActiveSessionId);
+  const requestedSessionId = useExternalStoreSelector(catalog, selectActiveSessionId);
   const activeIdRef = useRef<string | undefined>(undefined);
-  const sessionUiController = useAppShellSessionUiState();
-  const sessionList = useAppShellSessionList(toastApi, {
-    catalog,
-  });
+  const actionsRef = useRef<SessionWorkspaceActions | null>(null);
+  const sessionList = useAppShellSessionList(toastApi, { catalog });
+  const { controller: sessionUiController, publication, display } = Conversation.useAppShellSessionUiState(
+    sessionList.sessions,
+    requestedSessionId,
+    activeIdRef,
+    (sessionId, messages, controller: DesktopTranscriptRangeController) =>
+      actionsRef.current!.commitTranscript(sessionId, messages, controller),
+  );
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
-  const messagesRef = useRef<StoredMessage[]>([]);
-  const [transientMessages, setTransientMessages] = useState<TransientUserMessage[]>([]);
-  const transientMessagesBySessionRef = useRef(
-    new Map<string, Map<string, TransientUserMessage>>(),
-  );
-  const transcriptRangeRef = useRef<DesktopTranscriptRangeController | undefined>(undefined);
-  const [messageLoadPending, setMessageLoadPending] = useState(false);
+  const {
+    messagesRef, transcriptRangeRef, setMessagesState,
+    messages, publishedTranscriptRange, publishTranscript, isMessagePublished,
+  } = publication;
+  const {
+    transientMessagesBySessionRef,
+    setTransientMessagesState, setMessageLoadPending,
+  } = display;
 
-  const actionsRef = useRef<SessionWorkspaceActions | null>(null);
-  // Every dep below is a ref box, a state setter, or a method of the
-  // once-created session-UI controller, so one instance serves the renderer's
-  // lifetime. Consumers list these in dep arrays and pass them as props; a
-  // per-render identity there is what defeated the Session rail's memo.
-  actionsRef.current ??= createSessionWorkspaceActions({
+  // The captured publication setter only reads stable refs and writes React
+  // state. Along with the controller methods and other refs, it lets one
+  // actions instance serve the renderer's lifetime without defeating the
+  // Session rail's memo with new action identities on every render.
+  const actions = actionsRef.current ??= createSessionWorkspaceActions({
     activeIdRef,
+    readRequestedSessionId: () => catalog.getState().activeSessionId,
+    isReadableSession: (id) => catalog.getState().sessions.some(
+      (session) => session.id === id && session.localState !== 'pending',
+    ),
     messagesRef,
     transientMessagesBySessionRef,
     transcriptRangeRef,
@@ -79,13 +83,11 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     // controller is created once per renderer, so this identity is fixed and
     // the once-created factory may capture it.
     setActiveIdState: catalog.setActiveSessionId,
-    setMessagesState: setMessages,
-    setTransientMessagesState: setTransientMessages,
+    setMessagesState,
+    setTransientMessagesState,
     setMessageLoadPending,
     clearSessionUiState: sessionUiController.clearSessionUiState,
   });
-  const actions = actionsRef.current;
-
   if (!bootstrapSelectionLeaseRef.current) {
     bootstrapSelectionLeaseRef.current = createBootstrapSelectionLease({
       readActiveId: () => activeIdRef.current,
@@ -98,15 +100,16 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   return {
     ...sessionList,
     sessionCatalogController: catalog,
-    activeId,
+    requestedSessionId,
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
     ...actions,
     messages,
-    transientMessages,
+    publishedTranscriptRange,
+    publishTranscript,
+    isMessagePublished,
     transcriptRangeRef,
-    messageLoadPending,
-    setMessageLoadPending,
+    ...display,
     // The store's own surface, not a copy of it. Consumers reach setters and
     // claims through the controller.
     sessionUiController,

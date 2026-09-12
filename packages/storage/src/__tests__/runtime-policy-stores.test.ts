@@ -197,9 +197,9 @@ describe('runtime policy stores', () => {
         ...connectionDraft('my-relay', 'openai-compatible', 'My Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model'],
-        relayModelProfiles: declared,
+        modelOverrides: declared,
       });
-      assert.deepEqual(connection.relayModelProfiles, declared);
+      assert.deepEqual(connection.modelOverrides, declared);
 
       // Replacement is total: a new table swaps in, null clears.
       const replaced = await stores.connectionCatalog.update({
@@ -209,13 +209,13 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: { 'relay-model': { vision: false } },
+          modelOverrides: { 'relay-model': { vision: false } },
         },
       });
       assert.equal(replaced.kind, 'committed');
       if (replaced.kind !== 'committed') return;
       const afterReplace = replaced.snapshot.connections[0];
-      assert.deepEqual(afterReplace?.relayModelProfiles, { 'relay-model': { vision: false } });
+      assert.deepEqual(afterReplace?.modelOverrides, { 'relay-model': { vision: false } });
 
       const cleared = await stores.connectionCatalog.update({
         expected: connectionBasis(afterReplace!),
@@ -224,13 +224,13 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(cleared.kind, 'committed');
       if (cleared.kind !== 'committed') return;
       const afterClear = cleared.snapshot.connections[0];
-      assert.equal(afterClear?.relayModelProfiles, undefined);
+      assert.equal(afterClear?.modelOverrides, undefined);
 
       // An absent key leaves the table untouched (name-only saves stay
       // capability-blind), and an UNANNOUNCED endpoint change retires the
@@ -243,7 +243,7 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: declared,
+          modelOverrides: declared,
         },
       });
       assert.equal(retained.kind, 'committed');
@@ -259,7 +259,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(nameOnly.kind, 'committed');
       if (nameOnly.kind !== 'committed') return;
-      assert.deepEqual(nameOnly.snapshot.connections[0]?.relayModelProfiles, declared);
+      assert.deepEqual(nameOnly.snapshot.connections[0]?.modelOverrides, declared);
 
       const endpointMoved = await stores.connectionCatalog.update({
         expected: connectionBasis(nameOnly.snapshot.connections[0]!),
@@ -272,7 +272,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(endpointMoved.kind, 'committed');
       if (endpointMoved.kind !== 'committed') return;
-      assert.equal(endpointMoved.snapshot.connections[0]?.relayModelProfiles, undefined);
+      assert.equal(endpointMoved.snapshot.connections[0]?.modelOverrides, undefined);
       assert.deepEqual(endpointMoved.snapshot.connections[0]?.models, []);
 
       // …unless the same update submits a table of its own — then the table
@@ -285,17 +285,17 @@ describe('runtime policy stores', () => {
           baseUrl: 'https://third-relay.example/v1',
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: declared,
+          modelOverrides: declared,
         },
       });
       assert.equal(movedWithTable.kind, 'committed');
       if (movedWithTable.kind !== 'committed') return;
-      assert.deepEqual(movedWithTable.snapshot.connections[0]?.relayModelProfiles, declared);
+      assert.deepEqual(movedWithTable.snapshot.connections[0]?.modelOverrides, declared);
       assert.deepEqual(movedWithTable.snapshot.connections[0]?.models, []);
     });
   });
 
-  test('an untouched profile table is pruned to the new enabled-model selection', async () => {
+  test('disabled models retain editable profiles through reload and re-enable', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const declared = {
         'relay-model': { vision: true as const },
@@ -305,9 +305,9 @@ describe('runtime policy stores', () => {
         ...connectionDraft('prune-relay', 'openai-compatible', 'Prune Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model', 'relay-model-2'],
-        relayModelProfiles: declared,
+        modelOverrides: declared,
       });
-      assert.deepEqual(connection.relayModelProfiles, declared);
+      assert.deepEqual(connection.modelOverrides, declared);
 
       const disabled = await stores.connectionCatalog.update({
         expected: connectionBasis(connection),
@@ -320,14 +320,8 @@ describe('runtime policy stores', () => {
       });
       assert.equal(disabled.kind, 'committed');
       if (disabled.kind !== 'committed') return;
-      // No profile instruction rode along, so the ⊆ enabledModelIds rule is
-      // the store's job: the disabled model's declaration is gone, never
-      // stranded as a stale key the settings page cannot see.
-      assert.deepEqual(disabled.snapshot.connections[0]?.relayModelProfiles, {
-        'relay-model': { vision: true },
-      });
+      assert.deepEqual(disabled.snapshot.connections[0]?.modelOverrides, declared);
 
-      // Pruning everything degrades to "no table" — never a stored `{}`.
       const allDisabled = await stores.connectionCatalog.update({
         expected: connectionBasis(disabled.snapshot.connections[0]!),
         changes: {
@@ -339,7 +333,33 @@ describe('runtime policy stores', () => {
       });
       assert.equal(allDisabled.kind, 'committed');
       if (allDisabled.kind !== 'committed') return;
-      assert.equal(allDisabled.snapshot.connections[0]?.relayModelProfiles, undefined);
+      assert.deepEqual(allDisabled.snapshot.connections[0]?.modelOverrides, declared);
+      const edited = { ...declared, 'relay-model-2': { contextWindow: 128_000, vision: false } };
+      const configured = await stores.connectionCatalog.update({
+        expected: connectionBasis(allDisabled.snapshot.connections[0]!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: [],
+          modelOverrides: edited,
+        },
+      });
+      assert.equal(configured.kind, 'committed');
+      const reloaded = await stores.connectionCatalog.getSnapshot();
+      assert.deepEqual(reloaded.connections[0]?.modelOverrides, edited);
+      const enabled = await stores.connectionCatalog.update({
+        expected: connectionBasis(reloaded.connections[0]!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model-2'],
+        },
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+      assert.deepEqual(enabled.snapshot.connections[0]?.modelOverrides, edited);
     });
   });
 
@@ -354,7 +374,7 @@ describe('runtime policy stores', () => {
         ...connectionDraft('alias-relay', 'openai-compatible', 'Alias Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['claude-haiku-4-5-20251001'],
-        relayModelProfiles: { 'claude-haiku-4-5-20251001': { vision: true } },
+        modelOverrides: { 'claude-haiku-4-5-20251001': { vision: true } },
       });
 
       const credential = await stores.credentialVault.set({
@@ -390,12 +410,12 @@ describe('runtime policy stores', () => {
         ...connectionDraft('refresh-relay', 'openai-compatible', 'Refresh Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['model-a', 'model-b'],
-        relayModelProfiles: {
+        modelOverrides: {
           'model-a': { vision: true },
           'model-b': { contextWindow: 64_000 },
         },
       });
-      assert.deepEqual(connection.relayModelProfiles, {
+      assert.deepEqual(connection.modelOverrides, {
         'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
@@ -411,8 +431,7 @@ describe('runtime policy stores', () => {
 
       // The /models refresh no longer lists model-a. One response is not
       // grounds for deleting a model the user picked (#1584), so the selection
-      // and its declaration both stand — and the subset invariant holds
-      // because neither side moved.
+      // and its declaration both stand.
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
       assert.equal(fetch.kind, 'ready');
       if (fetch.kind !== 'ready') return;
@@ -425,15 +444,11 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const after = discovered.snapshot.connections[0];
       assert.deepEqual(after?.enabledModelIds, ['model-a', 'model-b']);
-      assert.deepEqual(after?.relayModelProfiles, {
+      assert.deepEqual(after?.modelOverrides, {
         'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
 
-      // Unchecking model-a IS a decision, and the update path prunes its
-      // declaration with it. The document must also survive a canonical
-      // reload: the next mutation re-decodes persisted state, and a stranding
-      // here would have raised invalid_document instead of committing.
       const roundtrip = await stores.connectionCatalog.update({
         expected: connectionBasis(after!),
         changes: {
@@ -445,7 +460,8 @@ describe('runtime policy stores', () => {
       });
       assert.equal(roundtrip.kind, 'committed');
       if (roundtrip.kind !== 'committed') return;
-      assert.deepEqual(roundtrip.snapshot.connections[0]?.relayModelProfiles, {
+      assert.deepEqual(roundtrip.snapshot.connections[0]?.modelOverrides, {
+        'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
     });
@@ -525,7 +541,7 @@ describe('runtime policy stores', () => {
         baseUrl: ' https://Gateway.EXAMPLE:443/v1 ',
         enabled: true,
         enabledModelIds: ['gpt-5'],
-        relayModelProfiles: null,
+        modelOverrides: null,
       };
       await assert.rejects(
         () =>
@@ -1614,14 +1630,15 @@ describe('runtime policy stores', () => {
       );
 
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
-      await writeFile(
-        join(root, 'model-facts.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          overrides: { 'openai:gpt-5': { apiProtocol: 'openai-responses' } },
-        }),
-        'utf8',
-      );
+      await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: connection.enabled,
+          enabledModelIds: connection.enabledModelIds,
+          modelOverrides: { 'gpt-5': { apiProtocol: 'openai-responses' } },
+        },
+      });
       const testTicket = await stores.operations.beginConnectionTest(
         connection.connectionId,
         'gpt-5',
@@ -1665,15 +1682,7 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [
-        { id: 'gpt-5.1' },
-        { id: 'gpt-5.2' },
-        {
-          id: 'gpt-5',
-          apiProtocol: 'openai-responses',
-          factOverriddenFields: ['apiProtocol'],
-        },
-      ]);
+      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
       // Discovery records what the provider reported while retaining the
       // selected fact-backed model for selectors and execution.
       assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
@@ -1836,7 +1845,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: true,
           enabledModelIds: ['gpt-5', 'llama3.3'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(widened.kind, 'committed');
@@ -1859,7 +1868,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: true,
           enabledModelIds: ['llama3.3'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(narrowed.kind, 'committed');
@@ -1894,7 +1903,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: false,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(disabled.kind, 'committed');
@@ -1949,7 +1958,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: [],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(emptied.kind, 'committed');
@@ -2149,7 +2158,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updated.kind, 'committed');
@@ -2880,7 +2889,7 @@ describe('runtime policy stores', () => {
           baseUrl: 'https://gateway.example/v1',
           enabled: true,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(endpointUpdate.kind, 'committed');
@@ -2908,7 +2917,7 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(modelSelectionUpdate.kind, 'committed');
@@ -3698,7 +3707,7 @@ describe('runtime policy stores', () => {
           name: 'Current revision',
           enabled: true,
           enabledModelIds: ['gpt-5'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updatedResult.kind, 'committed');
@@ -4716,7 +4725,7 @@ describe('runtime policy stores', () => {
           name: 'Claude renamed',
           enabled: current.enabled,
           enabledModelIds: current.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updated.kind, 'committed');

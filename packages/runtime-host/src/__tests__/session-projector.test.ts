@@ -322,6 +322,112 @@ test('admits an in-flight message only after its durable Turn ownership is recor
   assert.deepEqual(projector.noteDurableTranscriptMessages([durableMessage]), []);
 });
 
+test('admits and reseeds an ordinary follow-up from its durable root message', () => {
+  const current = snapshot();
+  const message: StoredMessage = {
+    type: 'user',
+    id: 'followup-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'Next question',
+  };
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+    [],
+    true,
+  );
+  const admissions = (events: readonly SessionEvent[]) =>
+    events
+      .filter((event) => event.type === 'message_admission')
+      .map((event) => ({
+        messageId: event.messageId,
+        turnId: event.turnId,
+        outcome: event.outcome,
+      }));
+  const expected = [{ messageId: 'followup-1', turnId: 'turn-1', outcome: 'admitted' }];
+
+  assert.deepEqual(admissions(projector.noteDurableTranscriptMessages([message])), expected);
+  assert.deepEqual(projector.noteDurableTranscriptMessages([message]), []);
+  const recovered = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([message], current),
+    () => 20,
+    [],
+    true,
+  );
+  assert.deepEqual(admissions(recovered.seedActive(false)), expected);
+});
+
+test('queue disappearance does not prove a follow-up was retracted', () => {
+  const previous = snapshot({
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 1,
+      steering: [],
+      followup: [
+        {
+          entryId: 'entry-1',
+          messageId: 'followup-1',
+          content: { text: 'Next question' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ],
+    },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    previous,
+    createRuntimeHostSessionProjectionSeed([], previous),
+    () => 10,
+    [],
+    true,
+  );
+  const next = snapshot({
+    projectionRevision: 2,
+    rootTurn: { sessionId: 'session-1', turnId: 'turn-2', runId: 'run-2', status: 'running' },
+    queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+  });
+
+  const update = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: next,
+  });
+  assert.deepEqual(
+    update.events.filter((event) => event.type === 'message_admission'),
+    [],
+  );
+});
+
+test('reseeds an empty queue after queued successors completed while disconnected', () => {
+  const current = snapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-3',
+      runId: 'run-3',
+      status: 'completed',
+      terminalEventId: 'complete-3',
+    },
+    queue: { hostEpoch: 'host-1', queueRevision: 7, steering: [], followup: [] },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+    [],
+    true,
+  );
+  const queue = projector.seedActive(false).find((event) => event.type === 'queue_update');
+  assert.ok(queue, 'a replacement must clear the previously rendered queue');
+  assert.equal(queue.queueRevision, 7);
+  assert.deepEqual(queue.steeringEntries, []);
+  assert.deepEqual(queue.followupEntries, []);
+});
+
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
   const retry = {
     phase: 'scheduled' as const,

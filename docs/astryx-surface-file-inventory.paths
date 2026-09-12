@@ -22,6 +22,8 @@ apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
+apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
+apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
@@ -121,7 +123,6 @@ apps/desktop/src/renderer/settings/permission-center-page.tsx
 apps/desktop/src/renderer/settings/personalization-settings-section.tsx
 apps/desktop/src/renderer/settings/projects-settings-page.tsx
 apps/desktop/src/renderer/settings/provider-add-form.tsx
-apps/desktop/src/renderer/settings/provider-add-model-dialog.tsx
 apps/desktop/src/renderer/settings/provider-brand-marks.tsx
 apps/desktop/src/renderer/settings/provider-catalog-page.tsx
 apps/desktop/src/renderer/settings/provider-connection-detail.tsx
@@ -182,7 +183,6 @@ apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/bot.css
-apps/desktop/src/renderer/styles/settings/connection.css
 apps/desktop/src/renderer/styles/settings/form.css
 apps/desktop/src/renderer/styles/settings/health.css
 apps/desktop/src/renderer/styles/settings/memory.css

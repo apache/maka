@@ -520,7 +520,8 @@ test('drives bounded Session domain projections through real UDS framing', async
     const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
     registerRuntimeHostSessionDomainsIpc(
-      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver() },
+      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver(),
+        terminalCloses: new (await import('../terminal-close-intents.js')).TerminalCloseIntents() },
       ipc,
     );
 

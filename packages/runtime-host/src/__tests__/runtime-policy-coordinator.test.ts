@@ -827,7 +827,7 @@ test('projects state-dependent OAuth endpoint overrides as invalid requests', as
           baseUrl: 'https://copilot.example.test/v1',
           enabled: connection.enabled,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       },
       context,
@@ -947,7 +947,7 @@ test('two Host clients cannot write an imported credential after retargeting its
           baseUrl: 'https://target-relay.example/v1',
           enabled: connection.enabled,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       },
       context,
@@ -987,8 +987,7 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
   await withCoordinator(async ({ coordinator, stores }) => {
     // Every claim in one header table used to be what made a long catalog
     // unreadable: the header item is atomic to the paginator. Profiles now
-    // travel with their own enabled_model_id item, so a connection whose
-    // EVERY enabled model declares a full profile must still paginate.
+    // travel with catalog entries, including disabled models.
     const modelIds = Array.from({ length: 40 }, (_, index) => `relay-model-${index}`);
     const profiles = Object.fromEntries(
       modelIds.map((modelId) => [
@@ -1008,14 +1007,14 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
         providerType: 'openai-compatible',
         baseUrl: 'https://relay.example/v1',
         enabled: true,
-        enabledModelIds: modelIds,
-        relayModelProfiles: profiles,
+        enabledModelIds: [],
+        modelOverrides: profiles,
       },
     });
     assert.equal(created.kind, 'committed');
     if (created.kind !== 'committed') return;
 
-    const seen: Extract<ConnectionCatalogPageItem, { kind: 'enabled_model_id' }>[] = [];
+    const seen: Extract<ConnectionCatalogPageItem, { kind: 'catalog_entry' }>[] = [];
     const first = await coordinator.handlers['connection.catalog.query'](
       { kind: 'start' },
       context,
@@ -1030,9 +1029,9 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
       );
       for (const item of observed.items) {
         if (item.kind === 'connection') {
-          assert.ok(!('relayModelProfiles' in item), 'header must not carry the profile table');
+          assert.ok(!('modelOverrides' in item), 'header must not carry the profile table');
         }
-        if (item.kind === 'enabled_model_id') seen.push(item);
+        if (item.kind === 'catalog_entry') seen.push(item);
       }
       if (observed.nextCursor) {
         const next = await coordinator.handlers['connection.catalog.query'](
@@ -1046,7 +1045,7 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
     }
     assert.equal(seen.length, modelIds.length);
     for (const item of seen) {
-      assert.deepEqual(item.relayProfile, profiles[item.modelId]);
+      assert.deepEqual(item.modelOverride, profiles[item.entry.id]);
     }
   });
 });
@@ -1089,13 +1088,20 @@ test('catalog pages carry the model facts a user overrode, not the stored row', 
     });
     assert.equal(discovered.kind, 'committed');
     if (discovered.kind !== 'committed') return;
-    await writeFile(
-      join(root, 'model-facts.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        overrides: { 'openai:custom-model': { contextWindow: 200_000 } },
-      }),
-      'utf8',
+    const latest = discovered.snapshot.connections[0]!;
+    assert.equal(
+      (
+        await stores.connectionCatalog.update({
+          expected: { connectionId: latest.connectionId, revision: latest.revision },
+          changes: {
+            name: latest.name,
+            enabled: latest.enabled,
+            enabledModelIds: latest.enabledModelIds,
+            modelOverrides: { 'custom-model': { contextWindow: 200_000 } },
+          },
+        })
+      ).kind,
+      'committed',
     );
 
     const result = await coordinator.handlers['connection.catalog.query'](
@@ -1109,14 +1115,16 @@ test('catalog pages carry the model facts a user overrode, not the stored row', 
       result.result,
     );
     if (decoded.kind !== 'page') return;
-    // The override's effect is what a client needs: the page must show the
-    // hand-set context window, not the one the stored row was written with.
     const overridden = decoded.items.find(
-      (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
-        item.kind === 'model' && item.model.id === 'custom-model',
-    )?.model;
-    assert.equal(overridden?.contextWindow, 200_000);
-    assert.equal(overridden?.inputLimit, 200_000);
+      (item): item is Extract<ConnectionCatalogPageItem, { kind: 'catalog_entry' }> =>
+        item.kind === 'catalog_entry' && item.entry.id === 'custom-model',
+    );
+    assert.equal(overridden?.entry.contextWindow, 200_000);
+    assert.deepEqual(overridden?.modelOverride, { contextWindow: 200_000 });
+    assert.equal(
+      decoded.items.some((item) => item.kind === 'model' && item.model.id === 'custom-model'),
+      false,
+    );
   });
 });
 
@@ -1324,7 +1332,7 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     // Mirror `projectCatalogItems`: profiles ride on their enabled_model_id
     // item, never in one header table (a header item is atomic to the
     // paginator — a long declaration list would make it unsplittable).
-    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const { enabledModelIds, models, modelOverrides, ...header } = connection;
     const catalogEntries = resolveConnectionModelCatalog({
       slug: connection.slug,
       providerType: connection.providerType,
@@ -1335,7 +1343,7 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
       enabledModelIds: [...enabledModelIds],
       models: [...models],
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
     });
     items.push({
       kind: 'connection',
@@ -1346,20 +1354,25 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
       catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
-      const relayProfile = relayModelProfiles?.[modelId];
       items.push({
         kind: 'enabled_model_id',
         connectionIndex,
         itemIndex,
         modelId,
-        ...(relayProfile === undefined ? {} : { relayProfile }),
       });
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
     }
     for (const [itemIndex, entry] of catalogEntries.entries()) {
-      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
+      const modelOverride = modelOverrides?.[entry.id];
+      items.push({
+        kind: 'catalog_entry',
+        connectionIndex,
+        itemIndex,
+        entry,
+        ...(modelOverride === undefined ? {} : { modelOverride }),
+      });
     }
   }
   return items;

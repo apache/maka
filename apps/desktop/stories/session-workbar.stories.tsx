@@ -825,10 +825,13 @@ function bridge(options: {
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: () => () => undefined,
+      subscribeUpdates: () => () => undefined,
       start: async () => {
         throw new Error('Terminal stories mount an existing resource');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => {
         if (options.terminalAttach === 'missing') return null;
         return {
@@ -842,7 +845,6 @@ function bridge(options: {
       detach: async () => undefined,
       write: async () => {
         if (options.terminalWriteFails) throw new Error('write failed');
-        return null;
       },
       subscribePtyData: unsubscribe,
       subscribeResync: unsubscribe,
@@ -860,7 +862,6 @@ function bridge(options: {
       close: async () => undefined,
       getState: async () => browserState,
       subscribeState: unsubscribe,
-      subscribeLive: unsubscribe,
     },
     sideChat: {
       listSessions: async () => [TOOL_PICKER_SOURCE_SESSION, SIDE_CHAT_SESSION],
@@ -891,7 +892,14 @@ function bridge(options: {
       }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
-      steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      submitFollowUp: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,

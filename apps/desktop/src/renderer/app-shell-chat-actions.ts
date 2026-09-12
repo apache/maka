@@ -18,13 +18,13 @@
  */
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { StoredMessage } from '@maka/core/session';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
-import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -58,8 +58,7 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import type { RefreshMessagesOptions } from './session-message-settlement.js';
-import type { MessageListUpdater } from './session-workspace-actions.js';
+import type { RefreshMessagesOptions } from './platform/desktop/session-message-settlement.js';
 
 export type { RefreshMessagesOptions };
 
@@ -155,9 +154,8 @@ export function createAppShellChatActions(deps: {
   messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   activateSessionForFirstSend: (sessionId: string) => Promise<void>;
-  setActiveId: (sessionId: string | undefined) => void;
+  retireSession: (sessionId: string) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
-  setMessages: MessageListUpdater;
   addTransientMessage: (
     sessionId: string,
     message: TransientUserMessageProjection,
@@ -168,6 +166,7 @@ export function createAppShellChatActions(deps: {
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
+  isMessagePublished: (message: StoredMessage) => boolean;
   onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
@@ -210,9 +209,8 @@ export function createAppShellChatActions(deps: {
     messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
-    setActiveId,
+    retireSession,
     setMessageLoadErrorBySession,
-    setMessages,
     removeTransientMessage,
     transcriptRangeRef,
     onFollowLatest,
@@ -353,7 +351,7 @@ export function createAppShellChatActions(deps: {
       unsentSessionId = undefined;
       try {
         await window.maka.sessions.remove(sessionId);
-        if (activeIdRef.current === sessionId) setActiveId(undefined);
+        retireSession(sessionId);
         await refreshSessions();
       } catch {
         // Best-effort: a failed cleanup must not replace the real error.
@@ -610,18 +608,21 @@ export function createAppShellChatActions(deps: {
       if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) {
         return false;
       }
-      const range = controller.store;
-      const snapshot = range.snapshot();
+      const snapshot = controller.store.snapshot();
       if (snapshot.sessionId !== sessionId) return false;
-      const next = [...snapshot.messages];
-      setMessages(next);
+      // Store changes already publish through its active subscription. A
+      // refresh checks readiness; it must not bypass input-held publication.
       setMessageLoadErrorBySession((current) => {
         if (!current[sessionId]) return current;
         const updated = { ...current };
         delete updated[sessionId];
         return updated;
       });
-      return requiredMessageId === undefined || range.hasDurableMessage(requiredMessageId);
+      // The live answer stays visible until the durable answer reaches the
+      // published view. Its existing publication effect retries this handoff.
+      return requiredMessageId === undefined || snapshot.messages.some(
+        (message) => message.id === requiredMessageId && deps.isMessagePublished(message),
+      );
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const message = messageRefreshErrorMessage(error, uiLocale);

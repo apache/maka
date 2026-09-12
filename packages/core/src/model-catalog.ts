@@ -24,20 +24,19 @@ import type {
   ProviderDefaults,
   ProviderType,
 } from './llm-connections.js';
+import { applyModelOverride, resolveModelLimits } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  connectionEnabledModelIds,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   providerFallbackModelIds,
   providerSupportsModelDiscovery,
-  type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
 import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
-  relayModelProfile,
+  modelOverride,
   thinkingVariantsForConnection,
-  type RelayModelProfiles,
+  type ModelOverrides,
   type ThinkingLevel,
 } from './model-thinking.js';
 
@@ -48,7 +47,7 @@ import {
  * desktop IPC boundary, so a field nothing renders is paid for on every
  * catalog read by every attached client — and the ones that were here
  * (`providerType`, `connectionSlug`, `source`, `unavailableReason`,
- * `lifecycle`, `inputLimit`, `maxOutputTokens`, `structuredOutput`,
+ * `lifecycle`, `maxOutputTokens`, `structuredOutput`,
  * `lastUpdated`, `modalities`, `provenance`, `pricing`, and every capability
  * but vision) had none. They are not needed today; when a surface actually asks
  * for one, add it back with the reader that wants it. `makeEntry` still
@@ -70,6 +69,9 @@ export interface ModelCatalogEntry {
   isDefault: boolean;
   /** Exact capability projection used by model-facing attachment composition. */
   supportsVision: boolean;
+  compactionThreshold?: number;
+  /** Host-resolved image support before the user's per-model override. */
+  defaultSupportsVision?: boolean;
   /**
    * Reasoning levels this model offers on this connection, in display order;
    * empty for a non-reasoning model. Part of the entry rather than a second
@@ -80,14 +82,10 @@ export interface ModelCatalogEntry {
    */
   thinkingLevels: readonly ThinkingLevel[];
   contextWindow?: number;
+  inputLimit?: number;
+  defaultContextWindow?: number;
+  defaultInputLimit?: number;
   knowledgeCutoff?: string;
-  /**
-   * Whether the metadata the Host resolved describes this model at all. The
-   * renderer reads it to decide whether a model needs a hand-written capability
-   * declaration: the Host owns the (possibly refreshed) catalog, so a client
-   * asks the entry rather than its own bundled table, which may be older.
-   */
-  describedByMetadata: boolean;
 }
 
 export interface BuildConnectionModelCatalogInput {
@@ -99,7 +97,7 @@ export interface BuildConnectionModelCatalogInput {
     | 'enabledModelIds'
     | 'models'
     | 'modelSource'
-    | 'relayModelProfiles'
+    | 'modelOverrides'
   >;
 }
 
@@ -114,7 +112,7 @@ export interface BuildModelCatalogInput {
   /** Ids the catalog must list even when no inventory describes them (#1584). */
   savedModelIds?: Iterable<string | undefined | null>;
   /** Per-model user declarations; authoritative over every catalog source. */
-  relayModelProfiles?: RelayModelProfiles;
+  modelOverrides?: ModelOverrides;
 }
 
 export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCatalogEntry[] {
@@ -249,15 +247,13 @@ export function buildConnectionModelCatalogEntries(
     // keep offering models that can no longer send — `runtimeAdapter:
     // 'unavailable'` blocks the send, not the choice.
     providerRetired: defaults.retired === true,
-    ...(connection.relayModelProfiles ? { relayModelProfiles: connection.relayModelProfiles } : {}),
-    // Enabling a model IS a user choice — the raw array is written only by the
-    // user, in connection settings — so it projects an entry even when no
-    // catalog describes the id. Without this a model the user enabled on a
-    // provider whose `models` is a release snapshot vanished from every picker
-    // (#1584), and fixing it at one call site left the others broken. The raw
-    // array, not `connectionEnabledModelIds`: that one folds in `defaultModel`,
-    // which the builder already lists on its own.
-    savedModelIds: (connection.enabledModelIds ?? []).filter((id) => !broken.has(id)),
+    ...(connection.modelOverrides ? { modelOverrides: connection.modelOverrides } : {}),
+    // Keep manually configured models visible while disabled, even when no
+    // provider inventory lists them. Selection still controls their use.
+    savedModelIds: [
+      ...(connection.enabledModelIds ?? []),
+      ...Object.keys(connection.modelOverrides ?? {}),
+    ].filter((id) => !broken.has(id)),
   });
 }
 
@@ -323,106 +319,6 @@ export function resolveConnectionModelCatalog(
   });
 }
 
-/** A connection editor's unsaved model state. */
-export interface ConnectionModelDraft {
-  readonly models: readonly ModelInfo[];
-  readonly modelSource: ModelDiscoverySource;
-  readonly enabledModelIds: readonly string[];
-}
-
-/**
- * The catalog to show for a connection being edited.
- *
- * While the draft still matches what is committed, the Host has already
- * resolved this exact connection and its entries are the answer. Resolving
- * again against a client's own bundled metadata would replace a possibly
- * newer Host's display names and eligibility decisions with local guesses —
- * the disagreement the projection exists to end.
- *
- * The other branch is the client-side resolution an editor legitimately needs:
- * once the draft diverges — model rows just fetched, ids just ticked — it
- * describes a connection the Host has never been told about and so cannot
- * have resolved. Even then, metadata coverage is a fact about the id, not the
- * edited row: the Host settled `describedByMetadata` against its (possibly
- * refreshed) catalog, and the client's bundled table — the stale authority
- * this field exists to stop trusting — must not overturn it. So the local
- * rebuild keeps the Host's answer for every id it already described; only an
- * id the Host has never seen falls back to the locally computed value.
- */
-export function resolveDraftConnectionModelCatalog(
-  connection: BuildConnectionModelCatalogInput['connection'] & HostResolvedConnectionCatalog,
-  draft: ConnectionModelDraft,
-): readonly ModelCatalogEntry[] {
-  if (draftMatchesConnection(connection, draft)) return connection.catalogEntries;
-  const hostCoverage = new Map(
-    connection.catalogEntries.map((entry): [string, boolean] => [
-      entry.id,
-      entry.describedByMetadata,
-    ]),
-  );
-  return resolveConnectionModelCatalog({
-    ...connection,
-    enabledModelIds: [...draft.enabledModelIds],
-    models:
-      draft.modelSource === 'fetched' || draft.models.length > 0 ? [...draft.models] : undefined,
-    modelSource: draft.modelSource,
-  }).map((entry) => {
-    // Sync point: `describedByMetadata` has two producers — `makeEntry` above
-    // and this overlay — so a future field decided on the Host must be patched
-    // back here too, or the local rebuild will silently downgrade it.
-    const hostDescribed = hostCoverage.get(entry.id);
-    if (hostDescribed === undefined || hostDescribed === entry.describedByMetadata) return entry;
-    return { ...entry, describedByMetadata: hostDescribed };
-  });
-}
-
-function draftMatchesConnection(
-  connection: Pick<LlmConnection, 'defaultModel' | 'enabledModelIds' | 'models' | 'modelSource'>,
-  draft: ConnectionModelDraft,
-): boolean {
-  if (draft.modelSource !== (connection.modelSource ?? 'fallback')) return false;
-  const enabled = connectionEnabledModelIds(connection);
-  if (draft.enabledModelIds.length !== enabled.length) return false;
-  if (draft.enabledModelIds.some((id, index) => id !== enabled[index])) return false;
-  return modelRowsEqual(draft.models, connection.models ?? []);
-}
-
-/**
- * Every stored field `makeEntry` reads, and only those. Comparing ids alone
- * would keep showing the Host's entries for rows the user just re-fetched,
- * whose facts may differ under the same id; comparing fields no entry is built
- * from would throw the Host's entries away over a change nothing can render.
- */
-export function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((model, index) => {
-    const other = right[index];
-    return (
-      model.id === other.id &&
-      model.displayName === other.displayName &&
-      model.description === other.description &&
-      model.contextWindow === other.contextWindow &&
-      model.knowledgeCutoff === other.knowledgeCutoff &&
-      modalitiesEqual(model.modalities, other.modalities) &&
-      model.capabilities?.chat === other.capabilities?.chat &&
-      model.capabilities?.vision === other.capabilities?.vision &&
-      model.capabilities?.reasoning === other.capabilities?.reasoning &&
-      model.capabilities?.functionCalling === other.capabilities?.functionCalling &&
-      model.capabilities?.imageGeneration === other.capabilities?.imageGeneration
-    );
-  });
-}
-
-function modalitiesEqual(left: ModelInfo['modalities'], right: ModelInfo['modalities']): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  return (
-    left.input.length === right.input.length &&
-    left.input.every((value, index) => value === right.input[index]) &&
-    left.output.length === right.output.length &&
-    left.output.every((value, index) => value === right.output[index])
-  );
-}
-
 /**
  * The per-build facts every entry in one catalog shares. Threading them as one
  * value keeps the entry builders' remaining parameters to what actually varies
@@ -450,9 +346,18 @@ function makeEntry(
   overrides: EntryOverrides = {},
 ): ModelCatalogEntry {
   const { input, normalizedDefaultModel } = ctx;
-  const normalizedModel = { ...model, id: model.id.trim() };
+  const normalizedModel = applyModelOverride(
+    { ...model, id: model.id.trim() },
+    input.modelOverrides?.[model.id.trim()],
+  );
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
-  const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
+  const sourceModel = { ...model, id: normalizedModel.id };
+  const defaults = resolveModelLimits(input.providerType, sourceModel);
+  const limits = resolveModelLimits(
+    input.providerType,
+    sourceModel,
+    input.modelOverrides?.[normalizedModel.id],
+  );
   const description = normalizedModel.description ?? metadata.description;
   const knowledgeCutoff = normalizedModel.knowledgeCutoff ?? metadata.knowledgeCutoff;
   const modalities = normalizedModel.modalities ?? metadata.modalities;
@@ -461,16 +366,16 @@ function makeEntry(
   // rather than being recomputed by whoever renders the entry.
   const thinkingContext = {
     providerType: input.providerType,
-    ...(input.relayModelProfiles ? { relayModelProfiles: input.relayModelProfiles } : {}),
+    ...(input.modelOverrides ? { modelOverrides: input.modelOverrides } : {}),
   };
+  const defaultSupportsVision = resolveModelVisionSupport(
+    input.providerType,
+    [model],
+    normalizedModel.id,
+  );
   const capabilities = {
     ...mergeCapabilities(normalizedModel.capabilities, metadata.capabilities),
-    vision: resolveModelVisionSupport(
-      input.providerType,
-      [normalizedModel],
-      normalizedModel.id,
-      relayModelProfile(thinkingContext, normalizedModel.id)?.vision,
-    ),
+    vision: resolveModelVisionSupport(input.providerType, [normalizedModel], normalizedModel.id),
   };
   // `modalities` too, not just `capabilities`: both are merged from the
   // provider row and the bundled metadata a few lines up, and the chat guard
@@ -498,12 +403,16 @@ function makeEntry(
     canUseAsChatDefault,
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     supportsVision: capabilities.vision === true,
+    defaultSupportsVision,
+    ...(input.modelOverrides?.[normalizedModel.id]?.compactionThreshold === undefined
+      ? {}
+      : { compactionThreshold: input.modelOverrides[normalizedModel.id]!.compactionThreshold }),
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
-    // Whether metadata describes this id at all — the same question
-    // `hasModelMetadata` answers, decided here on the Host's catalog so a client
-    // need not re-ask its own bundled table (which a Host refresh never reaches).
-    describedByMetadata: Object.keys(metadata).length > 0,
-    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...limits,
+    ...(defaults.contextWindow === undefined
+      ? {}
+      : { defaultContextWindow: defaults.contextWindow }),
+    ...(defaults.inputLimit === undefined ? {} : { defaultInputLimit: defaults.inputLimit }),
     ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
   };
 }

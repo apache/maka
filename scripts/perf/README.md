@@ -54,6 +54,12 @@ node scripts/perf/session-switch-busy-js.mjs
   catches React creating a `dispatchSetState`, so a commit can be attributed to
   the `setState` that caused it.
 - `cdp-client.mjs` — the protocol client and the row-clicking helper.
+- `xterm-hidden-selection.mjs <port>` — functional regression for the patched
+  xterm CJS/ESM bundles in real Chromium: hidden selection updates must not
+  redraw rows, and showing the terminal must paint the latest selection without
+  another write. Use a disposable Electron fixture; the probe briefly embeds
+  its own terminal frame and bypasses CSP, then removes the frame and restores
+  CSP. This is a behavior check, not a performance score.
 
 ## The one rule
 

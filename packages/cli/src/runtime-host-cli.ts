@@ -40,8 +40,15 @@ import {
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 import { hasEphemeralRuntimeHostPeerPort } from './runtime-host-peer-artifact.js';
 import type { RuntimeHostInstalledUpdateExpectedSource } from './runtime-host-installed-update-coordinator.js';
+import {
+  installedUpdateHelpText,
+  isRuntimeHostHelpTopic,
+  runtimeHostCommandHelpText,
+  runtimeHostHelpText,
+} from './runtime-host-help.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
+type RuntimeHostCliHelp = { kind: 'help'; text: string };
 
 export type RuntimeHostUpdateSelector =
   | { readonly kind: 'channel'; readonly channel: 'latest' | 'next' }
@@ -378,9 +385,19 @@ export type RuntimeHostCliCommand =
       expectedRootId: string;
     }
   | { kind: 'runtime-host-profile-remove'; id: string }
+  | RuntimeHostCliHelp
   | RuntimeHostCliError;
 
-export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
+export function parseRuntimeHostCommand(
+  argv: string[],
+  cliCommand = 'maka',
+): RuntimeHostCliCommand {
+  if (!argv[0] || argv[0] === '--help' || argv[0] === '-h') {
+    return { kind: 'help', text: runtimeHostHelpText(cliCommand) };
+  }
+  if ((argv[1] === '--help' || argv[1] === '-h') && isRuntimeHostHelpTopic(argv[0])) {
+    return { kind: 'help', text: runtimeHostCommandHelpText(cliCommand, argv[0]) };
+  }
   if (argv[0] === 'activate' || argv[0] === 'connect') {
     return parseManagedRootFramedCommand(argv[0], argv.slice(1));
   }
@@ -397,11 +414,7 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
     return parseCapabilityProviderCommand(argv.slice(1));
   }
   if (argv[0] === 'profile') return parseProfileCommand(argv.slice(1));
-  return error(
-    argv[0]
-      ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the activate, connect, serve, setup, service, access, project, plugin, profile, or capability-provider command',
-  );
+  return error(`Unexpected runtime-host command: ${argv[0]}`);
 }
 
 function parseManagedRootFramedCommand(
@@ -444,7 +457,13 @@ function parseManagedRootFramedCommand(
   };
 }
 
-export function parseRuntimeHostInstalledUpdateCommand(argv: string[]): RuntimeHostCliCommand {
+export function parseRuntimeHostInstalledUpdateCommand(
+  argv: string[],
+  cliCommand = 'maka',
+): RuntimeHostCliCommand {
+  if (argv[0] === '--help' || argv[0] === '-h') {
+    return { kind: 'help', text: installedUpdateHelpText(cliCommand) };
+  }
   let target: string | undefined;
   let allowInterruptActiveTasks = false;
   for (let index = 0; index < argv.length; index += 1) {

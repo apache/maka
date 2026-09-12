@@ -102,15 +102,13 @@ function controller(): SessionNavigationController {
 
 function ports(
   sessions: SessionNavigationSession[],
-  activeSessionId: string | undefined,
+  _activeSessionId: string | undefined,
   calls: string[] = [],
 ): SessionNavigationPorts {
   return {
-    activeIdRef: { current: activeSessionId },
     sessionsRef: { current: sessions },
     pendingSessionRowActionsRef: { current: new Set<string>() },
     activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
-    clearActiveMessages: () => calls.push('clear-messages'),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
     refreshSessions: async () => sessions,
     toastApi: {

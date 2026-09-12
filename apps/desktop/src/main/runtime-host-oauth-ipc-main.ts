@@ -22,6 +22,7 @@ import {
   decodeRuntimePolicyEntityId,
   type ConnectionCatalogEntry,
 } from '@maka/core/runtime-policy';
+import type { SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   OAUTH_LOGIN_PROVIDERS,
@@ -41,10 +42,12 @@ import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
-import type {
-  OAuthExternalPresentation,
-  OAuthPresentationExpectation,
-  RuntimeHostOAuthPresentation,
+import {
+  OAuthPresentationError,
+  type OAuthExternalPresentation,
+  type OAuthPresentationExpectation,
+  OAuthLoginInProgressError,
+  type RuntimeHostOAuthPresentation,
 } from './runtime-host-oauth-presentation.js';
 
 const OAUTH_POLL_INTERVAL_MS = 250;
@@ -140,16 +143,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           error instanceof Error && error.message.trim().length > 0
             ? error.message
             : 'Unable to start OAuth authorization';
-        // The selected Host refuses an enrollment that install has not opted
-        // into with `operation_unavailable`. Keep that as its own reason so the
-        // renderer can say the path is off rather than that authorization
-        // failed — a remote Host may gate differently from this Desktop process.
-        return actionFailure(
-          detail,
-          error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable'
-            ? 'experimental_disabled'
-            : 'unknown',
-        );
+        return actionFailure(detail, oauthStartFailureReason(error));
       }
     });
     handleReconnectableRead(deps.ipcMain, channel('get-enrollment-state'), async () => {
@@ -443,17 +437,17 @@ async function configuredOAuthAccountConnections(
   return configured.filter(({ status }) => status?.configured).map(({ connection }) => connection);
 }
 
-function actionFailure(
-  message: string,
-  reason:
-    | 'authorization_pending'
-    | 'authorization_cancelled'
-    | 'authorization_denied'
-    | 'refresh_failed'
-    | 'experimental_disabled'
-    | 'unknown' = 'unknown',
-) {
+function actionFailure(message: string, reason: SubscriptionActionFailureReason = 'unknown') {
   return { ok: false as const, reason, message };
+}
+
+function oauthStartFailureReason(error: unknown): SubscriptionActionFailureReason {
+  if (error instanceof OAuthPresentationError) return 'presentation_failed';
+  if (error instanceof OAuthLoginInProgressError) return 'login_in_progress';
+  if (error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable') {
+    return 'experimental_disabled';
+  }
+  return 'unknown';
 }
 
 function delay(ms: number): Promise<void> {
