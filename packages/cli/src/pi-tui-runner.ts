@@ -1386,7 +1386,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     currentModelChoice()?.contextWindow ??
     (onInitialTarget() ? input.modelContextWindow : undefined);
   // The Host resolved these when it projected the choice — including a relay's
-  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // declared `modelOverrides[model].thinkingLevels`. A model no choice
   // describes offers none rather than a locally guessed list.
   const currentThinkingLevels = (): readonly ThinkingLevel[] =>
     currentModelChoice()?.thinkingLevels ?? [];

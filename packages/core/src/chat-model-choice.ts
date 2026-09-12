@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { declaredContextWindow, type ThinkingLevel } from './model-thinking.js';
+import { type ThinkingLevel } from './model-thinking.js';
 import {
   offerableCatalogEntries,
   providerDefaultsOf,
@@ -54,7 +54,7 @@ export function buildChatModelChoices(
     const provider = providerDefaultsOf(connection.providerType);
     if (!provider) continue;
     for (const entry of offerableCatalogEntries(connection)) {
-      const declaredWindow = declaredContextWindow(connection, entry.id);
+      const declaredWindow = entry.compactionThreshold;
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,

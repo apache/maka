@@ -154,7 +154,6 @@
     "src/renderer/settings/personalization-settings-section.tsx",
     "src/renderer/settings/projects-settings-page.tsx",
     "src/renderer/settings/provider-add-form.tsx",
-    "src/renderer/settings/provider-add-model-dialog.tsx",
     "src/renderer/settings/provider-add-submission.ts",
     "src/renderer/settings/provider-brand-marks.tsx",
     "src/renderer/settings/provider-catalog-page.tsx",
@@ -165,7 +164,6 @@
     "src/renderer/settings/provider-endpoint-presentation.ts",
     "src/renderer/settings/provider-oauth-section.tsx",
     "src/renderer/settings/providers-panel.tsx",
-    "src/renderer/settings/relay-profile-draft.ts",
     "src/renderer/settings/request-customization-editor.tsx",
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
@@ -2950,25 +2948,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/provider-add-model-dialog.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 4,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../features/connection-settings": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/FormLayout": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/settings/provider-add-submission.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -3055,9 +3034,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../features/connection-settings": 1,
+          "../features/connection-settings": 2,
           "./password-input": 1,
-          "./provider-add-model-dialog": 1,
           "./provider-display": 1,
           "./provider-endpoint-presentation": 1,
           "./request-customization-editor": 1,
@@ -3175,17 +3153,6 @@
           "@maka/ui": 1,
           "@maka/ui/icons": 1,
           "react": 1
-        }
-      },
-      "src/renderer/settings/relay-profile-draft.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/core/model-thinking": 1
         }
       },
       "src/renderer/settings/request-customization-editor.tsx": {
@@ -3751,12 +3718,12 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useEffect": 6,
+          "useEffect": 5,
           "useKeyedActionGuard": 1,
           "useMountedRef": 1,
-          "useRef": 4,
+          "useRef": 3,
           "useRuntimeHostSettingsErrorReporter": 1,
-          "useState": 14,
+          "useState": 11,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -3767,11 +3734,9 @@
           "../features/connection-settings": 1,
           "./connection-name-draft.js": 1,
           "./provider-connection-status": 1,
-          "./relay-profile-draft": 1,
           "./runtime-host-settings-target.js": 1,
           "./use-action-guard": 1,
           "@maka/core/llm-connections": 2,
-          "@maka/core/model-catalog": 1,
           "@maka/core/model-thinking": 1,
           "@maka/core/provider-registry": 1,
           "@maka/ui": 1,

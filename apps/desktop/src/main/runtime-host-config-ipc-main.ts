@@ -351,7 +351,7 @@ export async function saveConnection(
         // Import-overwrite is snapshot replacement: absent in the snapshot
         // must CLEAR, not inherit — the update contract's "absent means
         // untouched" would otherwise resurrect the old profiles.
-        relayModelProfiles: connection.relayModelProfiles ?? null,
+        modelOverrides: connection.modelOverrides ?? null,
         requestBodyOverlay: connection.requestBodyOverlay ?? null,
       },
     );
@@ -359,7 +359,7 @@ export async function saveConnection(
       throw new Error(`Unable to update imported Connection: ${updated.kind}`);
     }
   } else {
-    const importedProfiles = connection.relayModelProfiles;
+    const importedProfiles = connection.modelOverrides;
     const created = await client.createConnection(catalog.revision, {
       slug: connection.slug,
       name: connection.name,
@@ -367,7 +367,7 @@ export async function saveConnection(
       ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
-      ...(importedProfiles === undefined ? {} : { relayModelProfiles: importedProfiles }),
+      ...(importedProfiles === undefined ? {} : { modelOverrides: importedProfiles }),
       ...(connection.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),

@@ -17,12 +17,10 @@
  * under the License.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Badge,
   Banner,
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
   HStack,
   Link,
   Switch,
@@ -32,16 +30,12 @@ import {
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
-  DECLARABLE_RELAY_THINKING_LEVELS,
-  THINKING_LEVELS,
   supportsRelayFastServiceTier,
-  type RelayModelProfile,
-  type ThinkingLevel,
+  type ModelOverride,
 } from '@maka/core/model-thinking';
 import {
   Button,
   RelativeTime,
-  Selector,
   TextInput,
   useMountedRef,
   useToast,
@@ -51,7 +45,7 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
 import { providerDisplay } from './provider-display';
-import { AddModelDialog } from './provider-add-model-dialog';
+import { CapabilityEditor, AddModelDialog } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
@@ -148,7 +142,7 @@ type EditingRow =
   | 'endpoint'
   | 'headers'
   | 'body'
-  | { model: string; contextWindowInput?: string }
+  | { model: string; contextWindowInput?: string; numericInputs?: Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>> }
   /* The 添加模型 dialog: one thing is open at a time, so it is a row here. */
   | 'add-model'
   | null;
@@ -193,47 +187,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     save,
     updateEnabledModels,
     addDeclaredModel,
-    relayProfileDraft,
-    hasRelayProfileChanges,
-    setDraftThinkingLevels,
-    setDraftVision,
-    setDraftContextWindow,
-    setDraftServiceTier,
+    modelParameters,
+    hasModelChanges,
     resetDraftProfile,
-    saveRelayProfiles,
+    setDraftParameters,
+    saveModelParameters,
     runTest,
     refreshModels,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  // A model gets a capability editor when Maka cannot describe it otherwise.
-  // On a custom OpenAI relay that is every model: the id is whatever the
-  // operator chose, so even one that collides with a known name may front
-  // something else entirely. Elsewhere it is the models the Host-resolved
-  // catalog entry reports no metadata for — one the user typed in on a provider
-  // whose key cannot call a model-list endpoint, which no refresh will ever
-  // describe (#1584). The entry answers this, not the renderer's bundled table:
-  // the Host owns the catalog and may have refreshed it since this build (#4496).
-  //
-  // A model that already carries a declaration always keeps its editor, or a
-  // stale declaration would be uneditable and unclearable.
   const isRelay = isRelayProviderType(connection.providerType);
   const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
-  // Only enabled models declare — the store prunes a model's profile the
-  // moment it is disabled, so no declaration can ever belong to a row that is
-  // off.
-  const capabilityModelIds = enabledModelIds.filter((modelId) => {
-    if (isRelay || relayProfileDraft[modelId] !== undefined) return true;
-    // A missing entry is a model the catalog dropped — a quarantined id the
-    // provider registry filters out of the list but `enabledModelIds` still
-    // carries so the user can untick it — not one the Host failed to describe.
-    // Treating absence as "no metadata" would grow an editor `main` never
-    // showed; only a present-but-uncovered entry needs the hand editor (the
-    // #1584 typed id, which `savedModelIds` always gives an entry).
-    const entry = entryById.get(modelId);
-    return entry !== undefined && !entry.describedByMetadata;
-  });
-  const declaringModelIds = new Set(capabilityModelIds);
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
@@ -305,10 +270,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   }
 
   function changeContextWindow(modelId: string, input: string) {
-    setEditingRow({ model: modelId, contextWindowInput: input });
+    setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: modelId, contextWindowInput: input }));
     const value = parseContextWindowInput(input);
     // Invalid text stays visible but never replaces a valid declaration.
-    if (value !== null || input.trim() === '') setDraftContextWindow(modelId, value ?? undefined);
+    if (value !== null || input.trim() === '') setDraftParameters(modelId, { contextWindow: value ?? undefined });
   }
 
   async function saveRequestHeaders(): Promise<boolean> {
@@ -688,8 +653,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             />
           ) : visibleModelRows.map(({ id, entry }) => {
             const label = entry?.displayName?.trim() || id;
-            const declared: RelayModelProfile | undefined = relayProfileDraft[id];
-            const declares = declaringModelIds.has(id);
+            const numericInputs = typeof editingRow === 'object' && editingRow?.model === id ? editingRow.numericInputs : undefined;
+            const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
+            const declared: ModelOverride | undefined = modelParameters[id];
             // One supporting line, the facts separated by dots: the id when it
             // differs from the name, then what the model can do. Plain text,
             // not a token per fact — three pills under a name and a badge read
@@ -699,7 +665,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               entry?.contextWindow !== undefined ? copy.contextToken(formatTokenCount(entry.contextWindow)) : null,
               entry?.supportsVision ? copy.visionToken : null,
               entry !== undefined && entry.thinkingLevels.length > 0 ? copy.thinkingToken : null,
-              declares && declared === undefined ? copy.modelUndescribed : null,
             ].filter((part): part is string => part !== null);
             const facts = factParts.length > 0 ? factParts.join(' · ') : undefined;
             const rowLabel = entry?.isDefault ? (
@@ -708,17 +673,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 <Badge variant="neutral" label={providerCopy.panel.default} />
               </HStack>
             ) : label;
-            if (!declares) {
-              return (
-                <SettingsRow
-                  key={id}
-                  label={rowLabel}
-                  description={facts}
-                  align="start"
-                  end={modelEnableSwitch(id, label)}
-                />
-              );
-            }
             return (
               <SettingsExpandableRow
                 key={id}
@@ -729,13 +683,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 afterAction={modelEnableSwitch(id, label)}
                 isEditing={editingModelId === id}
                 isDisabled={allActionsBusy}
-                canSave={hasRelayProfileChanges && !contextWindowInputInvalid}
+                canSave={hasModelChanges && !contextWindowInputInvalid && !numericInvalid}
                 saveLabel={copy.save}
                 cancelLabel={copy.cancel}
                 onEdit={() => openRow({ model: id })}
                 onCancel={() => { resetDraftProfile(id); setEditingRow(null); }}
                 onSave={async () => {
-                  if (!contextWindowInputInvalid && await saveRelayProfiles()) setEditingRow(null);
+                  if (!contextWindowInputInvalid && !numericInvalid && await saveModelParameters()) setEditingRow(null);
                 }}
               >
                 <Text type="supporting" color="secondary">{copy.capabilitiesHelp}</Text>
@@ -743,17 +697,21 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   copy={copy}
                   modelId={id}
                   isRelay={isRelay}
+                  numericInputs={numericInputs}
+                  onNumericInput={(field, input) => {
+                    setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: id, numericInputs: { ...numericInputs, [field]: input } }));
+                    const value = parseContextWindowInput(input);
+                    if (value !== null || input.trim() === '') setDraftParameters(id, { [field]: value ?? undefined });
+                  }}
                   declared={declared}
+                  onChange={(patch) => setDraftParameters(id, patch)}
                   contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
                   contextWindowInputInvalid={contextWindowInputInvalid}
                   disabled={allActionsBusy}
                   showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
                   reportedContextWindow={connection.models?.find((model) => model.id === id)?.contextWindow}
                   defaultVision={connection.catalogEntries.find((model) => model.id === id)?.defaultSupportsVision}
-                  onThinkingLevels={(levels) => setDraftThinkingLevels(id, levels)}
-                  onVision={(vision) => setDraftVision(id, vision)}
                   onContextWindowInput={(input) => changeContextWindow(id, input)}
-                  onServiceTier={(tier) => setDraftServiceTier(id, tier)}
                 />
               </SettingsExpandableRow>
             );
@@ -762,6 +720,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       )}
       <AddModelDialog
         isOpen={editingRow === 'add-model'}
+        providerType={connection.providerType}
         /* The catalog, not just the selection: the resolved entries are usually
            a proper superset of what the user enabled. Checking only the
            selection lets a listed-but-unchecked id through, and the dialog
@@ -866,166 +825,6 @@ function formatTokenCount(value: number): string {
   return `${Math.round(value / 1000)}k`;
 }
 
-function CapabilityEditor(props: {
-  copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
-  modelId: string;
-  isRelay: boolean;
-  declared: RelayModelProfile | undefined;
-  contextWindowInput: string;
-  contextWindowInputInvalid: boolean;
-  disabled: boolean;
-  showsFastMode: boolean;
-  /** The window the provider's model list reports, offered as a one-click fill while nothing is declared. */
-  reportedContextWindow: number | undefined;
-  defaultVision: boolean | undefined;
-  onThinkingLevels(levels: ThinkingLevel[] | undefined): void;
-  onVision(vision: boolean | undefined): void;
-  onContextWindowInput(value: string): void;
-  onServiceTier(tier: 'fast' | undefined): void;
-}) {
-  const { copy, modelId, declared } = props;
-  const visionValue =
-    declared?.vision === true ? 'enabled' : declared?.vision === false ? 'disabled' : 'auto';
-  const draftLevels = declared?.thinkingLevels ?? [];
-  // The menu offers the five declarable levels PLUS anything the stored table
-  // already claims — a level saved while it was still declarable (or
-  // hand-written into the document) must stay visible and un-checkable, never
-  // an invisible selection the trigger counts but the menu cannot show.
-  const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-    (level) =>
-      (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
-      draftLevels.includes(level),
-  );
-  return (
-    <div className="providerCapabilityFields">
-      <CapabilityField label={copy.visionInput} description={copy.visionInputHelp}>
-          <Selector
-            label={`${copy.visionInput} — ${modelId}`}
-            isLabelHidden
-            size="sm"
-            width="100%"
-            options={[
-              { value: 'auto', label: copy.visionDefaultOption(props.defaultVision) },
-              { value: 'enabled', label: copy.visionEnabledOption },
-              { value: 'disabled', label: copy.visionDisabledOption },
-            ]}
-            value={visionValue}
-            onChange={(value) => props.onVision(value === 'auto' ? undefined : value === 'enabled')}
-            isDisabled={props.disabled}
-          />
-      </CapabilityField>
-      <CapabilityField label={copy.contextWindow} description={copy.contextWindowHelp}>
-        <VStack gap={1}>
-          <TextInput
-            size="sm"
-            width="100%"
-            value={props.contextWindowInput}
-            isDisabled={props.disabled}
-            /* Named per model, like the controls around it: the visible label
-               is the field's, but the control's own name is all a screen reader
-               gets, and every open row carries the same one. */
-            label={`${copy.contextWindow} — ${modelId}`}
-            isLabelHidden
-            hasClear
-            placeholder="128000 / 128K / 1M"
-            onChange={props.onContextWindowInput}
-            status={props.contextWindowInputInvalid
-              ? { type: 'error', message: copy.contextWindowInputInvalid }
-              : undefined}
-          />
-          {declared?.contextWindow === undefined && props.reportedContextWindow !== undefined && (
-            <HStack gap={1} vAlign="center">
-              <Text size="sm" type="supporting" color="secondary">
-                {copy.contextWindowHint(props.reportedContextWindow)}
-              </Text>
-              <Button
-                variant="ghost"
-                size="sm"
-                label={copy.contextWindowApplyHint}
-                isDisabled={props.disabled}
-                onClick={() => props.onContextWindowInput(String(props.reportedContextWindow ?? ''))}
-              />
-            </HStack>
-          )}
-        </VStack>
-      </CapabilityField>
-      {/* Only relays accept a reasoning_effort declaration. */}
-      {props.isRelay && (
-        <CapabilityField label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
-          {/* DropdownMenu, not MultiSelector: levels have a canonical order
-              (low → max) that must not shuffle — MultiSelector pins the
-              selected-at-open options to the top with no opt-out, which
-              misread as the declaration being order-sensitive. */}
-          <DropdownMenu
-            button={{
-              variant: 'secondary',
-              size: 'sm',
-              label:
-                draftLevels.length > 0
-                  ? copy.thinkingSelectedCount(draftLevels.length)
-                  : copy.thinkingUndeclared,
-              'aria-label': `${copy.thinkingEffort} — ${modelId}`,
-              isDisabled: props.disabled,
-            }}
-            hasChevron
-            menuWidth={224}
-          >
-            {menuLevels.map((level) => (
-              <DropdownMenuCheckboxItem
-                key={level}
-                label={level}
-                aria-label={`${modelId} ${level}`}
-                value={draftLevels.includes(level)}
-                onChange={(checked) => {
-                  props.onThinkingLevels(
-                    checked
-                      ? [...draftLevels, level]
-                      : draftLevels.filter((existing) => existing !== level),
-                  );
-                }}
-                isDisabled={props.disabled}
-              />
-            ))}
-          </DropdownMenu>
-        </CapabilityField>
-      )}
-      {props.showsFastMode && (
-        <CapabilityField label={copy.fastMode} description={copy.fastModeHelp}>
-          <Selector
-            label={`${copy.fastMode} — ${modelId}`}
-            isLabelHidden
-            size="sm"
-            width="100%"
-            options={[
-              { value: 'auto', label: copy.fastAuto },
-              { value: 'fast', label: copy.fastEnabled },
-            ]}
-            value={declared?.serviceTier ?? 'auto'}
-            onChange={(value) => props.onServiceTier(value === 'fast' ? 'fast' : undefined)}
-            isDisabled={props.disabled}
-          />
-        </CapabilityField>
-      )}
-    </div>
-  );
-}
-
-function CapabilityField(props: { label: string; description: string; children: ReactNode }) {
-  return (
-    <div className="providerCapabilityField">
-      <Text>{props.label}</Text>
-      {props.children}
-      <Text type="supporting" color="secondary">{props.description}</Text>
-    </div>
-  );
-}
-
-// The OAuth notice for a re-loginable connection. The 重新登录 button drives
-// the SAME shared browser-assisted OAuth flow the catalog cards use, so an
-// expired connection can be re-authorized right where the problem surfaces.
-// The button shows in every credential state except 'loading' — an EXPIRED
-// token still reads hasSecret===true, so it must not hide behind
-// hasSecret===false.
 function OAuthReloginNotice(props: {
   service: OAuthLoginService;
   hasSecret: CredentialPresenceStatus;

@@ -659,7 +659,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
           : { id: 'mock-model-id', contextWindow },
       ],
       ...(options.declareContextWindow
-        ? { relayModelProfiles: { 'mock-model-id': { contextWindow } } }
+        ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
         : {}),
     },
     apiKey: 'sk-test',

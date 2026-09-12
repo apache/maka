@@ -622,3 +622,30 @@ function catalog(): ConnectionCatalogSnapshot {
 function connectionIdentity() {
   return { connectionId: 'connection-1', slug: 'openrouter' } as const;
 }
+
+test('adding and editing a model merge into the latest connection in one Host write', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let snapshot = catalog();
+  snapshot = { ...snapshot, connections: [{ ...snapshot.connections[0]!, modelOverrides: { 'model-2': { vision: true } } }] };
+  const writes: unknown[] = [];
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler as (...args: unknown[]) => unknown); } },
+    client: {
+      loadConnectionCatalog: async () => snapshot,
+      updateConnection: async (basis: unknown, changes: Partial<ConnectionCatalogEntry>) => {
+        writes.push({ basis, changes });
+        snapshot = { ...snapshot, connections: [{ ...snapshot.connections[0]!, ...changes }] };
+        return { kind: 'committed' };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+  const update = handlers.get('connections:update')!;
+  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', value: {}, enable: true } });
+  assert.equal(writes.length, 1);
+  assert.deepEqual(snapshot.connections[0]?.enabledModelIds, ['model-1', 'model-2', 'manual']);
+  assert.deepEqual(snapshot.connections[0]?.modelOverrides, { 'model-2': { vision: true }, manual: {} });
+  await update({}, connectionIdentity(), { modelOverride: { modelId: 'manual', value: { compactionThreshold: 64000 } } });
+  assert.equal(writes.length, 2);
+  assert.deepEqual(snapshot.connections[0]?.modelOverrides, { 'model-2': { vision: true }, manual: { compactionThreshold: 64000 } });
+});

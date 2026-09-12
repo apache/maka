@@ -155,7 +155,7 @@ const alibabaTokenPlanConnections = [
 // A provider whose key cannot call a model-list endpoint: refresh replays the
 // array this build shipped, so 添加模型 replaces 更新模型目录 as the only way the
 // catalog can grow. `deepseek-v4-pro-beta` is a model added that way — absent
-// from `models`, declared in `relayModelProfiles` (#1584).
+// from `models`, declared in `modelOverrides` (#1584).
 const staticCatalogConnections = [
   {
     ...makeConnection({
@@ -168,7 +168,7 @@ const staticCatalogConnections = [
       modelSource: 'fetched',
     }),
     enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
-    relayModelProfiles: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
+    modelOverrides: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
   },
 ];
 
@@ -190,8 +190,8 @@ const relayConnections = [
       ],
       modelSource: 'fetched',
     }),
-    enabledModelIds: ['deepseek-r2', 'deepseek-v4', 'qwen3-max-thinking', 'kimi-k2.6'],
-    relayModelProfiles: { 'deepseek-r2': { thinkingLevels: ['low', 'high'] as const } },
+    enabledModelIds: ['deepseek-r2', 'deepseek-v4', 'qwen3-max-thinking'],
+    modelOverrides: { 'deepseek-r2': { thinkingLevels: ['low', 'high'] as const } },
   },
 ];
 
@@ -294,18 +294,24 @@ function createBridge(input: {
       defaultSlug ??= connection.slug;
       return connection;
     },
-    async update(identity, patch) {
+    async update(identity, input) {
+      const patch = { ...input };
       const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
+      if (patch.modelOverride) {
+        const { modelId, value, enable } = patch.modelOverride;
+        patch.modelOverrides = { ...current.modelOverrides, [modelId]: value };
+        if (enable) patch.enabledModelIds = [...new Set([...(current.enabledModelIds ?? []), modelId])];
+      }
       const nextConnection = {
         ...current,
         ...patch,
-        // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);
+        // UpdateConnectionInput.modelOverrides is tri-state (null clears);
         // a stored connection never carries null — clear maps to absent.
-        relayModelProfiles:
-          patch.relayModelProfiles === undefined
-            ? current.relayModelProfiles
-            : (patch.relayModelProfiles ?? undefined),
+        modelOverrides:
+          patch.modelOverrides === undefined
+            ? current.modelOverrides
+            : (patch.modelOverrides ?? undefined),
         requestBodyOverlay:
           patch.requestBodyOverlay === undefined
             ? current.requestBodyOverlay
@@ -873,6 +879,20 @@ export const ModelCapabilities: Story = {
     await waitFor(() => expect(canvasElement.querySelector('.providerCapabilityFields')).not.toBeNull());
     const pane = canvasElement.querySelector('.settingsMainPane');
     if (pane) pane.scrollTop = 0;
+  },
+};
+
+export const AddModel: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const add = await within(canvasElement).findByRole('button', { name: /^(?:添加模型|新增模型|Add model)$/i });
+    add.click();
+    await waitFor(() => expect(document.querySelector('dialog[open]')).not.toBeNull());
   },
 };
 

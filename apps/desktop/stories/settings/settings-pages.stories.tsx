@@ -182,17 +182,23 @@ const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async create(next) {
     return makeConnection({ slug: next.slug, name: next.name, providerType: next.providerType });
   },
-  async update(identity, patch) {
+  async update(identity, input) {
+    const patch = { ...input };
     const current = connections.find((c) => c.connectionId === identity.connectionId && c.slug === identity.slug)!;
+      if (patch.modelOverride) {
+        const { modelId, value, enable } = patch.modelOverride;
+        patch.modelOverrides = { ...current.modelOverrides, [modelId]: value };
+        if (enable) patch.enabledModelIds = [...new Set([...(current.enabledModelIds ?? []), modelId])];
+      }
     return {
       ...current,
       ...patch,
-      // Tri-state relayModelProfiles (null clears) never stores null on a
+      // Tri-state modelOverrides (null clears) never stores null on a
       // connection — clear maps to absent.
-      relayModelProfiles:
-        patch.relayModelProfiles === undefined
-          ? current.relayModelProfiles
-          : (patch.relayModelProfiles ?? undefined),
+      modelOverrides:
+        patch.modelOverrides === undefined
+          ? current.modelOverrides
+          : (patch.modelOverrides ?? undefined),
       requestBodyOverlay:
         patch.requestBodyOverlay === undefined
           ? current.requestBodyOverlay

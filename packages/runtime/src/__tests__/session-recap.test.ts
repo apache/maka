@@ -117,7 +117,7 @@ test('session recap budgets only the evidence it sends', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-16k-model',
-      relayModelProfiles: { 'declared-16k-model': { contextWindow: 16_384 } },
+      models: [{ id: 'declared-16k-model', contextWindow: 16_384 }],
     },
     modelId: 'declared-16k-model',
   });
@@ -144,7 +144,7 @@ test('session recap excludes model-hidden tool outcomes', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });
@@ -171,7 +171,7 @@ test('session recap treats a zero evidence budget as no evidence, not unbounded 
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });

@@ -30,7 +30,7 @@ test('one save persists integer and abbreviated context windows while focused', 
   await page.locator('[data-connection-slug="no-models"] button').first().click();
   await page.getByRole('button', { name: copy.addModel }).click();
   await page.getByRole('textbox', { name: copy.addModelIdField }).fill(MODEL_ID);
-  await tokenField(copy.addModelContextWindow).fill('128000');
+  await tokenField(`${copy.contextWindow} — ${MODEL_ID}`).fill('128000');
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
   await expect(
     page.getByRole('button', { name: copy.declareCapabilitiesAria(MODEL_ID) }),
@@ -39,6 +39,8 @@ test('one save persists integer and abbreviated context windows while focused', 
 
   const contextWindow = tokenField(`${copy.contextWindow} — ${MODEL_ID}`);
   await contextWindow.fill('258000');
+  await tokenField(`${copy.compactionThreshold} — ${MODEL_ID}`).fill('200K');
+  await tokenField(`${copy.maxOutputTokens} — ${MODEL_ID}`).fill('8K');
   const save = page.getByRole('button', { name: copy.save, exact: true });
   // Keep the field focused and exercise the physical gesture: Save is below
   // the scroll viewport, so scroll it into view without letting Playwright's
@@ -54,30 +56,35 @@ test('one save persists integer and abbreviated context windows while focused', 
         const snapshot = await window.maka.connections.getSnapshot();
         return snapshot.connections
           .find((connection) => connection.slug === 'no-models')
-          ?.relayModelProfiles?.[modelId]?.contextWindow;
+          ?.modelOverrides?.[modelId]?.contextWindow;
       }, MODEL_ID),
     )
     .toBe(258_000);
+  const parameters = await page.evaluate(async (modelId) => {
+    const snapshot = await window.maka.connections.getSnapshot();
+    return snapshot.connections.find((connection) => connection.slug === 'no-models')?.modelOverrides?.[modelId];
+  }, MODEL_ID);
+  expect(parameters).toMatchObject({ contextWindow: 258000, compactionThreshold: 200000, maxOutputTokens: 8000 });
 
   const suffixModel = 'custom-context-units';
   await page.getByRole('button', { name: copy.addModel }).click();
   await page.getByRole('textbox', { name: copy.addModelIdField }).fill(suffixModel);
   for (const [input, message] of [
-    ['1MB', copy.contextWindowInputInvalid], ['', copy.addModelContextWindowRequired],
+    ['1MB', copy.contextWindowInputInvalid],
   ] as const) {
-    await tokenField(copy.addModelContextWindow).fill(input);
+    await tokenField(`${copy.contextWindow} — ${suffixModel}`).fill(input);
     await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
     await expect(page.getByRole('dialog').getByText(message, { exact: true })).toBeVisible();
     await expect(page.getByRole('textbox', { name: copy.addModelIdField })).toHaveValue(suffixModel);
   }
-  await tokenField(copy.addModelContextWindow).fill('1M');
+  await tokenField(`${copy.contextWindow} — ${suffixModel}`).fill('1M');
   await page.getByRole('dialog').screenshot({ path: testInfo.outputPath('context-window-units-add.png') });
   await page.getByRole('button', { name: copy.addModelConfirm, exact: true }).click();
   await expect(page.getByRole('button', { name: copy.declareCapabilitiesAria(suffixModel) })).toBeVisible();
   const readWindow = () => page.evaluate(async (modelId) => {
     const snapshot = await window.maka.connections.getSnapshot();
     return snapshot.connections.find((connection) => connection.slug === 'no-models')
-      ?.relayModelProfiles?.[modelId]?.contextWindow;
+      ?.modelOverrides?.[modelId]?.contextWindow;
   }, suffixModel);
   await expect.poll(readWindow).toBe(1_000_000);
 
@@ -105,9 +112,14 @@ test('one save persists integer and abbreviated context windows while focused', 
   await suffixWindow.fill('');
   await save.click();
   await expect.poll(readWindow).toBeUndefined();
+  const retained = await page.evaluate(async (modelId) => {
+    const snapshot = await window.maka.connections.getSnapshot();
+    return snapshot.connections.find((connection) => connection.slug === 'no-models')?.modelOverrides?.[modelId];
+  }, suffixModel);
+  expect(retained).toEqual({});
   await expect.poll(async () => page.evaluate(async (modelId) => {
     const snapshot = await window.maka.connections.getSnapshot();
     return snapshot.connections.find((connection) => connection.slug === 'no-models')
-      ?.relayModelProfiles?.[modelId]?.contextWindow;
+      ?.modelOverrides?.[modelId]?.contextWindow;
   }, MODEL_ID)).toBe(258_000);
 });

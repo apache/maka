@@ -18,40 +18,33 @@
  */
 
 import { useState, type FormEvent } from 'react';
+import { isRelayProviderType, type ProviderType } from '@maka/core/llm-connections';
+import { supportsRelayFastServiceTier, type ModelOverride } from '@maka/core/model-thinking';
+import { CapabilityEditor } from './provider-capability-editor';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, HStack, TextInput, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy, parseContextWindowInput } from '../features/connection-settings';
+import { getProviderSettingsCopy } from './settings-provider-copy.js';
+import { parseContextWindowInput } from './context-window-input.js';
 
-/**
- * Introduce a model by exact id, for a provider whose catalog cannot grow on
- * its own: without a model-list endpoint, refresh replays the array this build
- * shipped, so a model the user's plan already serves has no other way in
- * (#1584).
- *
- * Two fields. The id enters `enabledModelIds`, which is the authorization. The
- * context window is the one fact nothing else can supply: an id Maka has never
- * seen resolves no window, and the history budget falls back to a flat 32k
- * (context-budget-policy.ts) — three percent of a 1M-token window.
- *
- * Everything else a user can declare is edited in the capability section below
- * the model list, which shows a row for exactly the models Maka cannot
- * describe — every model added here, the moment it is added.
- */
 export function AddModelDialog(props: {
   isOpen: boolean;
+  providerType: ProviderType;
   existingModelIds: readonly string[];
   /** Another write is in flight; the store would drop this one on the floor. */
   isSubmitDisabled?: boolean;
   onOpenChange(open: boolean): void;
   /** Resolves to whether the write landed; the draft is held until it did. */
-  onSubmit(id: string, contextWindow: number): Promise<boolean>;
+  onSubmit(id: string, profile: ModelOverride): Promise<boolean>;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   const [id, setId] = useState('');
+  const [profile, setProfile] = useState<ModelOverride>({});
   const [contextWindowInput, setContextWindowInput] = useState('');
   const contextWindow = parseContextWindowInput(contextWindowInput);
+  const [numericInputs, setNumericInputs] = useState<Partial<Record<'compactionThreshold' | 'maxOutputTokens', string>>>({});
+  const numericInvalid = Object.values(numericInputs).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isSaving, setSaving] = useState(false);
 
@@ -61,16 +54,13 @@ export function AddModelDialog(props: {
     : props.existingModelIds.includes(trimmedId)
       ? copy.addModelIdDuplicate
       : null;
-  // Required, not defaulted: an unknown window falls back to a flat 32k history
-  // budget, and guessing higher on the user's behalf would trade a wasted
-  // window for requests the provider rejects outright. Whoever types an exact
-  // model id is reading the provider's own model page, where this is stated.
-  const contextWindowError = !contextWindowInput.trim()
-    ? copy.addModelContextWindowRequired
-    : contextWindow === null ? copy.contextWindowInputInvalid : null;
+  const contextWindowError = contextWindowInput.trim() !== '' && contextWindow === null
+    ? copy.contextWindowInputInvalid : null;
 
   function close() {
     setId('');
+    setProfile({});
+    setNumericInputs({});
     setContextWindowInput('');
     setSubmitAttempted(false);
     props.onOpenChange(false);
@@ -83,10 +73,14 @@ export function AddModelDialog(props: {
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitAttempted(true);
-    if (idError || !contextWindow || isSaving) return;
+    if (idError || contextWindowError || numericInvalid || isSaving) return;
     setSaving(true);
     try {
-      if (await props.onSubmit(trimmedId, contextWindow)) close();
+      const { serviceTier, ...parameters } = profile;
+      if (await props.onSubmit(trimmedId, {
+        ...parameters, ...(contextWindow === null ? {} : { contextWindow }),
+        ...(supportsRelayFastServiceTier(props.providerType, trimmedId) && serviceTier ? { serviceTier } : {}),
+      })) close();
     } finally {
       setSaving(false);
     }
@@ -101,7 +95,7 @@ export function AddModelDialog(props: {
         if (!open && !isSaving) close();
       }}
       purpose="form"
-      width={480}
+      width={640}
     >
       <Layout
         header={
@@ -125,6 +119,7 @@ export function AddModelDialog(props: {
                   description={copy.addModelIdFieldHelp}
                   isRequired
                   hasAutoFocus
+                  isDisabled={isSaving}
                   value={id}
                   placeholder={copy.addModelIdPlaceholder}
                   onChange={setId}
@@ -132,20 +127,26 @@ export function AddModelDialog(props: {
                     submitAttempted && idError ? { type: 'error', message: idError } : undefined
                   }
                 />
-                <TextInput
-                  label={copy.addModelContextWindow}
-                  description={copy.addModelContextWindowHelp}
-                  isRequired
-                  value={contextWindowInput}
-                  hasClear
-                  placeholder="128000 / 128K / 1M"
-                  onChange={setContextWindowInput}
-                  isDisabled={isSaving}
-                  status={
-                    submitAttempted && contextWindowError
-                      ? { type: 'error', message: contextWindowError }
-                      : undefined
-                  }
+                <CapabilityEditor
+                  copy={copy}
+                  modelId={trimmedId}
+                  isRelay={isRelayProviderType(props.providerType)}
+                  declared={profile}
+                  onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
+                  contextWindowInput={contextWindowInput}
+                  contextWindowInputInvalid={submitAttempted && contextWindowError !== null}
+                  contextWindowError={contextWindowError ?? undefined}
+                  numericInputs={numericInputs}
+                  onNumericInput={(field, input) => {
+                    setNumericInputs((current) => ({ ...current, [field]: input }));
+                    const value = parseContextWindowInput(input);
+                    if (value !== null || input.trim() === '') setProfile((current) => ({ ...current, [field]: value ?? undefined }));
+                  }}
+                  disabled={isSaving}
+                  showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
+                  reportedContextWindow={undefined}
+                  defaultVision={undefined}
+                  onContextWindowInput={setContextWindowInput}
                 />
               </FormLayout>
             </form>
