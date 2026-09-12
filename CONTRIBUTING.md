@@ -74,6 +74,7 @@ npm run build
 npm run typecheck
 npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
+npx knip --include unlisted --no-config-hints
 ```
 
 Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).
