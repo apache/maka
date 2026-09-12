@@ -646,6 +646,110 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('retires an interrupted steering admission proven by its successor Root', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-interrupted-root-handoff' }));
+      const content = { text: 'handed to the successor before interruption' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-interrupted-root-handoff',
+        turnId: 'turn-predecessor',
+        runId: 'run-predecessor',
+        messageId: 'message-successor-root',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 24,
+      });
+      const handoff = {
+        sessionId: 'session-interrupted-root-handoff',
+        messageIds: ['message-successor-root'],
+        turnId: 'turn-successor',
+        provenRootMessages: [
+          {
+            messageId: 'message-successor-root',
+            content,
+            admittedAt: 25,
+          },
+        ],
+      } satisfies ProvenRootHandoffInput;
+
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+
+      assert.equal(
+        await store.readMessageAdmission(
+          'session-interrupted-root-handoff',
+          'message-successor-root',
+        ),
+        undefined,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects a successor Root proof whose content conflicts with the stale admission', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader({ id: 'session-interrupted-root-content-conflict' }));
+      const content = { text: 'original steering content' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-interrupted-root-content-conflict',
+        turnId: 'turn-predecessor',
+        runId: 'run-predecessor',
+        messageId: 'message-conflicting-successor-root',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 26,
+      });
+
+      await assert.rejects(
+        markMessagesHandedOffWithProvenRoots(store, {
+          sessionId: 'session-interrupted-root-content-conflict',
+          messageIds: ['message-conflicting-successor-root'],
+          turnId: 'turn-successor',
+          provenRootMessages: [
+            {
+              messageId: 'message-conflicting-successor-root',
+              content: { text: 'different successor content' },
+              admittedAt: 27,
+            },
+          ],
+        }),
+        /fallback content conflict/,
+      );
+      assert.deepEqual(
+        await store.readMessageAdmission(
+          'session-interrupted-root-content-conflict',
+          'message-conflicting-successor-root',
+        ),
+        {
+          sessionId: 'session-interrupted-root-content-conflict',
+          turnId: 'turn-predecessor',
+          runId: 'run-predecessor',
+          messageId: 'message-conflicting-successor-root',
+          content,
+          submittedContentDigest: messageContentDigest(content),
+          submittedPlacement: 'current_turn',
+          placement: 'current_turn',
+          disposition: 'steering',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 26,
+        },
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test('repeats a proven Root message handoff after its admission is gone', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
