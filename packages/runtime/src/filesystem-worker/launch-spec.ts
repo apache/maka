@@ -18,7 +18,7 @@
  */
 
 import { constants } from 'node:fs';
-import { access, realpath } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -29,6 +29,11 @@ import {
   resolveMacosExecutableDependencies,
   type MacosExecutableDependencyResolution,
 } from './macos-executable-dependencies.js';
+import {
+  currentRipgrepEnvironment,
+  formatRipgrepEnvironmentArg,
+  type RipgrepEnvironment,
+} from '../ripgrep-guidance.js';
 
 export interface FilesystemWorkerLaunchSpec {
   program: string;
@@ -65,8 +70,41 @@ export interface CreateFilesystemWorkerLaunchSpecProviderInput {
 export function createFilesystemWorkerLaunchSpecProvider(
   input: CreateFilesystemWorkerLaunchSpecProviderInput,
 ): FilesystemWorkerLaunchSpecProvider {
-  let cached: Promise<FilesystemWorkerLaunchSpecResult> | undefined;
-  return () => (cached ??= resolveLaunchSpec(input));
+  const platform = input.platform ?? process.platform;
+  let base: Promise<LaunchBaseResult> | undefined;
+  let ripgrep: Promise<RipgrepResolution | undefined> | undefined;
+  // Mach-O inspection runs otool, so its result is kept per executable and
+  // file identity: an unchanged binary is inspected once, whether it was
+  // granted or refused, however often launches look for ripgrep again.
+  const inspections = new Map<string, MacosInspectionRecord>();
+  const resolveRipgrep = () =>
+    resolveRipgrepExecutable(
+      input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
+      platform,
+      input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
+      inspections,
+    );
+  // A resolved ripgrep stays cached while the same file is still there. A
+  // missing one, or one whose file has since disappeared or changed (a package
+  // upgrade removes the old keg; a reinstall in place can change its
+  // libraries), is looked up again on the next launch, with the same
+  // executable and dependency-root validation as the first lookup: installing
+  // ripgrep where the Host runs and retrying recovers without restarting the
+  // Host, and the sandbox only ever grants the copy found.
+  const currentRipgrep = async (): Promise<RipgrepResolution | undefined> => {
+    const known = (ripgrep ??= resolveRipgrep());
+    const resolved = await known;
+    if (resolved && (await fileIdentity(resolved.executable)) === resolved.identity)
+      return resolved;
+    // Concurrent launches share one fresh lookup.
+    if (ripgrep === known) ripgrep = resolveRipgrep();
+    return await ripgrep;
+  };
+  return async () => {
+    const resolved = await (base ??= resolveLaunchBase(input, platform));
+    if (!resolved.ok) return resolved;
+    return { ok: true, spec: composeLaunchSpec(resolved.base, await currentRipgrep()) };
+  };
 }
 
 export function buildFilesystemWorkerEnv(
@@ -94,9 +132,40 @@ export function buildFilesystemWorkerEnv(
   return env;
 }
 
-async function resolveLaunchSpec(
+interface RipgrepResolution {
+  readonly executable: string;
+  /** The file that was validated; a different file at the same path is looked up again. */
+  readonly identity: string;
+  readonly runtimeReadableRoots: readonly string[];
+  readonly executableRoots: readonly string[];
+}
+
+interface MacosInspectionRecord {
+  readonly identity: string;
+  readonly result: MacosExecutableDependencyResolution;
+}
+
+/** Everything in a launch that does not depend on ripgrep; resolved once. */
+interface LaunchBase {
+  readonly runtime: 'node' | 'electron';
+  readonly platform: NodeJS.Platform;
+  readonly program: string;
+  readonly bundlePath: string;
+  readonly runtimeRoot: string;
+  readonly dependencyRoots: readonly string[];
+  readonly electronFrameworks?: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly environment?: RipgrepEnvironment;
+}
+
+type LaunchBaseResult =
+  | { ok: true; base: LaunchBase }
+  | Extract<FilesystemWorkerLaunchSpecResult, { ok: false }>;
+
+async function resolveLaunchBase(
   input: CreateFilesystemWorkerLaunchSpecProviderInput,
-): Promise<FilesystemWorkerLaunchSpecResult> {
+  platform: NodeJS.Platform,
+): Promise<LaunchBaseResult> {
   const bundle = await resolveFilesystemWorkerBundle(input.resourceLocation);
   if (!bundle.ok) {
     return {
@@ -113,7 +182,6 @@ async function resolveLaunchSpec(
       message: 'Filesystem worker runtime is unavailable.',
     };
   }
-  const platform = input.platform ?? process.platform;
   // A packaged Windows executable lives directly inside the product-owned app
   // directory. Granting its parent would widen a normal install from
   // `...\Programs\Maka` to every application under `...\Programs` (or from
@@ -131,11 +199,6 @@ async function resolveLaunchSpec(
     };
   }
   const dependencyRoots = await resolveRuntimeDependencyRoots(program);
-  const grep = await resolveRipgrepExecutable(
-    input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
-    platform,
-    input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
-  );
   const electronFrameworks =
     input.runtime === 'electron' && platform === 'darwin'
       ? await resolveReadableRoot(resolve(dirname(program), '..', 'Frameworks'))
@@ -147,43 +210,64 @@ async function resolveLaunchSpec(
       message: 'Electron framework roots are unavailable.',
     };
   }
+  const environment = currentRipgrepEnvironment(input.hostEnv ?? process.env);
   return {
     ok: true,
-    spec: {
+    base: {
+      runtime: input.runtime,
+      platform,
       program,
-      // --preserve-symlinks-main skips the module loader's realpath of the
-      // bundle path. Inside the Windows AppContainer that realpath would
-      // lstat every ancestor directory (up to the volume root), which the
-      // sandbox grants deliberately do not allow.
-      //
-      // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
-      // backfill missing standard handles before Node starts, and the
-      // AppContainer denies that device open, which aborts startup (FATAL
-      // node_main.cc "Unable to open nul device"). The broker always relays
-      // three valid standard handles into the child, so the backfill is
-      // unnecessary; the switch skips it and is consumed before Node's own
-      // option parsing.
-      args: [
-        ...(input.runtime === 'electron' && platform === 'win32' ? ['--no-stdio-init'] : []),
-        ...(platform === 'win32' ? ['--preserve-symlinks-main'] : []),
-        bundle.path,
-        ...(grep ? ['--grep-executable', grep.executable] : []),
-      ],
+      bundlePath: bundle.path,
+      runtimeRoot,
+      dependencyRoots,
+      ...(electronFrameworks ? { electronFrameworks } : {}),
       env: buildFilesystemWorkerEnv(input.runtime, input.hostEnv, input.tmpdir, platform),
-      runtimeReadableRoots: unique([
-        bundle.path,
-        runtimeRoot,
-        ...dependencyRoots,
-        ...(grep?.runtimeReadableRoots ?? []),
-      ]),
-      executableRoots: unique([
-        program,
-        runtimeRoot,
-        ...(electronFrameworks ? [electronFrameworks] : []),
-        ...dependencyRoots,
-        ...(grep ? [grep.executable, ...grep.executableRoots] : []),
-      ]),
+      ...(environment ? { environment } : {}),
     },
+  };
+}
+
+function composeLaunchSpec(
+  base: LaunchBase,
+  grep: RipgrepResolution | undefined,
+): FilesystemWorkerLaunchSpec {
+  return {
+    program: base.program,
+    // --preserve-symlinks-main skips the module loader's realpath of the
+    // bundle path. Inside the Windows AppContainer that realpath would
+    // lstat every ancestor directory (up to the volume root), which the
+    // sandbox grants deliberately do not allow.
+    //
+    // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
+    // backfill missing standard handles before Node starts, and the
+    // AppContainer denies that device open, which aborts startup (FATAL
+    // node_main.cc "Unable to open nul device"). The broker always relays
+    // three valid standard handles into the child, so the backfill is
+    // unnecessary; the switch skips it and is consumed before Node's own
+    // option parsing.
+    args: [
+      ...(base.runtime === 'electron' && base.platform === 'win32' ? ['--no-stdio-init'] : []),
+      ...(base.platform === 'win32' ? ['--preserve-symlinks-main'] : []),
+      base.bundlePath,
+      ...(base.environment
+        ? ['--ripgrep-environment', formatRipgrepEnvironmentArg(base.environment)]
+        : []),
+      ...(grep ? ['--grep-executable', grep.executable] : []),
+    ],
+    env: base.env,
+    runtimeReadableRoots: unique([
+      base.bundlePath,
+      base.runtimeRoot,
+      ...base.dependencyRoots,
+      ...(grep?.runtimeReadableRoots ?? []),
+    ]),
+    executableRoots: unique([
+      base.program,
+      base.runtimeRoot,
+      ...(base.electronFrameworks ? [base.electronFrameworks] : []),
+      ...base.dependencyRoots,
+      ...(grep ? [grep.executable, ...grep.executableRoots] : []),
+    ]),
   };
 }
 
@@ -193,26 +277,29 @@ async function resolveRipgrepExecutable(
   inspectMacosExecutableDependencies: (
     executable: string,
   ) => Promise<MacosExecutableDependencyResolution>,
-): Promise<
-  | {
-      executable: string;
-      runtimeReadableRoots: readonly string[];
-      executableRoots: readonly string[];
-    }
-  | undefined
-> {
+  inspections: Map<string, MacosInspectionRecord>,
+): Promise<RipgrepResolution | undefined> {
   const inspected = new Set<string>();
   for (const candidate of candidates) {
     const executable = await resolveExecutable(candidate);
     if (!executable || inspected.has(executable)) continue;
     inspected.add(executable);
+    const identity = await fileIdentity(executable);
+    if (!identity) continue;
     if (platform !== 'darwin') {
-      return { executable, runtimeReadableRoots: [], executableRoots: [] };
+      return { executable, identity, runtimeReadableRoots: [], executableRoots: [] };
     }
-    const dependencies = await inspectMacosExecutableDependencies(executable);
+    const known = inspections.get(executable);
+    const inspection =
+      known && known.identity === identity
+        ? known
+        : { identity, result: await inspectMacosExecutableDependencies(executable) };
+    inspections.set(executable, inspection);
+    const dependencies = inspection.result;
     if (!dependencies.ok) continue;
     return {
       executable,
+      identity,
       runtimeReadableRoots: dependencies.runtimeReadableRoots,
       executableRoots: dependencies.executableRoots,
     };
@@ -225,6 +312,15 @@ async function resolveExecutable(candidate: string): Promise<string | undefined>
   try {
     await access(candidate, constants.X_OK);
     return await realpath(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+async function fileIdentity(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.mode}`;
   } catch {
     return undefined;
   }
@@ -249,6 +345,12 @@ function defaultRipgrepCandidates(
       .filter(Boolean)
       .map((directory) => join(directory, executableName)),
     ...(platform === 'win32' ? [] : ['/opt/homebrew/bin/rg', '/usr/local/bin/rg', '/usr/bin/rg']),
+    // winget links portable packages here and adds the directory to PATH for
+    // processes started afterwards; a running Host still has the old PATH, so
+    // look here too or "install, then retry" would not find the install.
+    ...(platform === 'win32' && env.LOCALAPPDATA
+      ? [join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', executableName)]
+      : []),
   ];
 }
 

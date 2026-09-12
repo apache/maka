@@ -35,6 +35,11 @@ import {
 } from './file-stable-write.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
+import {
+  currentRipgrepEnvironment,
+  RipgrepUnavailableError,
+  ripgrepMissingOnPathMessage,
+} from './ripgrep-guidance.js';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
@@ -456,9 +461,23 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       return { matches: stdout.split('\n').filter(Boolean).slice(0, input.limit) };
     } catch (error: any) {
       if (error?.code === 1) return { matches: [] };
+      // Node reports a missing spawn cwd exactly like a missing executable
+      // (both `spawn rg ENOENT`), so only blame ripgrep once the cwd exists.
+      if (error?.code === 'ENOENT' && (await isDirectory(input.cwd)))
+        throw new RipgrepUnavailableError(
+          ripgrepMissingOnPathMessage(currentRipgrepEnvironment()),
+          { cause: error },
+        );
       throw error;
     }
   }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  return await fs.stat(path).then(
+    (stat) => stat.isDirectory(),
+    () => false,
+  );
 }
 
 export function createLocalWorkspaceExecutor(): WorkspaceExecutor {

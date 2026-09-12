@@ -104,6 +104,7 @@ on:
       - 'packages/runtime/src/pipe-process-driver.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
       - 'packages/runtime/src/pty-process-driver.ts'
+      - 'packages/runtime/src/ripgrep-guidance.ts'
       - 'packages/runtime/src/sandbox-boundary-declaration.ts'
       - 'packages/runtime/src/sandbox/default-sandbox-manager.ts'
       - 'packages/runtime/src/sandbox/sandbox-manager.ts'

@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 31 |
-| platform-contract | 31 |
+| platform-contract | 32 |
 
-Total Windows-excluded declarations: **89**
+Total Windows-excluded declarations: **90**
 
 ## Inventory
 
@@ -82,6 +82,7 @@ Total Windows-excluded declarations: **89**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| platform-contract | `packages/runtime/src/__tests__/workspace-executor.test.ts` leaves other spawn failures, such as a non-executable rg, untouched | `process.platform === 'win32' ? 'POSIX execute permissions' : false` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` removes its temp file and rethrows after a chmod failure | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |

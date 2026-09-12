@@ -19,7 +19,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, truncate, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -274,4 +274,92 @@ describe('LocalWorkspaceExecutor file operations', () => {
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
   });
+
+  test('reports a missing ripgrep as grep_unavailable with an install hint (#5167)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-no-rg-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-empty-path-'));
+    const executor = new LocalWorkspaceExecutor();
+
+    await withPath(emptyBin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        (error: NodeJS.ErrnoException) => {
+          assert.equal(error.code, 'grep_unavailable');
+          assert.match(error.message, /ripgrep/);
+          assert.match(error.message, /BurntSushi\/ripgrep/);
+          assert.match(error.message, /then retry/);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('keeps a missing working directory distinct from a missing ripgrep', async () => {
+    // Node reports a missing spawn cwd exactly like a missing executable
+    // (`spawn rg ENOENT`), so the command name alone cannot tell them apart.
+    const parent = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-gone-cwd-'));
+    const cwd = join(parent, 'deleted');
+    await mkdir(cwd);
+    await writeFile(join(parent, 'kept.ts'), 'token', 'utf8');
+    await rm(cwd, { recursive: true });
+    const executor = new LocalWorkspaceExecutor();
+
+    await assert.rejects(
+      executor.grepFiles({
+        cwd,
+        pattern: 'token',
+        path: parent,
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 5_000,
+      }),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, 'ENOENT');
+        assert.doesNotMatch(error.message, /ripgrep/);
+        return true;
+      },
+    );
+  });
+
+  test('leaves other spawn failures, such as a non-executable rg, untouched', {
+    skip: process.platform === 'win32' ? 'POSIX execute permissions' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-eacces-'));
+    const bin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-noexec-bin-'));
+    await writeFile(join(bin, 'rg'), '#!/bin/sh\n', 'utf8');
+    await chmod(join(bin, 'rg'), 0o644);
+    const executor = new LocalWorkspaceExecutor();
+
+    await withPath(bin, () =>
+      assert.rejects(
+        executor.grepFiles({
+          cwd,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        }),
+        { code: 'EACCES' },
+      ),
+    );
+  });
 });
+
+async function withPath<T>(path: string, run: () => Promise<T>): Promise<T> {
+  const original = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete process.env.PATH;
+    else process.env.PATH = original;
+  }
+}
