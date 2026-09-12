@@ -113,8 +113,12 @@ export const StandardComposer: Story = {
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('menuitemradio', { name: 'model-b' }));
+    const wheel = canvas.getByRole('listbox', { name: /切换当前任务模型/ });
+    await expect(within(wheel).getByRole('option', { name: /model-a/, selected: true })).toBeInTheDocument();
+    await userEvent.keyboard('{End}');
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await waitFor(() => expect(within(wheel).getByRole('option', { name: /model-b/, selected: true })).toBeInTheDocument());
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
