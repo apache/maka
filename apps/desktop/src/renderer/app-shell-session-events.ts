@@ -30,6 +30,7 @@ import {
 } from '@maka/ui';
 import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
+import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -299,7 +300,8 @@ export function createAppShellSessionEventHandlers(options: {
     );
 
     switch (event.type) {
-      case 'queue_update':
+      case 'queue_update': {
+        const queue = deriveMessageQueueProjection(event);
         for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
           removeTransientMessage?.(sessionId, entry.messageId);
         }
@@ -314,14 +316,12 @@ export function createAppShellSessionEventHandlers(options: {
             ...current,
             [sessionId]: {
               queueRevision: event.queueRevision,
-              entries: [
-                ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
-                ...(event.followupEntries ?? []),
-              ].map((entry) => structuredClone(entry)),
+              entries: queue.entries,
             },
           };
         });
         break;
+      }
       case 'message_admission':
         if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
         break;

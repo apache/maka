@@ -137,9 +137,16 @@ export function createFakeWorkbarServices(
       },
       send: async () => ({ ok: false, reason: 'not configured' }),
       stop: async () => undefined,
-      steer: async () => {
-        throw new Error('Fake sideChat.steer is not configured');
+      submitFollowUp: async () => {
+        throw new Error('Fake sideChat.submitFollowUp is not configured');
       },
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');
       },

@@ -26,6 +26,10 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
+import {
   type SessionChangedEvent,
   type SessionChangedReason,
 } from '@maka/core/session';
@@ -122,6 +126,7 @@ type RuntimeHostSessionExecutionClient = Pick<
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+const DESKTOP_MESSAGE_QUERY_MAX_ENTRIES = 4_096;
 
 async function submitMessageWithReconnect(
   client: Pick<RuntimeHostSessionExecutionClient, 'getSession' | 'submitMessage'>,
@@ -299,18 +304,48 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      const result = await deps.client.queryMessages({ sessionId, messageIds });
-      deps.retireCancelledMessages?.(sessionId, result.cancelledMessageIds);
-      return result;
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      // Keep the transport limit at the Runtime Host seam so renderer callers
+      // can query their complete optimistic projection as one operation.
+      const cancelledMessageIds: string[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessages({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        cancelledMessageIds.push(...result.cancelledMessageIds);
+      }
+      if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
+        throw new Error('Duplicate cancelled Message identities');
+      }
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
+      return { cancelledMessageIds };
     },
   );
 
   ipcMain.handle(
     'sessions:queryMessageExecutions',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessageExecutions({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedMessageIds = requiredMessageIds(messageIds);
+      const resolutions: TurnMessageExecutionResolution[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessageExecutions({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        resolutions.push(...result.resolutions);
+      }
+      return { resolutions };
     },
   );
 
@@ -1012,6 +1047,24 @@ async function requireInteraction(
 function requiredId(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) {
     throw new Error(`Invalid ${label} identity`);
+  }
+  return value;
+}
+
+function requiredMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
+    throw new Error('Invalid Message identities');
+  }
+  const messageIds = value.map(requiredMessageId);
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw new Error('Duplicate Message identities');
+  }
+  return messageIds;
+}
+
+function requiredMessageId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value)) {
+    throw new Error('Invalid Message identity');
   }
   return value;
 }

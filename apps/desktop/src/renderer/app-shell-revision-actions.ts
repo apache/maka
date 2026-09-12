@@ -36,7 +36,7 @@ import {
   type SessionCopyAttemptPhase,
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
-import { readSettledMessages } from './session-message-settlement.js';
+import { readSettledMessages } from './platform/desktop/session-message-settlement.js';
 import type { MessageListUpdater } from './session-workspace-actions.js';
 
 type RefBox<T> = { current: T };

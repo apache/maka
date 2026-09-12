@@ -862,7 +862,6 @@ test('broadcasts durable admission and transcript changes from the same message'
     turnId: 'turn-1',
     ts: 2,
     text: 'Continue here',
-    steeringEventId: 'steering-event-1',
   };
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -956,6 +955,69 @@ test('broadcasts durable admission and transcript changes from the same message'
   );
   await observer.close();
 });
+
+for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as const) {
+  test(`proves a removed follow-up is ${resolution} before successor content`, async (t) => {
+    const events = new AsyncFrameQueue();
+    const queries: string[][] = [];
+    const observer = new RuntimeHostSessionObserver({
+      client: {
+        openSession: async () => runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            queue: {
+              hostEpoch: 'host-1', queueRevision: 1, steering: [],
+              followup: [{
+                entryId: 'entry-1', messageId: 'followup-1', content: { text: 'Next question' },
+                placement: 'next_turn', state: 'queued',
+              }],
+            },
+          }),
+          transcript: Promise.resolve([]), events, async close() { events.end(); },
+        }),
+        queryMessageExecutions: async ({ messageIds }) => {
+          queries.push([...messageIds]);
+          if (resolution === 'unavailable') throw new Error('Host proof unavailable');
+          return { resolutions: messageIds.map((messageId) => resolution === 'owned'
+            ? { messageId, state: 'owned' as const, turnId: 'turn-2', runId: 'run-2' }
+            : { messageId, state: resolution }) };
+        },
+      },
+      emitSessionsChanged() {},
+    });
+    t.after(() => observer.close());
+    const target = eventTarget(25);
+    await observer.observe('session-1', 'observer-followup', target, true);
+    target.events.splice(0);
+    events.push({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: { sessionId: 'session-1', turnId: 'turn-2', runId: 'run-2', status: 'running' },
+        queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+      }),
+    });
+    events.push({
+      kind: 'subscription.session_delta', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sessionId: 'session-1', sequence: 2,
+      delta: { kind: 'text', turnId: 'turn-2', runId: 'run-2', messageId: 'answer-2', startOffset: 0, text: 'Next answer' },
+    });
+    await waitFor(() => target.events.some((event) => event.type === 'text_delta'));
+
+    assert.deepEqual(queries, [['followup-1']]);
+    const admissions = target.events.filter((event) => event.type === 'message_admission');
+    assert.deepEqual(admissions.map((event) => ({
+      messageId: event.messageId, turnId: event.turnId, outcome: event.outcome,
+    })), resolution === 'owned' || resolution === 'cancelled' ? [{
+      messageId: 'followup-1', turnId: 'turn-2',
+      outcome: resolution === 'owned' ? 'admitted' : 'retracted',
+    }] : []);
+    if (admissions.length > 0) {
+      assert.ok(target.events.indexOf(admissions[0]!)
+        < target.events.findIndex((event) => event.type === 'text_delta'));
+    }
+  });
+}
 
 test('moves the read marker only as far as the Renderer window reports reaching', async () => {
   const events = new AsyncFrameQueue();
@@ -2718,6 +2780,109 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
       (event) =>
         event.type === "user_question_request" && event.requestId === "interaction-2",
     ),
+  );
+  await observer.close();
+});
+
+test('replays durable admission before a terminal successor on subscription recovery', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const recoveredSessions: string[] = [];
+  const terminalTranscript: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'follow-up-message',
+      turnId: 'turn-2',
+      ts: 20,
+      text: 'Continue',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-2',
+      turnId: 'turn-2',
+      ts: 30,
+      text: 'Done',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'terminal-2',
+      turnId: 'turn-2',
+      ts: 40,
+      status: 'completed',
+    },
+  ];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      listSessionTurns: async () => [{
+        turnId: 'turn-1',
+        status: 'completed' as const,
+        statusSource: 'recorded' as const,
+      }],
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return runtimeHostSessionFixture({
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          });
+        }
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            projectionRevision: 2,
+            rootTurn: {
+              sessionId: 'session-1',
+              turnId: 'turn-2',
+              runId: 'run-2',
+              status: 'completed',
+              terminalEventId: 'terminal-2',
+            },
+          }),
+          transcript: Promise.resolve(terminalTranscript),
+          loadTranscriptOverlay: async () => terminalTranscript,
+          events: secondEvents,
+          async close() {
+            secondEvents.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(23);
+  await observer.observe('session-1', 'observer-1', target, true);
+
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => recoveredSessions.length === 1);
+
+  assert.deepEqual(
+    target.events
+      .filter((event) => event.turnId === 'turn-2')
+      .map((event) => event.type),
+    ['message_admission', 'queue_update', 'text_complete', 'complete'],
+  );
+  const admission = target.events.find(
+    (event): event is Extract<SessionEvent, { type: 'message_admission' }> =>
+      event.type === 'message_admission',
+  );
+  assert.deepEqual(
+    admission && { messageId: admission.messageId, turnId: admission.turnId },
+    { messageId: 'follow-up-message', turnId: 'turn-2' },
   );
   await observer.close();
 });

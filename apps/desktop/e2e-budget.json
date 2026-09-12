@@ -53,6 +53,10 @@
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"
     },
+    "side-chat-followups.spec.ts": {
+      "tests": 1,
+      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
+    },
     "skill-draft-lifecycle.spec.ts": {
       "tests": 2,
       "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"

@@ -58,7 +58,7 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import type { RefreshMessagesOptions } from './session-message-settlement.js';
+import type { RefreshMessagesOptions } from './platform/desktop/session-message-settlement.js';
 
 export type { RefreshMessagesOptions };
 

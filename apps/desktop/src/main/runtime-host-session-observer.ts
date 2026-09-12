@@ -66,7 +66,7 @@ import {
 } from './desktop-transcript-ipc.js';
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
-  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker'>>;
+  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker' | 'queryMessageExecutions'>>;
 
 const TRANSCRIPT_DELIVERY_TIMEOUT_MS = 30_000;
 const TRANSCRIPT_DELIVERY_WINDOW = 4;
@@ -897,6 +897,7 @@ export class RuntimeHostSessionObserver {
     state.snapshot = state.projector.snapshot;
     if (update.previousSnapshot) {
       for (const group of state.targets.values()) this.#sendExecution(state, group);
+      await this.#reconcileRemovedQueueMessages(state, update.previousSnapshot, state.snapshot);
     }
     for (const event of update.events) {
       this.#broadcast(state.sessionId, event);
@@ -933,6 +934,49 @@ export class RuntimeHostSessionObserver {
       this.#emitSessionsChanged("message-appended", state.sessionId, {
         turnId: transcriptTurn.turnId,
       });
+    }
+  }
+
+  async #reconcileRemovedQueueMessages(
+    state: ObservedSessionState,
+    previous: SessionContinuitySnapshot,
+    next: SessionContinuitySnapshot,
+  ): Promise<void> {
+    if (!state.messageAdmissions || !this.#client.queryMessageExecutions
+      || previous.queue.hostEpoch !== next.queue.hostEpoch) return;
+    const retained = new Set(
+      [...next.queue.steering, ...next.queue.followup].map((entry) => entry.messageId),
+    );
+    // A queue removal can be delivery, promotion or cancellation. Only Host
+    // proof can retire the transient or name the successor; the snapshot's
+    // current root alone cannot. A queue contains at most 64 message identities.
+    const messageIds = [...previous.queue.steering, ...previous.queue.followup]
+      .filter((entry) => !retained.has(entry.messageId))
+      .map((entry) => entry.messageId);
+    if (messageIds.length === 0) return;
+    const projector = state.projector;
+    try {
+      const { resolutions } = await this.#client.queryMessageExecutions({
+        sessionId: state.sessionId, messageIds,
+      });
+      if (this.#closed || state.closing || state.projector !== projector) return;
+      for (const resolution of resolutions) {
+        if (resolution.state === 'pending') continue;
+        const turnId = resolution.state === 'owned'
+          ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
+        if (!turnId) continue;
+        this.#broadcast(state.sessionId, {
+          type: 'message_admission',
+          id: `host-message-resolution:${next.queue.hostEpoch}:${next.queue.queueRevision}:${resolution.messageId}`,
+          turnId,
+          ts: this.#now(),
+          messageId: resolution.messageId,
+          outcome: resolution.state === 'owned' ? 'admitted' : 'retracted',
+        });
+      }
+    } catch {
+      // Keep unproven messages visible. Durable transcript admission or the
+      // next observation recovery can resolve them without guessing a result.
     }
   }
 
@@ -1726,6 +1770,7 @@ function replacementProjection(
   const previousRoot = previous.rootTurn;
   const root = next.rootTurn;
   const terminalEvents: SessionEvent[] = [];
+  const seedEvents = projector.seedActive(true);
   if (previousRoot && !isTerminalTurn(previousRoot)) {
     if (!root || root.runId !== previousRoot.runId) {
       const stored = projector.seedStoredTerminal(
@@ -1744,7 +1789,7 @@ function replacementProjection(
       }
       terminalEvents.push(...stored);
     } else if (isTerminalTurn(root)) {
-      terminalEvents.push(...projector.seedTerminal(root));
+      terminalEvents.push(...seedEvents.splice(0), ...projector.seedTerminal(root));
     }
   }
   if (
@@ -1752,12 +1797,11 @@ function replacementProjection(
     isTerminalTurn(root) &&
     (!previousRoot || previousRoot.runId !== root.runId)
   ) {
-    terminalEvents.push(...projector.seedTerminal(root));
+    terminalEvents.push(...seedEvents.splice(0), ...projector.seedTerminal(root));
   }
   return {
     terminalEvents,
-    activeEvents:
-      root && !isTerminalTurn(root) ? projector.seedActive(true) : [],
+    activeEvents: seedEvents,
     terminalTurnIds: new Set(
       terminalEvents.filter(isTerminalSessionEvent).map((event) => event.turnId),
     ),
