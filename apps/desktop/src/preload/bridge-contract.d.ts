@@ -143,6 +143,39 @@ import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+/**
+ * What Settings › Import/export tasks gets back from a bundle operation.
+ *
+ * Stated here rather than in a file of its own: the renderer reaches this
+ * contract through the bridge, and a separate module would join the legacy
+ * AppShell closure, which the renderer architecture check freezes.
+ *
+ * `detail` is only set for `failed` -- the reason code no reader can act on.
+ * Without it the page says "that did not work" and the cause is gone, which is
+ * exactly the case where the user has nothing else to go on.
+ */
+export type SessionBundleFailureReason =
+  | 'canceled'
+  | 'candidate_set_stale'
+  | 'not_found'
+  | 'session_busy'
+  | 'operation_conflict'
+  | 'source_unreadable'
+  | 'failed';
+
+export type SessionBundleFailure = {
+  readonly ok: false;
+  readonly reason: SessionBundleFailureReason;
+  readonly detail?: string;
+};
+
+export type SessionBundleExportIpcResult =
+  | { readonly ok: true; readonly sessionCount: number; readonly path: string }
+  | SessionBundleFailure;
+
+export type SessionBundleImportIpcResult =
+  | { readonly ok: true; readonly sessionCount: number }
+  | SessionBundleFailure;
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type {
   SessionCollaborationCancelResult,
@@ -1272,6 +1305,23 @@ export interface MakaBridge {
       adapterId: string;
       sourceSessionId: string;
     }, host?: DesktopRuntimeHostRef): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
+  };
+  sessionBundles: {
+    /**
+     * Picks a destination, then writes the Session and its subagent subtree.
+     *
+     * `sessionId` is the projected, host-scoped id the renderer holds. Always
+     * routed to the Local Host: the picker returns a path on this machine, and
+     * that is the Host whose filesystem it names.
+     */
+    export(input: {
+      sessionId: string;
+      suggestedName: string;
+      /** Projected ids of the Sessions the user was shown. See the Host operation. */
+      confirmedSubtree?: readonly string[];
+    }): Promise<SessionBundleExportIpcResult>;
+    /** Picks a `.maka-session` file and merges it into the Local workspace. */
+    import(): Promise<SessionBundleImportIpcResult>;
   };
   projects: {
     getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{

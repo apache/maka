@@ -24,6 +24,9 @@ Branch: `feat/acp-tools-interactions-mcp`.
 The branch retains PR #4862 commit
 `0ba09673387cbde651b9474fdd5a313cc6b5f6a0` as an ancestor and merges the fetched
 Apache main commit `05164f5359467a9d00ea144395ab0b9f1f74750c` at `6e80bd002`.
+Before publication, the branch also merged main commit
+`69a3c060907b6549b3d72643d0cd774422b2b4f1` (#5197). That change independently
+used epoch 143, so PR5 advances the combined protocol to epoch 144.
 Scope follows the [PR5 checklist](https://github.com/apache/maka/issues/3132#issuecomment-5386735709)
 and the approved implementation plan.
 
@@ -34,7 +37,8 @@ and the approved implementation plan.
 | `npm run build` | Passed, including Desktop renderer and its notice attestation. |
 | `npm run typecheck` | Passed across all workspaces; CLI incrementally checked after final changes. |
 | `npm run check:cli-third-party-notices` | Passed. |
-| `node scripts/protocol-epoch-check.mjs --staged` | Passed: changed protocol, epoch 142 → 143. |
+| `node scripts/protocol-epoch-check.mjs --staged` | Passed: the publication resolution advances 143 → 144. |
+| Desktop and UI `knip` checks | Passed after the publication-time main merge. |
 | Lint and format for all tracked files, including PR5 additions | Passed (3523 linted files, 2097 formatted files at the check). |
 | `git diff --check` and staged whitespace check | Passed. |
 | MCP workspace tests | 250 passed. |
@@ -76,6 +80,10 @@ processes. Its five passing cases establish:
 
 The existing `acp-child-process.test.ts` real-process suite also passed its Session,
 configuration, capacity, recovery, streaming, cancellation and EOF checks.
+
+After merging #5197 and advancing to epoch 144, the full workspace build and
+typecheck passed again. The five real ACP flow tests were rerun together with
+Host Session-scope, UDS and Session-bundle coordinator tests: 18 passed, 0 failed.
 
 ## Zed status
 

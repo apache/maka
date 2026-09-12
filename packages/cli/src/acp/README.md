@@ -107,7 +107,7 @@ current connection and tool revision to be published.
 Generic MCP `ask` approval uses `admission: "mcp"` and the existing atomic Session
 grant mechanism with `mcp_tool` scope. It does not elevate provider trust or grant
 Host path access. Desktop MCP continues to use its existing capability. These wire
-changes move the Host compatibility epoch to 143; grant storage needs no migration.
+changes move the Host compatibility epoch to 144; grant storage needs no migration.
 Close/EOF stops execution, releases subscriptions, unregisters the corresponding
 capabilities and closes MCP processes before closing the shared Host connection.
 
