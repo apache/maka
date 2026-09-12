@@ -1030,12 +1030,19 @@ test('retries candidate startup when a restored observation cannot seed', async 
       ),
     /Failed to restore Session observations: session-1/,
   );
-  assert.deepEqual(
-    seedEvents
-      .filter(({ channel }) => channel === 'sessions:observation-seed')
-      .map(({ payload }) => (payload as { phase?: unknown }).phase),
-    ['pending'],
-  );
+  const failedPhases = seedEvents
+    .filter(({ channel }) => channel === 'sessions:observation-seed')
+    .map(({ payload }) => (payload as { phase?: unknown }).phase);
+  // Restore startup and subscription failure may both invalidate observation.
+  // Neither is evidence that the Host Turn ended or observation became ready.
+  assert.ok(failedPhases.length > 0);
+  assert.ok(failedPhases.every((phase) => phase === 'pending'));
+  const failureEvents = seedEvents
+    .filter(({ channel }) => channel === 'sessions:event:session-1')
+    .map(({ payload }) => payload as { type?: unknown; message?: unknown });
+  assert.ok(failureEvents.some((event) =>
+    event.type === 'host_observation_error' && event.message === 'restore failed'));
+  assert.ok(failureEvents.every((event) => event.type === 'host_observation_error'));
   seedEvents.length = 0;
 
   const recoveredHost = connectionHarness('restore-recovered', {
