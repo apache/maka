@@ -2383,16 +2383,15 @@ export class SqliteSessionMetadataStore {
           admission.runId === steeringProof.admissionRunId &&
           admission.admittedAt === steeringProof.admittedAt &&
           messageContentsEqual(admission.content, steeringProof.content);
+        // Root admission commits before this mutable queue projection is retired. A crash
+        // between those writes can therefore leave the same Message looking like steering
+        // for its predecessor even though the successor Root already owns it.
+        const provenSuccessorRootHandoff =
+          admission !== undefined &&
+          fallback !== undefined &&
+          messageContentsEqual(admission.content, fallback.content);
         if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
           throw new SessionMetadataConflictError('Proven steering admission identity conflict');
-        }
-        if (
-          admission !== undefined &&
-          admission.turnId !== input.turnId &&
-          admission.disposition !== 'followup' &&
-          !provenCrossTurnSteering
-        ) {
-          throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
         if (
           admission !== undefined &&
@@ -2400,6 +2399,15 @@ export class SqliteSessionMetadataStore {
           !messageContentsEqual(admission.content, fallback.content)
         ) {
           throw new SessionMetadataConflictError('Message admission fallback content conflict');
+        }
+        if (
+          admission !== undefined &&
+          admission.turnId !== input.turnId &&
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering &&
+          !provenSuccessorRootHandoff
+        ) {
+          throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
         if (
           !admission &&
