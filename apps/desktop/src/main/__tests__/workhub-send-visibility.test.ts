@@ -261,6 +261,7 @@ test('WorkHub holds transcript and live handoff together until publication is ad
     { type: 'assistant', id: 'answer', turnId, text: 'Answer', ts: 2, modelId: 'fixture' },
   ];
   await act(() => h.publish(messages));
+  await act(() => h.emit({ type: 'complete', id: 'done', turnId, ts: 3, stopReason: 'end_turn' }));
   await act(() => h.controller.streamingSettled('answer'));
   assert.equal(h.controller.transcript.messages.length, 0);
   assert.equal(h.controller.transientMessages.length, 1);
@@ -268,7 +269,6 @@ test('WorkHub holds transcript and live handoff together until publication is ad
   await act(() => { held = false; idle(); });
   assert.deepEqual(h.controller.transcript.messages, messages);
   assert.equal(h.controller.transientMessages.length, 0);
-  await act(() => h.controller.streamingSettled('answer'));
   assert.ok(!h.controller.liveTurn?.steps.some((step) => step.stepId === 'answer'));
   detach();
   h.latestRead.resolve();
