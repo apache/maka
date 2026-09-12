@@ -189,6 +189,7 @@ export interface WorkHubMessageAssignmentResult {
 }
 
 export type StableSessionCreateInput = CreateSessionInput & {
+  readonly branchNameOrigin?: SessionHeader['branchNameOrigin'];
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
 };
@@ -1294,7 +1295,7 @@ function assertCoordinationIdentityPairing(sessionId: string, role: SessionRole 
 
 function buildSessionHeader(
   workspaceRoot: string,
-  input: CreateSessionInput & { readonly role?: SessionRole },
+  input: StableSessionCreateInput,
   sessionId: string = randomUUID(),
   conversationCopy?: SessionConversationCopy,
 ): SessionHeader {
@@ -1319,6 +1320,7 @@ function buildSessionHeader(
     createdAt: now,
     name,
     titleIsManual: false,
+    ...(input.branchNameOrigin ? { branchNameOrigin: input.branchNameOrigin } : {}),
     isFlagged: false,
     labels: input.labels ?? [],
     isArchived: false,
@@ -1371,6 +1373,11 @@ function normalizeRequiredSessionName(name: string): string {
   return normalized.value;
 }
 
+function isCanonicalSessionName(value: unknown): value is string {
+  const normalized = normalizeUserSessionName(value);
+  return normalized.ok && normalized.value === value;
+}
+
 /** Validate and normalize a current SessionHeader before canonical persistence. */
 export function normalizeSessionHeader(
   header: SessionHeader,
@@ -1388,6 +1395,11 @@ export function normalizeSessionHeader(
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
     typeof header.name === 'string' &&
     typeof header.titleIsManual === 'boolean' &&
+    (header.branchNameOrigin === undefined ||
+      (header.branchNameOrigin !== null &&
+        typeof header.branchNameOrigin === 'object' &&
+        isCanonicalSessionName(header.branchNameOrigin.base) &&
+        isCanonicalSessionName(header.branchNameOrigin.name))) &&
     typeof header.isFlagged === 'boolean' &&
     Array.isArray(header.labels) &&
     header.labels.every((label) => typeof label === 'string') &&
