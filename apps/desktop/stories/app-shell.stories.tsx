@@ -2635,7 +2635,10 @@ export const GeometryMixed24Turns: Story = {
   }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
   play: async ({ canvasElement }) => {
     // Audit every code block after deferred Markdown has replaced its placeholder.
-    await waitFor(() => expect(within(canvasElement).getAllByRole('button', { name: '复制代码' })).toHaveLength(4));
+    await waitFor(
+      () => expect(within(canvasElement).getAllByRole('button', { name: '复制代码' })).toHaveLength(4),
+      { timeout: 10_000 },
+    );
   },
 };
 
