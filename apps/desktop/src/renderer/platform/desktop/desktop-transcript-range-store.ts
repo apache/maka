@@ -914,4 +914,3 @@ function freezeTranscriptValue<T>(value: T): T {
   for (const child of Object.values(value)) freezeTranscriptValue(child);
   return Object.freeze(value);
 }
-

@@ -103,6 +103,21 @@ describe('TUI copy resources', () => {
     assert.equal(getTuiPickerCopy('zh-TW').defaultMarker, '預設');
   });
 
+  test('describes /setup as provider onboarding in every locale', () => {
+    for (const locale of UI_LOCALES) {
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['primary-guidance'][locale].commands.setup,
+        /api[ -]?key/iu,
+        `primary-guidance/${locale}`,
+      );
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['connection-identity'][locale].emptyChoiceRecovery,
+        /api[ -]?key/iu,
+        `connection-identity/${locale}`,
+      );
+    }
+  });
+
   test('formats the English MCP count with ICU plural rules', () => {
     const template = TUI_COPY_RESOURCES['mcp-status'].en.toolCount;
 

@@ -32,6 +32,7 @@ export type HostOperationErrorCode =
   | 'candidate_set_stale'
   | 'operation_conflict'
   | 'capability_unavailable'
+  | 'slug_taken'
   | 'invalid_request'
   // External-session import: no usable model connection to attach the task to.
   | 'model_unavailable'
