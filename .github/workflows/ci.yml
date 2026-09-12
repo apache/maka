@@ -20,15 +20,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  # Title and body edits also run real validation: a newer skipped run can
-  # hide a successful required check. Keep edits from cancelling existing tests.
-  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'edited' && github.event.changes.base.ref.from == '' && format('-metadata-{0}', github.run_id) || '' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
