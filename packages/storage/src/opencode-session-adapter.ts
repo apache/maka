@@ -53,6 +53,12 @@ const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
 /** Guards the value interpolated into no SQL, but read back out of one. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
+/** Single authority for which read-back ids are usable, shared with the
+ *  foreign-session store so it never re-derives a second, wider gate. */
+export function isUsableOpencodeSessionId(id: string): boolean {
+  return SESSION_ID_PATTERN.test(id);
+}
+
 export interface OpenCodeSessionAdapterOptions {
   /** Overrides `~/.local/share/opencode`. */
   opencodeHome?: string;
@@ -91,6 +97,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     return existsSync(this.#databasePath());
   }
 
+  databasePath(): string {
+    return this.#databasePath();
+  }
+
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
     const rows = await this.#readSessions();
     const summaries: ExternalSessionSummary[] = [];
@@ -121,6 +131,38 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
       sourceSessionId: sessionId,
       metadata: { name: row.title || sessionId, cwd: row.directory },
       messages: convertTranscript(sessionId, messages, parts),
+    };
+  }
+
+  /**
+   * The digest path needs the #1057 read bound the import path does not:
+   * part payloads carry full tool output, so an unbounded read of a large
+   * session blocks the synchronous SQLite caller while materializing
+   * megabytes that a capped digest throws away. Reads stop once
+   * `maxReadBytes` of raw row payload have been consumed and the
+   * truncation is reported to the caller (#5125 review).
+   */
+  async readSessionBounded(
+    sessionId: string,
+    maxReadBytes: number,
+  ): Promise<{ session: ExternalMakaSession; truncated: boolean }> {
+    if (!SESSION_ID_PATTERN.test(sessionId)) {
+      throw new Error(`opencode session id is not usable: ${sessionId}`);
+    }
+    const rows = await this.#readSessions();
+    const row = rows.find((candidate) => candidate.id === sessionId);
+    if (!row) throw new Error(`opencode session not found: ${sessionId}`);
+    if (row.parentId !== undefined) {
+      throw new Error(`opencode session is a child of another session: ${sessionId}`);
+    }
+    const { messages, parts, truncated } = await this.#readTranscript(sessionId, maxReadBytes);
+    return {
+      session: {
+        sourceSessionId: sessionId,
+        metadata: { name: row.title || sessionId, cwd: row.directory },
+        messages: convertTranscript(sessionId, messages, parts),
+      },
+      truncated,
     };
   }
 
@@ -192,23 +234,77 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
 
   async #readTranscript(
     sessionId: string,
-  ): Promise<{ messages: readonly MessageRow[]; parts: readonly PartRow[] }> {
+    maxReadBytes?: number,
+  ): Promise<{
+    messages: readonly MessageRow[];
+    parts: readonly PartRow[];
+    truncated: boolean;
+  }> {
     return await this.#withDatabase((db) => {
       // A row that will not decode is not skipped. Dropping one silently
       // yields a transcript missing a message or a part while the import
       // reports success — a history that reads as complete and is not. A
       // selected import either carries what the session recorded or fails.
-      const messages = db
-        .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
-        .all(sessionId)
-        .map((row, index) => requireRow(toMessageRow(row), 'message', index));
-      // Ordered by the message they belong to and then by their own id, which
-      // is how the writer orders them; `time_created` ties within one step.
-      const parts = db
-        .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
-        .all(sessionId)
-        .map((row, index) => requireRow(toPartRow(row), 'part', index));
-      return { messages, parts };
+      // Bounded reads (digest) stop at the budget instead, and report the
+      // cut: that caller consumes a capped projection, not the import.
+      if (maxReadBytes === undefined) {
+        const messageRows = db
+          .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
+          .all(sessionId);
+        const partRows = db
+          .prepare(
+            'SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id',
+          )
+          .all(sessionId);
+        return {
+          messages: messageRows.map((row, index) =>
+            requireRow(toMessageRow(row), 'message', index),
+          ),
+          parts: partRows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
+          truncated: false,
+        };
+      }
+      // The budget is written in UTF-8 bytes, so the sizes come from SQLite:
+      // `length(CAST(data AS BLOB))` counts bytes while the JS `data.length`
+      // this loop used before counts UTF-16 code units and under-counts CJK
+      // payloads by the encoding ratio (#5125 review). Sizing first also means
+      // only the fitting prefix is ever fetched — `.all()` on the payload
+      // columns materialized every oversized row just to drop it. One budget
+      // spans both tables: parts draw on what messages leave unspent.
+      const fitPrefix = (
+        selectSizes: string,
+        selectRows: string,
+        budget: number,
+      ): { rows: unknown[]; used: number; truncated: boolean } => {
+        const sizes = db.prepare(selectSizes).all(sessionId) as Array<{ bytes?: unknown }>;
+        let used = 0;
+        let count = 0;
+        for (const row of sizes) {
+          const size = numberOf(row.bytes) ?? 0;
+          if (used + size > budget) break;
+          used += size;
+          count += 1;
+        }
+        const rows = count === 0 ? [] : db.prepare(selectRows).all(sessionId, count);
+        return { rows, used, truncated: count < sizes.length };
+      };
+      const fitMessages = fitPrefix(
+        'SELECT length(CAST(data AS BLOB)) AS bytes FROM message WHERE session_id = ? ORDER BY rowid',
+        'SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY rowid LIMIT ?',
+        maxReadBytes,
+      );
+      const fitParts = fitPrefix(
+        'SELECT length(CAST(data AS BLOB)) AS bytes FROM part WHERE session_id = ? ORDER BY time_created, id',
+        'SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id LIMIT ?',
+        maxReadBytes - fitMessages.used,
+      );
+      return {
+        messages: fitMessages.rows.map((row, index) =>
+          requireRow(toMessageRow(row), 'message', index),
+        ),
+        parts: fitParts.rows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
+        truncated: fitMessages.truncated || fitParts.truncated,
+      };
     });
   }
 }
