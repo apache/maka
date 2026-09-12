@@ -13,6 +13,10 @@
       "tests": 1,
       "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
     },
+    "vision-declaration.spec.ts": {
+      "tests": 1,
+      "electron": "the field's verdict is whatever the Host resolved for the saved declaration, so the assertion has to survive the save round trip and read the connection snapshot back"
+    },
     "new-task-reload.spec.ts": {
       "tests": 2,
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"

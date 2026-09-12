@@ -753,6 +753,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             const label = entry?.displayName?.trim() || id;
             const declared: RelayModelProfile | undefined = relayProfileDraft[id];
             const declares = declaringModelIds.has(id);
+            // The table as saved, not the draft: the entry below was resolved
+            // against the saved declarations, so its vision answers "what does
+            // 默认 give" only while none is saved. A saved one IS the answer,
+            // and the control shows it without help.
+            const savedVision = connection.relayModelProfiles?.[id]?.vision;
             // One supporting line, the facts separated by dots: the id when it
             // differs from the name, then what the model can do. Plain text,
             // not a token per fact — three pills under a name and a badge read
@@ -812,6 +817,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   disabled={allActionsBusy}
                   showsFastMode={supportsRelayFastServiceTier(connection.providerType, id)}
                   reportedContextWindow={connection.models?.find((model) => model.id === id)?.contextWindow}
+                  defaultVision={savedVision === undefined ? entry?.supportsVision : undefined}
                   onThinkingLevels={(levels) => setDraftThinkingLevels(id, levels)}
                   onVision={(vision) => setDraftVision(id, vision)}
                   onContextWindowInput={(input) => changeContextWindow(id, input)}
@@ -944,15 +950,25 @@ function CapabilityEditor(props: {
   showsFastMode: boolean;
   /** The window the provider's model list reports, offered as a one-click fill while nothing is declared. */
   reportedContextWindow: number | undefined;
+  /**
+   * What 「默认」resolves to for this model, and only while nothing is declared.
+   * Absent means the answer is not knowable here — see the caller, which reads
+   * it off the resolved entry so the verdict comes from the Host's catalog
+   * rather than this build's bundled table.
+   */
+  defaultVision: boolean | undefined;
   onThinkingLevels(levels: ThinkingLevel[] | undefined): void;
   onVision(vision: boolean | undefined): void;
   onContextWindowInput(value: string): void;
   onServiceTier(tier: 'fast' | undefined): void;
 }) {
   const { copy, modelId, declared } = props;
-  // Vision resolves to one of three states: absent (Auto), true (Enabled),
-  // false (explicitly Disabled). Only Auto is ever ambiguous, and three
-  // distinct options keep it honest.
+  // Vision resolves to one of three states: absent (Default), true (Enabled),
+  // false (explicitly Disabled). Only Default is ever ambiguous — the verdict
+  // comes from the provider's report and the metadata chain, and a provider
+  // that reports neither resolves to "no". So while Default is selected the
+  // field states the verdict, the way the context window field states the
+  // window the provider reported.
   const visionValue =
     declared?.vision === true ? 'enabled' : declared?.vision === false ? 'disabled' : 'auto';
   const draftLevels = declared?.thinkingLevels ?? [];
@@ -1011,20 +1027,27 @@ function CapabilityEditor(props: {
         </CapabilityField>
       )}
       <CapabilityField label={copy.visionInput} description={copy.visionInputHelp}>
-        <Selector
-          label={`${copy.visionInput} — ${modelId}`}
-          isLabelHidden
-          size="sm"
-          width={132}
-          options={[
-            { value: 'auto', label: copy.visionAuto },
-            { value: 'enabled', label: copy.visionEnabledOption },
-            { value: 'disabled', label: copy.visionDisabledOption },
-          ]}
-          value={visionValue}
-          onChange={(value) => props.onVision(value === 'auto' ? undefined : value === 'enabled')}
-          isDisabled={props.disabled}
-        />
+        <VStack gap={1} hAlign="start">
+          <Selector
+            label={`${copy.visionInput} — ${modelId}`}
+            isLabelHidden
+            size="sm"
+            width={132}
+            options={[
+              { value: 'auto', label: copy.visionAuto },
+              { value: 'enabled', label: copy.visionEnabledOption },
+              { value: 'disabled', label: copy.visionDisabledOption },
+            ]}
+            value={visionValue}
+            onChange={(value) => props.onVision(value === 'auto' ? undefined : value === 'enabled')}
+            isDisabled={props.disabled}
+          />
+          {visionValue === 'auto' && props.defaultVision !== undefined && (
+            <Text size="sm" type="supporting" color="secondary">
+              {copy.visionResolvedHint(props.defaultVision)}
+            </Text>
+          )}
+        </VStack>
       </CapabilityField>
       <CapabilityField label={copy.contextWindow} description={copy.contextWindowHelp}>
         <VStack gap={1} hAlign="start">

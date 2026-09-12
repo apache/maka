@@ -42,8 +42,10 @@ const zhCapabilitiesCopy = {
   thinkingBulkCoverage: (declared: number, total: number) =>
     declared === 0 ? '全部未声明' : `${declared}/${total} 个模型`,
   visionInput: '视觉输入（vision）',
-  visionInputHelp: '「自动」跟随内置元数据；「启用/禁用」是显式声明，覆盖自动判断。',
-  visionAuto: '自动',
+  visionInputHelp: '「默认」由 Maka 根据服务商上报和内置资料判断该模型能否看图；「启用/禁用」是显式声明，覆盖这个判断。',
+  visionResolvedHint: (supported: boolean) =>
+    supported ? '当前判断：支持图片输入' : '当前判断：不支持图片输入',
+  visionAuto: '默认',
   visionEnabledOption: '启用',
   visionDisabledOption: '禁用',
   contextWindow: '上下文窗口（tokens）',
@@ -66,8 +68,10 @@ const zhTwCapabilitiesCopy = {
   thinkingBulkCoverage: (declared: number, total: number) =>
     declared === 0 ? '全部未宣告' : `${declared}/${total} 個模型`,
   visionInput: '視覺輸入（vision）',
-  visionInputHelp: '「自動」跟隨內建後設資料；「啟用/停用」是顯式宣告，覆蓋自動判斷。',
-  visionAuto: '自動',
+  visionInputHelp: '「預設」由 Maka 依服務商上報與內建資料判斷該模型能否看圖；「啟用/停用」是明確宣告，覆蓋這個判斷。',
+  visionResolvedHint: (supported: boolean) =>
+    supported ? '目前判斷：支援圖片輸入' : '目前判斷：不支援圖片輸入',
+  visionAuto: '預設',
   visionEnabledOption: '啟用',
   visionDisabledOption: '停用',
   contextWindow: '上下文視窗（tokens）',
@@ -89,8 +93,10 @@ const enCapabilitiesCopy = {
   thinkingBulkCoverage: (declared: number, total: number) =>
     declared === 0 ? 'On no model' : `On ${declared} of ${total} models`,
   visionInput: 'Vision input',
-  visionInputHelp: 'Auto follows built-in metadata; Enabled/Disabled overrides it explicitly.',
-  visionAuto: 'Auto',
+  visionInputHelp: 'Default lets Maka decide from the provider report and built-in metadata; Enabled/Disabled overrides that decision explicitly.',
+  visionResolvedHint: (supported: boolean) =>
+    supported ? 'Currently resolves to: accepts images' : 'Currently resolves to: does not accept images',
+  visionAuto: 'Default',
   visionEnabledOption: 'Enabled',
   visionDisabledOption: 'Disabled',
   contextWindow: 'Context window (tokens)',

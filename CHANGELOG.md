@@ -56,6 +56,13 @@
 - Moved Read image snapshots into the durable context-offload store with Runtime-owned
   lifecycle identity, exact branch and revision copying, recovery-safe cleanup, and bounded
   physical garbage collection after Session retirement.
+- A model's vision field now offers `默认` where it offered `自动`, and while `默认` is
+  selected it states what Maka resolves for that model. "自动" promised a decision the
+  control never showed, so a provider whose model list reports nothing about image
+  support left "unresolved" indistinguishable from "does not accept images". The
+  verdict is read off the Host-resolved catalog entry, so the field cannot disagree
+  with what a send will do, and the help text no longer claims built-in metadata is
+  the only source.
 
 ## 0.1.11 - 2026-08-18
 
