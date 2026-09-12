@@ -28,9 +28,7 @@ describe('attachment preflight (before session create)', () => {
       size: 100,
       source: { type: 'file' as const, file: { size: 100 } },
     }));
-    assert.throws(() => preflightAttachmentItems(items), {
-      message: 'attachment_ingest:count_limit',
-    });
+    assert.throws(() => preflightAttachmentItems(items), { code: 'count_limit' });
   });
 
   test('rejects an oversized File so no empty session is created', () => {
@@ -39,7 +37,7 @@ describe('attachment preflight (before session create)', () => {
         preflightAttachmentItems([
           { size: MAX_ATTACHMENT_BYTES + 1, source: { type: 'file', file: { size: MAX_ATTACHMENT_BYTES + 1 } } },
         ]),
-      { message: 'attachment_ingest:item_too_large' },
+      { code: 'item_too_large' },
     );
   });
 
@@ -49,7 +47,7 @@ describe('attachment preflight (before session create)', () => {
         preflightAttachmentItems([
           { size: MAX_ATTACHMENT_BYTES + 1, source: { type: 'approval', approvalId: 'a1' } },
         ]),
-      { message: 'attachment_ingest:item_too_large' },
+      { code: 'item_too_large' },
     );
   });
 
@@ -58,9 +56,7 @@ describe('attachment preflight (before session create)', () => {
       { size: 10, source: { type: 'approval' as const, approvalId: 'dup' } },
       { size: 10, source: { type: 'approval' as const, approvalId: 'dup' } },
     ];
-    assert.throws(() => preflightAttachmentItems(duplicate), {
-      message: 'attachment_ingest:duplicate_source',
-    });
+    assert.throws(() => preflightAttachmentItems(duplicate), { code: 'duplicate_source' });
   });
 
   test('passes approval tokens and files under the cap', () => {

@@ -18,7 +18,7 @@
  */
 
 import {
-  attachmentIngestBlocked,
+  AttachmentIngestBlockedError,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
 } from '@maka/core/attachments';
@@ -31,25 +31,14 @@ type PreflightItem = {
     | { type: 'retained' };
 };
 
-/**
- * Reject count/size/duplicate-source violations before a new-chat session is
- * created, so an encode/resolve-time failure does not leave an empty session
- * behind. Rejects with the same stable `attachment_ingest:<code>` tokens the
- * main-side resolveIngestItems pre-validation rejects with, so the shell
- * presenter maps the reason through the locale catalogs instead of the
- * generic send fallback; main remains the authoritative cap.
- *
- * File blobs are sized by the browser File object; approval-token attachments
- * are sized by the pending size stamped at pick time (main re-stats).
- */
 export function preflightAttachmentItems(items: readonly PreflightItem[]): void {
-  if (items.length > MAX_ATTACHMENT_COUNT) throw attachmentIngestBlocked('count_limit');
+  if (items.length > MAX_ATTACHMENT_COUNT) throw new AttachmentIngestBlockedError('count_limit');
   const seen = new Set<string>();
   for (const item of items) {
     const bytes = item.source.type === 'file' ? item.source.file.size : item.size;
-    if (bytes > MAX_ATTACHMENT_BYTES) throw attachmentIngestBlocked('item_too_large');
+    if (bytes > MAX_ATTACHMENT_BYTES) throw new AttachmentIngestBlockedError('item_too_large');
     if (item.source.type === 'approval') {
-      if (seen.has(item.source.approvalId)) throw attachmentIngestBlocked('duplicate_source');
+      if (seen.has(item.source.approvalId)) throw new AttachmentIngestBlockedError('duplicate_source');
       seen.add(item.source.approvalId);
     }
   }

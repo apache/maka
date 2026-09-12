@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "expected-failure-feedback.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
+    },
     "new-task-reload.spec.ts": {
       "tests": 2,
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"

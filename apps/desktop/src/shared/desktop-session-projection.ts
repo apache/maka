@@ -48,6 +48,16 @@ export interface DesktopSessionSummary extends SessionSummary {
 
 export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
 
+export type DesktopSessionUpdateFailureCode =
+  | 'session_busy'
+  | 'operation_conflict'
+  | 'operation_unavailable'
+  | 'not_found';
+
+export type DesktopSessionUpdateResult<Session> =
+  | { readonly ok: true; readonly session: Session }
+  | { readonly ok: false; readonly code: DesktopSessionUpdateFailureCode };
+
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;
   readonly profileName: string;

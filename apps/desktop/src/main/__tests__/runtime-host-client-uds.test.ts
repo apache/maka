@@ -309,12 +309,17 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         /Invalid Session list filter/,
       );
     }
-    assert.equal(
-      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass') as {
-        permissionMode: string;
-      }).permissionMode,
-      'bypass',
-    );
+    const modeUpdate = await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass');
+    if (typeof modeUpdate !== 'object' || modeUpdate === null || !('ok' in modeUpdate)) {
+      throw new Error('sessions:setPermissionMode did not return an update envelope');
+    }
+    if (!modeUpdate.ok) throw new Error('Expected the committed mode update envelope');
+    if (!('session' in modeUpdate) || typeof modeUpdate.session !== 'object') {
+      throw new Error('Committed envelope missing session');
+    }
+    const updatedSession = modeUpdate.session as { permissionMode: string; revision: number };
+    assert.equal(updatedSession.permissionMode, 'bypass');
+    assert.equal(updatedSession.revision, 2);
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
     // A purge sweep asks for the task it saw archived. Restored under it, the

@@ -4644,7 +4644,11 @@ describe('SessionManager permission mode updates', () => {
         assert.strictEqual(backend?.stopCalls, 0);
         assert.deepStrictEqual(calls, []);
         // A fresh retry is now correctly classified as narrowing.
-        await assert.rejects(update(false), /当前任务正在运行|linked Turn is active/);
+        await assert.rejects(update(false), (error: unknown) => {
+          assert.ok(error instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(error.code, 'session_busy');
+          return true;
+        });
       } finally {
         gate.release();
         while (!(await turn.next()).done) {}
@@ -5168,8 +5172,8 @@ describe('SessionManager permission mode updates', () => {
           await activeTurn.next();
           await assert.rejects(restoreExplore(), (error: unknown) => {
             if (route === 'boundary') {
-              assert.ok(error instanceof Error);
-              assert.match(error.message, /当前任务正在运行/);
+              assert.ok(error instanceof SessionConfigurationTransitionError);
+              assert.strictEqual(error.code, 'session_busy');
               return true;
             }
             assert.ok(error instanceof SessionConfigurationTransitionError);

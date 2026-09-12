@@ -31,7 +31,8 @@ import {
   generalizedErrorMessageForLocale,
   unexpectedOperationFallback,
 } from '@maka/core/redaction';
-import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
+import { AttachmentIngestBlockedError, type AttachmentIngestBlockedCode } from '@maka/core/attachments';
+import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-session-projection.js';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -349,6 +350,7 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    updateFailures: Record<DesktopSessionUpdateFailureCode, string>;
     attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
@@ -1004,6 +1006,12 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      updateFailures: {
+        session_busy: '当前任务正在运行或有交互待处理，等结束后再改设置。',
+        operation_conflict: '任务状态刚刚变化，请刷新后重试。',
+        operation_unavailable: '当前 Runtime Host 不支持此设置。',
+        not_found: '任务不存在，可能已被删除。',
+      },
       attachmentIngestBlocked: {
         item_too_large: '单个附件超出大小限制。',
         items_invalid: '附件信息无效，请重新选择文件后再发送。',
@@ -1505,6 +1513,12 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      updateFailures: {
+        session_busy: '目前任務正在執行或有互動待處理，等結束後再改設定。',
+        operation_conflict: '任務狀態剛剛變化，請重新整理後重試。',
+        operation_unavailable: '目前 Runtime Host 不支援此設定。',
+        not_found: '任務不存在，可能已被刪除。',
+      },
       attachmentIngestBlocked: {
         item_too_large: '單一附件超出大小限制。',
         items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
@@ -2012,6 +2026,12 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      updateFailures: {
+        session_busy: 'A task is running or waiting on you. Change this setting after it settles.',
+        operation_conflict: 'The task changed underneath this request. Refresh and try again.',
+        operation_unavailable: 'This Runtime Host does not support that setting.',
+        not_found: 'The task no longer exists.',
+      },
       attachmentIngestBlocked: {
         item_too_large: 'One attachment exceeds the size limit.',
         items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
@@ -2316,17 +2336,8 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  const maps = getShellCopy(locale).sessionSettingsActions;
-  // The reason token survives the Electron IPC wrapper and is always the
-  // message tail: a bare `attachment_ingest:<code>` from the preload probe or
-  // the IPC-wrapped error line. End-anchored so an unrelated path that merely
-  // contains the substring never matches.
-  const blocked = lookupCopy(
-    maps.attachmentIngestBlocked,
-    message.match(/(?:^|[ :"'])attachment_ingest:([a-z_]+)$/u)?.[1],
-  );
-  if (blocked) return blocked;
+  if (error instanceof AttachmentIngestBlockedError)
+    return getShellCopy(locale).sessionSettingsActions.attachmentIngestBlocked[error.code];
   // A classified failure (timeout / rate limit / auth / provider / network)
   // is expected; only an unrecognized one lands the redacted diagnostic.
   return classifyGeneralizedError(error)
@@ -2351,8 +2362,14 @@ export function sessionSettingFailureCopy(
           : { title: copy.app.orchestrationModeFailedTitle, fallback: copy.app.orchestrationModeFallback };
   return {
     title: failure.title,
-    description: localizedShellErrorMessage(error, failure.fallback, locale),
+    description:
+      lookupCopy(copy.sessionSettingsActions.updateFailures, expectedOperationCode(error)) ??
+      localizedShellErrorMessage(error, failure.fallback, locale),
   };
+}
+
+function expectedOperationCode(error: unknown): string | undefined {
+  return error instanceof Error && error.name === 'ExpectedOperationError' ? error.message : undefined;
 }
 
 export function confirmBypassPermission(
