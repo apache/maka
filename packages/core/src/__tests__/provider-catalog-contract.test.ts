@@ -34,6 +34,7 @@ import {
 } from '../provider-registry.js';
 import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
 import { PROVIDER_AUTH_ACTIONS, deriveProviderAuthContract } from '../provider-auth.js';
+import { RETIRED_PROVIDER_TYPES } from '../provider-retirement.js';
 import type { ProviderType } from '../llm-connections.js';
 
 describe('provider connection slug derivation contract', () => {
@@ -103,8 +104,16 @@ describe('retired provider contract', () => {
     isRetiredProvider(type),
   );
 
-  it('pins the entries this catalog retires', () => {
-    assert.deepEqual(retired, ['claude-subscription']);
+  it('owns the list this catalog retires', () => {
+    // `RETIRED_PROVIDER_TYPES` is the one source of truth; the registry must
+    // agree so a name that is retired but not registered (or vice versa) fails
+    // here rather than at a send time.
+    assert.deepEqual(RETIRED_PROVIDER_TYPES, ['claude-subscription']);
+    assert.deepEqual(
+      retired,
+      RETIRED_PROVIDER_TYPES,
+      'isRetiredProvider must match RETIRED_PROVIDER_TYPES',
+    );
   });
 
   it('keeps a retired provider registered but unwired', () => {
