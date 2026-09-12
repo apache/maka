@@ -403,3 +403,18 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
   await expect(workhub.getByText('Fake backend received: Reply after renderer recovery')).toBeVisible();
 });
+
+test('project menu exits WorkHub before starting a new task', async ({ projectSidebarWindow: page }) => {
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  await expect(page.locator('.workHubDock')).toBeVisible();
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
+  await page.getByRole('button', { name: '示例项目 项目操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '新建任务', exact: true }).click();
+
+  await expect(page.locator('.workHubDock')).toBeHidden();
+  await expect(page.locator(COMPOSER_INPUT)).toBeFocused();
+  await expect(page.locator('[data-turn-id]')).toHaveCount(0);
+});
