@@ -3245,6 +3245,22 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The newer revision represents this task family in the archived list.
+    const title = 'Single agent_spawn, second attempt';
+    const unarchive = await canvas.findByRole('button', { name: `取消归档「${title}」` });
+    const remove = await canvas.findByRole('button', { name: `彻底删除「${title}」` });
+    await expect(unarchive).toBeVisible();
+    await expect(remove).toBeVisible();
+    await expect(unarchive.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(remove.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(canvas.queryByRole('button', { name: `「${title}」的更多操作` })).toBeNull();
+    const row = unarchive.closest('li');
+    if (!row) throw new Error('archived task row is missing');
+    await userEvent.click(unarchive);
+    await waitFor(() => expect(row).not.toBeInTheDocument());
+  },
 };
 
 // Real path: 设置 → 导入任务 on a machine that has Codex installed.

@@ -28,7 +28,27 @@
  * UI icons.
  */
 
+import { createLucideIcon, type IconNode } from 'lucide-react';
+
 export type { LucideIcon, LucideProps } from 'lucide-react';
+
+const ARCHIVE_TRAY_NODES: IconNode = [
+  ['path', { d: 'M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7', key: 'tray' }],
+  ['path', { d: 'M2 12h20', key: 'tray-edge' }],
+];
+
+/** A matched pair: the same tray with the arrow entering or leaving it. */
+export const Archive = createLucideIcon('archive', [
+  ...ARCHIVE_TRAY_NODES,
+  ['path', { d: 'M12 3v14', key: 'arrow-stem' }],
+  ['path', { d: 'm7 12 5 5 5-5', key: 'arrow-head' }],
+]);
+
+export const Unarchive = createLucideIcon('unarchive', [
+  ...ARCHIVE_TRAY_NODES,
+  ['path', { d: 'M12 17V3', key: 'arrow-stem' }],
+  ['path', { d: 'm7 8 5-5 5 5', key: 'arrow-head' }],
+]);
 
 /**
  * The five-rung icon scale. Pick by the role the glyph plays, not by eye.
@@ -54,8 +74,6 @@ export {
   AlertCircle,
   AlertOctagon,
   AlertTriangle,
-  Archive,
-  ArchiveRestore,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
