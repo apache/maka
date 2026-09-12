@@ -1525,6 +1525,40 @@ test('commits an authoritative empty GitHub Copilot catalog', async () => {
     );
     assert.equal(credential.kind, 'committed');
 
+    const seedCoordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 122,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => ({ ok: true, models: [{ id: 'account-available' }] }),
+    });
+    const seeded = await seedCoordinator.handlers['connection.models.fetch'](
+      { connectionId: connection.connectionId },
+      context,
+    );
+    assert.deepEqual(seeded, {
+      ok: true,
+      result: {
+        kind: 'committed',
+        catalogRevision: 2,
+        connection: { connectionId: connection.connectionId, revision: 2 },
+        modelCount: 1,
+        source: 'fetched',
+        fetchedAt: 122,
+      },
+    });
+    const seededSnapshot = await stores.connectionCatalog.getSnapshot();
+    const seededConnection = seededSnapshot.connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.ok(seededConnection);
+    assert.deepEqual(seededConnection.enabledModelIds, ['account-available']);
+    assert.deepEqual(
+      seededConnection.models.map((model) => model.id),
+      ['account-available'],
+    );
+
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
@@ -1542,8 +1576,8 @@ test('commits an authoritative empty GitHub Copilot catalog', async () => {
       ok: true,
       result: {
         kind: 'committed',
-        catalogRevision: 2,
-        connection: { connectionId: connection.connectionId, revision: 2 },
+        catalogRevision: 3,
+        connection: { connectionId: connection.connectionId, revision: 3 },
         modelCount: 0,
         source: 'fetched',
         fetchedAt: 123,
