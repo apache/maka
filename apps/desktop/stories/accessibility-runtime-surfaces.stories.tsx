@@ -292,6 +292,7 @@ export const HtmlArtifact: Story = {
         readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
         delete: async () => undefined,
         openPath: async () => ({ ok: false, reason: 'missing' }),
+        showInFolder: async () => ({ ok: false, reason: 'missing' }),
         saveAs: async () => ({ ok: false, reason: 'canceled' }),
       },
     }),

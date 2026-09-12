@@ -103,6 +103,7 @@ export function createFakeWorkbarServices(
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: false, reason: 'missing' }),
+      showInFolder: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
     inspector: {

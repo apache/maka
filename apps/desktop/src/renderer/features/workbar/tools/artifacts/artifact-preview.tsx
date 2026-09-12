@@ -66,8 +66,8 @@ import {
 import { Banner } from '@astryxdesign/core/Banner';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
-import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { RegistryArtifactPreview } from './artifact-preview-registry-shell.js';
+import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFolder?: () => void }) {

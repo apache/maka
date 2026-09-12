@@ -259,10 +259,34 @@ export function ArtifactPane(props: {
     }
   }
 
-  async function openInFinder(artifactId: string) {
+  async function openArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     try {
       const result = await artifacts.openPath(sessionId, artifactId);
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      if (!result.ok) {
+        toast.error(
+          copy.pane.openFailed,
+          openPathFailureCopy(result.reason, locale),
+          undefined,
+          { sessionId: actionSessionId },
+        );
+      }
+    } catch (error) {
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      toast.error(
+        copy.pane.openFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
+    }
+  }
+
+  async function showInFinder(artifactId: string) {
+    const actionSessionId = sessionId;
+    try {
+      const result = await artifacts.showInFolder(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(
@@ -547,8 +571,21 @@ export function ArtifactPane(props: {
                 {
                   label: previewRecord.kind === 'html' ? copy.pane.open : copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
-                  onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:open`,
+                    () => previewRecord.kind === 'html'
+                      ? openArtifact(previewRecord.id)
+                      : showInFinder(previewRecord.id),
+                  ),
                 },
+                ...(previewRecord.kind === 'html' ? [{
+                  label: copy.pane.openInFinder,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:reveal`,
+                    () => showInFinder(previewRecord.id),
+                  ),
+                }] : []),
                 {
                   label: copy.pane.saveAs,
                   icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
@@ -583,8 +620,8 @@ export function ArtifactPane(props: {
               key={previewRecord.id}
               record={previewRecord}
               onShowInFolder={() => void runArtifactAction(
-                `${previewRecord.id}:open`,
-                () => openInFinder(previewRecord.id),
+                `${previewRecord.id}:reveal`,
+                () => showInFinder(previewRecord.id),
               )}
             />
           </div>

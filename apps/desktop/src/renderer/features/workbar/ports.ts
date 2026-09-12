@@ -139,6 +139,10 @@ export interface WorkbarArtifactsService {
     sessionId: string,
     artifactId: string,
   ): Promise<WorkbarOpenArtifactResult>;
+  showInFolder(
+    sessionId: string,
+    artifactId: string,
+  ): Promise<WorkbarOpenArtifactResult>;
   saveAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
 }
 

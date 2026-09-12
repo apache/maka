@@ -785,6 +785,7 @@ function bridge(options: {
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
+      showInFolder: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {

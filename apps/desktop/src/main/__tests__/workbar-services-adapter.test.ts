@@ -136,6 +136,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.artifacts.readBinary('s', 'a');
     await services.artifacts.delete('s', 'a');
     await services.artifacts.openPath('s', 'a');
+    await services.artifacts.showInFolder('s', 'a');
     await services.artifacts.saveAs('s', 'a');
 
     await services.inspector.trace('s', 'cursor-1');
@@ -206,6 +207,7 @@ describe('createDesktopWorkbarServices', () => {
         'artifacts.readBinary',
         'artifacts.delete',
         'app.openArtifactPath',
+        'app.showArtifactInFolder',
         'app.saveArtifactAs',
         'inspector.trace',
         'inspector.summary',
