@@ -156,9 +156,11 @@ export function createAppShellRevisionActions(deps: {
     }
 
     if (userMessage.attachments && userMessage.attachments.length > 0) {
-      // Self-contained quotes ride back into the draft as staged content;
-      // attachment references are session-owned and their rewritten targets
+      // Attachment references are session-owned and their rewritten targets
       // are not exposed to clients yet, so those stay explicitly rejected.
+      // Quotes cannot reach this point: chat-turn counts them into
+      // editDisabled, so a quote-carrying message never offers the edit
+      // affordance in the first place.
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
       return;
     }
