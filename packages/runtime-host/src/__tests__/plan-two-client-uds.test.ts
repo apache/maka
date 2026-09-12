@@ -17,6 +17,17 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import { HostPlanCoordinator } from '../server/plan-coordinator.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import {
+  decodePlanQueryResult,
+  PLAN_PAGE_MAX_ITEMS,
+  PLAN_RESULT_MAX_BYTES,
+  type PlanQueryInput,
+  type PlanQueryResult,
+} from '../protocol/index.js';
+
 import { waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
@@ -269,3 +280,83 @@ const deterministicBackendComposition: RuntimeHostCompositionFactory = (context)
     {},
     { primaryBackendFactory: (backendContext) => new FakeBackend(backendContext) },
   );
+
+test('Plan queries include their state header when selecting byte-limited continuation pages', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plan-pages-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const store = await openInteractivePlanStoreForWrite(owner.lease);
+  let sessions: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+  try {
+    sessions = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await sessions.sessionStore.create({
+      cwd: root,
+      llmConnectionSlug: 'test',
+      model: 'test-model',
+      permissionMode: 'explore',
+      collaborationMode: 'plan',
+    });
+    for (let index = 0; index < 17; index += 1) {
+      await store.submitProposal({
+        operationId: `submit-${index}`,
+        sessionId: session.id,
+        turnId: `turn-${index}`,
+        title: `Proposal ${index}`,
+        steps: [{ id: 'step-1', title: 'Review', description: '文"\\🙂'.repeat(1000) }],
+      });
+    }
+    const state = await store.readState(session.id);
+    const expected = state.proposals.map((proposal) => ({ kind: 'proposal' as const, proposal }));
+    const coordinator = new HostPlanCoordinator({
+      store,
+      sessions: sessions.sessionStore,
+      sessionAdmission: new SessionAdmissionGate(),
+      runtime: null as never,
+      root: null as never,
+      isSessionActive: () => false,
+      refreshContinuity: async () => {},
+      onProjectionChanged: () => {},
+      requestDrain: () => assert.fail('query must not drain'),
+    });
+    const pages: Extract<PlanQueryResult, { kind: 'page' }>[] = [];
+    let input: PlanQueryInput = { kind: 'list_start', sessionId: session.id };
+    let end = 0;
+    do {
+      const outcome = await coordinator.handlers['plan.query'](input, null as never);
+      assert.ok(outcome.ok && outcome.result.kind === 'page');
+      const page = outcome.result;
+      assert.deepEqual(decodePlanQueryResult(page), page);
+      assert.equal(page.latestProposalId, state.latestProposalId);
+      assert.equal(page.storeVersion, state.storeVersion);
+      assert.ok(page.items.length > 0);
+      pages.push(page);
+      end += page.items.length;
+      assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+      if (page.nextCursor === null) break;
+      input = {
+        kind: 'list_continue',
+        sessionId: session.id,
+        storeVersion: page.storeVersion,
+        cursor: page.nextCursor,
+      };
+    } while (end < expected.length);
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.items.length < PLAN_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, expected, {
+      maxBytes: PLAN_RESULT_MAX_BYTES,
+      maxItems: PLAN_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => ({
+        ...page,
+        items,
+        nextCursor: end < expected.length ? String(end) : null,
+      }),
+    });
+  } finally {
+    store.close();
+    await sessions?.sessionStore.close?.();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

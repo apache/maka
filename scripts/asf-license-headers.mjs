@@ -195,6 +195,7 @@ export const exclusionRules = [
       'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
       'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
       'packages/cli/THIRD_PARTY_NOTICES.txt',
+      'patches/run-2.1.4-notices.md',
     ),
   },
   {
@@ -204,6 +205,7 @@ export const exclusionRules = [
     matches: (path) =>
       isOneOf(
         'experiments/windows-sandbox/launcher/Cargo.lock',
+        'patches/run-2.1.4-source.diff',
         // Adapted from opencode under MIT; attribution pinned by #3325.
         'packages/runtime/src/edit-replace.ts',
         'packages/runtime/src/tool-output.ts',

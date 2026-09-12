@@ -36,6 +36,10 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
+/* Retained tool evidence is not proof of current execution. Hide activity via
+   Astryx's public spinner target without inventing a completed/failed tool. */
+.maka-tool-activity-card[data-activity-observed='false'] .astryx-spinner { display: none; }
+
 /* An Item row draws a focus ring for ITS OWN tab stop, never for a control
    that already draws one.
 

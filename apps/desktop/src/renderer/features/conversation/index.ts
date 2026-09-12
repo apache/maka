@@ -58,3 +58,8 @@ export {
   clearPending,
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+
+export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';

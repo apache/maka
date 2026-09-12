@@ -26,6 +26,7 @@ import {
   createDangerFullAccessPermissionProfile,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
+  isCanonicalReadOnlyPermissionProfile,
   isDeniedPath,
   isProtectedMetadataPath,
   isReadOnlyPermissionProfile,
@@ -190,6 +191,62 @@ describe('isReadOnlyPermissionProfile', () => {
       name: 'custom',
     };
     assert.strictEqual(isReadOnlyPermissionProfile(renamedButStillReadOnly), true);
+  });
+});
+
+describe('isCanonicalReadOnlyPermissionProfile', () => {
+  test('matches the canonical policy without relying on its display name', () => {
+    const { name: _name, ...policy } = createReadOnlyPermissionProfile();
+    for (const profile of [
+      policy,
+      { ...policy, name: 'custom' },
+      { ...policy, name: 'read-only' },
+    ]) {
+      assert.strictEqual(isCanonicalReadOnlyPermissionProfile(profile), true);
+    }
+  });
+
+  test('distinguishes extra read authority from the canonical Explore policy', () => {
+    const profile = createReadOnlyPermissionProfile();
+    const extraRead: PermissionProfileManaged = {
+      ...profile,
+      fileSystem: {
+        ...profile.fileSystem,
+        entries: [
+          ...profile.fileSystem.entries,
+          { kind: 'path', access: 'read', path: '/outside' },
+        ],
+      },
+    };
+    assert.strictEqual(isReadOnlyPermissionProfile(extraRead), true);
+    assert.strictEqual(isCanonicalReadOnlyPermissionProfile(extraRead), false);
+  });
+
+  test('does not certify other managed policies as canonical Explore', () => {
+    const profile = createReadOnlyPermissionProfile();
+    const nonCanonical: PermissionProfileManaged[] = [
+      createWorkspaceWritePermissionProfile(),
+      createDangerFullAccessPermissionProfile(),
+      { ...profile, network: { kind: 'enabled' } },
+      { ...profile, fileSystem: { kind: 'restricted', entries: [] } },
+      {
+        ...profile,
+        fileSystem: {
+          ...profile.fileSystem,
+          entries: [{ kind: 'special', access: 'read', special: ':root' }],
+        },
+      },
+      {
+        ...profile,
+        fileSystem: {
+          ...profile.fileSystem,
+          protectedMetadata: { access: 'deny_write', names: ['.git'] },
+        },
+      },
+    ];
+    for (const candidate of nonCanonical) {
+      assert.strictEqual(isCanonicalReadOnlyPermissionProfile(candidate), false);
+    }
   });
 });
 

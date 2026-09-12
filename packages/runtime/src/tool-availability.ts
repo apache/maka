@@ -369,7 +369,6 @@ export class ToolAvailabilityRuntime {
           .optional()
           .describe(`Maximum matches to activate; defaults to ${TOOL_SEARCH_DEFAULT_LIMIT}.`),
       }),
-      nesting: 'direct_only',
       impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
         const normalizedQuery = query.trim();
         const ranked = this.searchIndex!.search(normalizedQuery)

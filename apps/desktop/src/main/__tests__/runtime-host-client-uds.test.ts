@@ -600,7 +600,7 @@ function unusedSessionCopyCleanup() {
 
 function unusedSessionObserver() {
   return {
-    async observe() { return []; },
+    async observe() {},
     async unobserve() {},
   };
 }

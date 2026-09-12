@@ -152,6 +152,7 @@ test('cancels managed approval owners and joiners with the canonical provider id
         modelId: 'model-1',
         readExecutionBoundary: async () =>
           createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+        readPermissionMode: async () => 'ask',
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,

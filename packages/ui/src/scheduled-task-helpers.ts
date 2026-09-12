@@ -284,10 +284,34 @@ export interface ScheduledTaskFormSeed {
   deliveryMethod: ScheduledTaskDeliveryMethod;
   deliveryPlatform: BotProvider;
   deliveryChatId: string;
+  /** Preserve the persisted schedule when an edit changes only non-schedule fields. */
+  originalSchedule?: ScheduledTaskSchedule;
   /** UI does not expose interval cadence editing; preserve it instead of coercing to once. */
   lockedSchedule?: Extract<ScheduledTaskSchedule, { kind: 'interval' }>;
   /** Agent execution is frozen at creation and must never be rewritten as notification delivery. */
   lockedEffect?: Exclude<ScheduledTaskEffect, { kind: 'notify' }>;
+}
+
+export function scheduledTaskScheduleFromForm(seed: ScheduledTaskFormSeed, input: {
+  runAtLocal: string;
+  parsedRunAt: number;
+  recurrence: ScheduledTaskRecurrence;
+  cronExpression: string;
+}): ScheduledTaskSchedule | null | undefined {
+  if (
+    seed.editingId !== null &&
+    seed.originalSchedule !== undefined &&
+    input.runAtLocal === seed.runAtLocal &&
+    input.recurrence === seed.recurrence &&
+    (input.recurrence !== 'cron' || input.cronExpression.trim() === seed.cronExpression.trim())
+  ) return undefined;
+
+  if (input.recurrence === 'interval') return seed.lockedSchedule ?? null;
+  if (input.recurrence === 'none') return { kind: 'once', runAt: input.parsedRunAt };
+  if (input.recurrence === 'cron') {
+    return { kind: 'cron', expression: input.cronExpression.trim(), startAt: input.parsedRunAt };
+  }
+  return { kind: 'calendar', recurrence: input.recurrence, anchorAt: input.parsedRunAt };
 }
 
 /**
@@ -354,6 +378,7 @@ function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSe
     recurrence: scheduledTaskRecurrenceValue(task),
     cronExpression: task.schedule.kind === 'cron' ? task.schedule.expression : '0 9 * * 1-5',
     deliveryMethod: task.effect.kind === 'notify' ? task.effect.channel : 'agent_run',
+    originalSchedule: task.schedule,
     ...(task.effect.kind === 'notify' && task.effect.channel === 'bot'
       ? { deliveryPlatform: task.effect.platform, deliveryChatId: task.effect.chatId }
       : { deliveryPlatform: 'telegram' as BotProvider, deliveryChatId: '' }),

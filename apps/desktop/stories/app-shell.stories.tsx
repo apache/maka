@@ -581,18 +581,18 @@ export const StreamingTurn: Story = {
     <ComposedShell
       session={{ status: 'running', streaming: true }}
       chat={{
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-s' },
         messages: [
           user('msg-s-1', 'turn-s', 3, '顶层布局的 story 怎么做最稳？'),
           { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
         ],
-        liveTurn: {
-          turnId: 'turn-s', phase: 'streamed', steps: [{
+        liveTurns: [{
+          turnId: 'turn-s', steps: [{
             stepId: 'msg-assistant-s',
             text: { text: '直接挂载 Astryx AppShell，通过官方插槽组合真实产品子组件，只隔离 IPC。', truncated: false, complete: false },
             tools: [],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -614,13 +614,13 @@ export const RunningStatusDuringToolRun: Story = {
     <ComposedShell
       session={{ status: 'running', streaming: true }}
       chat={{
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-t' },
         messages: [
           user('msg-t-1', 'turn-t', 2, '把整个测试套件跑一遍，看看那三个失败用例是不是同一个原因。'),
           { type: 'turn_state', id: 'state-t', turnId: 'turn-t', ts: NOW - 120_000, status: 'running' },
         ],
-        liveTurn: {
-          turnId: 'turn-t', phase: 'streamed', steps: [{
+        liveTurns: [{
+          turnId: 'turn-t', steps: [{
             stepId: 'msg-assistant-t',
             tools: [{
               toolUseId: 'tool-t-1',
@@ -630,7 +630,7 @@ export const RunningStatusDuringToolRun: Story = {
               args: { command: 'npm test' },
             }],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -877,14 +877,13 @@ export const ProviderRetrying: Story = {
     <ComposedShell
       session={{ status: 'running', streaming: true }}
       chat={{
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-rr' },
         messages: [
           user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
           { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-rr',
-          phase: 'streamed',
           steps: [{ stepId: 'msg-assistant-rr', tools: [] }],
           providerRetry: {
             event: {
@@ -901,7 +900,7 @@ export const ProviderRetrying: Story = {
             },
             receivedAtMs: NOW - 5_000,
           },
-        },
+        }],
       }}
     />
   ),
@@ -1071,7 +1070,7 @@ export const ComputerUseObservability: Story = {
     <ComposedShell
       session={{ status: 'running', streaming: true }}
       chat={{
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-cu' },
         messages: [
           user('msg-cu-1', 'turn-cu', 2, '在计算器里完成这组输入，并确认结果。'),
           {
@@ -1082,9 +1081,8 @@ export const ComputerUseObservability: Story = {
             status: 'running',
           },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-cu',
-          phase: 'streamed',
           steps: [{
             stepId: 'msg-assistant-cu',
             tools: [
@@ -1114,7 +1112,7 @@ export const ComputerUseObservability: Story = {
               },
             ],
           }],
-        },
+        }],
       }}
     />
   ),
@@ -2094,7 +2092,7 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
         },
       }}
       chat={{
-        runningStatus: Boolean(question) && !settled,
+        activeTurn: question && !settled ? { turnId: 'turn-tail' } : undefined,
         transientMessages: pendingUser && question && !settled ? [{
           id: 'msg-tail-1', text: question, ts: NOW - 30_000,
           transientPlacement: 'current_turn', hostTurnId: 'turn-tail',
@@ -2116,9 +2114,8 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
             },
           ] : []),
         ],
-        liveTurn: question && !settled ? {
+        liveTurns: question && !settled ? [{
           turnId: 'turn-tail',
-          phase: 'streamed',
           steps: [{
             stepId: 'msg-assistant-tail',
             text: {
@@ -2130,7 +2127,7 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
             },
             tools: [],
           }],
-        } : undefined,
+        }] : undefined,
       }}
     />
   );
@@ -2618,7 +2615,7 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
 
 export const OversizedLiveTurnHoldsAReadingAnchorOnColdScroll: Story = {
   ...OversizedTurnHoldsAReadingAnchorOnColdScroll,
-  render: () => <ComposedShell chat={{ messages: oversizedTurn, runningStatus: true }} />,
+  render: () => <ComposedShell chat={{ messages: oversizedTurn, activeTurn: { turnId: 'turn-oversized' } }} />,
 };
 
 export const EarlierHistoryLandsAboveTheReader: Story = {
@@ -3603,20 +3600,19 @@ function CompactionRunningScene(props: { motionEnabled?: boolean }) {
       motionEnabled={props.motionEnabled}
       session={{ status: 'running', streaming: true }}
       chat={{
-        runningStatus: true,
+        activeTurn: { turnId: 'turn-compact', compacting: true },
         messages: [
           user('msg-c-1', 'turn-c1', 6, '继续把上下文压缩那个功能实现完。'),
           assistant('msg-c-2', 'turn-c1', 5, '好的，我先梳理一下现有实现，再动手。'),
           { type: 'turn_state', id: 'state-c1', turnId: 'turn-c1', ts: NOW - 300_000, status: 'completed' },
           { type: 'turn_state', id: 'state-compact', turnId: 'turn-compact', ts: startedAt, status: 'running' },
         ],
-        liveTurn: {
+        liveTurns: [{
           turnId: 'turn-compact',
-          phase: 'waiting',
           steps: [],
           rootExecutionKind: 'context_compact',
           startedAt,
-        },
+        }],
       }}
     />
   );

@@ -17,11 +17,10 @@
  * under the License.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import type { AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
-import { useExternalStoreSelector } from './use-external-store-selector';
+import type { AppShellSessionUiStateController } from '../model/session-ui-state.js';
+import { selectLiveTurns } from '../model/session-ui-selectors.js';
 
 /**
  * Reconciles the live projection against durable messages, and renders nothing.
@@ -42,16 +41,17 @@ export function LiveTurnReconciler(props: {
   reconcile: (sessionId: string, messages: readonly StoredMessage[]) => void;
 }): null {
   const { controller, activeId, messages, reconcile } = props;
-  const liveTurn = useExternalStoreSelector(controller, selectLiveTurn, activeId);
+  const getSnapshot = () => selectLiveTurns(controller.getState(), activeId);
+  const liveTurns = useSyncExternalStore(controller.subscribe, getSnapshot, getSnapshot);
 
   useEffect(() => {
     if (!activeId) return;
     reconcile(activeId, messages);
-    // `liveTurn` is a trigger, not a read. `reconcile` must come from
+    // `liveTurns` is a trigger, not a read. `reconcile` must come from
     // `useStableActions` — its identity is fixed for the component's lifetime,
     // so it belongs in the deps honestly rather than being hidden behind a
     // wrapper whose identity changes every render.
-  }, [activeId, liveTurn, messages, reconcile]);
+  }, [activeId, liveTurns, messages, reconcile]);
 
   return null;
 }
