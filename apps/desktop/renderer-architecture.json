@@ -2647,7 +2647,7 @@
           "useOptimisticSettingsDraft": 1,
           "useOptionalRuntimeHostSettingsTarget": 2,
           "useRuntimeHostSettingsTarget": 2,
-          "useState": 7,
+          "useState": 5,
           "useToast": 4,
           "useUiLocale": 4
         },
