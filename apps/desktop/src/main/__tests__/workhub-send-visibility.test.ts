@@ -35,7 +35,7 @@ import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
 
-async function mountController(failFirstRead = false) {
+async function mountController(failFirstRead = false, overrides: Partial<WorkHubServices> = {}) {
   let hostEpoch = 'host-epoch-1';
   let openCount = 0;
   let onPhase!: (phase: 'pending' | 'ready') => void;
@@ -114,6 +114,7 @@ async function mountController(failFirstRead = false) {
       const result = await invoke('sessions:stop', target, { source: 'stop_button', expectedTurnId: turnId }) as DesktopSessionStopResult;
       return result?.kind === 'interrupted' ? result.retractedMessageIds : undefined;
     },
+    ...overrides,
   } as unknown as WorkHubServices;
   function Probe() { controller = useWorkHubController(); return null; }
   await act(async () => {
@@ -138,6 +139,54 @@ async function mountController(failFirstRead = false) {
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
   };
 }
+
+test('WorkHub model selection settles with its new revision and cannot be undone by a delayed catalog read', async () => {
+  type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;
+  const initial = {
+    id: JSON.stringify(['host-1', 'workhub-coordination']),
+    revision: 1, model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider',
+    runningTurnIds: [],
+  } as unknown as Session;
+  let snapshot = initial;
+  let notify!: () => void;
+  let nextRead: Promise<Session> | undefined;
+  const requests: Array<Parameters<WorkHubServices['configureModel']>[1]> = [];
+  const h = await mountController(false, {
+    getSession: async () => {
+      const read = nextRead;
+      nextRead = undefined;
+      return read ?? snapshot;
+    },
+    subscribeSessions: (handler) => { notify = handler; return () => {}; },
+    configureModel: async (_id, input) => {
+      requests.push(input);
+      snapshot = { ...snapshot, model: input.modelTarget.model, revision: snapshot.revision + 1 };
+      return { kind: 'committed', session: snapshot } as unknown as Awaited<ReturnType<WorkHubServices['configureModel']>>;
+    },
+  });
+  const staleRead = deferred<Session>();
+  nextRead = staleRead.promise;
+  await act(async () => { notify(); });
+  const confirmation = deferred<Session>();
+  nextRead = confirmation.promise;
+  let settled = false;
+  let change!: Promise<void>;
+  await act(async () => {
+    change = h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'B' });
+    void change.then(() => { settled = true; });
+  });
+  assert.equal(settled, false, 'the wheel must remain pending until the saved session is available');
+  await act(async () => { confirmation.resolve(snapshot); await change; });
+  assert.equal(h.controller.session?.model, 'B');
+  assert.equal(h.controller.session?.revision, 2);
+  await act(async () => { staleRead.resolve(initial); });
+  assert.equal(h.controller.session?.model, 'B', 'a late background snapshot cannot roll back a successful pick');
+  await act(async () => {
+    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' });
+  });
+  assert.equal(requests[1]?.expectedRevision, 2, 'the next pick uses the committed revision');
+  assert.equal(h.controller.session?.model, 'C');
+});
 
 test('WorkHub shows the submitted prompt before admission and keeps it until its durable user record arrives', async () => {
   const h = await mountController();

@@ -183,8 +183,11 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
-  const modelBeforeBrowsing = await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId);
-  const selectedBeforeBrowsing = await wheel.getByRole('option', { selected: true }).getAttribute('id');
+  const expectSnappedSelection = async () => {
+    await expect(wheel.locator('[data-active="true"]')).toHaveAttribute('aria-selected', 'true');
+    const label = await wheel.locator('[data-active="true"] .maka-model-wheel-label').innerText();
+    await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(label);
+  };
   await wheel.hover();
   await workhub.mouse.wheel(0, 30);
   await expect.poll(() => wheel.evaluate((element) => {
@@ -192,8 +195,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     const viewport = element.getBoundingClientRect();
     return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
   })).toBeLessThanOrEqual(1);
-  await expect(wheel.getByRole('option', { selected: true })).toHaveAttribute('id', selectedBeforeBrowsing!);
-  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
+  await expectSnappedSelection();
   await wheel.press('Escape');
   await model.click();
   await expect(wheel.getByRole('option')).toHaveCount(3);
@@ -210,7 +212,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.mouse.up();
   await expect(wheel).toBeVisible();
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(Math.round((dragInitialTop - dragDistance) / 44) * 44);
-  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
+  await expectSnappedSelection();
   await wheel.press('ArrowDown');
   await wheel.press('Escape');
   await expect(wheel).toHaveCount(0);
@@ -218,7 +220,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await model.click();
   const options = wheel.getByRole('option');
   await wheel.press(await options.first().getAttribute('aria-selected') === 'true' ? 'End' : 'Home');
-  await expect(wheel.locator('[data-active="true"]')).toHaveAttribute('aria-selected', 'false');
+  await expectSnappedSelection();
   const previewLabel = await wheel.locator('[data-active="true"] .maka-model-wheel-label').innerText();
   const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
   for (const theme of ['light', 'dark'] as const) {
@@ -232,7 +234,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.press('Enter');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).not.toBe(modelBeforeBrowsing);
+  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(previewLabel);
   await model.click();
   await expect(wheel.getByRole('option', { selected: true })).toContainText(previewLabel);
   await wheel.press('Escape');

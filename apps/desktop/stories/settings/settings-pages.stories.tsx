@@ -2002,7 +2002,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => selector.getAttribute('aria-expanded') === 'true',
+    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -2068,9 +2068,8 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. The popover remains a DOM descendant
-// of its Item after entering the top layer, so focused search must not ring
-// the whole settings row.
+// Real path: 设置 → 通用 → 默认模型. Focus stays on the inline magnetic wheel;
+// the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2080,8 +2079,7 @@ export const GeneralPickerOpenFocusRing: Story = {
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
-      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
+      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
@@ -2716,7 +2714,7 @@ export const DailyReviewNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path with the Astryx model selector expanded.
+// Real path with the shared magnetic model selector expanded.
 // Real path: Settings → Daily Review → Analysis model.
 export const DailyReviewModelSelectorOpen: Story = {
   decorators: [withSettingsBridge],
