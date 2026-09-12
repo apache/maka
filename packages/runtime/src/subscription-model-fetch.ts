@@ -194,10 +194,7 @@ async function checkedOpenAiCodexFetch(
   for (;;) {
     const response = await fetchFn(url, requestInit);
     if (response.ok) return response;
-    const detail = await response
-      .clone()
-      .text()
-      .catch(() => '');
+    const detail = await response.text().catch(() => '');
     if (
       response.status === 401 &&
       !authorizationReplayUsed &&

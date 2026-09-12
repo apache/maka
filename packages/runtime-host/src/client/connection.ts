@@ -348,6 +348,13 @@ interface QueuedDomainFrame {
 
 type RequestTimeoutScope = 'request' | 'connection';
 
+// A Host response can reach the Client before the Host's transport write
+// promise resumes and retires that request. Leave one slot free so replacing
+// the observed response cannot transiently cross the Host's hard limit. The
+// Host serializes outbound writes, so at most one response occupies this
+// acknowledgement window.
+const CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
+
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly cooperativeHandoff?: true;
   readonly rootId: string;
@@ -547,7 +554,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #drainDomainRequests(): void {
     while (
       !this.#terminalError &&
-      this.#inFlightDomainRequests < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS
+      this.#inFlightDomainRequests < CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS
     ) {
       const queued = this.#queuedDomainFrames.shift();
       if (!queued) return;

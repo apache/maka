@@ -51,6 +51,7 @@ import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
   TurnRunningStatus,
+  TurnFooter,
   TurnView,
   TransientUserMessage,
   type TurnFooterActionMeta,
@@ -60,7 +61,6 @@ import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
-import { projectTranscriptRows } from './transcript-row-projection.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
@@ -72,16 +72,6 @@ import {
 export interface LiveContentActivationSnapshot {
   turnId: string;
   entries: ReadonlyMap<string, string>;
-}
-
-export type TranscriptHistoryLoadDirection = 'older' | 'newer';
-
-export interface TranscriptHistoryGapRowProps {
-  direction: TranscriptHistoryLoadDirection;
-  description: string;
-  actionLabel: string;
-  isPending: boolean;
-  onActivate(): Promise<void> | void;
 }
 
 export interface ChatViewGoalIndicatorProps {
@@ -125,41 +115,6 @@ export function resolveRailAlignedTarget<T extends { turnId: string; nonce: numb
   };
 }
 
-/** A truthful missing-range boundary rendered at its position in the transcript. */
-export function TranscriptHistoryGapRow({
-  direction,
-  description,
-  actionLabel,
-  isPending,
-  onActivate,
-}: TranscriptHistoryGapRowProps) {
-  return (
-    <HStack
-      className="maka-transcript-gap-row"
-      data-transcript-gap={direction}
-      gap={2}
-      hAlign="center"
-      vAlign="center"
-      wrap="wrap"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    >
-      <Text type="supporting" color="secondary">{description}</Text>
-      <Button
-        label={actionLabel}
-        variant="ghost"
-        size="sm"
-        isLoading={isPending}
-        isInterruptible
-        onClick={() => {
-          void onActivate();
-        }}
-      />
-    </HStack>
-  );
-}
-
 /**
  * A user Message this client has shown but cannot yet prove is durable.
  *
@@ -171,6 +126,8 @@ export function TranscriptHistoryGapRow({
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
+  /** Held above the composer until Runtime emits steering_message. */
+  pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
   deliveryActions?: readonly { label: string; onClick(): void }[];
@@ -182,8 +139,9 @@ export interface TransientUserMessageProjection {
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
   /**
-   * Presentation-only placement until canonical transcript grouping arrives:
-   * `current_turn` renders beside the tail Turn, `next_turn` below it.
+   * Presentation-only placement until canonical transcript grouping arrives.
+   * Pending steering and next-turn messages stay in the composer queue; an
+   * unresolved current-turn root prompt can render beside its live Turn.
    */
   transientPlacement: 'current_turn' | 'next_turn';
   /** The Host Turn this Message is already bound to, once the Host named one. */
@@ -312,9 +270,9 @@ export function ChatView(props: {
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
-  historyLoadPending?: TranscriptHistoryLoadDirection;
-  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
-  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
+  /** Fills the window at an edge the reader is approaching. */
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
+  onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
@@ -400,7 +358,7 @@ export function ChatView(props: {
     [drainingMessageIds, props.messages],
   );
   const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
-  const transientMessages = props.transientMessages ?? [];
+  const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -450,7 +408,7 @@ export function ChatView(props: {
   // A live context-compaction Turn is not an assistant stream: it renders one
   // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
   // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
-  // article, the generic "pondering" spinner, and a footer placeholder on top.
+  // article and generic activity footer on top.
   const isCompactionLive = props.liveTurn?.rootExecutionKind === 'context_compact';
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
@@ -471,12 +429,6 @@ export function ChatView(props: {
   )?.ts ?? props.liveTurn?.startedAt;
   const boundaryOverlayTurnId = props.liveTurn?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
-  const transcriptRows = useMemo(() => projectTranscriptRows({
-    turns,
-    hasOlder: props.hasOlderHistory === true,
-    hasNewer: props.hasNewerHistory === true,
-    activeTurnId: boundaryOverlayTurnId,
-  }), [turns, props.hasOlderHistory, props.hasNewerHistory, boundaryOverlayTurnId]);
   // One rail tick per turn that carries a user prompt (Codex-style prompt
   // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
   // on every render.
@@ -632,9 +584,9 @@ export function ChatView(props: {
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
-    onLoadEarlierHistory: props.onLoadEarlierHistory,
     hasNewerHistory: props.hasNewerHistory,
-    onLoadLaterHistory: props.onLoadLaterHistory,
+    onPrefetchHistory: props.onPrefetchHistory,
+    onRetainWindow: props.onRetainWindow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -719,10 +671,9 @@ export function ChatView(props: {
                     sender="assistant"
                     className="maka-chat-message maka-assistant-answer"
                   >
-                    <div className="maka-assistant-answer-content">
+                    <TurnFooter actions={[]} live context="" activity={
                       <TurnRunningStatus startedAt={pendingRunningStartedAt} />
-                    </div>
-                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                    } />
                   </LocalizedChatMessage>
                 </section>
               )}
@@ -803,10 +754,7 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        {/* First child on purpose: the rail pins itself with a sticky anchor,
-            and a sticky box only takes an offset from its own static position
-            onward. Rendered after the transcript it would stay parked at the
-            bottom of the conversation until the reader scrolled there. */}
+        {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
           turns={promptRailTurns}
           onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
@@ -830,50 +778,16 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {transcriptRows.map((row) => {
-                if (row.kind === 'gap') {
-                  const gap = row.direction === 'older'
-                    ? {
-                        description: copy.transcriptGap.olderDescription,
-                        actionLabel: copy.transcriptGap.olderAction,
-                        activate: () => props.onLoadEarlierHistory?.(turns[0]?.turnId),
-                      }
-                    : {
-                        description: copy.transcriptGap.newerDescription,
-                        actionLabel: copy.transcriptGap.newerAction,
-                        activate: () => props.onLoadLaterHistory?.(turns.at(-1)?.turnId),
-                      };
-                  return (
-                    <TranscriptHistoryGapRow
-                      key={`transcript-gap:${row.direction}`}
-                      direction={row.direction}
-                      description={gap.description}
-                      actionLabel={gap.actionLabel}
-                      isPending={props.historyLoadPending === row.direction}
-                      onActivate={() => {
-                        scrollAuthority.releasePin();
-                        return gap.activate();
-                      }}
-                    />
-                  );
-                }
-                const turn = row.turn;
+              {turns.map((turn) => {
                 return (
                   <div
                     key={turn.turnId}
                     className="maka-transcript-turn"
                     data-transcript-turn-id={turn.turnId}
                   >
-                    {turn.turnId === tailTurnId
-                      ? inlineTransientMessages.map((message) => (
-                          <TransientUserMessage
-                            key={message.id}
-                            message={message}
-                          />
-                        ))
-                      : null}
                     <TurnView
                       turn={turn}
+                      transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
@@ -939,14 +853,13 @@ export function ChatView(props: {
                     sender="assistant"
                     className="maka-chat-message maka-assistant-answer"
                   >
-                    <div className="maka-assistant-answer-content">
-                      {props.liveTurn?.providerRetry ? (
+                    <TurnFooter actions={[]} live context="" activity={
+                      props.liveTurn?.providerRetry ? (
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
                         (props.runningStatus && <TurnRunningStatus startedAt={pendingRunningStartedAt} />)
-                      )}
-                    </div>
-                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                      )
+                    } />
                   </LocalizedChatMessage>
                 </section>
               )}

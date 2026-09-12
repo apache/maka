@@ -1514,16 +1514,23 @@ export class AiSdkTurn {
                 ? []
                 : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
           });
+          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
+            ({ text }) => ({ role: 'user', content: text }),
+          );
+          const contextualRequestMessages =
+            dynamicContextMessages.length === 0
+              ? requestMessages
+              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: requestMessages,
+                messages: contextualRequestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? requestMessages;
+          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
@@ -2335,14 +2342,11 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.map((outcome) => {
-              // A rejected settlement was handled above, so preserving the
-              // original array shape also preserves tool-call identity by index.
+            settlementOutcomes.forEach((outcome, index) => {
+              // All settlements completed and rejection was checked above;
+              // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
-              return outcome.value;
-            });
-            for (let index = 0; index < settlements.length; index += 1) {
-              const settlement = settlements[index]!;
+              const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2354,7 +2358,10 @@ export class AiSdkTurn {
               ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
-            }
+            });
+            // Continuation reads durable events, not raw results. Do not retain
+            // an entire completed batch across the next provider request.
+            settlementOutcomes.length = 0;
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
@@ -3077,7 +3084,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;

@@ -370,7 +370,7 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
 
 export async function withRuntimeHostManagedServiceDeploymentLock<T>(
   clientDataRoot: string,
-  operation: () => Promise<T>,
+  operation: (inheritableLeaseFd?: number) => Promise<T>,
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });

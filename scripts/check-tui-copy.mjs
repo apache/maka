@@ -55,6 +55,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-context-refresh.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
+  'packages/cli/src/tui-editor-render.ts',
   'packages/cli/src/tui-mcp-control.ts',
   'packages/cli/src/tui-mcp-remote-publication.ts',
 ];

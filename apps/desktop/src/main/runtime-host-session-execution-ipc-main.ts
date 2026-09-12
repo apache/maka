@@ -54,13 +54,20 @@ import {
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
-import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
+import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
+import {
+  RuntimeHostObservationCancelledError,
+  type RuntimeHostSessionObservationRegistry,
+} from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
   type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
-import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
+import type {
+  DesktopTranscriptRangeRequest,
+  DesktopTranscriptTailAcknowledgement,
+} from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
@@ -174,9 +181,11 @@ export interface RuntimeHostSessionExecutionIpcDeps {
 export interface RuntimeHostSessionObservationIpcDeps {
   observations: Pick<
     RuntimeHostSessionObservationRegistry,
+    | 'acknowledgeTranscriptTail'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
     | 'loadTranscriptAfter'
+    | 'loadTranscriptLatest'
     | 'observe'
     | 'openTranscript'
   >;
@@ -193,21 +202,25 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      return deps.observations.observe(
-        normalizedSessionId,
-        requiredId(observerId, 'Session observer'),
-        event.sender as RuntimeHostSessionObserverTarget,
-        await deps.resolveSideConversation(normalizedSessionId),
+      return observationIpcResult(
+        deps.observations.observe(
+          normalizedSessionId,
+          requiredId(observerId, 'Session observer'),
+          event.sender as RuntimeHostSessionObserverTarget,
+          await deps.resolveSideConversation(normalizedSessionId),
+        ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
     async (event, sessionId: unknown, consumerId: unknown) =>
-      deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
+      observationIpcResult(
+        deps.observations.openTranscript(
+          requiredId(sessionId, 'Session'),
+          requiredId(consumerId, 'Transcript consumer'),
+          event.sender as RuntimeHostTranscriptTarget,
+        ),
       ),
   );
   ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
@@ -228,6 +241,29 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
+  ipcMain.handle('sessions:transcript:load-latest', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptLatest(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
+    await deps.observations.acknowledgeTranscriptTail(
+      normalizeTranscriptTailAcknowledgement(input),
+      event.sender.id,
+    );
+  });
+}
+
+async function observationIpcResult<T>(
+  operation: Promise<T>,
+): Promise<RuntimeHostObservationIpcResult<T>> {
+  try {
+    return { kind: 'ready', value: await operation };
+  } catch (error) {
+    if (error instanceof RuntimeHostObservationCancelledError) return { kind: 'cancelled' };
+    throw error;
+  }
 }
 
 /**
@@ -428,10 +464,8 @@ export function registerRuntimeHostSessionExecutionIpc(
       // the row it already rendered, and what makes a retry the same Message.
       // Minting one here would hand back an identity the caller never showed.
       if (!command.messageId) throw new Error("Submitted message has no identity");
-      const session = await deps.client.getSession(sessionId);
-      if (!session) {
-        throw new Error(`Runtime Host Session not found: ${sessionId}`);
-      }
+      // Host admission validates the target, including reserved Sessions
+      // such as WorkHub that intentionally do not appear in the task catalog.
       let attachments = retainedAttachmentsForSession(
         sessionId,
         command.retainedAttachments ?? [],
@@ -828,12 +862,7 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     throw new Error('Invalid Desktop transcript range byte limit');
   }
   if (
-    (value.navigationVersion !== undefined &&
-      (!Number.isSafeInteger(value.navigationVersion) || (value.navigationVersion as number) < 0)) ||
-    (value.intent !== undefined && value.intent !== 'history' && value.intent !== 'followTail') ||
-    (value.preserveRange !== undefined && typeof value.preserveRange !== 'boolean') ||
-    (value.readingTurnId !== undefined &&
-      (typeof value.readingTurnId !== 'string' || value.readingTurnId.length === 0))
+    !Number.isSafeInteger(value.navigation) || (value.navigation as number) < 0
   ) {
     throw new Error('Invalid Desktop transcript navigation');
   }
@@ -843,10 +872,25 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
-    navigationVersion: value.navigationVersion as number | undefined,
-    intent: value.intent as DesktopTranscriptRangeRequest['intent'],
-    preserveRange: value.preserveRange as boolean | undefined,
-    readingTurnId: value.readingTurnId as string | undefined,
+    navigation: value.navigation as number,
+  };
+}
+
+function normalizeTranscriptTailAcknowledgement(
+  input: unknown,
+): DesktopTranscriptTailAcknowledgement {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid Desktop transcript tail acknowledgement');
+  }
+  const value = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(value.through) || (value.through as number) < 0) {
+    throw new Error('Invalid Desktop transcript tail watermark');
+  }
+  return {
+    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
+    sessionId: requiredId(value.sessionId, 'Session'),
+    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
+    through: value.through as number,
   };
 }
 

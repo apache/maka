@@ -20,12 +20,54 @@
 # patches
 
 Applied on root `postinstall` via `scripts/apply-dependency-patches.mjs`
-(`patch-package --error-on-fail`). After bumping a patched dependency, re-run
-`npx patch-package <name>` so the filename tracks the installed version.
+(`patch-package --error-on-fail`). To update a patch, edit the installed package
+in `node_modules`, then run `node node_modules/patch-package/index.js <name>`.
+After a dependency upgrade, apply the still-needed edits to the new version
+before regenerating. The command records the installed files, not the old
+patch text.
 
 Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
+
+## `@earendil-works/pi-tui@0.84.4`
+
+Editor undo snapshots deep-clone all stored paste strings for each typed word,
+so a 1 MiB paste followed by 60 words retains roughly 60 MiB of duplicate text.
+The editor now copies its mutable state, lines array, and paste Map while
+sharing immutable strings. All undo steps, paste renumbering, and submission
+cleanup are preserved; the generic undo stack used by Input stays unchanged.
+Snapshot creation and storage are private, with no published clone policy
+that product code can configure.
+
+Delete the patch when upstream shares immutable paste strings across undo snapshots.
+
+## `zod@4.5.4`
+
+Recursive schemas retain their last parse context and bucket in schema closures,
+keeping the input and output graphs alive for the schema's lifetime. Containers
+also leave entries on the global allocation stack when synchronous parsing
+throws, including cycles through transforms. The patch keeps memoization in the
+parse context and restores allocation state in `finally`, including a pending
+outer allocation during reentrant parsing. Recursive cycles and shared aliases
+still use the existing per-parse memoization.
+
+Delete the patch when upstream releases completed parse state in both ESM and CJS.
+Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle/alias
+identity against the new memoizer and container implementations.
+The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
+
+## `@modelcontextprotocol/client@2.0.0`
+
+Pending transport sends retain settled request arguments and results through
+error observers, even after response, abort, timeout, or connection close.
+The ESM and CJS patches scope cancellation observers independently and revoke
+the request observer's native `reject` reference in request cleanup. Late send
+errors still remove progress handlers, and cancellation send errors still reach
+`onerror`; queued frames and connection behavior stay intact. The private SDK
+request funnel has no public observer-lifetime hook for a call-site fix.
+
+Delete the patch when upstream releases settled request observers despite transport backpressure.
 
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
@@ -59,19 +101,27 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.5.2`
 
-Five published component seams drop host-owned state or semantics:
+The shared code tokenizer caches only valid language definitions. Caching `null`
+for arbitrary unsupported fence labels grows a process-lifetime map; a short
+label can also be a sliced string retaining its entire Markdown message after
+unmount. Unknown labels keep their plain-text fallback, and known languages
+keep reusing compiled regexes. A call-site language filter would duplicate the
+dependency's language list, discard the displayed label, and miss the shared
+CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
 
-- `ChatLayout` needs a conversation identity that resets scroll/unread state
-  without remounting its composer slot and discarding the live draft.
-- `ChatLayout` owns auto-follow and publishes no way to say "this scroll is
-  deliberate navigation, release it". Its scroll-direction unlock cannot infer
-  that: it discards any scroll event carrying a changed `scrollHeight` as a
-  resize artefact, and a host that mounts a turn before scrolling to it
-  produces exactly that. Without the seam the prompt rail's jump into an
-  unmounted turn is dragged straight back to the bottom (#2923), and no call
-  site can fix it — re-aiming frame by frame wins the mount and then loses to
-  the follow spring that outlives it. `unlockAutoFollow` on
-  `ChatLayoutContextValue` publishes the hook's existing `unlock`.
+`ChatComposerInput` synchronizes external controlled values into its editable
+DOM in a layout effect. A passive effect can leave the old multiline draft
+visible for a frame after the sent message is rendered; clearing it later
+shrinks the dock and moves the already-positioned transcript. The existing
+echo and selection guards stay unchanged.
+The short, multiline, tall and completion submission stories in
+`apps/desktop/stories/app-shell.stories.tsx` protect this layout contract.
+
+The other component changes preserve host-owned state and semantics:
+
+- `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
+  Maka's transcript authority can own scrolling without competing with the
+  dependency's auto-follow listeners and writes.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
 - `SideNavItem` needs an interactive `trailingAction` sibling between its

@@ -125,6 +125,10 @@ export interface ConversationCopy {
     importing: string;
     sendLabel: string;
     queuedMessagesAriaLabel(count: number): string;
+    steeringPending: string;
+    followupPending: string;
+    queueShortcutsLabel: string;
+    queueShortcuts: string;
     promoteQueuedEntry: string;
     editQueuedEntry: string;
     saveQueuedEntry: string;
@@ -340,12 +344,6 @@ export interface ConversationCopy {
   };
   chat: {
     conversationAriaLabel: (name: string) => string;
-    transcriptGap: {
-      olderDescription: string;
-      olderAction: string;
-      newerDescription: string;
-      newerAction: string;
-    };
     memory: string;
     memoryAriaLabel: string;
     memoryTitle: string;
@@ -483,6 +481,10 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
+      steeringPending: '调整方向 · 等待整批生效',
+      followupPending: '下一轮 · 每轮一条',
+      queueShortcutsLabel: '发送快捷键',
+      queueShortcuts: 'Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）',
       promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
@@ -577,12 +579,6 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `对话：${name}`,
-      transcriptGap: {
-        olderDescription: '上方还有未加载的较早消息',
-        olderAction: '加载较早消息',
-        newerDescription: '下方还有未加载的较新消息',
-        newerAction: '加载较新消息',
-      },
       memory: '记忆', memoryAriaLabel: '本地记忆已启用', memoryTitle: '本地 MEMORY.md 已加入 agent 系统提示。点击进入设置 · 记忆管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只读探索', deepResearchTitle: '深度研究任务使用只读探索边界：先阅读和分析，默认不改文件。',
       deepResearchProgress: {
         ariaLabel: '深度研究实时进度',
@@ -642,6 +638,10 @@ const CONVERSATION_COPY = {
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
+      steeringPending: '調整方向 · 等待整批生效',
+      followupPending: '下一輪 · 每輪一條',
+      queueShortcutsLabel: '傳送快速鍵',
+      queueShortcuts: 'Shift+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）',
       promoteQueuedEntry: '調整方向', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在處理…', continuing: 'Maka 繼續中…',
@@ -736,12 +736,6 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `對話：${name}`,
-      transcriptGap: {
-        olderDescription: '上方還有未載入的較早訊息',
-        olderAction: '載入較早訊息',
-        newerDescription: '下方還有未載入的較新訊息',
-        newerAction: '載入較新訊息',
-      },
       memory: '記憶', memoryAriaLabel: '本地記憶已啟用', memoryTitle: '本地 MEMORY.md 已加入 agent 系統提示。點選進入設定 · 記憶管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只讀探索', deepResearchTitle: '深度研究任務使用只讀探索邊界：先閱讀和分析，預設不改檔案。',
       deepResearchProgress: {
         ariaLabel: '深度研究即時進度',
@@ -830,6 +824,10 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
+      steeringPending: 'Steering · Applied together',
+      followupPending: 'Follow-up · One per turn',
+      queueShortcutsLabel: 'Send shortcuts',
+      queueShortcuts: 'Shift+Enter: Steering\nEnter: Follow-up',
       promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
@@ -921,12 +919,6 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `Conversation: ${name}`,
-      transcriptGap: {
-        olderDescription: 'Earlier messages above are not loaded.',
-        olderAction: 'Load earlier messages',
-        newerDescription: 'Newer messages below are not loaded.',
-        newerAction: 'Load newer messages',
-      },
       memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.', deepResearch: 'Deep Research', deepResearchAriaLabel: 'Deep Research, read-only exploration', deepResearchTitle: 'Deep Research uses a read-only boundary: inspect and analyze first, without changing files by default.',
       deepResearchProgress: {
         ariaLabel: 'Live Deep Research progress',

@@ -56,7 +56,7 @@ describe('CLI release file policy', () => {
     const repoRoot = resolve(import.meta.dirname, '..');
     for (const [directory, omitted] of Object.entries({
       core: ['./test-only/async-primitives'],
-      mcp: ['./test-only/stdio-server'],
+      mcp: ['./test-only/stdio-server', './test-only/form-server'],
       'runtime-host': [
         './test-only/client-capability-host',
         './test-only/execution-candidate-e2e-main',

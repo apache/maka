@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
   type BrowserWindow,
@@ -104,7 +105,7 @@ import { releaseBrowserSession } from "./browser/session.js";
 import {
   isBrowserMessageBoxPresentationActive,
   showBrowserMessageBox,
-  type BrowserMessageBoxAppearance,
+  type BrowserMessageBoxTheme,
 } from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
@@ -370,6 +371,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     }),
   mainLogs: () => mainProcessLogBuffer.snapshot(),
   runtimeHostProcessLogs: () => runtimeHostProcessLogBuffer.snapshot(),
+  runtimeHostConnections: () => runtimeHostManager?.entries() ?? [],
   resolveActiveRuntimeHost: () => {
     const scope = activeRuntimeHostRef();
     return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
@@ -378,16 +380,16 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   writeClipboard: (report) => clipboard.writeText(report),
 };
 let resolveBrowserDialogParent = desktopStartupProgressWindow;
-let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
+let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxTheme> => ({
   locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
   palette: "default",
 });
 
 async function showDesktopMessageBox(
   options: MessageBoxOptions,
-  override?: Partial<BrowserMessageBoxAppearance>,
+  override?: Partial<BrowserMessageBoxTheme>,
 ): Promise<MessageBoxReturnValue> {
-  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override };
+  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override, revealMode };
   return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
 }
 
@@ -900,7 +902,8 @@ const workHubRuntime = createWorkHubRuntime({
 });
 const workHubControl = createWorkHubControl({
   ipcMain,
-  prepareWindow: () => workHubPresentation.prepareControl(),
+  prepareWindow: (turnId) => workHubPresentation.prepareControl(turnId),
+  finishControl: () => workHubPresentation.finishControl(),
   window: () => {
     const window = mainWindowController.browserWindow();
     if (!window) throw new Error('Maka window is unavailable');
@@ -913,8 +916,10 @@ const workHubControl = createWorkHubControl({
   isCurrent: isCurrentWorkHubTarget,
   ...workHubRuntime,
 });
+let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
-  isEnabled: async () => (await settingsStore.get()).workHub.enabled,
+  isEnabled: () => workHubEnabled,
+  revealMode,
   mainWindow: () => mainWindowController.browserWindow(),
   ensureMainWindow: async () => {
     await quitCoordinator.focusOrCreateWindow();
@@ -964,7 +969,10 @@ const botRegistry = new BotRegistry({
 });
 const clientSettingsEffects = createClientSettingsEffects({
   settingsStore,
-  applyWorkHub: () => workHubPresentation.refreshSettings(),
+  applyWorkHub: async (enabled) => {
+    workHubEnabled = enabled;
+    await workHubPresentation.refreshSettings();
+  },
   applyKeepSystemAwake: async (enabled) => {
     keepSystemAwake.apply(enabled);
   },
@@ -1360,6 +1368,11 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
+    resolveWslHostHandoff: async (profile, error, signal) => resolveDesktopWslHostHandoff(profile, error, signal, {
+      locale: await desktopLocale.resolve(),
+      resolveBinding: (profileId) => runtimeHostProfileService.resolveManagedService(profileId),
+      resolvePackage: (packageSignal) => runtimeHostSetupPackage.resolve('none', packageSignal),
+    }),
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {

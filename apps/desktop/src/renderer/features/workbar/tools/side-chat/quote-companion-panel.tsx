@@ -301,7 +301,6 @@ export function QuoteCompanionPanel(props: {
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
-        scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>

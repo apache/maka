@@ -25,16 +25,23 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ visible = true }: { visible?: boolean }) {
+export function WorkHubDock({ enabled, visible = true }: { enabled: boolean; visible?: boolean }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
+  const previous = useRef({ enabled, visible });
   const needsRecovery = snapshot?.placement === 'docked' && snapshot.rendererCrashed;
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
+  useEffect(() => {
+    // Enabling WorkHub also activates its dock. Only subsequent navigation
+    // returns a floating conversation, so a fresh shortcut cannot be undone.
+    if (enabled && previous.current.enabled && visible && !previous.current.visible) void presentation.hide().catch(report);
+    previous.current = { enabled, visible };
+  }, [enabled, presentation, visible]);
   useEffect(() => {
     let active = true;
     const update = (next: WorkHubPresentationSnapshot) => {

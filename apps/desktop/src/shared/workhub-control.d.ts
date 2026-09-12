@@ -21,6 +21,7 @@ export interface WorkHubControlSnapshot {
   readonly revision: number;
   readonly phase: 'idle' | 'acting' | 'paused' | 'error';
   readonly canUndo: boolean;
+  readonly status?: string;
   readonly error?: string;
   readonly cursor?: {
     readonly x: number;

@@ -23,13 +23,17 @@ import { test } from 'node:test';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import type { HostHandoffView } from '@maka/runtime-host/client';
 import { createStartupProgressWindow, renderStartupProgressHtml } from '../startup-progress-window.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 
-function harness() {
+function harness(revealMode: WindowRevealMode = 'active') {
   let resolveLoad!: () => void;
   let rejectLoad!: (error: Error) => void;
   let destroyed = false;
   let minimized = false;
   let visible = false;
+  let shown = 0;
+  let shownInactive = 0;
+  let focused = 0;
   let copied = 0;
   let copiedHandoff: HostHandoffView | undefined;
   let documentUrl = '';
@@ -53,9 +57,10 @@ function harness() {
     destroy() { destroyed = true; },
     minimize() { minimized = true; },
     restore() { minimized = false; },
-    showInactive() { visible = true; },
-    show() { visible = true; },
-    focus() {},
+    isVisible: () => visible,
+    showInactive() { shownInactive += 1; visible = true; },
+    show() { shown += 1; visible = true; },
+    focus() { focused += 1; },
     loadURL: (url: string) => {
       documentUrl = url;
       return new Promise<void>((resolve, reject) => {
@@ -65,7 +70,7 @@ function harness() {
     },
   });
   const progress = createStartupProgressWindow({
-    locale: 'en', dark: false, icon: '/test/icon.png',
+    locale: 'en', dark: false, icon: '/test/icon.png', revealMode,
     createWindow(input) { options = input; return window as unknown as BrowserWindow; },
     copyDiagnostics(_phase, handoff) { copied += 1; copiedHandoff = handoff; },
     onError(error) { errors.push(error); },
@@ -79,6 +84,7 @@ function harness() {
     get destroyed() { return destroyed; },
     get minimized() { return minimized; },
     get visible() { return visible; },
+    get reveals() { return { shown, shownInactive, focused }; },
     get openWindow() { return openWindow; },
     get contentSize() { return contentSize; },
     setMeasuredHeight(height: number) { measuredHeight = height; },
@@ -203,4 +209,24 @@ test('live handoff accepts only current allowed actions and copies the current d
   assert.equal(h.copiedHandoff?.revision, 'second');
   assert.equal(h.copiedHandoff?.diagnostic, view.diagnostic);
   h.progress.close();
+});
+
+test('an automated run never lets a handoff pull the app to the front', async () => {
+  const attention: HostHandoffView = { revision: 'first', target: { name: 'local', location: 'local' },
+    state: 'attention', reason: 'busy', mayExitNaturally: false, actions: ['cancel'], defaultAction: 'cancel' };
+  const expected = {
+    hidden: { shown: 0, shownInactive: 0, focused: 0 },
+    inactive: { shown: 0, shownInactive: 1, focused: 0 },
+    active: { shown: 3, shownInactive: 0, focused: 3 },
+  } as const;
+  for (const mode of ['hidden', 'inactive', 'active'] as const) {
+    const h = harness(mode);
+    h.progress.handoff(attention, () => {}, 'en');
+    h.resolveLoad(); await flush();
+    h.progress.handoff({ ...attention, revision: 'second', state: 'progress' }, () => {}, 'en');
+    h.progress.handoff({ ...attention, revision: 'third' }, () => {}, 'en');
+    h.progress.focus();
+    assert.deepEqual(h.reveals, expected[mode], mode);
+    h.progress.close();
+  }
 });

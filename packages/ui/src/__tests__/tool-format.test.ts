@@ -19,6 +19,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
+import { resolveToolDisplayName } from '../tool-activity/display-name.js';
+import type { ToolActivityItem } from '../materialize.js';
 import { describeLoadToolResult } from '../tool-format.js';
 
 test('custom load-tool groups use Traditional Chinese action copy', () => {
@@ -32,4 +35,17 @@ test('custom load-tool groups use Traditional Chinese action copy', () => {
   );
   assert.equal(result?.actionLabel, '啟用 自訂工具');
   assert.equal(result?.title, '自訂工具 已啟用');
+});
+
+
+test('WorkHub control shows its user-language status in live and recorded tool rows', () => {
+  const base: ToolActivityItem = { toolUseId: 'control', toolName: 'mcp__desktop_workhub__control', args: {}, status: 'running' };
+  for (const status of ['正在打开项目设置', 'Opening project settings']) {
+    assert.equal(resolveToolDisplayName({ ...base, args: undefined, argsPreview: projectToolArgsPreview(base.toolName, { status }) }, 'en'), status);
+    assert.equal(resolveToolDisplayName({ ...base, status: 'completed', args: { status } }, 'zh-CN'), status);
+  }
+  for (const status of ['', '   ', 42, 'x'.repeat(81), 'one\ntwo']) {
+    assert.equal(resolveToolDisplayName({ ...base, args: { status } }, 'en'), base.toolName);
+  }
+  assert.equal(resolveToolDisplayName({ ...base, toolName: 'other', args: { status: 'Unrelated' } }, 'en'), 'other');
 });
