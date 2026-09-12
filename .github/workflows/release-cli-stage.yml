@@ -89,6 +89,9 @@ jobs:
     uses: ./.github/workflows/cli-package-validation.yml
     with:
       source_commit: ${{ needs.authorize.outputs.source_commit }}
+      # The formal candidate is a frozen tag; the live Nightly may be newer,
+      # so this lane keeps provenance identity without applying PR ancestry fencing.
+      fence_predecessor: false
 
   stage:
     name: Stage maka-agent on npm
@@ -178,6 +181,7 @@ jobs:
           PREDECESSOR_VERSION: ${{ needs.validate.outputs.release_predecessor_version }}
           PREDECESSOR_TARBALL_URL: ${{ needs.validate.outputs.release_predecessor_tarball_url }}
           PREDECESSOR_INTEGRITY: ${{ needs.validate.outputs.release_predecessor_integrity }}
+          PREDECESSOR_SOURCE_COMMIT: ${{ needs.validate.outputs.release_predecessor_source_commit }}
           PRODUCT_SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
           PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
@@ -186,7 +190,8 @@ jobs:
           node scripts/release-cli-publication.mjs assert-nightly-predecessor \
             "$PREDECESSOR_VERSION" \
             "$PREDECESSOR_TARBALL_URL" \
-            "$PREDECESSOR_INTEGRITY"
+            "$PREDECESSOR_INTEGRITY" \
+            "$PREDECESSOR_SOURCE_COMMIT"
 
           node scripts/product-release-authority.mjs verify-draft \
             "$PRODUCT_TAG" "$PRODUCT_SOURCE_COMMIT" "$GITHUB_REPOSITORY"

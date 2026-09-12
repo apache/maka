@@ -65,3 +65,5 @@ jobs:
     uses: ./.github/workflows/cli-package-validation.yml
     with:
       source_commit: ${{ github.sha }}
+      # This workflow validates a tagged source candidate, not a forward roll.
+      fence_predecessor: false
