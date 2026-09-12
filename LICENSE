@@ -263,10 +263,10 @@ SOFTWARE.
 
 Pi TUI dependency patch
 
-Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.84.4
-Repository: https://github.com/earendil-works/pi/tree/v0.84.4/packages/tui
-Version: 0.84.4
-Dependency patch: patches/@earendil-works+pi-tui+0.84.4.patch
+Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.85.1
+Repository: https://github.com/earendil-works/pi/tree/v0.85.1/packages/tui
+Version: 0.85.1
+Dependency patch: patches/@earendil-works+pi-tui+0.85.1.patch
 Copyright (c) 2025 Mario Zechner
 License: MIT
 
