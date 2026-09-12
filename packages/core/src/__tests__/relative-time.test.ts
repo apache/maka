@@ -38,12 +38,16 @@ describe('relative timestamp labels', () => {
 
     for (const ageMs of [0, 1_000, 30_000, 59_999]) {
       assert.equal(formatRelativeTimestamp(NOW - ageMs, NOW, 'zh-CN'), '刚刚');
+      assert.equal(formatRelativeTimestamp(NOW - ageMs, NOW, 'ko'), '방금 전');
       assert.equal(formatRelativeTimestamp(NOW - ageMs, NOW, 'en'), 'just now');
       assert.equal(formatCompactTimestamp(NOW - ageMs, NOW, 'zh-CN'), '刚刚');
+      assert.equal(formatCompactTimestamp(NOW - ageMs, NOW, 'ko'), '방금 전');
       assert.equal(formatSidebarTimestamp(NOW - ageMs, NOW, 'zh-CN'), '刚刚');
+      assert.equal(formatSidebarTimestamp(NOW - ageMs, NOW, 'ko'), '방금 전');
     }
 
     assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'zh-CN'), '1分钟前');
+    assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'ko'), '1분 전');
     assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'en'), '1 minute ago');
   });
 
@@ -54,7 +58,7 @@ describe('relative timestamp labels', () => {
   });
 
   it('uses scan-friendly units for sidebar timestamps', () => {
-    for (const locale of ['zh-CN', 'en'] as const) {
+    for (const locale of ['zh-CN', 'ko', 'en'] as const) {
       for (const [ageMs, expected] of [
         [60_000, '1min'],
         [46 * 60_000, '46min'],
