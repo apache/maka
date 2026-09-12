@@ -250,6 +250,185 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
   }
 });
 
+test("HTML Artifact materializes and opens with the operating system default app", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-artifact-ipc-"));
+  const presentationRoot = join(root, "presentations");
+  const content = Buffer.from("<!doctype html><button>Run interaction</button>");
+  const handlers = new Map<string, Handler>();
+  const openedPaths: string[] = [];
+  const artifact = previewArtifact({
+    name: "interactive.html",
+    kind: "html",
+    mimeType: "text/html",
+    sizeBytes: content.byteLength,
+  });
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as Handler),
+      },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(
+          _sessionId: string,
+          _artifactId: string,
+          writeChunk: (chunk: Uint8Array) => Promise<void>,
+        ) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: () => {
+        throw new Error("HTML artifacts must use openPath");
+      },
+      openPath: async (path) => {
+        openedPaths.push(path);
+        return "";
+      },
+      presentationRoot,
+    });
+
+    const open = handlers.get("app:openArtifactPath");
+    assert.ok(open);
+    assert.deepEqual(await open({}, "session-1", "artifact-1"), {
+      ok: true,
+      opened: "interactive.html",
+    });
+    assert.equal(openedPaths.length, 1);
+    assert.equal(await readFile(openedPaths[0]!, "utf8"), content.toString("utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HTML Artifact reveal uses Finder without invoking the default app", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-reveal-ipc-"));
+  const presentationRoot = join(root, "presentations");
+  const content = Buffer.from("<!doctype html><button>Run interaction</button>");
+  const handlers = new Map<string, Handler>();
+  const revealedPaths: string[] = [];
+  const artifact = previewArtifact({
+    name: "interactive.html",
+    kind: "html",
+    mimeType: "text/html",
+    sizeBytes: content.byteLength,
+  });
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as Handler),
+      },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: (path) => revealedPaths.push(path),
+      openPath: async () => {
+        throw new Error("reveal must not invoke openPath");
+      },
+      presentationRoot,
+    });
+
+    const reveal = handlers.get("app:showArtifactInFolder");
+    assert.ok(reveal);
+    assert.deepEqual(await reveal({}, "session-1", "artifact-1"), {
+      ok: true,
+      opened: "interactive.html",
+    });
+    assert.equal(revealedPaths.length, 1);
+    assert.equal(await readFile(revealedPaths[0]!, "utf8"), content.toString("utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const [label, openPath] of [
+  ["returns an error", async () => "default app unavailable"],
+  ["rejects", async () => { throw new Error("launcher unavailable"); }],
+] as const) {
+  test(`HTML Artifact reports default-app failure when opener ${label}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "maka-host-html-open-failure-"));
+    const presentationRoot = join(root, "presentations");
+    const content = Buffer.from("<!doctype html><p>failure test</p>");
+    const handlers = new Map<string, Handler>();
+    let revealCalls = 0;
+    const artifact = previewArtifact({
+      name: "interactive.html",
+      kind: "html",
+      mimeType: "text/html",
+      sizeBytes: content.byteLength,
+    });
+    try {
+      registerRuntimeHostArtifactsIpc({
+        uiLocale: () => "en" as const,
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: "host-1",
+          async getArtifact() { return artifact; },
+          async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+            await writeChunk(content);
+            return content.byteLength;
+          },
+        } as never,
+        mainWindowController: {} as never,
+        showItemInFolder: () => { revealCalls += 1; },
+        openPath,
+        presentationRoot,
+      });
+      const open = handlers.get("app:openArtifactPath");
+      assert.ok(open);
+      assert.deepEqual(await open({}, "session-1", "artifact-1"), { ok: false, reason: "open-failed" });
+      assert.equal(revealCalls, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("HTML Artifact does not invoke an opener when materialization fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-host-html-materialize-failure-"));
+  const handlers = new Map<string, Handler>();
+  const content = Buffer.from("<!doctype html><p>failure test</p>");
+  const artifact = previewArtifact({ name: "interactive.html", kind: "html", mimeType: "text/html", sizeBytes: content.byteLength });
+  let openCalls = 0;
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+      client: {
+        hostEpoch: "host-1",
+        async getArtifact() { return artifact; },
+        async streamArtifact() { throw new Error("source unavailable"); },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: () => { throw new Error("must not reveal failed materialization"); },
+      openPath: async () => { openCalls += 1; return ""; },
+      presentationRoot: join(root, "presentations"),
+    });
+    const open = handlers.get("app:openArtifactPath");
+    assert.ok(open);
+    assert.deepEqual(await open({}, "session-1", "artifact-1"), { ok: false, reason: "open-failed" });
+    assert.equal(openCalls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Attachment byte IPC rejects preview-ineligible metadata before streaming", async () => {
   for (const [overrides, reason] of [
     [{ id: "artifact-large", sizeBytes: 2 * 1024 * 1024 + 1 }, "too_large"],

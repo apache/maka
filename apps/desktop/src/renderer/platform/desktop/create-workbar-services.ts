@@ -77,6 +77,8 @@ export function createDesktopWorkbarServices(
         bridge.artifacts.delete(sessionId, artifactId),
       openPath: (sessionId, artifactId) =>
         bridge.app.openArtifactPath(sessionId, artifactId),
+      showInFolder: (sessionId, artifactId) =>
+        bridge.app.showArtifactInFolder(sessionId, artifactId),
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
     },

@@ -42,6 +42,7 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly showItemInFolder: (path: string) => void;
+  readonly openPath?: (path: string) => Promise<string>;
   readonly presentationRoot?: string;
 }
 
@@ -82,6 +83,20 @@ export function registerRuntimeHostArtifactsIpc(
       deps.client.deleteArtifact(sessionId, artifactId),
   );
   registerRuntimeHostAttachmentPreviewIpc(deps);
+  const materializePresentationArtifact = async (
+    sessionId: string,
+    artifactId: string,
+    artifact: Awaited<ReturnType<DesktopRuntimeHostClient['getArtifact']>>,
+  ): Promise<string> => {
+    if (!artifact) throw new Error('Artifact is missing');
+    const path = join(
+      presentationRoot,
+      sessionId,
+      `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
+    );
+    await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+    return path;
+  };
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
@@ -90,12 +105,28 @@ export function registerRuntimeHostArtifactsIpc(
         return { ok: false as const, reason: "missing" as const };
       }
       try {
-        const path = join(
-          presentationRoot,
-          sessionId,
-          `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
-        );
-        await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
+        if (artifact.kind === 'html' && deps.openPath) {
+          const error = await deps.openPath(path);
+          if (error) return { ok: false as const, reason: "open-failed" as const };
+        } else {
+          deps.showItemInFolder(path);
+        }
+        return { ok: true as const, opened: artifact.name };
+      } catch {
+        return { ok: false as const, reason: "open-failed" as const };
+      }
+    },
+  );
+  deps.ipcMain.handle(
+    "app:showArtifactInFolder",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (!artifact) {
+        return { ok: false as const, reason: "missing" as const };
+      }
+      try {
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
         deps.showItemInFolder(path);
         return { ok: true as const, opened: artifact.name };
       } catch {

@@ -3659,6 +3659,18 @@ const makaBridge = {
     > {
       return invokeSessionRuntimeHost('app:openArtifactPath', sessionId, artifactId);
     },
+    showArtifactInFolder(
+      sessionId: string,
+      artifactId: string,
+    ): Promise<
+      | { ok: true; opened: string }
+      | {
+          ok: false;
+          reason: 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
+        }
+    > {
+      return invokeSessionRuntimeHost('app:showArtifactInFolder', sessionId, artifactId);
+    },
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult> {
       return invokeSessionRuntimeHost('app:saveArtifactAs', sessionId, artifactId);
     },

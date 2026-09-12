@@ -39,7 +39,8 @@
  *  5. **Copy/export policy**: only the text-based kinds (`file`, `diff`,
  *     `html`) expose a Copy button. `image` / `pdf` rows do NOT — those are
  *     binary, and silently base64-stuffing a multi-MB PDF into the clipboard
- *     is a footgun. Both kinds still get「在 Finder 中打开」and「另存为」.
+ *     is a footgun. HTML gets「打开」(the system default app); other kinds
+ *     get「在 Finder 中打开」. All kinds still get「另存为」.
  *
  * Layout: fills the Generated files tab and switches between a list and one
  * full-panel preview while reporting its authoritative filtered count.
@@ -258,10 +259,34 @@ export function ArtifactPane(props: {
     }
   }
 
-  async function openInFinder(artifactId: string) {
+  async function openArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     try {
       const result = await artifacts.openPath(sessionId, artifactId);
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      if (!result.ok) {
+        toast.error(
+          copy.pane.openFailed,
+          openPathFailureCopy(result.reason, locale),
+          undefined,
+          { sessionId: actionSessionId },
+        );
+      }
+    } catch (error) {
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      toast.error(
+        copy.pane.openFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
+    }
+  }
+
+  async function showInFinder(artifactId: string) {
+    const actionSessionId = sessionId;
+    try {
+      const result = await artifacts.showInFolder(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(
@@ -544,10 +569,23 @@ export function ArtifactPane(props: {
               onOpenChange={setMoreMenuOpen}
               items={[
                 {
+                  label: previewRecord.kind === 'html' ? copy.pane.open : copy.pane.openInFinder,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:open`,
+                    () => previewRecord.kind === 'html'
+                      ? openArtifact(previewRecord.id)
+                      : showInFinder(previewRecord.id),
+                  ),
+                },
+                ...(previewRecord.kind === 'html' ? [{
                   label: copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
-                  onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
-                },
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:reveal`,
+                    () => showInFinder(previewRecord.id),
+                  ),
+                }] : []),
                 {
                   label: copy.pane.saveAs,
                   icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
@@ -582,8 +620,8 @@ export function ArtifactPane(props: {
               key={previewRecord.id}
               record={previewRecord}
               onShowInFolder={() => void runArtifactAction(
-                `${previewRecord.id}:open`,
-                () => openInFinder(previewRecord.id),
+                `${previewRecord.id}:reveal`,
+                () => showInFinder(previewRecord.id),
               )}
             />
           </div>

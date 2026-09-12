@@ -19,6 +19,8 @@
 
 import type { WorkbarServices } from './ports.js';
 
+export { ArtifactPreview } from './tools/artifacts/artifact-preview.js';
+
 export { WorkbarServicesProvider } from './services-context.js';
 export type {
   WorkbarServices,
@@ -103,6 +105,7 @@ export function createFakeWorkbarServices(
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: false, reason: 'missing' }),
+      showInFolder: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
     inspector: {
