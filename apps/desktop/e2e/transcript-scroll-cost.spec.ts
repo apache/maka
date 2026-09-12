@@ -64,6 +64,7 @@ declare global {
   interface Window {
     __makaTranscriptDisplacement?: {
       boundaries: TranscriptBoundary[];
+      input: { frames: number; heightDrift: number; rangeChanges: number; reverse: number };
       isSettled(): boolean;
       stop(): void;
     };
@@ -153,6 +154,7 @@ async function observeDisplacement(page: Page): Promise<void> {
     // publication. Arming from Playwright after wheel() returns races the same
     // rendering frames that publish the range and can miss every boundary.
     let recording = false;
+    let wheelSeen = false;
     const record = (on: boolean): void => {
       if (recording === on) return;
       recording = on;
@@ -160,6 +162,7 @@ async function observeDisplacement(page: Page): Promise<void> {
       settled = null;
     };
     const onWheel = (event: Event): void => {
+      wheelSeen = true;
       const { deltaY } = event as WheelEvent;
       const remaining = deltaY < 0 ? scroller.scrollTop
         : scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
@@ -171,10 +174,12 @@ async function observeDisplacement(page: Page): Promise<void> {
     scroller.addEventListener('scrollend', onScrollEnd, { capture: true });
     const state: {
       boundaries: unknown[];
+      input: { frames: number; heightDrift: number; rangeChanges: number; reverse: number };
       isSettled(): boolean;
       stop(): void;
     } = {
       boundaries: [],
+      input: { frames: 0, heightDrift: 0, rangeChanges: 0, reverse: 0 },
       isSettled: () => recording && settled === null,
       stop: () => {
         running = false;
@@ -193,6 +198,12 @@ async function observeDisplacement(page: Page): Promise<void> {
       if (!running) return;
       const current = read();
       if (!recording) {
+        if (wheelSeen) {
+          state.input.frames++;
+          state.input.heightDrift = Math.max(state.input.heightDrift, Math.abs(current.scrollHeight - previous.scrollHeight));
+          state.input.rangeChanges += Number(current.key !== previous.key);
+          state.input.reverse = Math.max(state.input.reverse, current.scrollTop - previous.scrollTop);
+        }
         settled = null;
         previous = current;
         requestAnimationFrame(tick);
@@ -307,9 +318,8 @@ async function returnToLatest(page: Page): Promise<void> {
  * range changes, whatever Turn the reader can still see must hold its viewport
  * position.
  *
- * Each native scroll operation finishes before the next one starts. This
- * isolates publication displacement from the reader's own movement; the
- * continuous-wheel and held-thumb tests cover input that is still in flight.
+ * Each burst contains consecutive native wheel ticks. Publication boundaries
+ * are sampled after scrollend, separately from the reader's own movement.
  *
  * Displacement in pixels rather than frame timings on purpose — see this file's
  * header for what happened to the timing assertions this suite replaced. A
@@ -336,9 +346,7 @@ test('Host history paging stays bounded, preserves the reader and returns to lat
     if (firstBefore === 'turn-prompt-rail-1') break;
     await expect
       .poll(async () => {
-        // One native scroll operation at a time: an older scrollend can arrive
-        // during a newer wheel animation and is not a quiet measurement point.
-        await wheel(page, cdp, { ticks: 1, deltaY: -1_200 });
+        await wheel(page, cdp, { ticks: 12, deltaY: -120 });
         await page.waitForFunction(() => window.__makaTranscriptDisplacement?.isSettled());
         return turns.first().getAttribute('data-turn-id');
       })
@@ -357,6 +365,11 @@ test('Host history paging stays bounded, preserves the reader and returns to lat
   expect(mountedMax).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 
   const boundaries = await displacement(page);
+  const input = await page.evaluate(() => window.__makaTranscriptDisplacement!.input);
+  expect(input.frames, 'the probe must observe consecutive wheel input').toBeGreaterThan(0);
+  expect(input.heightDrift, 'active wheel input must not change height').toBeLessThanOrEqual(1);
+  expect(input.rangeChanges, 'active wheel input must hold membership').toBe(0);
+  expect(input.reverse, 'upward wheel input must not reverse').toBeLessThanOrEqual(1);
   // The probe has to have seen the thing it measures: a run that paged nothing,
   // or one where every boundary replaced the range wholesale and carried no
   // Turn across, proves nothing about the reader.

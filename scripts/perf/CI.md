@@ -53,6 +53,9 @@ history uses the existing prompt rail, not wheel-triggered fill/trim.
 (mixed 24 turns, 45 tools, 1200-line code), with three repetitions each.
 Its mount CPU/layout counters are recorded before the
 first upward sweep, so deferred work cannot disappear from the comparison.
+Scroll metrics cover only that cold upward sweep. Older reports included two
+return sweeps and are not equivalent timing workloads. Unasserted per-step
+anchors, LoAF and heap diagnostics are no longer collected by this driver.
 The script emits the shared report format and full per-frame geometry JSON.
 Both probes run sequentially in the existing frontend job and upload through
 its existing artifact step. No additional workflow or production switch exists.

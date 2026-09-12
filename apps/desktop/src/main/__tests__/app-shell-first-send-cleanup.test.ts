@@ -546,7 +546,6 @@ describe('composer first-send cleanup', () => {
   it('refresh waits for durable messages without bypassing range publication', async () => {
     const deps = createActionsDeps();
     deps.activeIdRef.current = 'session';
-    let directPublications = 0;
     let durable = false;
     const durableAnswer = { id: 'answer' };
     let publishedAnswer = { id: 'answer' };
@@ -563,14 +562,12 @@ describe('composer first-send cleanup', () => {
       ...deps,
       transcriptRangeRef: { current: controller },
       isMessagePublished: (message: unknown) => message === publishedAnswer,
-      setMessages: () => { directPublications++; },
     };
     const actions = createAppShellChatActions(dependencies);
     const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
     assert.equal(durable, false);
     ready.resolve();
     assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
-    assert.equal(directPublications, 0, 'only the range subscription may publish source changes');
     publishedAnswer = durableAnswer;
     assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
   });

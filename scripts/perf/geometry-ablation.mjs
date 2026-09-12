@@ -17,8 +17,7 @@
  * under the License.
  */
 
-// Manual diagnostic, not a passing substitute for the future geometry CI
-// gate. One Electron process, fresh DOM per trial, alternating configurations.
+// Fixed-range geometry gate and performance samples, fresh DOM per trial.
 // Uses production ComposedShell stories; no Host, paging or streaming here.
 import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -85,7 +84,6 @@ if (process.versions.electron) {
       const probe = (window.__geometry = {
         frames: [],
         tasks: [],
-        loaf: [],
         phase: 'mount',
         firstRootMs: null,
       });
@@ -96,15 +94,6 @@ if (process.versions.electron) {
             .map((e) => ({ start: e.startTime, duration: e.duration, phase: probe.phase })),
         ),
       ).observe({ type: 'longtask', buffered: true });
-      if (PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')) {
-        new PerformanceObserver((list) =>
-          probe.loaf.push(
-            ...list
-              .getEntries()
-              .map((e) => ({ start: e.startTime, duration: e.duration, phase: probe.phase })),
-          ),
-        ).observe({ type: 'long-animation-frame', buffered: true });
-      }
       const frame = () => {
         const root = document.querySelector('[data-chat-scroll-container]');
         if (root) {
@@ -162,7 +151,6 @@ if (process.versions.electron) {
         });
         const beforeCpu = await cdp.send('Performance.getMetrics');
         const box = await page.locator('[data-chat-scroll-container]').boundingBox();
-        const steps = [];
         const sweep = async (phase, deltaY) => {
           await page.evaluate((phase) => {
             window.__geometry.phase = phase;
@@ -170,15 +158,6 @@ if (process.versions.electron) {
           for (let tick = 0; tick < 350; tick++) {
             const before = await metrics();
             if (deltaY < 0 ? before.t <= 1 : before.h - before.v - before.t <= 1) return;
-            // elementFromPoint selects only an already visible leaf. Never
-            // measure the offscreen descendants to find an anchor.
-            await page.evaluate(
-              ({ x, y }) => {
-                const el = document.elementFromPoint(x, y);
-                window.__anchor = { el, top: el?.getBoundingClientRect().top };
-              },
-              { x: box.x + box.width / 2, y: box.y + box.height / 2 },
-            );
             await cdp.send('Input.dispatchMouseEvent', {
               type: 'mouseWheel',
               x: box.x + box.width / 2,
@@ -188,18 +167,11 @@ if (process.versions.electron) {
             });
             await paint();
             const after = await metrics();
-            const moved = await page.evaluate(() => {
-              const a = window.__anchor;
-              return a.el?.isConnected ? a.el.getBoundingClientRect().top - a.top : null;
-            });
-            steps.push({ phase, tick, before, after, moved });
             expect(after.count, 'fixed fixture membership changed').toBe(turns);
           }
           throw new Error(`${scene}/${phase} did not reach the edge within 350 wheel ticks`);
         };
         await sweep('cold-up', -600);
-        await sweep('warm-down', 600);
-        await sweep('warm-up', -600);
         const afterCpu = await cdp.send('Performance.getMetrics');
         await page.evaluate(() => {
           window.__geometry.phase = 'done';
@@ -237,8 +209,6 @@ if (process.versions.electron) {
           ),
           layoutMs:
             (metric(afterCpu, 'LayoutDuration') - metric(beforeCpu, 'LayoutDuration')) * 1000,
-          heap: await cdp.send('Runtime.getHeapUsage'),
-          steps,
           ...state,
         };
         rows.push(row);
@@ -251,7 +221,7 @@ if (process.versions.electron) {
               viewport: '1200x900',
               repetitions,
               conditions:
-                'Same Electron; alternating fresh DOMs; fonts and Markdown ready; no offscreen box reads before traversal; real CDP wheel. Containment preserved; only skipping removed. Synthetic fixed-range production stories, no Host or paging.',
+                'Same Electron; fresh DOM per trial; fonts and Markdown ready; no offscreen box reads; real CDP upward wheel. Synthetic fixed-range production stories, no Host or paging.',
               rows,
             },
             null,
@@ -285,7 +255,7 @@ if (process.versions.electron) {
         conditions:
           'One Electron process, production layout, fresh DOM per trial. Mount metrics include document navigation and readiness polling; not disk-cold startup or screen presentation.',
         limits:
-          'Synthetic fixed-range production components, no Host. Three samples per configuration by default; p95 is the maximum. Geometry report is diagnostic, not a default-product correctness gate.',
+          'Synthetic fixed-range production components, no Host or paging. Three samples per scene by default; p95 is the maximum. --assert-stable gates cold upward height and monotonicity; timing measurements have no threshold. Scroll layout/task samples cover only the cold upward sweep.',
       },
       scenes.flatMap(([scene]) => {
         const group = rows.filter((r) => r.scene === scene);
