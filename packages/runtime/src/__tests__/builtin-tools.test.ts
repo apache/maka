@@ -1525,49 +1525,6 @@ describe('builtin Bash streaming output', () => {
     } satisfies RuntimeResourceReader;
     const read = buildBuiltinTools({ runtimeResources }).find((tool) => tool.name === 'Read');
     if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      jsonSchema: PromiseLike<Record<string, unknown>> | Record<string, unknown>;
-      validate(value: unknown): PromiseLike<{ success: boolean }> | { success: boolean };
-    };
-    const providerSchema = await parameters.jsonSchema;
-    // Anthropic-compatible: a plain top-level object with properties, and no
-    // top-level union combinator (#1228).
-    assert.strictEqual(providerSchema.type, 'object');
-    assert.strictEqual(providerSchema.anyOf, undefined);
-    assert.strictEqual(providerSchema.oneOf, undefined);
-    assert.strictEqual(providerSchema.allOf, undefined);
-    assert.deepStrictEqual(
-      Object.keys(providerSchema.properties as Record<string, unknown>).sort(),
-      ['limit', 'offset', 'path', 'ref'],
-    );
-    // The strict file-vs-ref union remains the authoritative runtime validator.
-    assert.strictEqual(
-      (await parameters.validate({ path: 'README.md', offset: 2, limit: 10 })).success,
-      true,
-    );
-    assert.strictEqual(
-      (await parameters.validate({ ref: 'maka://runtime/background-tasks/shell-run-1' })).success,
-      true,
-    );
-    assert.strictEqual((await parameters.validate({})).success, false);
-    assert.strictEqual(
-      (
-        await parameters.validate({
-          ref: 'maka://runtime/background-tasks/shell-run-1',
-          offset: 2,
-        })
-      ).success,
-      false,
-    );
-    assert.strictEqual(
-      (
-        await parameters.validate({
-          path: 'README.md',
-          ref: 'maka://runtime/background-tasks/shell-run-1',
-        })
-      ).success,
-      false,
-    );
     const context = {
       sessionId: 'session-1',
       runId: 'run-1',
@@ -1577,31 +1534,12 @@ describe('builtin Bash streaming output', () => {
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     };
-    await assert.rejects(
-      async () => read.impl({ path: 'maka://runtime/background-tasks/shell-run-1' }, context),
-      /must be read with the ref parameter/,
-    );
-    const result = await read.impl({ ref: 'maka://runtime/background-tasks/shell-run-1' }, context);
-
-    assert.deepStrictEqual(result, {
-      kind: 'shell_run',
-      ref: 'maka://runtime/background-tasks/shell-run-1',
-      mode: 'pipes',
-      status: 'running',
-      cwd: '/workspace',
-      cmd: 'sleep 60',
-      startedAt: 1,
-      updatedAt: 2,
-      revision: 2,
-      output: {
-        mode: 'pipes',
-        stdout: 'background task detail',
-        stderr: '',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
-    });
+    const result = (await read.impl(
+      { path: 'maka://runtime/background-tasks/shell-run-1' },
+      context,
+    )) as { content: string; metadata: { status: string } };
+    assert.equal(result.content, 'background task detail');
+    assert.equal(result.metadata.status, 'running');
     assert.deepStrictEqual(calls, [
       {
         sessionId: 'session-1',
@@ -1631,81 +1569,17 @@ describe('builtin Bash streaming output', () => {
       emitOutput: () => {},
     };
 
-    assert.deepEqual(await read.impl({ ref: 'maka://runtime/attachments/attachment-1' }, context), {
-      kind: 'text',
-      text: 'attachment marker',
-    });
-    assert.deepEqual(calls, [{ sessionId: 'session-1', artifactId: 'attachment-1' }]);
-  });
-
-  test('Read normalizes a blank ref to "no ref" before validating the file-or-resource union', async () => {
-    const read = buildBuiltinTools({
-      runtimeResources: {
-        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
+    assert.deepEqual(
+      await read.impl({ path: 'maka://runtime/attachments/attachment-1' }, context),
+      {
+        content: 'attachment marker',
+        offset: 0,
+        returnedLines: 1,
+        totalLines: 1,
+        next: null,
       },
-    }).find((tool) => tool.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      validate(value: unknown): PromiseLike<{
-        success: boolean;
-        value?: unknown;
-        error?: unknown;
-      }>;
-    };
-
-    // A blank ref alongside a path passes, and the ref key is dropped so the
-    // canonical input is the pure file variant.
-    const normalized = await parameters.validate({
-      path: 'config.yaml',
-      ref: '',
-      offset: 2,
-    });
-    assert.equal(normalized.success, true);
-    if (normalized.success) {
-      assert.deepEqual(normalized.value, { path: 'config.yaml', offset: 2 });
-      assert.ok(!('ref' in (normalized.value as Record<string, unknown>)));
-    }
-    assert.equal((await parameters.validate({ path: 'config.yaml', ref: '   ' })).success, true);
-    // A lone blank ref still fails: there is no readable target.
-    assert.equal((await parameters.validate({ ref: '' })).success, false);
-    assert.equal((await parameters.validate({ ref: '   ' })).success, false);
-  });
-
-  test('Read ignores provider defaults beside a non-empty runtime ref', async () => {
-    const read = buildBuiltinTools({
-      runtimeResources: {
-        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
-      },
-    }).find((tool) => tool.name === 'Read');
-    if (!read) throw new Error('Read tool missing');
-    const parameters = read.parameters as {
-      validate(value: unknown): PromiseLike<{
-        success: boolean;
-        value?: unknown;
-      }>;
-    };
-    const ref = 'maka://runtime/background-tasks/shell-run-1';
-
-    const normalized = await parameters.validate({
-      path: '',
-      offset: 0,
-      limit: 1,
-      ref,
-    });
-    assert.equal(normalized.success, true);
-    if (normalized.success) assert.deepEqual(normalized.value, { ref });
-
-    assert.equal(
-      (
-        await parameters.validate({
-          path: 'README.md',
-          offset: 0,
-          limit: 1,
-          ref,
-        })
-      ).success,
-      false,
     );
+    assert.deepEqual(calls, [{ sessionId: 'session-1', artifactId: 'attachment-1' }]);
   });
 
   test('StopBackgroundTask stops a runtime ref in the current session', async () => {

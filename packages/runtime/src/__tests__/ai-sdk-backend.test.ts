@@ -4438,7 +4438,7 @@ describe('AiSdkBackend model history', () => {
       serializedResult: string;
       bodySha256: string;
     }> = [];
-    const oldResult = { body: 'x'.repeat(500) };
+    const oldResult = { body: 'x'.repeat(20_000) };
     const transitions: ModelProjectionTransition[] = [];
     const backend = createBackend({
       connection: connection(),
@@ -4447,10 +4447,8 @@ describe('AiSdkBackend model history', () => {
       tools: [],
       contextBudget: {
         name: 'archive-test',
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         charsPerToken: 1,
       },
@@ -6402,10 +6400,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-transition-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6455,7 +6451,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-fold-1',
           name: 'Read',
-          result: { body: 'y'.repeat(400) },
+          result: { body: 'y'.repeat(20_000) },
           isError: false,
         },
       }),
@@ -6502,10 +6498,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-transition-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6555,10 +6549,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-summary-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6614,7 +6606,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-echo-1',
           name: 'Read',
-          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          result: { body: 'x'.repeat(20_000) + 'RAW_TRANSITIONED_TOOL_BODY' },
           isError: false,
         },
       }),
@@ -6652,10 +6644,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-summary-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6735,7 +6725,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-echo-1',
           name: 'Read',
-          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          result: { body: 'x'.repeat(20_000) + 'RAW_TRANSITIONED_TOOL_BODY' },
           isError: false,
         },
       }),
@@ -6757,7 +6747,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       summarizeHistoryCompact: echoSummarizer,
@@ -6793,10 +6783,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6836,7 +6824,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => recorded.at(-1),
@@ -6896,7 +6884,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'unreadable-target-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       loadModelProjectionTransitions: async () => ({
@@ -8969,7 +8957,7 @@ describe('AiSdkBackend usage telemetry', () => {
     // lands back in the conversation. Advertising the decoder is only half the
     // invariant; the other half is that calling it works from inside the turn.
     const durable = durableTurnHarness('turn-1', 'read the big file');
-    const largeBody = 'ARCHIVED_BODY_SENTINEL'.repeat(200);
+    const largeBody = 'x'.repeat(9_000) + 'ARCHIVED_BODY_SENTINEL';
     const store = new Map<string, string>();
     const prompts: unknown[] = [];
     let streamCalls = 0;
@@ -8998,12 +8986,21 @@ describe('AiSdkBackend usage telemetry', () => {
               streamCalls === 2
               ? call('tool-2', 'Bash', { cmd: 'continue' })
               : streamCalls === 3
-                ? call('tool-3', 'ArchiveRead', {
-                    // Read the ref out of the placeholder the runtime just
-                    // handed us, exactly as a model would.
-                    ref: /maka:\/\/archive\/[^"\\]+/.exec(JSON.stringify(prompt))?.[0] ?? 'missing',
-                    operation: 'read',
-                  })
+                ? call(
+                    'tool-3',
+                    'Read',
+                    (() => {
+                      const findNext = (value: any): any => {
+                        if (value?.kind === 'maka.archived_tool_result') return value.page.next;
+                        if (value && typeof value === 'object')
+                          for (const child of Object.values(value)) {
+                            const found = findNext(child);
+                            if (found) return found;
+                          }
+                      };
+                      return findNext(prompt);
+                    })(),
+                  )
                 : [
                     { type: 'stream-start', warnings: [] },
                     {
@@ -9029,7 +9026,7 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          impl: async () => ({ body: largeBody }),
+          impl: async () => ({ content: largeBody }),
         },
         {
           name: 'Bash',
@@ -9039,19 +9036,17 @@ describe('AiSdkBackend usage telemetry', () => {
         },
       ],
       contextBudget: {
-        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        toolResultPrune: { enabled: true },
       },
       // A real store, so the decoder has to reach what the writer actually wrote.
       toolResultArchive: createToolResultArchiveCapability({
         archiveToolResult: async (event) => {
-          const artifactId = `artifact-${store.size + 1}`;
-          store.set(artifactId, event.serializedResult);
-          return { artifactId };
+          store.set(event.runtimeEventId, event.serializedResult);
+          return { ledger: true };
         },
-        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
         readArchivedToolResultResource: async (event) => {
           const serializedResult =
-            event.storage === 'ledger' ? undefined : store.get(event.artifactId);
+            event.storage === 'event' ? store.get(event.runtimeEventId) : undefined;
           return serializedResult === undefined
             ? { ok: false, reason: 'not_found' }
             : { ok: true, serializedResult };
@@ -9063,13 +9058,13 @@ describe('AiSdkBackend usage telemetry', () => {
     for await (const event of backend.send(durable.input())) durable.record(event);
 
     assert.match(
-      store.get('artifact-1') ?? '',
+      [...store.values()][0] ?? '',
       /ARCHIVED_BODY_SENTINEL/,
       'the oversized Read result must have been archived',
     );
     const thirdPrompt = JSON.stringify(prompts[2]);
     assert.doesNotMatch(thirdPrompt, /ARCHIVED_BODY_SENTINEL/);
-    assert.match(thirdPrompt, /maka:\/\/archive\//);
+    assert.match(thirdPrompt, /maka:\/\/runtime\/tool-results\//);
     assert.match(
       JSON.stringify(prompts[3]),
       /ARCHIVED_BODY_SENTINEL/,
@@ -9081,7 +9076,7 @@ describe('AiSdkBackend usage telemetry', () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const largeBody = 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED'.repeat(200);
+    const largeBody = 'x'.repeat(20_000) + 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED';
     const archivedToolCallIds: string[] = [];
     let streamCalls = 0;
     const prompts: unknown[] = [];
@@ -9182,7 +9177,7 @@ describe('AiSdkBackend usage telemetry', () => {
         },
       ],
       contextBudget: {
-        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        toolResultPrune: { enabled: true },
       },
       toolResultArchive: testToolResultArchive({
         archiveToolResult: async (candidate) => {
@@ -9208,7 +9203,7 @@ describe('AiSdkBackend usage telemetry', () => {
       | undefined;
     assert.equal(streamCalls, 4);
     const secondPrompt = JSON.stringify(prompts[1]);
-    assert.match(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
+    assert.doesNotMatch(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.doesNotMatch(secondPrompt, /maka\.active_archived_tool_result/);
     const thirdPrompt = JSON.stringify(prompts[2]);
     assert.doesNotMatch(thirdPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
@@ -9222,15 +9217,17 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.match(fourthPrompt, /artifact-tool-1/);
     // Each result is archived once, no matter how many later steps rebuild the
     // Turn: the ledger, not a per-run memory, is what says it already happened.
-    assert.deepEqual(archivedToolCallIds, ['tool-1', 'tool-2']);
+    assert.deepEqual(archivedToolCallIds, ['tool-1']);
     for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
-      assert.equal(contextBudget?.activePrunedToolResults, 2);
-      assert.equal(contextBudget?.activeArchiveFailures, undefined);
-      assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
+      assert.equal(contextBudget?.prunedToolResults, 1);
+      assert.equal(contextBudget?.archiveWriteFailures, undefined);
+      assert.ok(
+        ((contextBudget?.prunedToolResultEstimatedTokensBefore as number | undefined) ?? 0) > 0,
+      );
     }
   });
 
-  test('projects superseded current-turn observations before the next provider step', async () => {
+  test('keeps small observations even when a newer Read supersedes their range', async () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const prompts: unknown[] = [];
@@ -9294,10 +9291,8 @@ describe('AiSdkBackend usage telemetry', () => {
       ],
       contextBudget: {
         charsPerToken: 1,
-        activeToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxCurrentResultEstimatedTokens: 10_000,
-          minSupersededResultEstimatedTokens: 1,
         },
       },
       toolResultArchive: testToolResultArchive({
@@ -9311,13 +9306,13 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(streamCalls, 3);
     assert.match(JSON.stringify(prompts[1]), /OLD_READ_RESULT/);
     const thirdPrompt = JSON.stringify(prompts[2]);
-    assert.doesNotMatch(thirdPrompt, /OLD_READ_RESULT/);
+    assert.match(thirdPrompt, /OLD_READ_RESULT/);
     assert.match(thirdPrompt, /NEW_READ_RESULT/);
-    assert.match(thirdPrompt, /newer_read_covers_range/);
+    assert.doesNotMatch(thirdPrompt, /maka\.archived_tool_result/);
     const usageMessage = messages.find(
       (message) => (message as { type?: string }).type === 'token_usage',
     ) as { contextBudget?: Record<string, unknown> } | undefined;
-    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, 1);
+    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, undefined);
     assert.equal(usageMessage?.contextBudget?.activeDuplicateToolResults, undefined);
   });
 

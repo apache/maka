@@ -22,6 +22,7 @@ import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
+import { readParameters, resolveReadInput } from '@maka/runtime/read-page';
 
 const HEADLESS_CODING_V1_TOOL_NAMES = [
   'Bash',
@@ -58,17 +59,10 @@ const WORKHUB_COORDINATION_V1_SYSTEM_PROMPT = [
   'Never claim to have inspected files, run commands, changed a Session, or completed concrete work.',
 ].join(' ');
 
-const WORKHUB_ATTACHMENT_READ_PARAMETERS = z
-  .object({
-    ref: z
-      .string()
-      .refine(
-        (value) => parseAttachmentResourceRef(value) !== null,
-        'Expected a Session attachment reference',
-      )
-      .describe('The maka://runtime/attachments/ reference provided with a user attachment.'),
-  })
-  .strict();
+const WORKHUB_ATTACHMENT_READ_PARAMETERS = readParameters.refine(
+  (input) => parseAttachmentResourceRef(resolveReadInput(input).path) !== null,
+  'Expected a Session attachment path',
+);
 
 export interface HostedExecutionRunProfile {
   readonly toolNames: readonly string[];

@@ -150,14 +150,41 @@ export function createLedgerToolResultArchiveReader(
 
 export function createLedgerArchiveResourceReader(evidence: ToolResultArchiveEvidenceReader) {
   const reader = createLedgerToolResultArchiveReader(evidence);
-  return (input: LedgerArchiveResourceIdentity & { sessionId: string; maxBytes: number }) =>
-    reader({
+  return async (
+    input: (LedgerArchiveResourceIdentity | { storage: 'event'; runtimeEventId: string }) & {
+      sessionId: string;
+      maxBytes: number;
+    },
+  ) => {
+    if (input.storage === 'event') {
+      const loaded = await evidence.read({
+        sessionId: input.sessionId,
+        runtimeEventId: input.runtimeEventId,
+      });
+      if (!loaded.ok) return { ok: false as const, reason: 'not_found' as const };
+      const transitions = loaded.transitions.map((record) =>
+        decodeLedgerTransition(record, input.sessionId),
+      );
+      if (transitions.some((transition) => !transition))
+        return { ok: false as const, reason: 'corrupt' as const };
+      const reduction = reduceEffectiveModelProjections(
+        [loaded.event],
+        transitions as ModelProjectionTransition[],
+      );
+      const replacement = reduction.applied.at(-1)?.replacement;
+      const placeholder: unknown = replacement?.kind === 'json' ? replacement.value : undefined;
+      if (!isArchivedToolResultPlaceholder(placeholder))
+        return { ok: false as const, reason: 'not_found' as const };
+      return reader({ ...placeholder, sessionId: input.sessionId, maxBytes: input.maxBytes });
+    }
+    return reader({
       ...input,
       kind: 'maka.archived_tool_result',
       rewriteVersion: 2,
       originalEstimatedTokens: 1,
       reason: 'stale_tool_result_pruned_before_compact',
     });
+  };
 }
 
 /** Verify reconstructibility before committing a replacement; does not write any payload. */

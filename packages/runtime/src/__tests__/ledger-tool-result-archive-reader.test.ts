@@ -343,27 +343,20 @@ test('new archive commits only a v2 ledger reference and is readable through the
   assert.ok(outcome);
   assert.equal(outcome.placeholder.rewriteVersion, 2);
   assert.equal(outcome.placeholder.artifactId, undefined);
-  assert.match(outcome.placeholder.resourceRef!, /^maka:\/\/archive-ledger\/v1\//);
+  assert.match(outcome.placeholder.resourceRef!, /^maka:\/\/runtime\/tool-results\//);
   const reader = createLedgerToolResultArchiveReader(evidence);
   assert.deepEqual(await reader({ ...outcome.placeholder, sessionId: 'session' }), {
     ok: true,
     serializedResult: f.body,
   });
   const resource = createLedgerArchiveResourceReader(evidence);
-  const read = await readToolResultArchiveResource(
-    {
-      readArchivedToolResultResource: (input) =>
-        input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
-    },
-    'session',
-    { ref: outcome.placeholder.resourceRef!, operation: 'read' },
-  );
-  assert.match(JSON.stringify(read), /bounded model output/);
-  assert.ok(parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef!));
-  assert.equal(
-    parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef! + '#extra'),
-    null,
-  );
+  const read = await resource({
+    storage: 'event',
+    runtimeEventId: 'response',
+    sessionId: 'session',
+    maxBytes: 4 * 1024 * 1024,
+  });
+  assert.deepEqual(read, { ok: true, serializedResult: f.body });
 });
 
 test('preflight and transition failure leave the source projection unchanged', async () => {

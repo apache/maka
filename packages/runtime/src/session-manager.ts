@@ -693,13 +693,9 @@ export interface BackendFactoryContext {
    * policy, but must never append, substitute, or otherwise expose an
    * agent-permission tool outside this exact set.
    *
-   * Runtime protocol tools are outside that ceiling by construction (#2026).
-   * `ArchiveRead` decodes a placeholder the runtime itself generated during
-   * pruning; it grants no reach the parent did not already exercise, and
-   * withholding it only strands content the model was explicitly told to
-   * retrieve. The backend therefore binds it from the archive capability, not
-   * from this set, which is why narrowing a child's allowlist can no longer
-   * silently strip the decoder for placeholders that child will still receive.
+   * Session tool-result reads remain available through Read when archiving is
+   * enabled. The backend wraps an existing Read or supplies a resource-only
+   * Read; it never adds filesystem access to a restricted tool set.
    */
   tools?: readonly MakaTool[];
   /** Turn-scoped shell plan captured with a bound child tool ceiling. */

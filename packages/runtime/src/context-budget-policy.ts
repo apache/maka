@@ -48,21 +48,11 @@ export function buildDefaultContextBudgetPolicy(
   );
   return {
     name: options.name ?? 'default-history-budget',
-    staleToolResultPrune: {
-      enabled: true,
-      maxResultEstimatedTokens: 2_048,
-      minRecentTurnsFull: 2,
-    },
+    toolResultPrune: { enabled: true },
     historyCompact: {
       enabled: true,
       highWaterName: `${surfaceName}-history-compact`,
       midTurn: { enabled: true },
-    },
-    activeToolResultPrune: {
-      enabled: true,
-      maxCurrentResultEstimatedTokens: 2_048,
-      minSupersededResultEstimatedTokens: 256,
-      minStepNumber: 1,
     },
   };
 }

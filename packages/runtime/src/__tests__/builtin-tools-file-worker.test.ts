@@ -191,7 +191,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     await runTool(tools, 'Read', { path: 'image.png', offset: 1, limit: 1 }, cwd);
 
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
+    assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png' });
     assert.equal(snapshotOwnerId, 'toolop-Read');
   });
 

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readToolResultPage } from '../read-page.js';
 import {
   createLedgerToolResultArchiveReader,
   createLedgerArchiveResourceReader,
@@ -85,7 +86,6 @@ import {
 } from '../model-projection-transition-ledger.js';
 import {
   archivedToolResultProjection,
-  collectReachableArchiveArtifactIds,
   serializedToolResultProjection,
 } from '../tool-result-archive-transition.js';
 import {
@@ -2828,7 +2828,7 @@ for (const inspectFirst of [false, true]) {
         version: 1,
         kind: 'content',
         parts: [
-          { kind: 'text', text: 'caption' },
+          { kind: 'text', text: 'caption'.repeat(1500) },
           { kind: 'artifact', mediaType: 'image/png', ref: imageRef },
         ],
       };
@@ -2901,22 +2901,47 @@ for (const inspectFirst of [false, true]) {
         data: { runtimeEventId: result.id, part: 'tool_result', transition },
       });
       const sourceRecords = await runStore.readEvents('session-source', 'run-source');
+      const firstPage = readToolResultPage(serialized, { path: placeholder.resourceRef! });
+      assert.ok(firstPage.next?.path.startsWith('maka://read/'));
+      for (const event of [
+        runtimeEvent({
+          id: 'page-call',
+          ts: 4.1,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'page-tool',
+            name: 'Read',
+            args: { path: placeholder.resourceRef! },
+          },
+        }),
+        runtimeEvent({
+          id: 'page-response',
+          ts: 4.2,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'page-tool',
+            name: 'Read',
+            result: { kind: 'json', value: firstPage },
+            modelProjection: { version: 1, kind: 'json', value: firstPage as never },
+          },
+        }),
+      ])
+        await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+
       if (inspectFirst) {
         const resource = createLedgerArchiveResourceReader({
           read: async () => ({ ok: true, event: result, transitions: sourceRecords }),
         });
-        const inspected = await readToolResultArchiveResource(
-          {
-            readArchivedToolResultResource: (input) => {
-              assert.equal(input.storage, 'ledger');
-              return input.storage === 'ledger'
-                ? resource(input)
-                : { ok: false, reason: 'not_found' };
-            },
-          },
-          'session-source',
-          { ref: placeholder.resourceRef!, operation: 'inspect' },
-        );
+        const inspected = {
+          kind: 'tool_result_archive',
+          ref: placeholder.resourceRef,
+          storage: 'ledger',
+          runtimeEventId: result.id,
+        };
         await runtimeEventStore.appendRuntimeEvent(
           'session-source',
           'run-source',
@@ -3037,7 +3062,7 @@ for (const inspectFirst of [false, true]) {
       const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
         'session-source',
       );
-      await cloneConversationRuntimeLedger({
+      const copiedLedger = await cloneConversationRuntimeLedger({
         plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
         copiedMessages: source.messages,
         referenceMap: {
@@ -3072,6 +3097,29 @@ for (const inspectFirst of [false, true]) {
       assert.equal(copiedPlaceholder.rewriteVersion, 2);
       assert.notEqual(copiedPlaceholder.bodySha256, placeholder.bodySha256);
       assert.notEqual(copiedPlaceholder.resourceRef, placeholder.resourceRef);
+      const copiedPageEvent = targetEvents.find(
+        (event) => event.content?.kind === 'function_response' && event.content.id === 'page-tool',
+      );
+      assert.ok(copiedPageEvent?.content?.kind === 'function_response');
+      const copiedPage = (
+        copiedPageEvent.content.result as {
+          value: { next: { path: string }; continuationReset: string };
+        }
+      ).value;
+      assert.deepEqual(copiedPage.next, { path: copiedPlaceholder.resourceRef });
+      assert.match(copiedPage.continuationReset, /copied resource changed/);
+      assert.deepEqual(
+        copiedPageEvent.content.modelProjection?.kind === 'json'
+          ? copiedPageEvent.content.modelProjection.value
+          : undefined,
+        copiedPage,
+      );
+      const storedPage = copiedLedger.copiedMessages.find(
+        (message) => message.type === 'tool_result' && message.toolUseId === 'page-tool',
+      );
+      assert.ok(storedPage?.type === 'tool_result');
+      assert.deepEqual(storedPage.content, { kind: 'json', value: copiedPage });
+
       const read = createLedgerToolResultArchiveReader({
         read: async () => ({
           ok: true,
@@ -3118,12 +3166,14 @@ for (const inspectFirst of [false, true]) {
         const reread = await readToolResultArchiveResource(
           {
             readArchivedToolResultResource: (input) =>
-              input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
+              input.storage === 'ledger' || input.storage === 'event'
+                ? resource(input)
+                : { ok: false, reason: 'not_found' },
           },
           'session-target',
-          { ref: output.ref, operation: 'read' },
+          { path: output.ref },
         );
-        assert.equal((reread as { ok: boolean }).ok, true);
+        assert.equal('content' in (reread as object), true);
         const dependent = transitions.transitions.find(
           (transition) => transition.target.runtimeEventId === response.id,
         )!;
@@ -3343,10 +3393,6 @@ test('conversation copy rebuilds projection transitions against the copied event
     assert.equal(effective.content.result.runtimeEventId, targetResult.id);
     // Only the surviving placeholder's archive is reachable; the one it
     // superseded is not, and cleanup may reclaim it.
-    assert.deepEqual(
-      [...collectReachableArchiveArtifactIds(reduced.events)],
-      ['artifact-target-2'],
-    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -3512,10 +3558,6 @@ test('conversation copy carries a transition recorded by a later, uncopied run',
     const reduced = reduceEffectiveModelProjections(targetEvents, copied.transitions);
     assert.equal(reduced.applied.length, 1);
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
-    assert.deepEqual(
-      [...collectReachableArchiveArtifactIds(reduced.events)],
-      ['artifact-target-1'],
-    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

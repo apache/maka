@@ -127,7 +127,7 @@ type CallKind =
   | 'partialThenOverflowPart';
 
 const RETRY_STEP_TEXT_SENTINEL = 'RETRY_STEP_TEXT_SENTINEL reasoning before the big read';
-const BIG_RESULT = 'BIG_RESULT_'.repeat(200);
+const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 
 interface ReactiveFixtureOptions {
   script: CallKind[];
@@ -174,7 +174,7 @@ interface ReactiveFixtureOptions {
    */
   slowAppendMessage?: boolean;
   /** Enable the active tool-result prune with a small threshold + archive seam. */
-  activeToolResultPrune?: boolean;
+  toolResultPrune?: boolean;
   /** Test-only gate before a numbered provider request starts. */
   beforeStream?: (call: number) => Promise<void>;
   /** Test-only replacement for the Runtime-owned retry clock. */
@@ -722,11 +722,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         enabled: true,
         ...(midTurnEnabled ? { midTurn: { enabled: true } } : {}),
       },
-      ...(options.activeToolResultPrune
-        ? { activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 100 } }
-        : {}),
+      ...(options.toolResultPrune ? { toolResultPrune: { enabled: true } } : {}),
     },
-    ...(options.activeToolResultPrune
+    ...(options.toolResultPrune
       ? {
           toolResultArchive: testToolResultArchive({
             archiveToolResult: () => ({ artifactId: 'artifact-archived-1' }),
@@ -1777,7 +1775,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     const fixture = buildReactiveFixture({
       script: ['bigread', 'overflow', 'done'],
       bigPriors: true,
-      activeToolResultPrune: true,
+      toolResultPrune: true,
     });
     await runTurn(fixture);
 

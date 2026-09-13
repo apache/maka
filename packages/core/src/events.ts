@@ -870,6 +870,7 @@ export type ToolResultContent =
        * (#4283), so the archived-result read model spans both reasons.
        */
       reason:
+        | 'tool_result_pruned'
         | 'stale_tool_result_pruned_before_compact'
         | 'active_current_turn_tool_result_pruned_before_next_step';
     }

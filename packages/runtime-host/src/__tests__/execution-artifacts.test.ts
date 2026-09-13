@@ -208,22 +208,26 @@ for (const largeImage of [false, true]) {
       evidence = await openToolResultArchiveEvidenceReader(owner.lease);
       services = make();
       assert.deepEqual(
-        await services.toolResultArchive.services.readToolResultArchive({
-          ...placeholder,
+        await services.toolResultArchive.services.readArchivedToolResultResource({
+          storage: 'event',
+          runtimeEventId: placeholder.runtimeEventId,
+          maxBytes: input.originalBytes,
           sessionId: 'session',
         }),
         { ok: true, serializedResult },
       );
       assert.equal(
         (
-          await services.toolResultArchive.services.readToolResultArchive({
-            ...placeholder,
+          await services.toolResultArchive.services.readArchivedToolResultResource({
+            storage: 'event',
+            runtimeEventId: placeholder.runtimeEventId,
+            maxBytes: input.originalBytes,
             sessionId: 'other',
           })
         ).ok,
         false,
       );
-      const identity = parseToolResultArchiveResourceRef(placeholder.resourceRef!);
+      const identity = { storage: 'event' as const, runtimeEventId: placeholder.runtimeEventId };
       assert.ok(identity);
       assert.deepEqual(
         await services.toolResultArchive.services.readArchivedToolResultResource({
@@ -433,9 +437,9 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
     });
     const archived = { artifactId: legacy.id };
     assert.deepEqual(
-      await services.toolResultArchive.services.readToolResultArchive({
+      await services.toolResultArchive.services.readArchivedToolResultResource({
         ...archiveInput,
-        kind: 'maka.archived_tool_result',
+        maxBytes: archiveInput.originalBytes,
         artifactId: archived.artifactId,
       }),
       { ok: true, serializedResult },
@@ -451,9 +455,9 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
         requestDrain: () => assert.fail('reading an upgraded archive must not drain'),
       });
       assert.deepEqual(
-        await successor.toolResultArchive.services.readToolResultArchive({
+        await successor.toolResultArchive.services.readArchivedToolResultResource({
           ...archiveInput,
-          kind: 'maka.archived_tool_result',
+          maxBytes: archiveInput.originalBytes,
           artifactId: archived.artifactId,
         }),
         { ok: true, serializedResult },
