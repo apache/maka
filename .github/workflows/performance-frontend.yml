@@ -35,14 +35,30 @@ jobs:
       - run: npm ci
       - run: npm --workspace @maka/desktop run build:workspace-deps
       - run: npm --workspace @maka/desktop run build
+      - run: npm --workspace @maka/desktop run build-storybook
       - id: browsers
         run: npx playwright install --with-deps chromium
       - name: Fetch exact experiment sources
-        run: git fetch --depth=1 origin 839d14535a541ef0da29ea4d6626a2e3d0e32a8e 0039a230754a4bd832653f481194fb40516464db
-      - name: Paired page admission ablation on real Host
+        run: git fetch --depth=1 origin 839d14535a541ef0da29ea4d6626a2e3d0e32a8e 0039a230754a4bd832653f481194fb40516464db b65a8c16476c61336c87b9838f161886df26c5e1
+      - name: Virtual history continuity and selection
+        run: |
+          node --input-type=module <<'JS'
+          import { chromium } from '@playwright/test';
+          import { startStaticServer, smokeStory } from './scripts/storybook-visual-smoke.mjs';
+          const server = await startStaticServer('apps/desktop/storybook-static');
+          const browser = await chromium.launch();
+          try {
+            const page = await browser.newPage();
+            await smokeStory(page, server.baseUrl, {
+              storyId: 'product-shell-official-appshell--virtual-history-continuity',
+              colorScheme: 'light', palette: 'default',
+            });
+          } finally { await browser.close(); await server.close(); }
+          JS
+      - name: Paired viewport mounting on real Host
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
-          MAKA_PERF_VARIANTS: A,F,F,A,A,F
+          MAKA_PERF_VARIANTS: A,V,V,A,A,V
           MAKA_PERF_TARGET_TURN: '60'
         run: xvfb-run -a node scripts/perf/scroll-paired.mjs
       - name: Upload raw measurements and diagnostics

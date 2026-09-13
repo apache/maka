@@ -28,12 +28,14 @@ const refs = {
   D: '0039a230754a4bd832653f481194fb40516464db',
   E: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
   F: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
+  V: 'b65a8c16476c61336c87b9838f161886df26c5e1',
 };
 const files = [
   'packages/ui/src/chat-view.tsx',
   'packages/ui/src/use-chat-scroll.ts',
   'packages/ui/src/transcript-scroll-authority.tsx',
   'apps/desktop/src/renderer/platform/desktop/desktop-transcript-range-store.ts',
+  'packages/ui/src/use-transcript-known-space.ts',
 ];
 const original = files.map((file) => readFileSync(file));
 const output = path.resolve(process.env.MAKA_PERF_OUTPUT ?? 'perf-results');
@@ -46,8 +48,11 @@ if (order.some((variant) => !(variant in refs))) throw new Error('Unknown scroll
 mkdirSync(output, { recursive: true });
 try {
   for (const [index, variant] of order.entries()) {
-    for (const file of files)
-      writeFileSync(file, execFileSync('git', ['show', refs[variant] + ':' + file]));
+    for (const file of files) {
+      const ref =
+        file.endsWith('use-transcript-known-space.ts') && variant !== 'V' ? refs.B : refs[variant];
+      writeFileSync(file, execFileSync('git', ['show', ref + ':' + file]));
+    }
     {
       const file = files[3];
       let source = readFileSync(file, 'utf8');
