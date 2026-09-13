@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -9,12 +29,13 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ScheduledTask } from '@maka/core/scheduled-task';
-import type { ProjectRecord } from '@maka/core/project';
-import type { QuoteRef } from '@maka/core/events';
-import type { SessionSummary } from '@maka/core/session';
+import type {
+  FollowUpMode,
+  InlineReference,
+  QuoteRef,
+} from '@maka/core/events';
+import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { isLinkedSubagentSession } from '@maka/core/session';
@@ -22,8 +43,6 @@ import { resolveUiLocale } from '@maka/core/ui-locale';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
-  ScheduledTasksPage,
-  DailyReviewPage,
   ChatSurfaceLayout,
   type ComposerHandle,
   type ComposerSendMetadata,
@@ -32,136 +51,121 @@ import {
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
-  ModuleHubSelector,
   ToastProvider,
+  type ToastDiagnosticTarget,
   type ToastErrorAction,
   type NavSelection,
+  type ProjectRowActions,
   SessionListPanel,
-  type SessionHistoryGroup,
-  SkillsPage,
-  type SessionViewMode,
   TitlebarSessionIdentity,
   type TurnFooterActionMeta,
-  type WorkspacePickerModel,
   useToast,
   activeInteractionFor,
+  deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
-  enqueueInteraction,
-  getConversationCopy,
-  getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
-import {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-} from './task-readiness-notice';
-import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
-import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
+import * as Conversation from './features/conversation';
+import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
-import { ChatComposerRegion } from './chat-composer-region';
-import { ChatWorkbar } from './chat-workbar';
-import type {
-  SessionWorkbarPlacement,
-  SessionWorkbarTab,
-  SessionWorkbarTabKind,
-} from './session-workbar-tabs';
+import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
-  findPreferredSideChatWorkbarTab,
-  terminalRefFromWorkbarTab,
-  terminalSessionWorkbarTabId,
-} from './session-workbar-tabs';
+  WorkbarHost,
+  WorkbarTitlebarActions,
+  useWorkbarController,
+} from './features/workbar';
+import { AppUpdateProvider } from './features/app-update/index.js';
+import * as Goals from './features/goals';
+import * as ModuleHub from './features/module-hub';
+import type { HistoryDraftHostInput } from './features/module-hub';
 import {
-  consumeCompanionInitialPrompt,
-  consumeCompanionQuoteSnapshot,
-  openCompanionPanel,
-  removeStagedCompanionQuote,
-  stageCompanionQuote,
-} from './quote-companion-panel-state';
-import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
+  captureActiveComposerClaim as captureComposerClaim,
+  createComposerSurfaceAuthority,
+} from './shell/composer-surface';
+import { hasWorkspaceActions, resolveShellDetailView } from './shell/detail-view';
+import {
+  SessionNavigationProvider,
+  createSessionOpenCommand,
+  sessionRailLayoutStore,
+  useSessionNavigationReads,
+  type SessionNavigationPorts,
+  type SessionNavigationRowActions,
+} from './features/session-navigation';
+import * as TaskEntry from './features/task-entry';
+import type { TaskEntryShellProjection } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
-import { sideChatTitleFromPrompt } from './side-chat-command';
-import { parseDesktopSlashCommand } from './desktop-slash-command';
+import { SessionCollaborationDialog } from './session-collaboration-dialog';
+import * as SessionCollaboration from './features/session-collaboration';
+import { NEW_TASK_PENDING_KEY } from './pending-items';
 import {
-  applyCompanionForkVisibilityEvent,
-  reconcileCompanionForkVisibility,
-} from './quote-companion-visibility';
+  desktopSlashCommandAvailability,
+  parseDesktopSlashCommand,
+} from './desktop-slash-command';
+import {
+  mergeWorkspaceReferences,
+  rebaseWorkspaceFileReferences,
+} from './follow-up-submit-routing';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
   usePlanModeState,
 } from './plan-mode-panel';
-import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
-  AppUpdateStatus,
   DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
-import {
-  isAppUpdateInstallFailure,
-  requestDownloadedAppUpdate,
-} from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
-  SideChatCloseConfirmation,
-  SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY,
-} from './side-chat-close-confirmation';
-import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
+  getShellCopy,
+  localizedShellErrorMessage,
+  confirmBypassPermission,
+  sessionSettingFailureCopy,
+} from './locales/shell-copy';
+import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
+import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
-import { useSessionGoal } from './use-session-goal';
+import { useSessionSettingIntent } from './features/session-settings';
 import { deriveStaleSessionIds } from './stale-sessions';
-import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
-import { deriveSessionRail } from './session-rail';
+import { pendingSessionView } from './pending-session-view';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
-import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
-import { sessionMatchesRail } from './session-nav-filter';
-import { deriveSessionRevisionNavigation } from './session-revisions';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { useActiveExecutionBoundary } from './use-active-execution-boundary';
-import {
-  SESSION_LIST_EXPANDED_MAX_WIDTH,
-  SESSION_LIST_EXPANDED_MIN_WIDTH,
-  readSessionListViewMode,
-} from './session-list-layout';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-chrome-actions';
-import { updateReminderFromStatus } from './app-shell-app-update';
+import {
+  createContextCompactionPresentation,
+  presentContextCompactionResult,
+} from './app-shell-context-compaction';
+import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
-import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
-import { useAppShellModuleData } from './use-module-data';
-import { useKeepSystemAwake } from './use-keep-system-awake';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
 } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import {
-  createAppShellChatActions,
-  type WorkspaceFileReferencePosition,
-} from './app-shell-chat-actions';
+import { createAppShellChatActions } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   abandonTurnRevisionCopyAttempt,
@@ -170,9 +174,6 @@ import {
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
-import { createAppShellDailyReviewActions } from './app-shell-daily-review-actions';
-import { createAppShellSessionRowActions } from './app-shell-session-row-actions';
-import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
 import {
@@ -184,84 +185,36 @@ import {
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
-import {
-  EMPTY_LIVE_CONTENT_SEED,
-  beginLiveContentSeed,
-  completeLiveContentSeed,
-  liveContentSeedRevision,
-  type LiveContentSeed,
-} from './live-content-seed';
+import * as liveContent from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
-import { useKeyedPendingRegistry } from './use-pending-action-registry';
-import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
+import { useTurnActionRegistry } from './use-turn-action-registry';
+import { useComposerAttachments, desktopSlashCommandPresentation } from './features/conversation/index.js';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
-import { useComposerMentions } from './use-composer-mentions';
+import {
+  type ComposerMentionsSurfaceInput,
+  renderComposerMentionsProvider,
+} from './composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
-import { useNewTaskTarget } from './use-new-task-target';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
-import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
-import { recoverOrphanedCompanionCopies } from './quote-companion-core';
-import { useSideConversationWorkspace } from './use-side-conversation-workspace';
-
-function rebaseWorkspaceFileReferences(
-  sourceText: string,
-  projectedText: string,
-  references: readonly WorkspaceFileReferencePosition[],
-): WorkspaceFileReferencePosition[] {
-  const offset = sourceText.lastIndexOf(projectedText);
-  if (offset < 0) return [];
-  return references
-    .filter(
-      (reference) =>
-        reference.start >= offset &&
-        reference.start + reference.value.length <= offset + projectedText.length,
-    )
-    .map((reference) => ({ ...reference, start: reference.start - offset }));
-}
 
 import { useSettingsModal } from './use-settings-modal';
-import { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
-import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
-
-type ComposerImportOwner = {
-  sessionId: string | undefined;
-  navSection: NavSelection['section'];
-  newTaskDraftKey?: string;
-};
-
-function newTaskDraftKey(target: {
-  profileId: string;
-  hostId: string;
-  projectId: string | null;
-} | undefined): string {
-  return target
-    ? JSON.stringify(['new-task', target.profileId, target.hostId, target.projectId])
-    : UNRESOLVED_NEW_TASK_DRAFT_KEY;
-}
 
 /**
  * Grace period before the committed-history fallback force-settles an
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-/**
- * Module surfaces that own their whole column and render no workspace toolbar.
- * This used to be a `display: none` rule keyed on the detail panel's
- * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
- * a descendant of the detail panel, so the condition belongs here.
- */
-const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
-
+const { useSessionCollaborationDialog } = SessionCollaboration;
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -275,18 +228,15 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      onClick: (input) => {
-        void window.maka.diagnostics.copyErrorReport({
-            surface: 'toast',
-            title: input.title,
-            ...(input.description ? { description: input.description } : {}),
-            ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
-            ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
-            rendererUserAgent: navigator.userAgent,
-            rendererLocale: navigator.language,
-          })
-          .catch(() => undefined);
-      },
+      failureTitle: getShellCopy(uiLocale).commandActions.copyFailedTitle,
+      failureDescription: getShellCopy(uiLocale).commandActions.clipboardDenied,
+      onClick: (input) => window.maka.diagnostics.copyReport({
+        surface: 'toast',
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+        ...(input.diagnosticTarget ? { target: input.diagnosticTarget } : {}),
+      }),
     }),
     [uiLocale],
   );
@@ -300,13 +250,16 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
       <AstryxLocaleProvider>
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
-            <AppShellContent
-              initialOnboardingSnapshot={initialOnboardingSnapshot}
-              uiLocale={uiLocale}
-              uiLocaleOverride={uiLocaleOverride}
-              setUiLocaleOverride={setUiLocaleOverride}
-              setUiLocalePreference={setUiLocalePreference}
-            />
+            <AppUpdateProvider>
+              <WorkHubControlOverlay />
+              <TaskEntry.TaskEntryRoot>
+                {(taskEntry) => (
+                  <AppShellContent
+                    {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                  />
+                )}
+              </TaskEntry.TaskEntryRoot>
+            </AppUpdateProvider>
           </ErrorBoundary>
         </ToastProvider>
       </AstryxLocaleProvider>
@@ -314,129 +267,163 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   );
 }
 
-function nextSideChatOrdinal(tabs: readonly SessionWorkbarTab[]): number {
-  return (
-    tabs.reduce(
-      (highest, tab, index) =>
-        tab.kind === 'side-chat'
-          ? Math.max(highest, tab.ordinal ?? index + 1)
-          : highest,
-      0,
-    ) + 1
-  );
-}
-
-function nextTerminalOrdinal(tabs: readonly SessionWorkbarTab[]): number {
-  return (
-    tabs.reduce(
-      (highest, tab, index) =>
-        tab.kind === 'terminal'
-          ? Math.max(highest, tab.ordinal ?? index + 1)
-          : highest,
-      0,
-    ) + 1
-  );
-}
+/**
+ * The Session rail, as one element built once.
+ *
+ * AppShell re-renders about fourteen times per session switch. Written inline
+ * in the JSX below, each of those rebuilt this element and re-rendered the
+ * rail's ~1,000 fibers with it; hoisted here, React sees the same element and
+ * skips the subtree, and what reaches the rail is the two rail contexts alone.
+ * The panel takes no props for exactly this reason (#4109).
+ */
+const SESSION_RAIL = <SessionListPanel />;
 
 function AppShellContent({
   initialOnboardingSnapshot = null,
+  taskEntry,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
+  taskEntry: TaskEntryShellProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
-  const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
-  const updateInstallInFlightRef = useRef(false);
-  const notifiedInstallErrorRef = useRef<string | null>(null);
+  const sharedSessionDialog = useSessionCollaborationDialog();
+  const previousInterruptionShownRef = useRef(false);
   const {
     sessions,
+    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
-    setSessions,
     refreshSessions,
     seedSessions,
-    upsertSessionSummary,
-    markSessionReadLocally,
     activeId,
     activeIdRef,
+    requestedSessionId,
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
+    captureSelection,
+    isSessionSelected,
+    retiredSessionIds,
     messages,
+    transientMessages,
     setMessages,
+    commitTranscript,
+    addTransientMessage,
+    updateTransientMessage,
+    retireCancelledTransientMessages,
+    removeTransientMessage,
     transcriptRangeRef,
+    publishedTranscriptRange,
+    publishTranscript,
+    isMessagePublished,
     messageLoadPending,
     setMessageLoadPending,
-    messageRetryPendingRef,
-    stopPendingRef,
     sessionUiController,
-    liveTurnBySessionRef,
-    sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
-    setStopPendingBySession,
-    setLiveTurnBySession,
-    confirmLiveTurn,
-    setShellRunUpdatesBySession,
-    setInteractionBySession,
-    setSessionEventHealthBySession,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
+    activeCatalogSession,
+    activeHostSession,
+    requestedCatalogSession,
+    requestedHostSession,
+    sharedSessionActive,
+    ownerActiveId,
+    switchingSession,
   } = useAppShellSessionWorkspace(toastApi);
-  const interactionHydrationEpochRef = useRef(new Map<string, number>());
+  // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
+  const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
-    const epochs = interactionHydrationEpochRef.current;
-    epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+    const pending = interactionHydrationRef.current;
+    if (pending?.sessionId === sessionId) interactionHydrationRef.current = null;
   }, []);
 
+  const {
+    settingsOpen,
+    settingsRequest,
+    settingsProviderCatalogOpen,
+    settingsConnectionDetailSlug,
+    settingsCreateProviderType,
+    setSettingsOpen,
+    closeSettingsModal,
+    setSettingsProfileId,
+    openSettings,
+    openSettingsSection,
+    openComputerHistorySettings,
+    openProjectSettings,
+    openProviderCatalog,
+    openConnectionDetail,
+    openProviderCreate,
+  } = useSettingsModal();
+
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
-  const newTask = useNewTaskTarget({ toastApi, uiLocale });
-  const currentNewTaskDraftKey = newTaskDraftKey(newTask.target);
-  const attachmentDraftKey = activeId ?? currentNewTaskDraftKey;
+  // The owner bridge keeps commands stable while TaskEntryRoot swaps the
+  // current feature-owned implementation below the shell.
+  const { selectLocalProject } = taskEntry.commands;
+  const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
+  // Staged files and quotes do NOT take the target-scoped key: they belong to
+  // the composer the user is looking at, and an in-flight send needs an owner
+  // that cannot move under it. See NEW_TASK_PENDING_KEY.
+  const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
+  const directoryHostId = activeId
+    ? (activeCatalogSession?.profileKind === 'local'
+        ? activeCatalogSession.runtimeHostId
+        : undefined)
+    : (taskEntry.selectors.selectedHost?.kind === 'local'
+        ? taskEntry.selectors.target?.hostId
+        : undefined);
   const {
     pendingAttachments,
+    submittableAttachments,
+    hasPendingContext,
+    directoryOptions,
+    directoryComposerProps,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
-    clearSubmittedAttachments,
-  } = useAppShellComposerAttachments({
+    clearSubmittedContext,
+    imageNoticeLifecycle,
+  } = useComposerAttachments({
     draftKey: attachmentDraftKey,
+    directoryHostId,
     toastApi,
+    service: window.maka.attachments,
+    imageNotice: {
+      supportsVision: () => composerSupportsVision,
+      notify: toastApi.info,
+    },
   });
   const {
     pendingQuotes,
     addQuote,
     removeQuote,
     clearQuotes,
+    restoreQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
+  // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
+  const [newTaskSendPending, setNewTaskSendPending] = useState(false);
+  // What a new chat will start with, held the way the Session holds it: a
+  // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
-  const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
-  const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
-  const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
-  const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
+  const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
+  const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
-  const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
-  const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
+  const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
     turns: readonly { turnId: string; sequence: number; label: string }[];
   }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  // P3: session ids with a live embedded-browser view. The right-side
-  // BrowserPanel mounts only for these, so ordinary chats reserve no space.
-  const [, setLiveBrowserSessionIds] = useState<string[]>([]);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
+  const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
     setNavigationState((current) => selectNavigation(
       current,
@@ -444,6 +431,32 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
+  const [workHubEnabled, setWorkHubEnabled] = useState(false);
+  const [workHubActive, setWorkHubActive] = useState(false);
+  const workHubEnabledRef = useRef(false);
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const enabled = (await window.maka.settings.getClient()).workHub.enabled;
+        if (disposed) return;
+        const becameEnabled = enabled && !workHubEnabledRef.current;
+        workHubEnabledRef.current = enabled;
+        setWorkHubEnabled(enabled);
+        if (!enabled || becameEnabled) setWorkHubActive(enabled);
+        if (becameEnabled) setNavSelection({ section: 'sessions' });
+      } catch {
+        // Keep the last known client-owned setting. A transient settings read
+        // must not leave the shell half-switched between WorkHub and Session.
+      }
+    };
+    void refresh();
+    const unsubscribe = window.maka.settings.subscribeClientChanged(() => void refresh());
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [setNavSelection]);
   // #1985: the shell's complete read of session UI state. See the hook for why
   // the two token-rate maps are absent.
   const {
@@ -451,20 +464,25 @@ function AppShellContent({
     messageRetryPendingBySession,
     stopPendingBySession,
     interactionBySession,
-    pendingPermissionModeBySession,
-    pendingSessionModelBySession,
+    messageQueueBySession,
+    transcriptRestoreUnavailableBySession,
     streamingSessionIds,
     activeLiveTurnSnapshot,
+    activeExecution,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
     toastApi,
     uiLocale,
-    sessionId: activeId,
+    sessionId: ownerActiveId,
+    disabled: sharedSessionActive,
   });
-  const newTaskHost = newTask.selectedHost
-    ? { profileId: newTask.selectedHost.profile.id, hostId: newTask.selectedHost.hostId }
+  const newTaskHost = taskEntry.selectors.selectedHost
+    ? {
+        profileId: taskEntry.selectors.selectedHost.profileId,
+        hostId: taskEntry.selectors.selectedHost.hostId,
+      }
     : undefined;
   const newTaskConnections = useShellConnections({
     toastApi,
@@ -479,18 +497,15 @@ function AppShellContent({
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    target: { kind: 'session', sessionId: activeId },
+    target: { kind: 'session', sessionId: ownerActiveId },
   });
-  const startupConnectionSnapshot =
-    initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
-  const newTaskUsesDefaultHost =
-    newTask.catalog.hosts.length === 0 ||
-    newTask.selectedProfileId === newTask.catalog.defaultProfileId;
+  const startupConnectionSnapshot = onboarding.snapshot;
+  const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
   let newTaskConnectionSnapshot = newTaskConnections.snapshot;
-  if (!newTaskConnections.hasSnapshot && newTaskUsesDefaultHost) {
-    newTaskConnectionSnapshot = defaultHostConnections.hasSnapshot
+  if (newTaskConnections.projection.status !== 'ready' && newTaskUsesDefaultHost) {
+    newTaskConnectionSnapshot = defaultHostConnections.projection.status === 'ready'
       ? defaultHostConnections.snapshot
-      : startupConnectionSnapshot
+      : defaultHostConnections.projection.status === 'unrequested' && startupConnectionSnapshot
         ? {
             connections: startupConnectionSnapshot.connections,
             defaultConnection: startupConnectionSnapshot.defaultSlug,
@@ -498,7 +513,7 @@ function AppShellContent({
           }
         : defaultHostConnections.snapshot;
   }
-  const activeConnectionSnapshot = activeId
+  const activeConnectionSnapshot = workHubActive || activeId
     ? sessionHostConnections.snapshot
     : newTaskConnectionSnapshot;
   const connections = activeConnectionSnapshot.connections;
@@ -511,13 +526,13 @@ function AppShellContent({
     return Promise.all([
       defaultHostConnections.refreshConnections(),
       newTaskConnections.refreshConnections(),
-      ...(activeId ? [sessionHostConnections.refreshConnections()] : []),
+      ...(ownerActiveId ? [sessionHostConnections.refreshConnections()] : []),
     ]).then(() => undefined);
   }
   function handleConnectionEvent(event: ConnectionEvent): void {
     defaultHostConnections.handleConnectionEvent(event);
     newTaskConnections.handleConnectionEvent(event);
-    if (activeId) sessionHostConnections.handleConnectionEvent(event);
+    if (ownerActiveId) sessionHostConnections.handleConnectionEvent(event);
   }
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
@@ -526,29 +541,16 @@ function AppShellContent({
     sessions.length > 0,
   );
   const {
-    settingsOpen,
-    settingsRequestedSection,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    setSettingsProviderCatalogOpen,
-    openSettings,
-    openSettingsSection,
-    openProviderCatalog,
-    openConnectionDetail,
-    openProviderCreate,
-  } = useSettingsModal();
-  const {
     themePref,
     setThemePref,
     themePalette,
     setThemePalette,
     uiLocaleUpdateGate,
+    appearanceHydrated,
     userLabel,
     setUserLabel,
-    defaultPermissionMode,
-    setDefaultPermissionMode,
+
+
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -557,176 +559,71 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const projectActionsCopy = getShellCopy(uiLocale).projectActions;
+  const previousInterruptionCopy =
+    getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
-  const terminalPanelCopy = desktopConversationCopy.terminalPanel;
-  const workbarCopy = desktopConversationCopy.workbar;
+  /**
+   * What this draft would start in: the user's choice for it if they made one,
+   * otherwise the Host default it will inherit by omission.
+   *
+   * The choice stays local to the draft. Picking Full access for one task is
+   * not a statement about every later task, so it is sent once on create and
+   * never written back to `chatDefaults` — the Settings surface owns that.
+   */
   const newTaskPermissionMode =
     newTaskPermissionChoice ??
-    newTask.selectedHost?.chatDefaults.permissionMode ??
+    taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
     'ask';
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
-    if (!isAppUpdateInstallFailure(appUpdateStatus)) {
-      notifiedInstallErrorRef.current = null;
-      return;
-    }
-    if (notifiedInstallErrorRef.current === appUpdateStatus.message) return;
-    notifiedInstallErrorRef.current = appUpdateStatus.message;
-    toastApi.error(
-      shellCopy.updateInstallFailedTitle,
-      shellCopy.updateInstallManualFallback,
-    );
-  }, [appUpdateStatus, shellCopy, toastApi]);
-  useEffect(() => {
+    if (!appearanceHydrated) return;
     let cancelled = false;
-    let receivedPush = false;
-    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
-      receivedPush = true;
-      if (!cancelled) setAppUpdateStatus(next);
-    });
-    void window.maka.app
-      .updateStatus()
-      .then((next) => {
-        if (!cancelled && !receivedPush) setAppUpdateStatus(next);
+    void window.maka.diagnostics
+      .takePreviousMainProcessInterruption()
+      .then((interrupted) => {
+        if (cancelled || !interrupted || previousInterruptionShownRef.current) return;
+        previousInterruptionShownRef.current = true;
+        toastApi.toast({
+          variant: 'warning',
+          title: previousInterruptionCopy.title,
+          description: previousInterruptionCopy.description,
+          duration: 10_000,
+          action: {
+            label: previousInterruptionCopy.copyDiagnostics,
+            onClick: () =>
+              window.maka.diagnostics.copyPreviousMainProcessInterruption(),
+          },
+        });
       })
-      .catch(() => {});
+      .catch((error) =>
+        console.error('[diagnostics] previous-session notice failed:', error),
+      );
     return () => {
       cancelled = true;
-      unsubscribeUpdateStatus();
     };
-  }, []);
-
-  const updateReminder = updateReminderFromStatus(appUpdateStatus);
-  // Dispatches on the task, not on the raw status: the footer is this
-  // callback's only caller and it only renders for the two states above, so
-  // reading the status again here would be the same "who needs the user" list
-  // maintained twice.
-  const openUpdateDownload = useCallback(() => {
-    if (updateReminder?.state === 'downloaded') {
-      if (updateInstallInFlightRef.current) return;
-      updateInstallInFlightRef.current = true;
-      void requestDownloadedAppUpdate({
-        installUpdate: (input) => window.maka.app.installUpdate(input),
-        confirmActiveTasks: () => toastApi.confirm({
-          title: shellCopy.updateActiveTasksTitle,
-          description: shellCopy.updateActiveTasksDescription,
-          confirmLabel: shellCopy.updateActiveTasksConfirm,
-          cancelLabel: shellCopy.updateActiveTasksCancel,
-          destructive: true,
-        }),
-      })
-        .then((outcome) => {
-          if (outcome.kind !== 'failed') return;
-          if (outcome.reason === 'install_failed') return;
-          toastApi.error(
-            shellCopy.updateInstallFailedTitle,
-            shellCopy.updateInstallManualFallback,
-          );
-        })
-        .catch((error) => {
-          toastApi.error(
-            shellCopy.updateInstallFailedTitle,
-            localizedShellErrorMessage(error, shellCopy.updateInstallFailedFallback, uiLocale),
-          );
-        })
-        .finally(() => {
-          updateInstallInFlightRef.current = false;
-        });
-      return;
-    }
-    if (!updateReminder) return;
-    void window.maka.app
-      .retryUpdateDownload()
-      .then((next) => {
-        if (next.state !== 'error') return;
-        toastApi.error(
-          shellCopy.updateRetryFailedTitle,
-          shellCopy.updateRetryFailedFallback,
-        );
-      })
-      .catch((error) => {
-        toastApi.error(
-          shellCopy.updateRetryFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.updateRetryFailedFallback, uiLocale),
-        );
-      });
-  }, [updateReminder, shellCopy, toastApi, uiLocale]);
-  const moduleHubCopy = getSharedUiCopy(uiLocale).moduleHubs;
-  const extensionsHubHeader = {
-    title: moduleHubCopy.extensions.title,
-    subtitle: moduleHubCopy.extensions.description,
-    badge: (
-      <ModuleHubSelector
-        hub="extensions"
-        value={navSelection.section === 'extensions' ? navSelection.module : navigationState.moduleMemory.extensions}
-        onChange={(module) => setNavSelection({ section: 'extensions', module })}
-      />
-    ),
-  };
-  const automationsHubHeader = {
-    title: moduleHubCopy.automations.title,
-    subtitle: moduleHubCopy.automations.description,
-    badge: (
-      <ModuleHubSelector
-        hub="automations"
-        value={navSelection.section === 'automations' ? navSelection.module : navigationState.moduleMemory.automations}
-        onChange={(module) => setNavSelection({ section: 'automations', module })}
-      />
-    ),
-  };
+  }, [appearanceHydrated, previousInterruptionCopy, toastApi]);
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
-  const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
-  // The rail's toggle has to reach Astryx's resizable state, not just this
-  // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
-  // for the whole shell, so the handle is always live by the time it is called.
-  const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle | null>(null);
-  // Codex-style side conversations: each workbar tab owns a separate transient
-  // fork, composer draft, quote queue, and cleanup lifecycle.
-  const sideConversations = useSideConversationWorkspace();
-  const quotePanels = sideConversations.panels;
-  const sideChatContentPanelIds = sideConversations.contentPanelIds;
-  const sideChatPreparingPanelIds = sideConversations.preparingPanelIds;
-  const sideChatActivePanelIds = sideConversations.activePanelIds;
-  const [pendingSideChatClose, setPendingSideChatClose] =
-    useState<Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>>(
-      [],
-    );
-  const [skipSideChatCloseConfirmation, setSkipSideChatCloseConfirmation] =
-    useState(
-      () => safeLocalStorageGet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY) === 'true',
-    );
-  // Created companion forks stay hidden until authoritative cleanup succeeds or
-  // a later authoritative session list confirms they are gone. A set preserves
-  // earlier failed cleanups when another companion opens.
-  const [hiddenCompanionForkIds, setHiddenCompanionForkIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const companionRecoveryStartedRef = useRef(false);
-  useLayoutEffect(() => {
-    if (companionRecoveryStartedRef.current) return;
-    companionRecoveryStartedRef.current = true;
-    void recoverOrphanedCompanionCopies(window.maka.sessions);
+  const {
+    captureComposerImportOwner,
+    isShellSurfaceOwnerActive,
+    isComposerImportOwnerActive,
+    isNewChatSendSurfaceActive,
+  } = createComposerSurfaceAuthority({
+    activeIdRef,
+    navSelectionRef,
+    isSessionSelected,
+    newTaskDraftKey: currentNewTaskDraftKey,
+  });
+  const openComposerModelPicker = useCallback(() => {
+    composerRef.current?.openModelPicker();
   }, []);
-  const onCompanionForkVisibilityChange = useCallback(
-    (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
-      setHiddenCompanionForkIds((current) =>
-        applyCompanionForkVisibilityEvent(current, event),
-      ),
-    [],
-  );
-  useEffect(() => {
-    if (!authoritativeSessionIds) return;
-    setHiddenCompanionForkIds((current) =>
-      reconcileCompanionForkVisibility(current, authoritativeSessionIds),
-    );
-  }, [authoritativeSessionIds]);
+  const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
   const commitRevisionDraft = useCallback((draft: TurnRevisionDraft | null) => {
@@ -740,9 +637,8 @@ function AppShellContent({
     const owner = sessions.find((session) => session.id === draft.draftSessionId);
     if (source && owner && !source.isArchived && !owner.isArchived) return;
     composerRef.current?.clearDraft(draft.draftSessionId);
-    if (draft.sourceSessionId !== draft.draftSessionId) {
+    if (draft.sourceSessionId !== draft.draftSessionId)
       composerRef.current?.clearDraft(draft.sourceSessionId);
-    }
     if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
     else void abandonTurnRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
@@ -752,11 +648,8 @@ function AppShellContent({
     resumePendingSessionId,
     resumeParkDescriptionBySession,
     resumeInterruptedSession,
-  } = useShellResume({ activeId, toastApi, shellCopy, uiLocale });
+  } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
   const rendererMountedRef = useRef(true);
-  // Active autonomous goal for the current session drives the header
-  // kill-switch pill (visible indicator + one-click clear).
-  const activeGoal = useSessionGoal(activeId);
   // Set of session ids whose backend / connection is no longer usable —
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
@@ -769,43 +662,44 @@ function AppShellContent({
       }),
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
-  // Status-grouped sidebar. The `chats`
-  // filter shows sessions grouped by SessionStatus (Pinned →
-  // Running → Waiting → Blocked → Active → Review → Done → Archived);
-  // `aborted` is dropped. Pinned (flagged) sessions float to the top
-  // in their own group, preserving the PR48 pin-floats behavior.
-  // One projection owns rail membership, active highlight, and titlebar parent:
-  // revision-tree roots (orphans stay; linked children with a live parent leave),
-  // flat nav / companion filter — never promote children past ancestors.
-  const {
-    sessions: visibleSessions,
-    activeRowId: sidebarActiveId,
-    activeParentSession: railParentSession,
-  } = useMemo(
-    () =>
-      deriveSessionRail(sessions, activeId, (session) =>
-        !hiddenCompanionForkIds.has(session.id) && sessionMatchesRail(session),
-      ),
-    [sessions, activeId, hiddenCompanionForkIds],
-  );
-  // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
-  // Memoized so the panel's `useEffect` cleanup keys
-  // off a stable reference instead of refetching on every render.
-  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(uiLocale), [uiLocale]);
-  const {
-    appendDailyReviewMarkdown,
-    copyDailyReviewMarkdown,
-    saveDailyReviewMarkdown,
-  } = useStableActions(createAppShellDailyReviewActions, {
-    uiLocale,
-    composerRef,
-    toastApi,
+  const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
+  const activeSession = activeCatalogSession;
+  const sessionSettingIntent = useSessionSettingIntent({
+    catalogRevision,
+    isActiveSession: (sessionId) => activeIdRef.current === sessionId,
+    sessions,
+    newTaskPermissionMode,
+    refreshCatalog: refreshSessions,
+    saveComposerDefaults: (model) => saveComposerDefaults({ model }),
+    writeFailureCopy: (setting, error) => sessionSettingFailureCopy(uiLocale, setting, error),
+    showSessionError,
+    planMode: {
+      write: commitPlanMode,
+    },
+    captureOwner: captureComposerImportOwner,
+    isOwnerActive: isComposerImportOwnerActive,
+    setNewTaskPermissionMode,
+    confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
   });
-  const activeInteraction = activeInteractionFor(interactionBySession, activeId);
-  const activeSandboxBoundary =
-    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
-  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
-  const activeSession = sessions.find((session) => session.id === activeId);
+  const { setPermissionMode, setSessionModel, setSessionThinkingLevel } = sessionSettingIntent;
+  const modelConfigurationOverlay = activeSession
+    ? sessionSettingIntent.overlays.modelConfiguration[activeSession.id]
+    : undefined;
+  const activeSessionForModelControls = activeSession
+    ? {
+        ...activeSession,
+        ...(modelConfigurationOverlay
+          ? {
+              llmConnectionId: modelConfigurationOverlay.modelTarget.llmConnectionId,
+              llmConnectionSlug: modelConfigurationOverlay.modelTarget.llmConnectionSlug,
+              model: modelConfigurationOverlay.modelTarget.model,
+              thinkingLevel: modelConfigurationOverlay.thinkingLevel ?? undefined,
+            }
+          : {}),
+      }
+    : undefined;
+  const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
+  const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
@@ -816,17 +710,14 @@ function AppShellContent({
     hasInFlightLiveTools,
     hasLiveTurnContent,
     turnActive,
-    showRunningStatus,
-    showProcessingIndicator,
-    showContinuingIndicator,
   } = useShellLiveTurn({
     liveTurn: activeLiveTurnSnapshot,
-    activeSession,
+    execution: activeExecution,
   });
   const petActivityState = derivePetActivityState({
     hasActiveSession: activeSession !== undefined,
     hasActiveInteraction: activeInteraction !== undefined,
-    turnActive,
+    turnActive: activeExecution?.available === true && turnActive,
     sessionStatus: activeSession?.status,
   });
   // Surface a credential-lifecycle alert directly in the chat header when
@@ -843,13 +734,18 @@ function AppShellContent({
     : undefined;
   const composerProfileId = activeId
     ? activeDesktopSession?.profileId
-    : newTask.selectedProfileId;
+    : taskEntry.selectors.selectedProfileId;
   const composerProfileName = activeId
     ? activeDesktopSession?.profileName
-    : newTask.selectedHost?.profile.name;
+    : taskEntry.selectors.selectedHost?.name;
   const modelSettingsOwnsComposerHost =
     composerProfileId !== undefined &&
-    composerProfileId === newTask.catalog.defaultProfileId;
+    composerProfileId === taskEntry.selectors.defaultProfileId;
+  const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
+    streaming: turnActive,
+    sessionStatus: activeSession?.status,
+    pending: false,
+  });
   const {
     chatModelChoices,
     activeConnection,
@@ -862,6 +758,7 @@ function AppShellContent({
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    composerSupportsVision,
     setPendingNewChatModel,
     pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
@@ -876,256 +773,126 @@ function AppShellContent({
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
-    activeSession,
+    activeSession: activeSessionForModelControls,
+    sessionHealthSession: activeSession,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
-    defaultThinkingLevel: newTask.selectedHost?.chatDefaults.thinkingLevel,
+    defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
+    connectionSnapshotReady: activeId
+      ? sessionHostConnections.projection.status === 'ready'
+      : true,
+    modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
+    openModelPicker: openComposerModelPicker,
+    refreshModelChoices: sessionHostConnections.refreshConnections,
   });
-  const newChatProviderType = newChatModel
-    ? connections.find((connection) => connection.slug === newChatModel.llmConnectionSlug)?.providerType
-    : undefined;
-
+  const newChatProviderType = connections.find(
+    (connection) => connection.slug === newChatModel?.llmConnectionSlug,
+  )?.providerType;
   // PR109d-b: turn footer actions per turn. Derived from the
   // materialized turn list (status + lineage descendants) + pending
   // mask. Per @kenji PR109d review: pending state prevents double-click
   // duplicate sibling turns by disabling the action button between
   // click and `sessions:changed turn-status-change` arriving.
-  // The four de-dup registries (turn-footer actions, session-row actions,
-  // per-session permission-mode / model changes) all share the same keyed-Set
-  // shape; see useKeyedPendingRegistry. Only the turn-footer registry mirrors
-  // into React state (drives the disabled mask) and arms a 5s auto-clear
-  // fallback timer; the other three stay ref-only and clear in their action's
-  // `finally`.
-  const turnActionRegistry = useKeyedPendingRegistry({
-    trackState: true,
-    autoClearMs: 5000,
-  });
-  const pendingTurnActions = turnActionRegistry.keys;
-  const sessionRowActionRegistry = useKeyedPendingRegistry();
-  const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  const collaborationModeChangeRegistry = useKeyedPendingRegistry();
-  const orchestrationModeChangeRegistry = useKeyedPendingRegistry();
-  const sessionModelChangeRegistry = useKeyedPendingRegistry();
-  const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
-    `${sessionId}:${turnId}:${actionId}`;
-  function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
-    if (!(sessionId in current)) return current;
-    const next = { ...current };
-    delete next[sessionId];
-    return next;
+  // Session-row mutations live in Session Navigation; the per-session mode and
+  // model claims live in the session UI store.
+  const turnActionRegistry = useTurnActionRegistry();
+
+  // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
+  // hundreds of lines below, and the rail does not need this identity held
+  // still — the rail's controller reads it through `portsRef`.
+  function clearSessionRendererState(sessionId: string): void {
+    dropDisplayEvents(sessionId);
+    // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
+    // session from every session-UI map — the four pending claims included.
+    clearOwnedSessionState(sessionId);
+    turnActionRegistry.clearForSession(sessionId);
+    sessionSettingIntent.clear(sessionId);
   }
 
-  function addPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): boolean {
-    if (pendingRef.current.has(sessionId)) return false;
-    pendingRef.current.add(sessionId);
-    setPendingBySession((current) => ({ ...current, [sessionId]: true }));
+  // Stable: the rail's row actions are built from it, and it only reaches
+  // registries and refs that are themselves stable (#4109).
+  /**
+   * Enter or leave Plan for one Session — the only path that writes
+   * `collaborationMode`, and it writes nothing else.
+   *
+   * `sessionId` is a parameter rather than a read of `activeIdRef`, because
+   * this awaits — a Plan-exit confirmation can sit open while the user opens
+   * another Session, and a re-read partway through would finish the
+   * transition somewhere else.
+   *
+   * Both gates read the Host through `getPlanState`, not the projected mode.
+   * The projection can be a frame behind; the question "does this discard a
+   * pending plan proposal" has an authoritative answer and deserves it.
+   *
+   * The Session's orchestration default is left exactly as it was. Plan is a
+   * temporary excursion that Runtime ends by itself once a proposal is
+   * approved or abandoned, so clearing the default on the way in would lose
+   * it for the execution the plan was written for.
+   */
+  async function commitPlanMode(sessionId: string, active: boolean): Promise<boolean> {
+    const planState = await window.maka.sessions.getPlanState(sessionId);
+    if (active && planState.activeExecutionId) {
+      showSessionError(
+        sessionId,
+        shellCopy.planModeExecutionActiveTitle,
+        shellCopy.planModeExecutionActiveDescription,
+      );
+      return false;
+    }
+    const latestProposal = planState.proposals.find(
+      (proposal) => proposal.proposalId === planState.latestProposalId,
+    );
+    if (!active && latestProposal?.status === 'pending_approval') {
+      const confirmed = await toastApi.confirm({
+        title: shellCopy.planModeExitPendingTitle,
+        description: shellCopy.planModeExitPendingDescription(latestProposal.title),
+        confirmLabel: shellCopy.planModeExitConfirm,
+        cancelLabel: shellCopy.planModeExitCancel,
+        destructive: true,
+      });
+      if (!confirmed) return false;
+      // Abandoning the proposal is what leaves Plan: Runtime writes the
+      // Session back to `agent` itself as part of it.
+      await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
+    } else await window.maka.sessions.setCollaborationMode(sessionId, active ? 'plan' : 'agent');
     return true;
   }
 
-  function clearPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): void {
-    if (!pendingRef.current.has(sessionId)) return;
-    pendingRef.current.delete(sessionId);
-    setPendingBySession((current) => omitSessionKey(current, sessionId));
-  }
-
-  function clearSessionRendererState(sessionId: string): void {
-    clearOwnedSessionState(sessionId);
-    turnActionRegistry.clearForSession(sessionId);
-    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
-    collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
-    setPendingCollaborationModeBySession((current) => omitSessionKey(current, sessionId));
-    orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
-    setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
-    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
-  }
-
-  const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
-    uiLocale,
-    activeIdRef,
-    clearSessionRendererState,
-    pendingSessionRowActionsRef: sessionRowActionRegistry.keysRef,
-    refreshSessions,
-    sessionsRef,
-    setActiveId,
-    setMessages,
-    toastApi,
-  });
-  const sessionRowActions = useMemo<NonNullable<Parameters<typeof SessionListPanel>[0]['rowActions']>>(
-    () => ({
-      onToggleFlag: (sessionId, next) => sessionRowActionHandlers.flagSession(sessionId, next),
-      onArchive: (sessionId) => sessionRowActionHandlers.archiveSession(sessionId),
-      onUnarchive: (sessionId) => sessionRowActionHandlers.unarchiveSession(sessionId),
-      onRename: (sessionId, name) => sessionRowActionHandlers.renameSession(sessionId, name),
-      onDelete: (sessionId) => sessionRowActionHandlers.deleteSession(sessionId),
-    }),
-    [],
-  );
-
-  const {
-    setPermissionMode,
-    setSessionModel,
-    setSessionThinkingLevel,
-  } = useStableActions(createAppShellSessionSettingsActions, {
-    uiLocale,
-    activeIdRef,
-    connections,
-    messages,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
-    refreshSessions,
-    saveComposerDefaults,
-    sessionsRef,
-    setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
-    setSessions,
-    toastApi,
-  });
-
-  async function setPlanMode(active: boolean): Promise<void> {
+  function setPlanMode(active: boolean): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
       setNewChatPlanModeActive(active);
-      return;
+      return Promise.resolve(true);
     }
-    if (!addPendingSessionAction(
-      sessionId,
-      collaborationModeChangeRegistry.keysRef,
-      setPendingCollaborationModeBySession,
-    )) return;
-
-    try {
-      const planState = await window.maka.sessions.getPlanState(sessionId);
-      if (active && planState.activeExecutionId) {
-        toastApi.error(
-          shellCopy.planModeExecutionActiveTitle,
-          shellCopy.planModeExecutionActiveDescription,
-        );
-        return;
-      }
-      const latestProposal = planState.proposals.find(
-        (proposal) => proposal.proposalId === planState.latestProposalId,
-      );
-      if (!active && latestProposal?.status === 'pending_approval') {
-        const confirmed = await toastApi.confirm({
-          title: shellCopy.planModeExitPendingTitle,
-          description: shellCopy.planModeExitPendingDescription(latestProposal.title),
-          confirmLabel: shellCopy.planModeExitConfirm,
-          cancelLabel: shellCopy.planModeExitCancel,
-          destructive: true,
-        });
-        if (!confirmed) return;
-        await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-        setSessions((current) => current.map((session) => (
-          session.id === sessionId ? { ...session, collaborationMode: 'agent' } : session
-        )));
-      } else {
-        const next = await window.maka.sessions.setCollaborationMode(
-          sessionId,
-          active ? 'plan' : 'agent',
-        );
-        setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      }
-      await refreshSessions();
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        toastApi.error(
-          shellCopy.planModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
-        );
-      }
-    } finally {
-      clearPendingSessionAction(
-        sessionId,
-        collaborationModeChangeRegistry.keysRef,
-        setPendingCollaborationModeBySession,
-      );
-    }
+    if (active === activePlanMode) return Promise.resolve(true);
+    return sessionSettingIntent.setPlanMode(sessionId, active);
   }
 
-  async function setSwarmMode(active: boolean): Promise<boolean> {
+  /**
+   * The ＋ menu's orchestration choice and the `/swarm` and `/graph` commands
+   * all land here, so every entry point spells the field the same way.
+   *
+   * `/swarm off` means "leave swarm", not "go to default": a Session already
+   * in Graph has nothing for it to do.
+   */
+  function setOrchestrationMode(mode: OrchestrationMode): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
-      setNewChatSwarmModeActive(active);
-      if (active) setNewChatGraphModeActive(false);
-      return true;
+      setNewChatOrchestrationMode(mode);
+      return Promise.resolve(true);
     }
-    if (!addPendingSessionAction(
-      sessionId,
-      orchestrationModeChangeRegistry.keysRef,
-      setPendingOrchestrationModeBySession,
-    )) return false;
-
-    try {
-      const next = await window.maka.sessions.setOrchestrationMode(
-        sessionId,
-        active ? 'swarm' : 'default',
-      );
-      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        toastApi.error(
-          shellCopy.swarmModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.swarmModeFallback, uiLocale),
-        );
-      }
-      return false;
-    } finally {
-      clearPendingSessionAction(
-        sessionId,
-        orchestrationModeChangeRegistry.keysRef,
-        setPendingOrchestrationModeBySession,
-      );
-    }
+    if (mode === activeOrchestrationMode) return Promise.resolve(true);
+    return sessionSettingIntent.setOrchestrationMode(sessionId, mode);
   }
 
-  async function setGraphMode(active: boolean): Promise<boolean> {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) {
-      setNewChatGraphModeActive(active);
-      if (active) setNewChatSwarmModeActive(false);
-      return true;
-    }
-    if (!addPendingSessionAction(
-      sessionId,
-      orchestrationModeChangeRegistry.keysRef,
-      setPendingOrchestrationModeBySession,
-    )) return false;
-
-    try {
-      const next = await window.maka.sessions.setOrchestrationMode(
-        sessionId,
-        active ? 'graph' : 'default',
-      );
-      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        toastApi.error(
-          shellCopy.graphModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.graphModeFallback, uiLocale),
-        );
-      }
-      return false;
-    } finally {
-      clearPendingSessionAction(
-        sessionId,
-        orchestrationModeChangeRegistry.keysRef,
-        setPendingOrchestrationModeBySession,
-      );
-    }
+  function setOrchestrationModeActive(
+    mode: Exclude<OrchestrationMode, 'default'>,
+    active: boolean,
+  ): Promise<boolean> {
+    if (active) return setOrchestrationMode(mode);
+    if (activeOrchestrationMode !== mode) return Promise.resolve(true);
+    return setOrchestrationMode('default');
   }
 
   // Handed to ChatView, which calls it with the turns its transcript projection
@@ -1134,46 +901,19 @@ function AppShellContent({
   // keeps the props a memoized TurnView reads stable (#2030).
   const deriveTurnPresentation = useAppShellTurnPresentation({
     activeId,
-    pendingTurnActions,
-    pendingKeyOf,
+    pendingTurnActions: turnActionRegistry.keys,
     uiLocale,
   });
 
-  // PR109e-e: click handler for lineage badge → scroll target turn into
-  // view. Avoids pulling a separate ref-tracker: relies on the
-  // `data-turn-id` attribute the renderer already sets on each TurnView.
-  //
-  // @kenji PR109e review + @xuan PR109f follow-up: scrollIntoView with
-  // `behavior: 'smooth'` must respect both reduced-motion AND the
-  // e2e-fixture capture entry (PR-IR-02). @xuan confirmed on main that
-  // e2e-fixture always writes `data-maka-e2e-fixture="true"` but
-  // `data-maka-reduced-motion="true"` is only set on the reduced
-  // variant — so the e2e-fixture attribute is the broader signal for
-  // "deterministic capture, no animations". Three triggers collapse to
-  // `auto`:
-  //   1. `data-maka-reduced-motion="true"` — PR-IR-04 reduced variant
-  //   2. `data-maka-e2e-fixture="true"` — PR-IR-02 any capture
-  //   3. `prefers-reduced-motion: reduce` — OS-level user preference
-  function handleLineageBadgeClick(targetTurnId: string): void {
-    requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-turn-id="${CSS.escape(targetTurnId)}"]`);
-      if (!el || !('scrollIntoView' in el)) return;
-      (el as HTMLElement).scrollIntoView({
-        behavior: readScrollMotionBehavior(),
-        block: 'center',
-      });
-    });
-  }
-
-  function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
-    setNavSelection({ section: 'sessions' });
-    setActiveId(sessionId);
-    if (turnId) {
-      setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
-    } else {
-      setSearchScrollTarget(null);
-    }
-  }
+  const openSessionInChatRef = useRef<
+    (sessionId: string, turnId?: string, sequence?: number) => void
+  >(() => undefined);
+  const openSessionInChat = useCallback(
+    (sessionId: string, turnId?: string, sequence?: number): void => {
+      openSessionInChatRef.current(sessionId, turnId, sequence);
+    },
+    [],
+  );
 
   /* PR-FE-BUG-HUNT-0 (kenji bug-hunt 2026-06-24): SearchModal +
      CommandPalette callbacks used to be inline arrows in JSX, so
@@ -1185,13 +925,12 @@ function AppShellContent({
      dead while a stream was active. Same root cause for the palette
      selection effect that resets keyboard highlight on every deps
      change. Stable refs + memos keep the timers alive. */
-  const openSessionInChatRef = useRef(openSessionInChat);
-  openSessionInChatRef.current = openSessionInChat;
   const {
     searchModalOpen,
     setSearchModalOpen,
     searchScrollTarget,
     setSearchScrollTarget,
+    consumeSearchScrollTarget,
     closeSearchModal,
     searchModalDeps,
     searchModalOnNavigate,
@@ -1209,120 +948,101 @@ function AppShellContent({
         composerRef.current?.appendText(shellCopy.useSkillPrompt(skillName));
       composerRef.current?.focus();
     };
-    if (activeIdRef.current) {
-      window.requestAnimationFrame(seed);
-      return;
-    }
-    void createSession().then(() => window.requestAnimationFrame(seed));
+    if (activeIdRef.current) window.requestAnimationFrame(seed);
+    else void createSession().then(() => window.requestAnimationFrame(seed));
     },
     [shellCopy],
   );
-  const sessionListSelectSession = useCallback((sessionId: string) => {
-    openSessionInChatRef.current(sessionId);
-  }, []);
+  const openWorkHub = useCallback(() => {
+    if (!workHubEnabledRef.current) return;
+    setSettingsOpen(false);
+    setNavSelection({ section: 'sessions' });
+    setWorkHubActive(true);
+  }, [setNavSelection]);
 
-  // PR109f: branched session context. When the active session was
-  // created via `sessions:branchFromTurn`, its `parentSessionId` is
-  // set; render a banner above the chat surface so the user knows
-  // they're in a derived conversation and can jump back to the parent.
-  //
-  // v1 intentionally omits the fromAbortedTurn hint because checking
-  // it requires loading the parent's full message log. The session
-  // banner stays at "分自 ${parentName}" until parent-message
-  // preloading lands; "从中断前" is only surfaced in the aborted
-  // turn's branch footer tooltip where the active turn status is known.
-  const branchBanner = useMemo(
-    () => deriveBranchBanner(activeSession, sessions),
-    [activeSession?.parentSessionId, sessions],
-  );
-  const revisionNavigation = useMemo(
-    () => deriveSessionRevisionNavigation(sessions, activeId),
-    [sessions, activeId],
-  );
-
-  function handleBranchBannerClick(parentSessionId: string): void {
-    openSessionInChat(parentSessionId);
-  }
-
-  // Same revision-aware parent row the rail uses — not a second physical-id walk.
-  const titlebarParentSession = useMemo(() => {
-    if (!railParentSession) return undefined;
-    const parentId = railParentSession.id;
-    return {
-      name: railParentSession.name,
-      onOpen: () => openSessionInChatRef.current(parentId),
-    };
-  }, [railParentSession]);
-
-  const activeSessionForView: SessionSummary | undefined =
-    activeSession ??
-    (activeId
-      ? {
-    id: activeId,
-          name: shellCopy.newConversation,
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    status: 'active',
-    backend: 'fake',
-    llmConnectionSlug: 'default',
-    connectionLocked: false,
-    model: 'fake-model',
-    // Transient placeholder while the real SessionSummary loads --
-    // matches the configured default so the composer doesn't flash a
-    // hardcoded value before the real session data settles.
-    permissionMode: defaultPermissionMode,
-        }
-      : undefined);
+  // Transient placeholder while the real SessionSummary loads, so the composer
+  // does not flash a value the session never had.
+  const activeSessionForView = activeSession ?? (activeId
+    ? pendingSessionView({
+        sessionId: activeId,
+        name: shellCopy.newConversation,
+        permissionMode: newTaskPermissionMode,
+      })
+    : undefined);
+  // Each control reads its own field. There is nothing to project and nothing
+  // to keep in sync: a Session in Plan with Swarm as its orchestration default
+  // says both, because it is both.
+  const activePlanMode = activeId
+    ? sessionSettingIntent.overlays.planMode[activeId]
+      ?? ((activeSessionForView?.collaborationMode ?? 'agent') === 'plan')
+    : newChatPlanModeActive;
+  const activeOrchestrationMode: OrchestrationMode = activeId
+    ? sessionSettingIntent.overlays.orchestrationMode[activeId]
+      ?? activeSessionForView?.orchestrationMode
+      ?? 'default'
+    : newChatOrchestrationMode;
+  /**
+   * Why neither mode can be changed right now, if either cannot. Both controls
+   * write the same Session configuration, so everything that holds one holds
+   * the other; only "this one is already changing" is per-control.
+   */
+  const modeChangeDisabledReason = activeId && !activeSession
+    ? shellCopy.modeChangeLoading
+    : activeStreamingLive
+      ? shellCopy.modeChangeStreaming
+      : activeId && turnActive
+        ? shellCopy.modeChangeRunning
+        : activeId && activeSessionForView?.status === 'waiting_for_user'
+          ? shellCopy.modeChangeWaiting
+          : undefined;
   const {
     boundary: activeExecutionBoundary,
     unreadable: activeExecutionBoundaryUnreadable,
     reading: activeExecutionBoundaryReading,
     reload: reloadActiveExecutionBoundary,
-  } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  } = useActiveExecutionBoundary(ownerActiveId, activeSessionForView?.permissionMode);
   // The session view only subscribes to the session it shows, so a request
   // raised while another session was active never reaches this surface as a
   // live event — and neither does one raised before the window existed. The
   // runtime holds every unanswered request, so read them back whenever the
   // active session changes (#2072).
   useEffect(() => {
-    if (!activeId) return;
-    let cancelled = false;
-    const hydrationEpoch = interactionHydrationEpochRef.current.get(activeId) ?? 0;
-    void window.maka.sessions
-      .listActiveInteractions(activeId)
-      .then((requests) => {
-        if (
-          cancelled ||
-          (interactionHydrationEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
-        ) {
-          return;
-        }
-        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
+    if (!ownerActiveId) return;
+    const pending = { sessionId: ownerActiveId };
+    interactionHydrationRef.current = pending;
+    const release = () => {
+      if (interactionHydrationRef.current === pending) interactionHydrationRef.current = null;
     };
-  }, [activeId, setInteractionBySession]);
+    void window.maka.sessions
+      .listActiveInteractions(ownerActiveId)
+      .then((requests) => {
+        if (interactionHydrationRef.current !== pending) return;
+        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, ownerActiveId, requests));
+      })
+      .catch(() => {})
+      .finally(release);
+    return release;
+  }, [ownerActiveId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
       window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
         markInteractionChanged(sessionId);
-        setInteractionBySession((current) =>
+        sessionUiController.setInteractionBySession((current) =>
           reconcileInteractions(current, sessionId, interactions),
         );
       }),
-    [markInteractionChanged, setInteractionBySession],
+    [markInteractionChanged, sessionUiController.setInteractionBySession],
   );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,
     activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newTaskPermissionMode,
   );
-  const activePermissionMode = activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(activeSessionForView);
+  const activePermissionMode = activeId
+    ? sessionSettingIntent.overlays.permissionMode[activeId]
+      ?? activeBoundarySurface.permissionMode
+    : activeBoundarySurface.permissionMode;
+  const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
@@ -1349,13 +1069,11 @@ function AppShellContent({
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
   const sessionStartPendingRef = useRef(false);
-  // Seed sessions from the onboarding snapshot on first load — the snapshot
-  // already fetches the session list + connections internally, so separate
-  // Session and connection snapshot IPCs are redundant.
-  // This lets the UI show the sidebar + model picker immediately on first load.
+  // Seed a snapshot captured before React mounted so the sidebar can paint
+  // immediately. The subscription bootstrap reconciles once through the live
+  // Session catalog on the next frame; later onboarding pulls still own
+  // readiness and connection data, but never overwrite that catalog.
   const initialSnapshotSeededRef = useRef(false);
-  const mountedSnapshotSeededRef = useRef(false);
-  const bootstrapFallbackStartedRef = useRef(false);
   // useLayoutEffect, NOT useEffect: the snapshot render flips
   // `isOnboardingLoading` off while `sessions` is still []. A passive
   // effect seeds sessions AFTER the browser paints that frame, so users
@@ -1363,55 +1081,29 @@ function AppShellContent({
   // "配置页闪了一下" startup flash). Layout effects run before paint,
   // so the seeded sessions and the un-gated frame commit together.
   useLayoutEffect(() => {
-    // Snapshot IPC failed — the seed path will never run, so fall back
-    // to the classic boot pull or the sidebar stays empty forever.
-    if (
-      onboarding.error &&
-      !initialOnboardingSnapshot &&
-      !onboarding.mountedSnapshotHandoff &&
-      !bootstrapFallbackStartedRef.current
-    ) {
-      bootstrapFallbackStartedRef.current = true;
-      void bootstrapSessions();
-      void defaultHostConnections.refreshConnections();
-      return;
-    }
-    let snapshot: OnboardingSnapshot | null = null;
-    let releaseSelectionLease = false;
-    if (!initialSnapshotSeededRef.current && initialOnboardingSnapshot) {
-      initialSnapshotSeededRef.current = true;
-      snapshot = initialOnboardingSnapshot;
-    } else if (
-      !bootstrapFallbackStartedRef.current &&
-      !mountedSnapshotSeededRef.current &&
-      onboarding.mountedSnapshotHandoff
-    ) {
-      mountedSnapshotSeededRef.current = true;
-      snapshot = onboarding.mountedSnapshotHandoff;
-      releaseSelectionLease = true;
-    }
-    if (!snapshot) return;
-    // Seed sessions. Display normalization MUST run here too — this is
-    // a third renderer state entry alongside commitSessions /
-    // upsertSessionSummary (#452): without it, legacy blocked/unknown
-    // sessions flash an 已阻塞 group on first paint until the first
-    // refreshSessions() overwrites the seed.
-    const next = seedSessions(snapshot.sessions);
+    if (initialSnapshotSeededRef.current || !initialOnboardingSnapshot) return;
+    initialSnapshotSeededRef.current = true;
+    // This prop settled before React mounted, so it is the only onboarding
+    // value allowed to seed the catalog. Later snapshots must go through the
+    // authoritative refresher or they can overwrite a newer Guest-inclusive
+    // catalog with an older point-in-time view.
+    const next = seedSessions(initialOnboardingSnapshot.sessions);
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-    if (releaseSelectionLease) bootstrapSelectionLease.release();
-  }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
+  }, [initialOnboardingSnapshot]);
   useEffect(() => {
-    const snapshot = initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
-    if (!snapshot) return;
-    defaultHostConnections.seedSnapshot({
-      connections: snapshot.connections,
-      defaultConnection: snapshot.defaultSlug,
-      chatModelChoices: snapshot.chatModelChoices,
-    });
-  }, [
-    initialOnboardingSnapshot,
-    onboarding.mountedSnapshotHandoff,
-  ]);
+    const snapshot = onboarding.snapshot;
+    if (snapshot) {
+      defaultHostConnections.seedSnapshot({
+        connections: snapshot.connections,
+        defaultConnection: snapshot.defaultSlug,
+        chatModelChoices: snapshot.chatModelChoices,
+      });
+    } else if (onboarding.error && !initialOnboardingSnapshot) {
+      // Session bootstrap is independent above. If onboarding itself failed,
+      // retain the previous connection-specific recovery path as well.
+      void defaultHostConnections.refreshConnections();
+    }
+  }, [initialOnboardingSnapshot, onboarding.error, onboarding.snapshot]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
@@ -1448,380 +1140,20 @@ function AppShellContent({
           onRetry: () => reloadActiveExecutionBoundary(activeId),
         }
       : undefined;
-  const {
-    sessionListWidth,
-    setSessionListWidth,
-    sessionListCollapsed,
-    setSessionListCollapsed,
-    workbarCollapsed,
-    setWorkbarCollapsed,
-    bottomPanelOpen,
-    setBottomPanelOpen,
-    workbarWidth,
-    workbarResizable,
-    bottomPanelHeight,
-    bottomPanelResizable,
-    workbarPanelsState,
-    openWorkbarTab,
-    openDynamicWorkbarTab,
-    activateWorkbarTab,
-    closeWorkbarTab,
-    closeWorkbarTabs,
-    reorderWorkbarTab,
-    moveWorkbarTab,
-    moveWorkbarTabToPanel,
-    titleWorkbarTab,
-    pinWorkbarTab,
-    openWorkbarLauncher,
-  } = useShellLayout();
-  const openNewSideConversation = useCallback(
-    (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
-      const sourceSessionId = activeIdRef.current;
-      if (!sourceSessionId) return;
-      const panel = openCompanionPanel(null, {
-        sourceSessionId,
-        initialPrompt,
-        newId: () => crypto.randomUUID(),
-      });
-      sideConversations.upsertPanel(panel, true);
-      openDynamicWorkbarTab(
-        {
-          id: `side-chat:${panel.id}`,
-          kind: 'side-chat',
-          title: sideChatTitleFromPrompt(initialPrompt ?? ''),
-          ordinal: nextSideChatOrdinal([
-            ...workbarPanelsState.right.tabs,
-            ...workbarPanelsState.bottom.tabs,
-          ]),
-        },
-        placement,
-      );
-      if (placement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      openDynamicWorkbarTab,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      sideConversations,
-      workbarPanelsState,
-    ],
-  );
-  const openSideConversation = useCallback(
-    (initialPrompt?: string) => openNewSideConversation('right', initialPrompt),
-    [openNewSideConversation],
-  );
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
-      const streaming = turnActive || activeStreamingLive;
       const availableCommands = slashCommandsForSurface('desktop').filter(
-        ({ id, session }) =>
-          (session === 'none' || Boolean(activeId))
-          && !(streaming && id === 'compact'),
+        desktopSlashCommandAvailability({
+          hasSession: Boolean(activeId),
+          streaming: turnActive,
+        }),
       );
-      const presentation: Record<
-        SlashCommandIdForSurface<'desktop'>,
-        Omit<ComposerSlashCommandOption, 'id'>
-      > = {
-        compact: {
-          ...shellCopy.slashCommands.compact,
-          keywords: ['compact', 'context', '压缩', '上下文'],
-          Icon: Minimize2,
-        },
-        side: {
-          ...shellCopy.slashCommands.side,
-          keywords: ['side', 'btw', '侧聊', '追问'],
-          Icon: MessageCircleQuestion,
-        },
-        swarm: {
-          ...shellCopy.slashCommands.swarm,
-          keywords: ['swarm', 'multi-agent', '多智能体'],
-          Icon: Network,
-        },
-        graph: {
-          ...shellCopy.slashCommands.graph,
-          keywords: ['graph', 'agent graph', '智能体图'],
-          Icon: GitBranch,
-        },
-      };
+      const presentation = desktopSlashCommandPresentation(shellCopy.slashCommands);
       return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
-  const openSideConversationWithQuote = useCallback(
-    (quote: QuoteRef) => {
-      if (!activeId) return;
-      const activeSideChat = findPreferredSideChatWorkbarTab(workbarPanelsState);
-      const activeSideChatTab = activeSideChat?.tab;
-      const activePanelId = activeSideChatTab?.id.slice('side-chat:'.length);
-      const activePanel = quotePanels.find(
-        (panel) =>
-          panel.id === activePanelId && panel.sourceSessionId === activeId,
-      );
-      const panel = stageCompanionQuote(
-        activePanel ?? null,
-        {
-          sourceSessionId: activeId,
-          quote,
-          newId: () => crypto.randomUUID(),
-        },
-      );
-      sideConversations.upsertPanel(panel, !activePanel);
-      const targetPlacement =
-        activeSideChat?.placement ?? 'right';
-      openDynamicWorkbarTab(
-        {
-          id: `side-chat:${panel.id}`,
-          kind: 'side-chat',
-          ordinal:
-            activeSideChatTab?.ordinal ??
-            nextSideChatOrdinal([
-              ...workbarPanelsState.right.tabs,
-              ...workbarPanelsState.bottom.tabs,
-            ]),
-        },
-        targetPlacement,
-      );
-      if (targetPlacement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      activeId,
-      openDynamicWorkbarTab,
-      quotePanels,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      sideConversations,
-      workbarPanelsState,
-    ],
-  );
-
-  const requestOpenWorkbarTab = useCallback(
-    (placement: SessionWorkbarPlacement, kind: SessionWorkbarTabKind) => {
-      if (kind === 'terminal') {
-        if (!activeId) return;
-        const ownerSessionId = activeId;
-        const tabs = [
-          ...workbarPanelsState.right.tabs,
-          ...workbarPanelsState.bottom.tabs,
-        ];
-        void window.maka.shellRuns
-          .start(ownerSessionId)
-          .then((update) => {
-            const ref = update.result.ref;
-            openDynamicWorkbarTab(
-              {
-                id: terminalSessionWorkbarTabId(ref),
-                kind: 'terminal',
-                ordinal: nextTerminalOrdinal(tabs),
-                resourceRef: ref,
-                ownerSessionId,
-              },
-              placement,
-            );
-            if (placement === 'right') setWorkbarCollapsed(false);
-            else setBottomPanelOpen(true);
-          })
-          .catch((error) => {
-            toastApi.error(
-              terminalPanelCopy.startFailed,
-              localizedShellErrorMessage(
-                error,
-                terminalPanelCopy.startFailed,
-                uiLocale,
-              ),
-            );
-          });
-        return;
-      }
-      if (kind === 'side-chat') {
-        openNewSideConversation(placement);
-        return;
-      }
-      openWorkbarTab(kind, placement);
-      if (placement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      activeId,
-      openDynamicWorkbarTab,
-      openNewSideConversation,
-      openWorkbarTab,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      terminalPanelCopy,
-      toastApi,
-      uiLocale,
-      workbarPanelsState,
-    ],
-  );
-
-  const closeWorkbarTabsImmediately = useCallback(
-    (
-      placement: SessionWorkbarPlacement,
-      tabs: readonly SessionWorkbarTab[],
-    ) => {
-      if (tabs.length === 0) return;
-      for (const tab of tabs) {
-        const ref = terminalRefFromWorkbarTab(tab);
-        if (!ref || !tab.ownerSessionId) continue;
-        void window.maka.shellRuns
-          .stop({ sessionId: tab.ownerSessionId, ref })
-          .catch(() => {});
-      }
-      closeWorkbarTabs(placement, tabs.map((tab) => tab.id));
-      const panelIds = new Set(
-        tabs
-          .filter((tab) => tab.kind === 'side-chat')
-          .map((tab) => tab.id.slice('side-chat:'.length)),
-      );
-      if (panelIds.size === 0) return;
-      sideConversations.removePanels(panelIds);
-    },
-    [closeWorkbarTabs, sideConversations],
-  );
-
-  useEffect(() => {
-    const stale = (['right', 'bottom'] as const).flatMap((placement) =>
-      workbarPanelsState[placement].tabs
-        .filter(
-          (tab) =>
-            tab.kind === 'terminal' &&
-            tab.ownerSessionId !== activeId,
-        )
-        .map((tab) => ({ placement, tab })),
-    );
-    for (const placement of ['right', 'bottom'] as const) {
-      const tabs = stale
-        .filter((candidate) => candidate.placement === placement)
-        .map((candidate) => candidate.tab);
-      closeWorkbarTabsImmediately(placement, tabs);
-    }
-  }, [activeId, closeWorkbarTabsImmediately, workbarPanelsState]);
-
-  const closeWorkbarTabsAndSurfaces = useCallback(
-    (
-      placement: SessionWorkbarPlacement,
-      tabs: readonly SessionWorkbarTab[],
-    ) => {
-      const closableTabs = tabs.filter(
-        (tab) =>
-          tab.kind !== 'side-chat' ||
-          !sideChatPreparingPanelIds.has(tab.id.slice('side-chat:'.length)),
-      );
-      if (closableTabs.length === 0) return;
-      const needsConfirmation =
-        !skipSideChatCloseConfirmation &&
-        closableTabs.some(
-          (tab) =>
-            tab.kind === 'side-chat' &&
-            sideChatContentPanelIds.has(tab.id.slice('side-chat:'.length)),
-        );
-      if (needsConfirmation) {
-        setPendingSideChatClose(
-          closableTabs.map((tab) => ({ placement, tab })),
-        );
-        return;
-      }
-      closeWorkbarTabsImmediately(placement, closableTabs);
-    },
-    [
-      closeWorkbarTabsImmediately,
-      sideChatContentPanelIds,
-      sideChatPreparingPanelIds,
-      skipSideChatCloseConfirmation,
-    ],
-  );
-
-  const closeWorkbarTabAndSurface = useCallback(
-    (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) =>
-      closeWorkbarTabsAndSurfaces(placement, [tab]),
-    [closeWorkbarTabsAndSurfaces],
-  );
-
-  const toggleWorkbar = useCallback(() => {
-    if (workbarCollapsed) {
-      setWorkbarCollapsed(false);
-      if (workbarPanelsState.right.activeTabId) {
-        activateWorkbarTab('right', workbarPanelsState.right.activeTabId);
-      }
-      return;
-    }
-    setWorkbarCollapsed(true);
-  }, [
-    activateWorkbarTab,
-    setWorkbarCollapsed,
-    workbarCollapsed,
-    workbarPanelsState.right.activeTabId,
-  ]);
-
-  // Side chats survive a panel collapse. They are cleaned up only when their
-  // tab closes or when navigation leaves the owning source session.
-  useEffect(() => {
-    const stalePanels = quotePanels.filter(
-      (panel) => panel.sourceSessionId !== activeId,
-    );
-    if (stalePanels.length === 0) return;
-    const staleIds = new Set(stalePanels.map((panel) => panel.id));
-    for (const panel of stalePanels) {
-      const tabId = `side-chat:${panel.id}`;
-      const placement = workbarPanelsState.right.tabs.some((tab) => tab.id === tabId)
-        ? 'right'
-        : 'bottom';
-      closeWorkbarTab(placement, tabId);
-    }
-    sideConversations.removePanels(staleIds);
-  }, [quotePanels, activeId, closeWorkbarTab, sideConversations, workbarPanelsState]);
-
-  function isScheduledTasksSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'scheduled-tasks';
-  }
-
-  function isSkillsSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'extensions' && navSelectionRef.current.module === 'skills';
-  }
-
-  function isDailyReviewSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'daily-review';
-  }
-
-  const {
-    skills,
-    managedSkillSources,
-    bundledSkillCatalog,
-    scheduledTasks,
-    refreshScheduledTasks,
-    createScheduledTask,
-    updateScheduledTask,
-    toggleScheduledTask,
-    triggerScheduledTaskNow,
-    snoozeScheduledTask,
-    clearScheduledTaskRunHistory,
-    deleteScheduledTask,
-    refreshSkills,
-    refreshManagedSkillSources,
-    refreshBundledSkillCatalog,
-    importManagedSkillSource,
-    installManagedSkill,
-    installBundledSkill,
-    previewManagedSkillUpdate,
-    updateManagedSkill,
-    setSkillEnabled,
-    setSkillPinned,
-    deleteSkill,
-    openSkill,
-  } = useAppShellModuleData({
-    uiLocale,
-    isSkillsSurfaceActive,
-    isScheduledTasksSurfaceActive,
-    toastApi,
-  });
-
-  // 保持系统唤醒 capability for the 定时任务 page: reads/writes
-  // settings.system.keepSystemAwake over the existing settings bridge. When
-  // the bridge is absent the panel hides the row (fail-soft).
-  const keepSystemAwakeController = useKeepSystemAwake();
-
+  const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
   const {
     projectInfo,
     projects,
@@ -1843,137 +1175,46 @@ function AppShellContent({
   } = useAppShellProjectContext({
     uiLocale,
     rendererMountedRef,
-    sessionId: activeId,
-    sessionCwd: activeSession?.cwd,
-    sessionProjectId: activeSession?.projectId,
-    sessionProfileKind: activeDesktopSession?.profileKind,
+    sessionId: ownerActiveId,
+    sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
+    sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
+    sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
-      void refreshSkills();
-      void refreshManagedSkillSources();
-      void refreshBundledSkillCatalog();
+      void moduleHubCommands.refreshProjectSkills();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
   });
+  const captureActiveComposerClaim = useCallback(
+    () => captureComposerClaim(activeIdRef, navSelectionRef, composerRef),
+    [],
+  );
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
-  const selectedNewTaskHost = newTask.catalog.hosts.find(
-    (host) => host.profile.id === newTask.selectedProfileId,
-  );
-  const selectedNewTaskProject = newTask.currentProject?.name ??
-    (newTask.selectedProjectId === null && newTask.selectedHost?.capabilities.selectNoProject
-      ? getConversationCopy(uiLocale).workspace.noProject
-      : undefined);
-  const selectedNewTaskBranch =
-    newTask.selectedHost &&
-      newTask.selectedProjectId === newTask.selectedHost.selectedProjectId
-      ? newTask.selectedHost.branch
-      : undefined;
-  const newTaskCatalogNeedsRetry = Boolean(newTask.error) || newTask.catalog.hosts.some(
-    (host) => host.readiness === 'ready' && host.state === 'error',
-  );
-  const workspacePicker: WorkspacePickerModel = {
-    label: selectedNewTaskProject ?? selectedNewTaskHost?.profile.name ??
-      (newTask.error ? getShellCopy(uiLocale).projectActions.catalogUnavailable : undefined),
-    ...(selectedNewTaskHost?.profile.kind === 'remote'
-      ? { hostBadge: selectedNewTaskHost.profile.name }
-      : {}),
-    branch: newTask.selectedProjectId === null ? null : selectedNewTaskBranch,
-    pending: newTask.pending || (newTask.refreshing && newTask.catalog.hosts.length === 0),
-    selectedGroupId: newTask.selectedProfileId,
-    groups: newTask.catalog.hosts.map((host) => {
-      if (host.readiness !== 'ready' || host.state !== 'available') {
-        return {
-          id: host.profile.id,
-          label: host.profile.name,
-          status: host.readiness === 'ready'
-            ? host.message
-            : getShellCopy(uiLocale).projectActions.runtimeHostReadiness[host.readiness],
-          disabled: true,
-          projects: [],
-        };
-      }
-      const selectedProjectId = host.profile.id === newTask.selectedProfileId
-        ? newTask.selectedProjectId
-        : host.selectedProjectId;
-      return {
-        id: host.profile.id,
-        label: host.profile.name,
-        projects: host.projects.filter((project) => project.archivedAt === undefined),
-        selectedProjectId,
-        onSelectProject: (projectId: string) => newTask.selectProject(host, projectId),
-        ...(host.capabilities.chooseClientDirectory || host.capabilities.chooseHostDirectory
-          ? { onAdd: () => void newTask.addProject(host) }
-          : {}),
-        ...(host.capabilities.chooseClientDirectory
-          ? { onRelink: (projectId: string) => void newTask.relinkProject(host, projectId) }
-          : {}),
-        ...(host.capabilities.selectNoProject
-          ? { onSelectNoProject: () => newTask.selectNoProject(host) }
-          : {}),
-      };
-    }),
-    ...(newTaskCatalogNeedsRetry
-      ? {
-          retry: {
-            label: getShellCopy(uiLocale).projectActions.retryCatalog,
-            onClick: () => void newTask.refresh().catch(() => undefined),
-          },
-        }
-      : {}),
-  };
-  const taskReadinessWorkspace = activeSession?.cwd ?? newTask.projectPath;
+  const taskReadinessWorkspace = activeSession?.cwd ?? taskEntry.selectors.projectPath;
   const taskReadinessRequest = {
-    ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
+    ...Conversation.resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
     ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
   };
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,
     onboarding.snapshot,
-    activeId,
-    activeId ? undefined : newTask.target,
+    ownerActiveId,
+    activeId ? undefined : taskEntry.selectors.target,
   );
-  const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
-  const ignoreTaskReadinessModelTarget =
-    activeSession !== undefined && activeSessionSendOutcome?.kind !== 'blocked';
+  const taskReadinessNotice = Conversation.deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
   const taskSubmissionHardBlocked =
-    (!activeId && !newTask.target) ||
-    isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
-      ignoreModelTarget: ignoreTaskReadinessModelTarget,
-    });
+    !activeId && !taskEntry.selectors.target;
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
-  const titlebarProjectName = deriveTitlebarProjectName({
-    projectName: currentProject?.name,
-    projectPath: projectInfo?.projectPath,
-  });
-  const sessionProjectGroups = useMemo(
-    () => deriveDesktopSessionGroups(visibleSessions, localProjects, uiLocale),
-    [visibleSessions, localProjects, uiLocale],
-  );
-  const worktreeSessionIds = useMemo(
-    () => deriveWorktreeSessionIds(
-      visibleSessions.filter(
-        (session) => session.profileKind !== 'remote',
-      ),
-      localProjects,
-    ),
-    [visibleSessions, localProjects],
-  );
-  // Archived Local tasks use the Local Host catalog; remote rows identify
-  // their Host instead of resolving Project ids across unrelated catalogs.
-  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
-    () => ({
-      sessions,
-      projects: localProjects,
-      onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
-      onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
-      onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
-    }),
-    [sessions, localProjects],
-  );
+  const titlebarProjectName = sharedSessionActive
+    ? undefined
+    : deriveTitlebarProjectName({
+        projectName: currentProject?.name,
+        projectPath: projectInfo?.projectPath,
+      });
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
@@ -1981,45 +1222,226 @@ function AppShellContent({
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    newTaskTarget: newTask.target,
+    newTaskTarget: taskEntry.selectors.target,
     sessionStartPendingRef,
     refreshOnboarding: onboarding.refresh,
     refreshSessions,
     showModelSetupToast,
     toastApi,
   });
+  const openNewTaskSurface = useCallback(() => {
+    imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
+    startNewSession();
+    // Only Plan resets: a new task starts out of Plan, in whatever
+    // orchestration the last one was set to.
+    setNewChatPlanModeActive(false);
+    setNavSelection({ section: 'sessions' });
+    setSearchScrollTarget(null);
+    // New-task affordances reset to the empty-state composer; move focus
+    // there so the user can start typing immediately.
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
+
+  const createSession = useCallback(async () => {
+    openNewTaskSurface();
+  }, [openNewTaskSurface]);
+
+  const historyDraft: HistoryDraftHostInput = {
+    activeSessionId: activeId,
+    activeSessionIsLocal: activeCatalogSession?.profileKind === 'local' && !sharedSessionActive,
+    switchingSession,
+    obscured: settingsOpen,
+    target: taskEntry.selectors.target,
+    targetIsLocal: taskEntry.selectors.selectedHost?.kind === 'local',
+    draftKey: currentNewTaskDraftKey,
+    selectLocalTarget: taskEntry.commands.selectLocalTarget,
+    composer: composerRef,
+    captureSelection,
+    selectChat(selection) {
+      setWorkHubActive(false);
+      setNavSelection(selection);
+    },
+    startNewSession,
+    reportError(error) {
+      toastApi.error(
+        desktopConversationCopy.actions.operationFailedTitle,
+        localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
+      );
+    },
+  };
+
+  // Stable, because the rail's Project rows carry it: a fresh identity here
+  // rebuilt the whole list on every AppShell commit (#4109).
+  const createSessionInProject = useCallback(
+    async (projectId: string) => {
+      if (!selectLocalProject(projectId)) return;
+      openNewTaskSurface();
+    },
+    [openNewTaskSurface, selectLocalProject],
+  );
+
   // Sidebar Project groups are Local. Their catalog mutations remain on the
   // default-scoped bridge until Settings receives its own Host selector.
-  const projectRowActions: Parameters<typeof SessionListPanel>[0]['projectActions'] =
-    projectCapabilities.setLocalDefault
-      ? {
-          onNew: createSessionInProject,
-          onRename: renameProject,
-          onArchive: archiveProject,
-          onRestore: restoreProject,
-          ...(projectCapabilities.chooseClientDirectory
-            ? {
-                onRelink: (projectId: string) =>
-                  relinkProject(projectId).then(() => undefined),
-              }
-            : {}),
-        }
-      : undefined;
+  //
+  // Memoized because the rail reads it: rebuilt per render, this one object
+  // would put the whole list back on every AppShell commit (#4109).
+  const projectRowActions = useMemo<ProjectRowActions | undefined>(
+    () =>
+      projectCapabilities.setLocalDefault
+        ? {
+            onNew: createSessionInProject,
+            onRename: renameProject,
+            onArchive: archiveProject,
+            onRestore: restoreProject,
+            ...(projectCapabilities.chooseClientDirectory
+              ? {
+                  onRelink: (projectId: string) =>
+                    relinkProject(projectId).then(() => undefined),
+                }
+              : {}),
+          }
+        : undefined,
+    [
+      archiveProject,
+      createSessionInProject,
+      projectCapabilities.chooseClientDirectory,
+      projectCapabilities.setLocalDefault,
+      relinkProject,
+      renameProject,
+      restoreProject,
+    ],
+  );
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
-  // resolved project path as a refresh key for new-chat project changes.
-  const { mentionSkills, searchMentionFiles } = useComposerMentions({
-    skills,
-    sessionId: activeId,
-    projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
-    newTaskTarget: activeId ? undefined : newTask.target,
+  // resolved project path as a refresh key for new-chat project changes. Only
+  // the SURFACE is named here — the projection itself is owned by
+  // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
+  const composerMentionsSurface: ComposerMentionsSurfaceInput = {
+    sessionId: ownerActiveId,
+    projectPath: activeId
+      ? ownerActiveId
+        ? projectInfo?.projectPath
+        : undefined
+      : taskEntry.selectors.projectPath,
+    newTaskTarget: activeId ? undefined : taskEntry.selectors.target,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode: newTaskPermissionMode,
+  };
+
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
+  const shellObscured = hasModalOpen || settingsOpen;
+  const contextCompactionPresentation = useMemo(
+    () =>
+      createContextCompactionPresentation({
+        toastApi,
+        presentTerminal(sessionId, notice) {
+          if (notice.level === 'error') {
+            toastApi.error(notice.title, notice.description, undefined, { sessionId });
+            return;
+          }
+          toastApi[notice.level](notice.title, notice.description);
+        },
+      }),
+    [toastApi],
+  );
+  const reportWorkbarError = useCallback(
+    (title: string, description: string, sessionId: string) =>
+      toastApi.error(title, description, undefined, { sessionId }),
+    [toastApi],
+  );
+  const workbarAvailable =
+    sessionsSelected && !workHubActive && Boolean(activeId);
+  const workbar = useWorkbarController({
+    available: workbarAvailable,
+    layoutSessionId: activeId,
+    activeSession: activeHostSession,
+    projectId: currentProjectId,
+    projectAliases: currentProject?.aliases ?? [],
+    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
+    shellObscured,
+    modelChoices: chatModelChoices,
+    reportError: reportWorkbarError,
   });
+  const { commands, selectors, LiveContextUsageProbe } = workbar;
+
+  const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
+  const selectSessionSurface = useCallback(
+    () => setNavSelection({ section: 'sessions' }),
+    [setNavSelection],
+  );
+  const openSession = useMemo(
+    () =>
+      createSessionOpenCommand({
+        activateSession: setActiveId,
+        exitWorkHub,
+        selectSessionSurface,
+        setSearchTarget: setSearchScrollTarget,
+      }),
+    [exitWorkHub, selectSessionSurface, setActiveId, setSearchScrollTarget],
+  );
+  useLayoutEffect(() => {
+    openSessionInChatRef.current = openSession;
+  }, [openSession]);
+  const pendingSessionRowActionsRef = useRef(new Set<string>());
+  const sessionNavigationCommandsRef = useRef<SessionNavigationRowActions | null>(null);
+  // Built inline: the rail reads these through a ref published on commit, so
+  // their identity carries no information and this object never has to be
+  // held still by hand (#4109).
+  const sessionNavigationPorts: SessionNavigationPorts = {
+    sessionsRef,
+    pendingSessionRowActionsRef,
+    activateSession: setActiveId,
+    clearSessionRendererState,
+    refreshSessions,
+    toastApi,
+  };
+  const {
+    rail: sessionRail,
+    branchBanner,
+    revisionNavigation,
+    layout: railLayout,
+  } = useSessionNavigationReads({
+    sessions,
+    activeSessionId: activeId,
+    activeSession,
+    hiddenSessionIds: selectors.hiddenSessionIds,
+  });
+  const visibleSessions = sessionRail.sessions;
+  const sessionListCollapsed = railLayout.collapsed;
+  const sessionListWidth = railLayout.width;
+  const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
+  const titlebarParentSession = useMemo(() => {
+    const parent = sessionRail.activeParentSession;
+    if (!parent) return undefined;
+    const parentId = parent.id;
+    return {
+      name: parent.name,
+      onOpen: () => openSessionInChatRef.current(parentId),
+    };
+  }, [sessionRail.activeParentSession]);
+  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
+    () => ({
+      sessions,
+      projects: localProjects,
+      onRestore: (sessionId) =>
+        void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
+      onDelete: (sessionId) =>
+        void sessionNavigationCommandsRef.current?.deleteSession(sessionId),
+      onPurge: (sessionIds) =>
+        sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
+    }),
+    [sessions, localProjects],
+  );
+
+  const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
+    setNavSelection({ section: 'sessions' });
+    setActiveId(sessionId);
+    return Promise.resolve();
+  }, [setActiveId, setNavSelection]);
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
@@ -2027,69 +1449,79 @@ function AppShellContent({
     setActiveId,
     setNavSelection,
     setSearchModalOpen,
-    setSessionListCollapsed,
-    setWorkbarCollapsed,
-    openWorkbarTab,
+    setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
+    workbar: {
+      rightCollapsed: selectors.rightCollapsed,
+      toggleRight: commands.toggleRight,
+      openTool: commands.openTool,
+    },
     setThemePref,
     setUiLocaleOverride,
   });
 
   const {
     send,
+    enqueueMessage,
     respondToSandboxBoundary,
     respondToUserQuestion,
+    respondToUserForm,
     refreshMessages,
     retryMessages,
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
+    getRunningTurnId: (sessionId) => {
+      if (sessionId !== activeId) return undefined;
+      return Conversation.activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
+    },
     activeIdRef,
-    addPendingSessionAction,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
-    clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    markSessionReadLocally,
-    messageRetryPendingRef,
+    messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
-    setActiveId,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
-    setMessages,
+    activateSessionForFirstSend,
+    retireSession: clearSessionRendererState,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
+    addTransientMessage,
+    updateTransientMessage,
+    removeTransientMessage,
     transcriptRangeRef,
-    setNavSelection,
-    setLiveTurnBySession,
-    setInteractionBySession,
+    onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? Promise.resolve(true),
+    isMessagePublished,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
+    respondToUserForm: commands.respondToUserForm,
     showModelSetupToast,
     toastApi,
-    upsertSessionSummary,
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
-    newChatPermissionMode: newTaskPermissionMode,
+    newChatPermissionChoice: newTaskPermissionChoice,
+    clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
-    newChatOrchestrationMode: newChatGraphModeActive
-      ? 'graph'
-      : newChatSwarmModeActive
-        ? 'swarm'
-        : 'default',
-    newTaskTarget: newTask.target,
+    newChatOrchestrationMode: newChatOrchestrationMode,
+    newTaskTarget: taskEntry.selectors.target,
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
-    addPendingTurnAction: turnActionRegistry.addKey,
-    clearPendingTurnAction: turnActionRegistry.clearKey,
+    captureSelection,
+    turnActionRegistry,
     openSessionInChat,
-    pendingKeyOf,
-    refreshMessages,
     refreshSessions,
-    setMessages,
     toastApi,
-    upsertSessionSummary,
   });
+  const handleSwitchToBypassAndRetry = useCallback(
+    async (turnId: string) => {
+      const selectionIsCurrent = captureSelection();
+      const switched = await setPermissionMode('bypass');
+      if (!switched || !selectionIsCurrent()) return;
+      await handleTurnFooterAction(turnId, 'regenerate');
+    },
+    [captureSelection, handleTurnFooterAction, setPermissionMode],
+  );
 
   const {
     beginEditUserMessage,
@@ -2098,24 +1530,72 @@ function AppShellContent({
   } = useStableActions(createAppShellRevisionActions, {
     uiLocale,
     activeIdRef,
+    captureSelection,
     composerRef,
     messages,
-    hasPendingAttachments: () => pendingAttachments.length > 0,
+    hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
-    refreshMessages,
     refreshSessions,
     setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   });
 
   async function taskSubmissionReadyAtSend(): Promise<boolean> {
-    const snapshot = await taskReadiness.checkNow();
-    return !isTaskSubmissionHardBlocked(snapshot, {
-      ignoreModelTarget: ignoreTaskReadinessModelTarget,
-    });
+    return !sharedSessionActive && (!!activeIdRef.current || !!taskEntry.selectors.target);
+  }
+
+  /**
+   * The send the composer calls, wrapped so the new-task target cannot move
+   * out from under it (#3408). `sendCurrent` captures the draft key it
+   * submitted from and clears exactly that key once this resolves; the picker
+   * stays live throughout, and the catalog can settle on its own. Holding the
+   * flag for the whole call gives the submission one owner, and
+   * ChatComposerRegion defers its carry until it drops.
+   */
+  async function sendOwningItsTarget(
+    text: string,
+    metadata?: ComposerSendMetadata,
+  ): Promise<boolean | void> {
+    setNewTaskSendPending(true);
+    try {
+      return await sendWithAttachments(text, metadata);
+    } finally {
+      setNewTaskSendPending(false);
+    }
+  }
+
+  function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
+    const createdSessionId = activeIdRef.current;
+    if (!sourceSessionId && createdSessionId)
+      imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
+  }
+
+  async function enqueueFollowUp(
+    sessionId: string,
+    text: string,
+    mode: FollowUpMode,
+    metadata?: ComposerSendMetadata,
+  ): Promise<boolean> {
+    try {
+      const sent = await enqueueMessage(sessionId, text,
+        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
+          ...directoryOptions, quotes: pendingQuotes,
+          workspaceFileReferences: metadata?.workspaceFileReferences,
+        });
+      if (!sent) return false;
+      clearSubmittedContext(submittableAttachments);
+      clearQuotes();
+      return true;
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        showSessionError(sessionId, copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
+      }
+      return false;
+    }
   }
 
   async function sendWithAttachments(
@@ -2127,17 +1607,27 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
-    // The composer has one submit; mid-turn it means steering, and this is
-    // where that reading lives. Slash commands are exempt because they are
-    // control instructions to the shell, not text for the running turn.
-    if (!slashCommand && (turnActive || activeStreamingLive)) {
-      return steerWithText(text);
+    // Message placement expresses user intent; Host decides admission.
+    const sessionId = activeIdRef.current;
+    const workspaceFileReferences = mergeWorkspaceReferences(
+      text,
+      metadata?.workspaceFileReferences,
+      sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
+    );
+    const followUpAtSubmit = slashCommand ? undefined : metadata?.followUpMode;
+    if (sessionId && followUpAtSubmit) {
+      const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
+        ...metadata,
+        workspaceFileReferences,
+      });
+      if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
+      return queued;
     }
     if (
       revisionSend &&
       revision &&
       text.trim() === revision.originalText.trim() &&
-      pendingAttachments.length === 0
+      !hasPendingContext
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
@@ -2145,7 +1635,7 @@ function AppShellContent({
     }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (pendingAttachments.length > 0) {
+      if (hasPendingContext) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
@@ -2159,14 +1649,20 @@ function AppShellContent({
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
-        await window.maka.sessions.compact(sessionId);
-        return true;
+        const result = await window.maka.sessions.compact(sessionId);
+        return presentContextCompactionResult(
+          contextCompactionPresentation,
+          sessionId,
+          result,
+          uiLocale,
+        );
       } catch (error) {
         if (activeIdRef.current !== sessionId) return false;
         if (isSessionWorkspaceUnavailableError(error)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
         } else {
-          toastApi.error(
+          showSessionError(
+            sessionId,
             shellCopy.compactErrorTitle,
             localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
           );
@@ -2183,9 +1679,9 @@ function AppShellContent({
         return false;
       }
       if (
-        pendingAttachments.length > 0 ||
-        pendingQuotes.length > 0 ||
-        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+        hasPendingContext ||
+        pendingQuotes.length ||
+        metadata?.workspaceFileReferences?.length
       ) {
         toastApi.info(
           shellCopy.sideChatContextPendingTitle,
@@ -2193,15 +1689,17 @@ function AppShellContent({
         );
         return false;
       }
-      openSideConversation(slashCommand.command.prompt || undefined);
+      commands.openTool('side-chat', 'right', {
+        ...(slashCommand.command.prompt
+          ? { initialPrompt: slashCommand.command.prompt }
+          : {}),
+      });
       return true;
     }
     if (slashCommand?.kind === 'swarm') {
       const swarmCommand = slashCommand.command;
       if (swarmCommand.kind === 'status') {
-        const active = activeIdRef.current
-          ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
-          : newChatSwarmModeActive;
+        const active = activeOrchestrationMode === 'swarm';
         toastApi.info(
           active ? shellCopy.swarmModeEnabledTitle : shellCopy.swarmModeDisabledTitle,
           shellCopy.swarmModeStatusDescription,
@@ -2209,7 +1707,7 @@ function AppShellContent({
         return true;
       }
       if (swarmCommand.kind === 'set_mode') {
-        const changed = await setSwarmMode(swarmCommand.mode === 'swarm');
+        const changed = await setOrchestrationModeActive('swarm', swarmCommand.mode === 'swarm');
         if (changed) {
           toastApi.info(
             swarmCommand.mode === 'swarm'
@@ -2220,10 +1718,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2235,24 +1734,29 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+        settleNewTaskImageNoticeOwner(sessionId);
+      }
       return ok;
     }
     if (slashCommand?.kind === 'graph') {
       const graphCommand = slashCommand.command;
       if (graphCommand.kind === 'status') {
-        const active = activeIdRef.current
-          ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
-          : newChatGraphModeActive;
+        const active = activeOrchestrationMode === 'graph';
         toastApi.info(
           active ? shellCopy.graphModeEnabledTitle : shellCopy.graphModeDisabledTitle,
           shellCopy.graphModeStatusDescription,
         );
         return true;
       }
+      if (graphCommand.kind === 'history') {
+        toastApi.info(shellCopy.graphHistoryTitle, shellCopy.graphHistoryDescription);
+        return true;
+      }
       if (graphCommand.kind === 'set_mode') {
-        const changed = await setGraphMode(graphCommand.mode === 'graph');
+        const changed = await setOrchestrationModeActive('graph', graphCommand.mode === 'graph');
         if (changed) {
           toastApi.info(
             graphCommand.mode === 'graph'
@@ -2263,10 +1767,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2278,23 +1783,32 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+        settleNewTaskImageNoticeOwner(sessionId);
+      }
       return ok;
     }
-    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
+    const pending = submittableAttachments;
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
+      waitForHostAdmission: revisionSend,
+      ...directoryOptions,
       ...(quotes ? { quotes } : {}),
-      ...(metadata?.workspaceFileReferences?.length
-        ? { workspaceFileReferences: metadata.workspaceFileReferences }
+      ...(workspaceFileReferences.length
+        ? { workspaceFileReferences }
         : {}),
     });
-    if (ok !== false && pending) clearSubmittedAttachments(pending);
-    if (ok !== false && quotes) clearQuotes();
+    if (ok !== false) {
+      clearSubmittedContext(pending);
+      if (quotes) clearQuotes();
+      settleNewTaskImageNoticeOwner(sessionId);
+      if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
+    }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
         completeTurnRevisionCopyAttempt(expectedRevisionDraft);
@@ -2308,31 +1822,64 @@ function AppShellContent({
     return ok;
   }
 
-  async function steerWithText(text: string): Promise<boolean> {
+  async function updateQueuedEntry(
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text)
+    );
+  }
+
+  async function deleteQueuedEntry(entryId: string): Promise<void> {
+    const messageId = activeMessageQueue?.entries.find((entry) => entry.entryId === entryId)?.messageId;
+    const sessionId = await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
+    );
+    if (sessionId && messageId) removeTransientMessage(sessionId, messageId);
+  }
+
+  // Surfaces the failure, then rethrows so the pending plate can settle its
+  // in-flight action state without guessing with a timer.
+  async function runQueueEntryAction(
+    action: (sessionId: string) => Promise<void>,
+  ): Promise<string | undefined> {
     const sessionId = activeIdRef.current;
-    if (!sessionId || !text.trim()) return false;
+    if (!sessionId) return;
     try {
-      const outcome = await window.maka.sessions.steer(sessionId, text.trim());
-      return outcome.kind === 'queued';
+      await action(sessionId);
+      return sessionId;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        toastApi.error(
+        showSessionError(
+          sessionId,
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
         );
       }
-      return false;
+      throw error;
     }
+  }
+
+  async function promoteQueuedEntry(entryId: string): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.promoteQueueEntry(sessionId, entryId).then(() => undefined)
+    );
+  }
+
+  async function reorderQueuedEntries(entryIds: readonly string[]): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.reorderQueueEntries(sessionId, entryIds).then(() => undefined)
+    );
   }
 
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
-    clearPendingSessionAction,
-    setStopPendingBySession,
-    stopPendingRef,
+    stopPending: sessionUiController.stopPending,
+    removeTransientMessage,
     toastApi,
   });
 
@@ -2342,25 +1889,29 @@ function AppShellContent({
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
+    dropDisplayEvents,
     markDisplayPending,
     markDisplayReady,
   } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
-    liveTurnBySessionRef,
+    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
     refreshMessages,
     refreshSessions,
-    setLiveTurnBySession,
-    setInteractionBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
+    setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
+    removeTransientMessage,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
+    onContextCompactionOutcome: (sessionId, turnId, outcome) =>
+      contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {
-      if (kind === 'completed' && activeIdRef.current === sessionId) {
+      if (kind === 'completed' && activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      }
       const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
       // Best-effort: swallow any main-side failure so a missed banner
       // never surfaces as an unhandled promise rejection.
@@ -2384,289 +1935,105 @@ function AppShellContent({
     return () => window.clearTimeout(timer);
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
-  const shellObscured = hasModalOpen || settingsOpen;
-
-  useEffect(() => {
-    const handleWorkbarShortcut = (event: KeyboardEvent) => {
-      if (
-        shellObscured ||
-        navSelectionRef.current.section !== 'sessions' ||
-        !activeId
-      ) {
-        return;
-      }
-      const primary = navigator.platform.toLowerCase().includes('mac')
-        ? event.metaKey
-        : event.ctrlKey;
-      const key = event.key.toLowerCase();
-      if (event.ctrlKey && event.shiftKey && !event.altKey && key === 'g') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'review');
-      } else if (
-        event.ctrlKey &&
-        !event.altKey &&
-        !event.shiftKey &&
-        (key === '`' || event.code === 'Backquote')
-      ) {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'terminal');
-      } else if (primary && !event.altKey && !event.shiftKey && key === 't') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'browser');
-      } else if (primary && !event.altKey && !event.shiftKey && key === 'p') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'files');
-      } else if (primary && event.altKey && !event.shiftKey && key === 's') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'side-chat');
-      }
-    };
-    window.addEventListener('keydown', handleWorkbarShortcut, true);
-    return () => window.removeEventListener('keydown', handleWorkbarShortcut, true);
-  }, [activeId, requestOpenWorkbarTab, shellObscured]);
-
   useAppShellNavRefSync({
     navSelection,
     navSelectionRef,
   });
-  useAppShellHostEffects({
-    activeId,
-    setLiveBrowserSessionIds,
-  });
+  useAppShellHostEffects();
   useAppShellBootstrapSubscriptions({
     uiLocale,
     activeIdRef,
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
-    confirmLiveTurn,
-    clearSessionRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
     openSettings,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
-    pendingTurnActionTimersRef: turnActionRegistry.timersRef,
-    pendingTurnActionsRef: turnActionRegistry.keysRef,
+    clearPendingTurnActions: turnActionRegistry.clearAll,
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
-    refreshScheduledTasks,
     refreshProjects,
     refreshShellSettings,
-    refreshSkills,
-    refreshManagedSkillSources,
-    refreshBundledSkillCatalog,
     refreshSessions,
     rendererMountedRef,
-    setActiveId,
-    setMessages,
-    setNavSelection,
-    setSessionEventHealthBySession,
+    retireSession: clearSessionRendererState,
+    retiredSessionIds,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   useAppShellPersistenceEffects({
     navigationState,
-    sessionListCollapsed,
-    sessionListWidth,
-    sessionListViewMode: viewMode,
-    workbarCollapsed,
-    workbarWidth,
-    bottomPanelOpen,
-    bottomPanelHeight,
-    workbarPanelsState,
     themePalette,
     themePref,
   });
-  const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
+  const [activeEventSeed, setActiveEventSeed] = useState<liveContent.LiveContentSeed>(
+    liveContent.EMPTY_LIVE_CONTENT_SEED,
+  );
   const activeEventSeedRef = useRef(activeEventSeed);
   activeEventSeedRef.current = activeEventSeed;
-  const beginObservationSeed = (sessionId: string): number => {
-    const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
+  const beginObservationSeed = (sessionId: string) => {
+    const next = liveContent.beginLiveContentSeed(activeEventSeedRef.current, sessionId);
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
-    return next.generation;
   };
-  const completeObservationSeed = (sessionId: string, generation?: number): void => {
+  const completeObservationSeed = (sessionId: string) => {
     const current = activeEventSeedRef.current;
-    const expected = generation ?? current.generation;
-    if (current.sessionId !== sessionId || current.generation !== expected) return;
+    if (current.sessionId !== sessionId) return;
     flushDisplayEvents(sessionId);
     markDisplayReady(sessionId);
-    const next = completeLiveContentSeed(current, sessionId, expected);
+    const next = liveContent.completeLiveContentSeed(current, sessionId);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
+    void retireCancelledTransientMessages(sessionId);
   };
+  const observationAuthorityRef = useRef(liveContent.EMPTY_SESSION_OBSERVATION_AUTHORITY);
+  observationAuthorityRef.current = liveContent.advanceSessionObservationAuthority(
+    observationAuthorityRef.current,
+    requestedSessionId,
+    requestedCatalogSession?.profileId,
+  );
   useActiveSessionEvents({
+    publishTranscript,
     uiLocale,
-    activeId,
+    activeId: requestedHostSession?.id,
+    observationAuthorityRevision: observationAuthorityRef.current.revision,
     activeIdRef,
     handleEvent,
-    markSessionReadLocally,
     beginObservationSeed,
+    setExecution: sessionUiController.setExecution,
     completeObservationSeed,
-    setMessageLoadErrorBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
+    clearMessageLoadError: sessionUiController.clearMessageLoadError,
     setMessageLoadPending,
-    setMessages,
+    commitTranscript,
     transcriptRangeRef,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
-  let newestDurablePromptSequence: number | null = null;
-  try {
-    const controller = transcriptRangeRef.current;
-    if (controller && controller.store.range().sessionId === activeId) {
-      newestDurablePromptSequence = controller.store.newestDurableUserSequence();
-    }
-  } catch {
-    newestDurablePromptSequence = null;
-  }
-  useEffect(() => {
-    const sessionId = activeId;
-    if (!sessionId) {
-      setTranscriptTurnIndex(undefined);
-      return;
-    }
-    let disposed = false;
-    if (
-      transcriptTurnIndex?.sessionId === sessionId &&
-      (newestDurablePromptSequence === null ||
-        (transcriptTurnIndex.throughSequence !== null &&
-          newestDurablePromptSequence <= transcriptTurnIndex.throughSequence))
-    ) return;
-    void window.maka.sessions.listTurnLandmarks(sessionId).then(
-      (snapshot) => {
-        if (disposed || activeIdRef.current !== sessionId) return;
-        setTranscriptTurnIndex({
-          sessionId,
-          throughSequence: snapshot.throughSequence,
-          turns: snapshot.landmarks,
-        });
-      },
-      () => undefined,
-    );
-    return () => {
-      disposed = true;
-    };
-  }, [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
-  useEffect(() => {
-    const target = searchScrollTarget;
-    if (!target || target.sessionId !== activeId || target.sequence === undefined) return;
-    const sequence = target.sequence;
-    const controller = transcriptRangeRef.current;
-    if (!controller) return;
-    let disposed = false;
-    void controller.ready()
-      .then(() => controller.loadAround(sequence))
-      .then(() => {
-        if (
-          disposed ||
-          transcriptRangeRef.current !== controller ||
-          activeIdRef.current !== target.sessionId
-        ) return;
-        setMessages([...controller.store.snapshot().messages]);
-      })
-      .catch((error) => {
-        if (disposed || activeIdRef.current !== target.sessionId) return;
-        setMessageLoadErrorBySession((current) => ({
-          ...current,
-          [target.sessionId]: localizedShellErrorMessage(
-            error,
-            desktopConversationCopy.actions.operationFailedFallback,
-            uiLocale,
-          ),
-        }));
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [activeId, searchScrollTarget?.nonce]);
-  useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
+  useShellRunUpdates({
+    activeId: ownerActiveId,
+    setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
+  });
   useSessionEventHealthPolling({
-    activeId,
+    activeId: activeHostSession?.id,
     activeInteraction,
     activeSession,
     activeStreamingLive,
     hasInFlightLiveTools,
     refreshMessages,
     refreshSessions,
-    sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession,
+    sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
-  function captureComposerImportOwner(): ComposerImportOwner {
-    return {
-      sessionId: activeIdRef.current,
-      navSection: navSelectionRef.current.section,
-      ...(activeIdRef.current === undefined
-        ? { newTaskDraftKey: currentNewTaskDraftKey }
-        : {}),
-    };
-  }
-
-  /**
-   * "Is this owner still the surface the user is looking at." One rule, both
-   * halves: an async result that lands after the user moved on must not toast,
-   * navigate or steal focus, and `selectNavigation` never clears `activeId`
-   * (nav-selection.ts) — so the session id alone answers yes long after the
-   * user left for 扩展 or 设置.
-   *
-   * The two below are this same question with a precondition on what KIND of
-   * owner the caller wants, not second opinions about the question. They were
-   * three independent spellings once, and the one that re-derived it from an
-   * id drifted: it lost the section half, which is exactly what let a failed
-   * send pull a user out of 技能 and into 设置 · 模型.
-   */
-  function isShellSurfaceOwnerActive(owner: ComposerImportOwner): boolean {
-    return navSelectionRef.current.section === owner.navSection &&
-      activeIdRef.current === owner.sessionId &&
-      (owner.sessionId !== undefined || owner.newTaskDraftKey === currentNewTaskDraftKey);
-  }
-
-  /** …and the owner was captured on the chat surface. */
-  function isComposerImportOwnerActive(owner: ComposerImportOwner): boolean {
-    return owner.navSection === 'sessions' && isShellSurfaceOwnerActive(owner);
-  }
-
-  /** …and it was the new-chat surface, which by definition has no session. */
-  function isNewChatSendSurfaceActive(owner: ComposerImportOwner): boolean {
-    return owner.sessionId === undefined && isComposerImportOwnerActive(owner);
-  }
-
   async function bootstrapSessions() {
     const next = await refreshSessions();
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
     bootstrapSelectionLease.release();
-  }
-
-  function openNewTaskSurface() {
-    startNewSession();
-    setNewChatPlanModeActive(false);
-    setNavSelection({ section: 'sessions' });
-    setSearchScrollTarget(null);
-    // New-task affordances reset to the empty-state composer; move focus
-    // there so the user can start typing immediately.
-    window.requestAnimationFrame(() => composerRef.current?.focus());
-  }
-
-  async function createSession() {
-    openNewTaskSurface();
-  }
-
-  async function createSessionInProject(projectId: string) {
-    if (!newTask.localHost) return;
-    newTask.selectProject(newTask.localHost, projectId);
-    openNewTaskSurface();
-  }
-
-  function openScheduledTaskForm() {
-    setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
-    closePalette();
-    setScheduledTaskCreateRequestNonce((nonce) => nonce + 1);
   }
 
   /**
@@ -2705,8 +2072,7 @@ function AppShellContent({
   }
 
   function closeSettings() {
-    setSettingsOpen(false);
-    setSettingsProviderCatalogOpen(false);
+    closeSettingsModal();
     // PR110c: re-pull onboarding snapshot when the user closes the
     // Settings modal — they may have just configured a default
     // connection or supplied a credential. Existing connections /
@@ -2724,7 +2090,11 @@ function AppShellContent({
     void refreshShellSettings();
   }
 
-  function showModelSetupToast(description: string, reason?: string) {
+  function showModelSetupToast(
+    description: string,
+    reason?: string,
+    diagnosticTarget?: ToastDiagnosticTarget,
+  ) {
     const copy = modelSetupToastCopy(reason, description, uiLocale);
     toastApi.toast({
       title: copy.title,
@@ -2733,6 +2103,7 @@ function AppShellContent({
         : copy.description,
       variant: 'error',
       duration: 8000,
+      ...(diagnosticTarget ? { diagnosticTarget } : {}),
       ...(modelSettingsOwnsComposerHost
         ? {
             action: {
@@ -2745,43 +2116,28 @@ function AppShellContent({
     if (modelSettingsOwnsComposerHost) openSettingsSection('models');
   }
 
-  const canStageComposerContext = activeId !== undefined || newTask.target !== undefined;
+  function showSessionError(
+    sessionId: string,
+    title: string,
+    description?: string,
+  ) {
+    toastApi.error(title, description, undefined, { sessionId });
+  }
+
+  const canStageComposerContext =
+    activeId !== undefined || taskEntry.selectors.target !== undefined;
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
-  let activeTranscriptRange;
-  try {
-    const controller = transcriptRangeRef.current;
-    const range = controller?.store.range();
-    if (range?.sessionId === activeId) activeTranscriptRange = range;
-  } catch {
-    activeTranscriptRange = undefined;
-  }
-  async function loadTranscriptHistory(target: 'earlier' | 'latest') {
-    const controller = transcriptRangeRef.current;
-    const sessionId = activeId;
-    if (!controller || !sessionId || historyLoadPendingSessionId) return;
-    setHistoryLoadPendingSessionId(sessionId);
-    try {
-      if (target === 'earlier') {
-        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
-      } else {
-        await controller.loadLatest();
-      }
-    } catch (error) {
-      toastApi.error(
-        desktopConversationCopy.actions.messageReadFailedTitle,
-        localizedShellErrorMessage(
-          error,
-          desktopConversationCopy.actions.operationFailedFallback,
-          uiLocale,
-        ),
-      );
-    } finally {
-      setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
-    }
-  }
+  const activeTranscriptReadingAnchor = activeId
+    ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
+    : undefined;
+  const activeUnavailableTranscriptRestore = activeId
+    ? transcriptRestoreUnavailableBySession[activeId]
+    : undefined;
+  const activeTranscriptRange = publishedTranscriptRange?.sessionId === activeId
+    ? publishedTranscriptRange : undefined;
   const homeSurfaceActive =
-    navSelection.section === 'sessions' &&
+    sessionsSelected &&
     messages.length === 0 &&
     !hasLiveTurnContent &&
     !activeMessageLoadError;
@@ -2796,43 +2152,71 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    dailyReviewBridge,
     messages,
+    newTaskProfileId: taskEntry.selectors.selectedProfileId,
+    settingsOpen,
+    settingsProfileId: settingsRequest.profileId,
     sessions,
     themePref,
     visibleSessions,
     captureComposerImportOwner,
-    composerRef,
     createSession,
     startModeSession,
-    isComposerImportOwnerActive,
     openHelp,
-    openScheduledTaskForm,
+    openScheduledTaskCreate: () => {
+      closePalette();
+      moduleHubCommands.openScheduledTaskCreate();
+    },
     openProjectFolder,
     openSessionInChat,
-    openSideConversation,
+    openSideConversation: () => commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
     openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
-    saveDailyReviewMarkdown,
+    copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
+    pasteTodayDailyReview: moduleHubCommands.pasteTodayDailyReview,
+    saveTodayDailyReview: moduleHubCommands.saveTodayDailyReview,
     setNavSelection,
     setPermissionMode,
     setThemePref,
     toastApi,
   };
 
-  const agentsView =
-    navSelection.section === 'automations'
-      ? navSelection.module === 'daily-review'
-        ? 'daily-review'
-        : 'cron'
-      : navSelection.section === 'extensions'
-        ? navSelection.module
-        : 'im_hub';
+  const agentsView = resolveShellDetailView(navSelection);
 
   return (
+    // Feature controllers live below the shell. Task Entry publishes a stable
+    // shell projection plus reader-local Host/Workspace Picker projections;
+    // Goal state and Module Hub ownership likewise wake only their narrow
+    // readers. Composer mentions still wrap the frame so one projection serves
+    // every composer, including side-chat panels, without rebuilding the frame
+    // on catalog moves.
+    <Goals.GoalProvider
+      activeSessionId={ownerActiveId}
+      canOpenDialog={activeBoundarySurface.localInteractionAvailable}
+      reportError={showSessionError}
+    >
+    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <ModuleHub.ModuleHubProvider
+      selection={navSelection}
+      selectModule={setNavSelection}
+      openSkillsFolder={projectCapabilities.viewClientPath ? openSkillsFolder : undefined}
+      useSkillInChat={useSkillInChat}
+      openSession={openSessionInChat}
+      historyDraft={historyDraft}
+      appendComposerText={(text) => composerRef.current?.appendText(text)}
+      captureActiveComposerClaim={captureActiveComposerClaim}
+      commandPort={moduleHubCommands}
+    >
+    <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
+      render={renderComposerMentionsProvider(composerMentionsSurface)}
+    >
+    <SessionCollaboration.SessionTurnRequestInboxProvider
+      sessions={sessions}
+      onOpenSession={openSession}
+    >
     <div
       className="appFrame agents-layout-root"
       data-agents-page
@@ -2843,27 +2227,39 @@ function AppShellContent({
          readers at all — and three writers of the same value is three chances
          for them to disagree. */
       data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-      /* Published here for the same reason `data-sidebar-state` is: the frame is
-         the only ancestor shared by the sidebar column and the titlebar strip,
-         and both need this number. The column is this wide; the titlebar's
-         session breadcrumb opens at that edge rather than straddling the seam
-         between the columns.
-
-         Only the EXPANDED width, and only as an inline style, because that is
-         the half of the answer this component owns — the user's dragged width.
-         The collapsed width is a constant, so shell-layout.css states it off
-         `data-sidebar-state`. Writing both here would duplicate the constant;
-         writing this one unconditionally would bury the other, since an inline
-         custom property outranks any rule that redefines it. */
+      /* The frame is the shared owner for dimensions consumed by both shell
+         columns and titlebar chrome. CSS clears the titlebar reserve when the
+         responsive layout moves the workbar below the conversation. */
       style={
-        sessionListCollapsed
-          ? undefined
-          : ({
-              '--maka-sidenav-width': `${sessionListWidth}px`,
-            } as CSSProperties)
+        ({
+          '--maka-session-workbar-width': `${workbar.host.rightWidth}px`,
+          '--maka-sidenav-width': sessionListCollapsed ? 0 : `${sessionListWidth}px`,
+        } as CSSProperties)
       }
     >
-      <LiveTurnReconciler
+      <Conversation.TranscriptReadingPositionController
+        commands={transcriptReadingCommands}
+        sessionId={activeId}
+        profileId={activeSession?.profileId}
+        currentSessionId={activeIdRef}
+        rangeController={transcriptRangeRef}
+        messages={messages}
+        searchTarget={searchScrollTarget?.handled ? null : searchScrollTarget}
+        landmarkSessionId={ownerActiveId ?? null}
+        clearSearchTarget={() => setSearchScrollTarget(null)}
+        sessionUi={sessionUiController}
+        turnIndex={transcriptTurnIndex}
+        setTurnIndex={setTranscriptTurnIndex}
+        listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
+        onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
+          ...current,
+          [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
+        }))}
+        onNavigationError={(error, sessionId) => showSessionError(sessionId,
+          desktopConversationCopy.actions.messageReadFailedTitle,
+          localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale))}
+      />
+      <Conversation.LiveTurnReconciler
         controller={sessionUiController}
         activeId={activeId}
         messages={messages}
@@ -2898,7 +2294,7 @@ function AppShellContent({
                 summary loads, and the name this replaced (the context layer's) was
                 showing through that window. Hung on the real record alone, 新任务
                 was named nowhere for the length of it. */}
-            {navSelection.section === 'sessions' && activeSessionForView && (
+            {sessionsSelected && !workHubActive && activeSessionForView && (
               <TitlebarSessionIdentity
                 /* Keyed by session: the open rename is local state and the field is
                    uncontrolled, so a switch that left the instance mounted would
@@ -2906,27 +2302,37 @@ function AppShellContent({
                    next one. A remount ties the edit to the session it belongs to. */
                 key={activeSessionForView.id}
                 sessionName={activeSessionForView.name}
+                readOnly={sharedSessionActive}
+                action={
+                  sharedSessionActive ||
+                  !activeDesktopSession ||
+                  activeDesktopSession.profileKind === 'environment'
+                    ? undefined
+                    : {
+                        label: sharedSessionDialog.shareActionLabel,
+                        onClick: () => sharedSessionDialog.openSession(activeDesktopSession),
+                      }
+                }
                 onRenameSession={(name) => {
-                  void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
+                  void sessionNavigationCommandsRef.current?.renameSession(activeSessionForView.id, name);
                 }}
                 project={
                   titlebarProjectName
                     ? {
                         name: titlebarProjectName,
-                        ...(activeProjectCapabilities.viewClientPath
-                          ? { onOpenFolder: () => void openProjectFolder() }
-                          : {}),
+                        path: projectInfo?.projectPath,
+                        onOpenFolder: activeProjectCapabilities.viewClientPath ? openProjectFolder : undefined,
                       }
                     : undefined
                 }
                 parentSession={titlebarParentSession}
               />
             )}
-            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-              <AppShellWorkspaceTopActions
-                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-                workbarCollapsed={workbarCollapsed}
-                onToggleWorkbar={toggleWorkbar}
+            {!sharedSessionActive && hasWorkspaceActions(agentsView) && (
+              <WorkbarTitlebarActions
+                available={workbarAvailable}
+                collapsed={selectors.rightCollapsed}
+                onToggle={commands.toggleRight}
               />
             )}
           </>
@@ -2937,7 +2343,8 @@ function AppShellContent({
         /* Astryx's default: nav column takes --color-background-body, content takes
            --color-background-surface. Both point at the product palette through
            makaTheme.ts, so the shell follows a palette switch. Declared rather
-           than defaulted — it decides what separates the two columns. */
+           than defaulted: the two columns are separated by that background
+           step alone, so the variant IS the separation. */
         variant="elevated"
         height="fill"
         contentPadding={0}
@@ -2945,36 +2352,36 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={shellObscured ? true : undefined}
         sideNav={
-          <SessionListPanel
-            collapseHandleRef={sessionSideNavHandleRef}
-            collapsed={sessionListCollapsed}
-            onCollapsedChange={setSessionListCollapsed}
-            width={sessionListWidth}
-            onWidthChange={(width) => {
-              if (width >= SESSION_LIST_EXPANDED_MIN_WIDTH) setSessionListWidth(width);
-            }}
-            minWidth={SESSION_LIST_EXPANDED_MIN_WIDTH}
-            maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
-            selection={navSelection}
-            sessions={visibleSessions}
-            activeId={sidebarActiveId}
-            scheduledTasks={scheduledTasks}
-            streamingSessionIds={streamingSessionIds}
-            staleSessionIds={staleSessionIds}
-            viewMode={viewMode}
-            onViewModeChange={setViewMode}
-            groups={viewMode === 'project' ? sessionProjectGroups : undefined}
-            worktreeSessionIds={worktreeSessionIds}
-            sessionMeta={runtimeHostSessionMeta}
-            moduleMemory={navigationState.moduleMemory}
-            onSelect={setNavSelection}
-            onSelectSession={sessionListSelectSession}
-            onOpenSettings={openSettings}
-            updateReminder={updateReminder}
-            onOpenUpdate={openUpdateDownload}
-            onNew={createSession}
-            rowActions={sessionRowActions}
-            projectActions={projectRowActions}
+          <ModuleHub.ModuleHubScheduledTasksBoundary
+            render={(scheduledTasks) => (
+              <SessionNavigationProvider
+                scheduledTasks={scheduledTasks}
+                rail={sessionRail}
+                projects={localProjects}
+                streamingSessionIds={streamingSessionIds}
+                staleSessionIds={staleSessionIds}
+                SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
+                NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
+                ports={sessionNavigationPorts}
+                commandsRef={sessionNavigationCommandsRef}
+                onExitWorkHub={exitWorkHub}
+                onSelectSession={openSession}
+                workHubActive={workHubActive}
+                selection={navSelection}
+                moduleMemory={navigationState.moduleMemory}
+                onSelect={setNavSelection}
+                onOpenSettings={openSettings}
+                onNew={createSession}
+                workHubEntry={workHubEnabled ? {
+                  active: workHubActive,
+                  label: 'WorkHub',
+                  onSelect: openWorkHub,
+                } : undefined}
+                projectActions={projectRowActions}
+              >
+                {SESSION_RAIL}
+              </SessionNavigationProvider>
+            )}
           />
         }
       >
@@ -2989,128 +2396,93 @@ function AppShellContent({
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
           <div className="maka-detail-with-artifacts">
-            <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
-              {navSelection.section === 'extensions' && navSelection.module === 'skills' ? (
-                <SkillsPage
-                  hubHeader={extensionsHubHeader}
-                  skills={skills}
-                  scheduledTasks={scheduledTasks}
-                  onRefreshSkills={() => refreshSkills()}
-                  onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onOpenSkill={projectCapabilities.viewClientPath
-                    ? (skillId) => openSkill(skillId)
-                    : undefined}
-                  onUseSkill={useSkillInChat}
-                  onOpenSkillsFolder={projectCapabilities.viewClientPath
-                    ? () => openSkillsFolder()
-                    : undefined}
-                  managedSkillSources={managedSkillSources}
-                  onImportManagedSkillSource={projectCapabilities.viewClientPath
-                    ? () => importManagedSkillSource()
-                    : undefined}
-                  onInstallManagedSkill={(sourceId) => installManagedSkill(sourceId)}
-                  bundledSkillCatalog={bundledSkillCatalog}
-                  onRefreshBundledSkillCatalog={() => refreshBundledSkillCatalog()}
-                  onInstallBundledSkill={(id) => installBundledSkill(id)}
-                  onPreviewManagedSkillUpdate={(skillId) => previewManagedSkillUpdate(skillId)}
-                  onUpdateManagedSkill={(skillId, options) => updateManagedSkill(skillId, options)}
-                  onSetSkillEnabled={(skillId, enabled) => setSkillEnabled(skillId, enabled)}
-                  onSetSkillPinned={(skillRef, pinned) => setSkillPinned(skillRef, pinned)}
-                  onDeleteSkill={(skillRef) => deleteSkill(skillRef)}
-                />
-              ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
-                <McpPage hubHeader={extensionsHubHeader} />
-              ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
-                <ScheduledTasksPage
-                  hubHeader={automationsHubHeader}
-                  tasks={scheduledTasks}
-                  createRequestNonce={scheduledTaskCreateRequestNonce}
-                  onCreateRequestHandled={() => setScheduledTaskCreateRequestNonce(0)}
-                  keepSystemAwake={
-                    keepSystemAwakeController.supported
-                      ? keepSystemAwakeController.keepSystemAwake
-                      : undefined
-                  }
-                  onKeepSystemAwakeChange={
-                    keepSystemAwakeController.supported
-                      ? keepSystemAwakeController.setKeepSystemAwake
-                      : undefined
-                  }
-                    onRefresh={() =>
-                      refreshScheduledTasks({
-                        shouldShowError: isScheduledTasksSurfaceActive,
-                      })
-                    }
-                  onCreate={(input) => createScheduledTask(input)}
-                  onUpdate={(id, patch) => updateScheduledTask(id, patch)}
-                  onToggle={(id, enabled) => toggleScheduledTask(id, enabled)}
-                  onTriggerNow={(id) => triggerScheduledTaskNow(id)}
-                  onSnooze={(id) => snoozeScheduledTask(id)}
-                  onClearRunHistory={(id) => clearScheduledTaskRunHistory(id)}
-                  onDelete={(id) => deleteScheduledTask(id)}
-                />
-              ) : navSelection.section === 'automations' && navSelection.module === 'daily-review' ? (
-                <DailyReviewPage
-                  hubHeader={automationsHubHeader}
-                  bridge={dailyReviewBridge}
-                  onSelectSession={openSessionInChat}
-                  onCopyMarkdown={(input) => copyDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
-                  onAppendMarkdown={appendDailyReviewMarkdown}
-                  onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
-                />
-              ) : null}
+            <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
+              inert={switchingSession || undefined}
+              aria-busy={switchingSession || undefined}>
+              <ModuleHub.ModuleHubHost onOpenSettings={openComputerHistorySettings} isObscured={settingsOpen} />
+              <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
+              <WorkHubDock enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
-                // Reset conversation-owned scroll state without remounting the
-                // composer: its contenteditable DOM carries the live draft.
-                conversationKey={activeId}
-                hidden={navSelection.section !== 'sessions'}
+                // ChatView positions this transcript: switching conversations,
+                // following the tail and the moves the reader asks for are one
+                // authority there, and the composer never remounts for any of
+                // them — its contenteditable DOM carries the live draft.
+                data-maka-onboarding={showOnboardingHero ? 'true' : undefined}
+                scrollToBottomLabel={
+                  desktopConversationCopy.actions.scrollMainToBottom
+                }
+                onReturnToTail={activeTranscriptRange?.hasNewer
+                  ? () => transcriptReadingCommands.current?.returnToLatest()
+                  : undefined}
+                hidden={workHubActive || !sessionsSelected}
                 composer={
                   <>
-                    {navSelection.section === 'sessions' &&
-                    activeId &&
+                    {ownerActiveId ? (
+                      <SessionCollaboration.SessionTurnRequestApprovalForSession
+                        sessionId={ownerActiveId}
+                        messages={messages}
+                        onOpenSession={openSessionInChat}
+                      />
+                    ) : null}
+                    {sessionsSelected &&
+                    ownerActiveId &&
                     activeSessionForView &&
                     !isLinkedSubagentSession(activeSessionForView) ? (
                       <AgentGraphPanel
-                        rootSessionId={activeId}
+                        rootSessionId={ownerActiveId}
                         enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
                         locale={uiLocale}
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
-                    <ChatComposerRegion
+                    {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    <WorkHubReturnButton
+                      visible={workHubEnabled && Boolean(activeId) && !onboardingComposerHidden}
+                      onReturn={openWorkHub}
+                    />
+                    {sharedSessionActive && activeId ? (
+                      <SessionCollaboration.SessionTurnRequestComposer
+                        sessionId={activeId}
+                      />
+                    ) : (
+                      <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}>
+                        {(workspacePicker) => (
+                          <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
-                  active={navSelection.section === 'sessions'}
+                  active={sessionsSelected}
                   onboardingComposerHidden={
-                    onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
+                    onboardingComposerHidden
                   }
                   boundaryUnreadableNotice={boundaryUnreadableNotice}
                   activeInteraction={activeInteraction}
                   activeId={activeId}
                   newTaskDraftKey={currentNewTaskDraftKey}
+                  newTaskSendPending={newTaskSendPending}
                   stopPendingBySession={stopPendingBySession}
-                  activeSandboxBoundary={activeSandboxBoundary}
                   respondToSandboxBoundary={respondToSandboxBoundary}
-                  activeQuestion={activeQuestion}
+                  respondToClientCapability={commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
+                  respondToUserForm={respondToUserForm}
                   stop={stop}
+                  directoryComposerProps={directoryComposerProps}
+                  directoryPickerEnabled={Boolean(
+                    canStageComposerContext && directoryHostId && !revisionDraft
+                  )}
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
-                  // `turnActive` unions the send's zero-lag local arm with the
-                  // runtime's live `runningTurnIds` (turns this renderer did not
-                  // send), so neither witness can veto the other — see
-                  // `deriveTurnActive`. `activeStreamingLive` is folded in
-                  // defensively for the rare replay where the arm was over-cleared.
-                  streaming={turnActive || activeStreamingLive}
-                  // #646: in the first-token wait (Stop up, nothing streams yet) the
-                  // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
-                  // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
-                  processing={showProcessingIndicator && !activeStreamingLive}
-                  continuing={showContinuingIndicator && !activeStreamingLive}
-                  onSend={sendWithAttachments}
+                  streaming={turnActive}
+                  processing={activeMessageSubmitting}
+                  onSend={sendOwningItsTarget}
                   onStop={stop}
+                  pendingMessages={transientMessages}
+                  queuedMessages={activeMessageQueue?.entries}
+                  queuedMessageRevision={activeMessageQueue?.queueRevision}
+                  onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
+                  onUpdateQueuedEntry={activeId ? updateQueuedEntry : undefined}
+                  onDeleteQueuedEntry={activeId ? deleteQueuedEntry : undefined}
+                  onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
@@ -3121,9 +2493,7 @@ function AppShellContent({
                         }
                       : undefined
                   }
-                  mentionSkills={mentionSkills}
                   slashCommands={desktopSlashCommands}
-                  onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}
@@ -3141,42 +2511,41 @@ function AppShellContent({
                       ? undefined
                       : attachFilePaths
                   }
-                  modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
+                  modelLabel={activeModelLabel ?? newChatModelLabel}
                   activeSession={activeSessionForView}
+                  activeModelConnectionId={activeSessionForModelControls?.llmConnectionId}
+                  activeModelConnectionSlug={activeSessionForModelControls?.llmConnectionSlug}
                   activeModel={activeModel}
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
+                  latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
+                  onOpenContextUsage={() => commands.openTool('inspector')}
+                  LiveContextUsageProbe={LiveContextUsageProbe}
+                  contextUsageSessionId={ownerActiveId}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
+                  hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
-                  onModelChange={(input) => setSessionModel(input)}
-                  activeThinkingLevels={activeThinkingLevels}
-                  activeThinkingLevel={activeThinkingLevel}
-                  onThinkingLevelChange={(level) => setSessionThinkingLevel(level)}
-                  newChatModel={newChatModel}
-                  newChatProviderType={newChatProviderType}
+                  onModelChange={(input) => activeId ? void setSessionModel(activeId, input) : undefined}
+                  {...{ modelSwitchAvailability, activeThinkingLevels, activeThinkingLevel }}
+                  onThinkingLevelChange={(level) => {
+                    if (activeId) void setSessionThinkingLevel(activeId, level ?? null);
+                  }}
+                  {...{ newChatModel, newChatProviderType, newChatThinkingLevels, newChatThinkingLevel }}
                   onPickNewChatModel={(input) => {
                     setPendingNewChatModel(input);
                     if (modelSettingsOwnsComposerHost) saveComposerDefaults({ model: input });
                   }}
-                  newChatThinkingLevels={newChatThinkingLevels}
-                  newChatThinkingLevel={newChatThinkingLevel}
                   onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
                   onOpenModelSettings={modelSettingsOwnsComposerHost
                     ? () => openSettingsSection('models')
                     : undefined}
-                  noModelConnection={connections.length === 0}
+                  noModelConnection={!activeId && connections.length === 0}
                   noModelHint={!modelSettingsOwnsComposerHost && composerProfileName
                     ? shellCopy.configureModelsOnHost(composerProfileName)
                     : undefined}
-                  sendBlocked={
-                    Boolean(workspaceReadinessRecovery) ||
-                    sessionHealthNotice?.tone === 'destructive' ||
-                    taskSubmissionHardBlocked
-                  }
+                  sendBlocked={taskSubmissionHardBlocked}
                   permissionMode={activePermissionMode}
-                  permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                   // Every "cannot change this mid-turn" gate reads `turnActive`,
                   // the same witness Stop reads. Reading the persisted status
                   // here instead left these toggles live through the whole
@@ -3184,90 +2553,64 @@ function AppShellContent({
                   // mode change to land before the run registers and alter the
                   // execution config of the turn already sent.
                   permissionModeDisabledReason={
-                    activeId && pendingPermissionModeBySession[activeId] === true
-                        ? shellCopy.permissionModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.permissionModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.permissionModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.permissionModeWaiting
-                            : undefined
+                    activeStreamingLive
+                      ? shellCopy.permissionModeStreaming
+                      : activeId && turnActive
+                        ? shellCopy.permissionModeRunning
+                        : activeId && activeSessionForView?.status === 'waiting_for_user'
+                          ? shellCopy.permissionModeWaiting
+                          : undefined
                   }
                   onPermissionModeChange={
                     activeBoundarySurface.localInteractionAvailable
-                      ? (mode) => setPermissionMode(mode)
+                      ? async mode => {
+                          await setPermissionMode(mode)
+                        }
                       : undefined
                   }
-                  planModeActive={activeId
-                    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
-                    : newChatPlanModeActive}
-                  planModePending={activeId ? pendingCollaborationModeBySession[activeId] === true : false}
-                  planModeDisabledReason={
-                    activeId && pendingCollaborationModeBySession[activeId] === true
-                      ? shellCopy.planModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.planModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.planModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.planModeWaiting
-                            : undefined
+                  planModeActive={activePlanMode}
+                  // No pending-keyed disable while a toggle commits: the
+                  // pending registries already swallow re-entrant toggles, and
+                  // a reason here would gray the row mid-click — the blink
+                  // this control had. The rows repaint when the write lands.
+                  planModeDisabledReason={modeChangeDisabledReason}
+                  onPlanModeChange={(active) => void setPlanMode(active)}
+                  orchestrationMode={activeOrchestrationMode}
+                  orchestrationModeDisabledReason={modeChangeDisabledReason}
+                  onOrchestrationModeChange={(mode) => void setOrchestrationMode(mode)}
+                  goalDisabledReason={
+                    activeStreamingLive || (activeId && turnActive)
+                      ? shellCopy.goalTurnActive
+                      : undefined
                   }
-                  onPlanModeChange={setPlanMode}
-                  swarmModeActive={activeId
-                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
-                    : newChatSwarmModeActive}
-                  swarmModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                  swarmModeDisabledReason={
-                    activeId && pendingOrchestrationModeBySession[activeId] === true
-                      ? shellCopy.swarmModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.swarmModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.swarmModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.swarmModeWaiting
-                            : undefined
-                  }
-                  onSwarmModeChange={(active) => {
-                    void setSwarmMode(active);
-                  }}
-                  graphModeActive={activeId
-                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
-                    : newChatGraphModeActive}
-                  graphModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                  graphModeDisabledReason={
-                    activeId && pendingOrchestrationModeBySession[activeId] === true
-                      ? shellCopy.graphModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.graphModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.graphModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.graphModeWaiting
-                            : undefined
-                  }
-                  onGraphModeChange={(active) => {
-                    void setGraphMode(active);
-                  }}
-                    />
+                          />
+                        )}
+                      </TaskEntry.TaskEntryWorkspacePickerConsumer>
+                    )}
                   </>
                 }
               >
-                {navSelection.section === 'sessions' ? (
+                {sessionsSelected ? (
+                  <SessionCollaboration.SessionGuestTurnActionBoundary
+                    sessionId={sharedSessionActive ? activeId : undefined}
+                    deriveTurnPresentation={deriveTurnPresentation}
+                    ownerTurnFooterAction={handleTurnFooterAction}
+                    turnActionRegistry={turnActionRegistry}
+                  >
+                    {(turnActions) => (
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
-                hasOlderHistory={activeTranscriptRange?.hasOlder === true}
-                hasNewerHistory={activeTranscriptRange?.hasNewer === true}
-                historyLoadPending={historyLoadPendingSessionId === activeId}
-                onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
-                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
-                liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
+                activeTurn={Conversation.chatTurnActivity(activeExecution)}
+                hasOlderHistory={activeTranscriptRange?.hasOlder}
+                hasNewerHistory={activeTranscriptRange?.hasNewer}
+                onPrefetchHistory={(edge) =>
+                  transcriptReadingCommands.current?.prefetchHistory(edge) ?? Promise.resolve(false)}
+                onRetainWindow={(band) => transcriptReadingCommands.current?.retainWindow(band)}
+                liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
+                transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}
-                runningStatus={showRunningStatus}
                     onStreamingSettled={
                       activeId ? (messageId) => settleAssistantStreaming(activeId, messageId) : undefined
                     }
@@ -3277,45 +2620,25 @@ function AppShellContent({
                 activeProviderType={activeConnection?.providerType}
                 renderProviderMark={(type) => <ProviderLogo type={type} compact />}
                 modelChoices={chatModelChoices}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
-                onModelChange={(input) => setSessionModel(input)}
+                onModelChange={sharedSessionActive ? undefined : (input) => {
+                  if (activeId) void setSessionModel(activeId, input);
+                }}
                 userLabel={userLabel}
                 memoryActive={memoryActive}
-                onOpenMemorySettings={() => openSettingsSection('memory')}
-                    goalIndicator={
-                      activeGoal
-                        ? {
-                  condition: activeGoal.condition,
-                  status: activeGoal.status,
-                  iterations: activeGoal.iterations,
-                  maxIterations: activeGoal.maxIterations,
-                            onClear: () => {
-                              void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
-                                toastApi.error(
-                                  shellCopy.goalClearFailedTitle,
-                                  localizedShellErrorMessage(
-                                    error,
-                                    shellCopy.goalClearFailedFallback,
-                                    uiLocale,
-                                  ),
-                                );
-                              });
-                            },
-                          }
-                        : undefined
-                    }
+                onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                deriveTurnPresentation={deriveTurnPresentation}
-                onTurnFooterAction={handleTurnFooterAction}
-                onEditUserMessage={(turnId) => { void beginEditUserMessage(turnId); }}
-                safeResumeAction={activeId ? {
+                deriveTurnPresentation={turnActions.deriveTurnPresentation}
+                onTurnFooterAction={turnActions.onTurnFooterAction}
+                onSwitchToBypassAndRetry={sharedSessionActive ? undefined : handleSwitchToBypassAndRetry}
+                onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
+                safeResumeAction={!sharedSessionActive && activeId ? {
                   pending: resumePendingSessionId === activeId,
                   detail: resumeParkDescriptionBySession[activeId],
                   onResume: () => { void resumeInterruptedSession(); },
                 } : undefined}
-                onLineageBadgeClick={handleLineageBadgeClick}
+                onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
                 onReadAttachmentBytes={window.maka.attachments.readBytes}
                 onOpenLinkedSession={openSessionInChat}
                 scrollTargetTurn={
@@ -3326,6 +2649,14 @@ function AppShellContent({
                           }
                     : undefined
                 }
+                onScrollTargetHandled={consumeSearchScrollTarget}
+                restoreTargetTurn={Conversation.transcriptReadingPosition.restoreTarget(
+                  activeTranscriptReadingAnchor,
+                  activeUnavailableTranscriptRestore,
+                )}
+                onReadingAnchorChange={activeId
+                  ? (turnId) => transcriptReadingCommands.current?.captureAnchor(turnId)
+                  : undefined}
                 transcriptTurnIndex={
                   transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId
                     ? transcriptTurnIndex.turns
@@ -3336,15 +2667,19 @@ function AppShellContent({
                   : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
                 branchBanner={branchBanner}
-                onBranchBannerClick={handleBranchBannerClick}
+                onBranchBannerClick={openSessionInChat}
                 revisionNavigation={revisionNavigation}
                 onRevisionNavigate={openSessionInChat}
                 onNew={createSession}
                 onPromptSuggestion={(prompt) => composerRef.current?.appendText(prompt)}
-                onQuoteSelection={(selection) => {
-                  addQuote(selection);
-                  composerRef.current?.focus();
-                }}
+                onQuoteSelection={
+                  sharedSessionActive
+                    ? undefined
+                    : (selection) => {
+                        addQuote(selection);
+                        composerRef.current?.focus();
+                      }
+                }
                 onAskAboutSelection={
                   activeId
                     ? (input) => {
@@ -3352,7 +2687,7 @@ function AppShellContent({
                           text: input.text,
                           sourceTurnId: input.turnId,
                         };
-                        openSideConversationWithQuote(quote);
+                        commands.openSideChatWithQuote(quote);
                       }
                     : undefined
                 }
@@ -3367,18 +2702,17 @@ function AppShellContent({
                   });
                 }}
                 sessionHealthNotice={sessionHealthNotice}
+                sessionHealthModelPickerAvailable={
+                  activeBoundarySurface.localInteractionAvailable
+                }
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 taskReadinessNotice={taskReadinessNotice}
                 onTaskReadinessAction={
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
                       ? openNewTaskSurface
-                      : newTask.selectedHost &&
-                          (newTask.selectedHost.capabilities.chooseClientDirectory ||
-                            newTask.selectedHost.capabilities.chooseHostDirectory)
-                        ? () => {
-                            if (newTask.selectedHost) void newTask.addProject(newTask.selectedHost);
-                          }
+                      : taskEntry.selectors.canAddProject
+                        ? taskEntry.commands.addProject
                         : undefined
                     : taskReadiness.refresh
                 }
@@ -3396,92 +2730,33 @@ function AppShellContent({
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
                   try {
-                    await window.maka.onboarding.setMilestone('initial_onboarding', 'skipped');
+                    await runOnDefaultRuntimeHost((host) =>
+                      window.maka.onboarding.setMilestone(
+                        'initial_onboarding',
+                        'skipped',
+                        host,
+                      ),
+                    );
                     onboarding.refresh();
                   } catch (error) {
                     toastApi.error(
                       shellCopy.skipErrorTitle,
                       localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+                      undefined,
+                      defaultRuntimeHostDiagnosticTarget(error),
                     );
                   }
                 }}
                 conversationItems={planConversationItems}
                   />
+                    )}
+                  </SessionCollaboration.SessionGuestTurnActionBoundary>
                 ) : null}
               </ChatSurfaceLayout>
             </div>
-            {/* Rendered collapsed too: ChatWorkbar's own box is what the
-                collapse animates, and it has to be in the tree on both sides of
-                the toggle for there to be an animation at all. The column
-                inside it still unmounts. */}
-            {navSelection.section === 'sessions' && activeId && (
-              <ChatWorkbar
-                activeId={activeId}
-                rightCollapsed={workbarCollapsed}
-                bottomOpen={bottomPanelOpen}
-                hidden={shellObscured}
-                rightWidth={workbarWidth}
-                bottomHeight={bottomPanelHeight}
-                onDismissPanel={(placement) => {
-                  if (placement === 'right') setWorkbarCollapsed(true);
-                  else setBottomPanelOpen(false);
-                }}
-                panelsState={workbarPanelsState}
-                onActivateTab={activateWorkbarTab}
-                onCloseTab={closeWorkbarTabAndSurface}
-                onCloseTabs={closeWorkbarTabsAndSurfaces}
-                onReorderTab={reorderWorkbarTab}
-                onMoveTab={moveWorkbarTab}
-                onMoveTabToPanel={moveWorkbarTabToPanel}
-                onPinTab={pinWorkbarTab}
-                onOpenLauncher={(placement) => {
-                  openWorkbarLauncher(placement);
-                  if (placement === 'right') setWorkbarCollapsed(false);
-                  else setBottomPanelOpen(true);
-                }}
-                onRequestOpenTab={requestOpenWorkbarTab}
-                rightResizable={workbarResizable}
-                bottomResizable={bottomPanelResizable}
-                quotes={quotePanels.filter(
-                  (panel) => panel.sourceSessionId === activeId,
-                )}
-                onQuotesConsumed={(snapshot) =>
-                  sideConversations.updatePanel(snapshot.panelId, (panel) =>
-                    consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,
-                  )
-                }
-                onRemoveQuote={(target) =>
-                  sideConversations.updatePanel(target.panelId, (panel) =>
-                    removeStagedCompanionQuote(panel, target) ?? panel,
-                  )
-                }
-                onForkVisibilityChange={onCompanionForkVisibilityChange}
-                onContentStateChange={sideConversations.setContent}
-                preparingSideChatPanelIds={sideChatPreparingPanelIds}
-                activeSideChatPanelIds={sideChatActivePanelIds}
-                onPreparingStateChange={sideConversations.setPreparing}
-                onInitialPromptStarted={(panelId) =>
-                  sideConversations.updatePanel(panelId, (panel) =>
-                    consumeCompanionInitialPrompt(panel, panelId) ?? panel,
-                  )
-                }
-                onPromptAccepted={(panelId, prompt) => {
-                  const title = sideChatTitleFromPrompt(prompt);
-                  if (title) {
-                    titleWorkbarTab(`side-chat:${panelId}`, title);
-                  }
-                }}
-                onActivityStateChange={sideConversations.setActive}
-                sourceSession={activeSessionForView}
-                modelChoices={chatModelChoices}
-                mentionSkills={mentionSkills}
-                onSearchMentionFiles={searchMentionFiles}
-                onAppendComputerHistoryContext={(context) => {
-                  composerRef.current?.appendText(`\n\n${context}\n`);
-                  composerRef.current?.focus();
-                }}
-              />
-            )}
+            {/* Collapse hides the Workbar surface without unmounting its tools;
+                dynamic resources therefore keep their existing lifecycle. */}
+            <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
@@ -3493,55 +2768,13 @@ function AppShellContent({
           contextKey={activeId}
         />
       )}
-      <SideChatCloseConfirmation
-        key={pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed'}
-        open={pendingSideChatClose.length > 0}
-        sideChatCount={
-          pendingSideChatClose.filter(({ tab }) => tab.kind === 'side-chat').length
-        }
-        onCancel={() => setPendingSideChatClose([])}
-        onConfirm={(skipFutureConfirmations) => {
-          const pending = pendingSideChatClose;
-          if (pending.length === 0) return;
-          if (skipFutureConfirmations) {
-            setSkipSideChatCloseConfirmation(true);
-            safeLocalStorageSet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY, 'true');
-          }
-          setPendingSideChatClose([]);
-          const byPlacement = {
-            right: pending
-              .filter(({ placement }) => placement === 'right')
-              .map(({ tab }) => tab),
-            bottom: pending
-              .filter(({ placement }) => placement === 'bottom')
-              .map(({ tab }) => tab),
-          };
-          closeWorkbarTabsImmediately('right', byPlacement.right);
-          closeWorkbarTabsImmediately('bottom', byPlacement.bottom);
-        }}
-      />
-
+      <Goals.GoalHost />
+      <TaskEntry.TaskEntryHost />
       <RuntimeHostSshTerminalDialog />
-
-      <RemoteProjectDirectoryDialog
-        host={newTask.directoryHost ? {
-          profileId: newTask.directoryHost.profile.id,
-          hostId: newTask.directoryHost.hostId,
-          name: newTask.directoryHost.profile.name,
-        } : undefined}
-        onClose={newTask.closeDirectoryPicker}
-        onRegistered={(project, host) => {
-          void newTask.acceptRegisteredProject(project, host).catch((error) => {
-            toastApi.error(
-              projectActionsCopy.projectUpdateFailedTitle,
-              localizedShellErrorMessage(
-                error,
-                projectActionsCopy.projectUpdateFailedFallback,
-                uiLocale,
-              ),
-            );
-          });
-        }}
+      <SessionCollaborationDialog
+        target={sharedSessionDialog.target}
+        onOpenRemoteAccessSettings={() => openSettingsSection('projects')}
+        onClose={sharedSessionDialog.close}
       />
 
       <AppShellOverlays
@@ -3554,14 +2787,16 @@ function AppShellContent({
         setUiLocalePreference={setUiLocalePreference}
         uiLocaleUpdateGate={uiLocaleUpdateGate}
         setUserLabel={setUserLabel}
-        setDefaultPermissionMode={setDefaultPermissionMode}
-        settingsRequestedSection={settingsRequestedSection}
+        refreshChatDefaults={() => {
+          void taskEntry.commands.refresh().catch(() => undefined);
+        }}
+        settingsRequest={settingsRequest}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
         settingsCreateProviderType={settingsCreateProviderType}
-        onOpenDailyReview={() => {
+        onOpenComputerHistory={() => {
           closeSettings();
-          setNavSelection({ section: 'automations', module: 'daily-review' });
+          setNavSelection({ section: 'computer-history' });
         }}
         onOpenKeyboardHelp={openHelp}
         onOpenSettingsSession={(sessionId) => {
@@ -3578,51 +2813,21 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        /* Seeding is for the navigation, not for correctness: the import IPC
-           already emits `sessions:changed`, so the task reaches the rail on its
-           own even if the user closes Settings mid-import. Seeding it here just
-           means `openSessionInChat` has something to open without waiting for
-           the refresh to land. */
         onExternalSessionImported={(session) => {
-          upsertSessionSummary(session);
           closeSettings();
           openSessionInChat(session.id);
         }}
+        onRemoteHostAdded={(profileId) => {
+          closeSettings();
+          openNewTaskSurface();
+          void taskEntry.commands.chooseProjectForProfile(profileId).catch(() => undefined);
+        }}
+        onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
+    </SessionCollaboration.SessionTurnRequestInboxProvider>
+    </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
+    </ModuleHub.ModuleHubProvider>
+    </Goals.GoalProvider>
   );
-}
-
-function runtimeHostSessionMeta(session: DesktopSessionSummary): string | undefined {
-  return session.profileKind === 'remote' ? session.profileName : undefined;
-}
-
-function deriveDesktopSessionGroups(
-  sessions: readonly DesktopSessionSummary[],
-  projects: readonly ProjectRecord[],
-  locale: UiLocale,
-): SessionHistoryGroup[] {
-  const local: DesktopSessionSummary[] = [];
-  const remote = new Map<string, { label: string; sessions: DesktopSessionSummary[] }>();
-  for (const session of sessions) {
-    if (session.profileKind !== 'remote') {
-      local.push(session);
-      continue;
-    }
-    const key = session.profileId;
-    const group = remote.get(key) ?? {
-      label: session.profileName,
-      sessions: [],
-    };
-    group.sessions.push(session);
-    remote.set(key, group);
-  }
-  return [
-    ...deriveProjectGroups(local, projects, locale),
-    ...[...remote].map(([id, group]) => ({
-      id: `runtime-host:${id}`,
-      label: group.label,
-      sessions: group.sessions,
-    })),
-  ];
 }

@@ -1,3 +1,34 @@
+---
+doc_id: computer-use-provider-evidence
+title: "Computer Use Provider Evidence"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Computer Use Provider Evidence
 
 This layer defines the evidence contract for real-model Computer Use runs. It
@@ -19,7 +50,7 @@ provider transports, or execution backends.
 
 ## Report Contract
 
-Reports separate three evidence classes:
+Reports separate four evidence classes:
 
 - `real-runtime`: a live provider model used the production Maka runtime;
 - `fault-injection`: a live provider and Runtime exercised a named injected
@@ -63,8 +94,10 @@ Qualification also keeps three fail-closed invariants:
 
 The old direct real-machine qualification runner was removed. The five-round
 restart runner remains available as `npm run computer-use -- restart-soak`,
-but is regression-only and cannot satisfy a provider matrix cell. There is one
-qualification path rather than parallel evidence standards.
+using the `MAKA_CU_AX_MODEL_LAB_ROOT` fixture checkout described in
+[Lab fixture setup](./computer-use-evidence-classes.md#lab-fixture-setup). The
+runner is regression-only and cannot satisfy a provider matrix cell. There is
+one qualification path rather than parallel evidence standards.
 
 ## Next Layer
 
@@ -90,7 +123,7 @@ The first qualifying run completed with:
 - terminal status: `complete / end_turn`;
 - fixture oracle: verification code matched and interaction count remained zero.
 
-The direct E2E tool exposure is deliberate. The default deferred `load_tools`
+The direct E2E tool exposure is deliberate. The default deferred `tool_search`
 path remains a separate product contract; the launcher narrows provider
 variables while still exercising the production tool implementation, permission
 engine, Runtime, Desktop host, and executor backend.

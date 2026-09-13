@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -46,8 +66,8 @@ test('two UDS clients share one recoverable Memory authority across Host death',
     await assert.rejects(() => stat(residue.transactionPath), { code: 'ENOENT' });
     assert.deepEqual(await readFile(residue.pendingPath), residue.targetPending);
 
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
+    const desktop = await connectClient(root);
+    const tui = await connectClient(root);
     let incompleteUploadId: string;
     try {
       const initial = await memoryState(desktop);
@@ -148,7 +168,7 @@ test('two UDS clients share one recoverable Memory authority across Host death',
       assert.doesNotMatch(paged.content, /sk-live-secret-token-value/);
       assert.ok((await memoryState(tui)).backups.some((backup) => backup.kind === 'save'));
 
-      const abandoned = await connectClient(root, 'run');
+      const abandoned = await connectClient(root);
       const capacityBasis = await memoryState(abandoned);
       for (let index = 0; index < 8; index += 1) {
         const staged = await abandoned.request('memory.mutate', {
@@ -195,7 +215,7 @@ test('two UDS clients share one recoverable Memory authority across Host death',
     }
 
     successor = await startHost(root, capability.rootId);
-    const observer = await connectClient(root, 'run');
+    const observer = await connectClient(root);
     try {
       const recovered = await readDocument(observer, 'memory');
       assert.ok(recovered.pageCount > 1);
@@ -291,13 +311,9 @@ function documentDecision(snapshot: MemoryDocumentSnapshot) {
   };
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui' | 'run',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');
@@ -479,16 +495,4 @@ function waitForExitResult(
 
 function revision(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }

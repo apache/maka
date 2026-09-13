@@ -1,150 +1,175 @@
-.computerHistoryPanel {
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.computer-history-page {
   display: flex;
-  min-height: 0;
-  height: 100%;
   flex-direction: column;
-  background: var(--maka-surface-canvas);
-}
-
-.computerHistoryHeader {
-  display: flex;
-  min-height: 64px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  box-shadow: inset 0 -1px color-mix(in srgb, var(--maka-border) 55%, transparent);
-}
-
-.computerHistoryControls {
-  display: grid;
-  gap: 10px;
-  padding: 12px 16px;
-  background: var(--maka-surface-subtle);
-  box-shadow: inset 0 -1px color-mix(in srgb, var(--maka-border) 48%, transparent);
-}
-
-.computerHistoryStatusRow,
-.computerHistoryActions,
-.computerHistoryStatus,
-.computerHistoryEntryMeta {
-  display: flex;
-  align-items: center;
-}
-
-.computerHistoryStatusRow {
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.computerHistoryStatus,
-.computerHistoryActions {
-  gap: 8px;
-}
-
-.computerHistoryStatusDot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: var(--maka-text-tertiary);
-}
-
-.computerHistoryStatusDot[data-state="running"] {
-  background: var(--maka-success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--maka-success) 16%, transparent);
-}
-
-.computerHistoryStatusDot[data-state="paused"],
-.computerHistoryStatusDot[data-state="needs_permission"] {
-  background: var(--maka-warning);
-}
-
-.computerHistoryStatusDot[data-state="error"] {
-  background: var(--maka-danger);
-}
-
-.computerHistoryTimeline {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-}
-
-.computerHistoryEntry {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  min-height: 86px;
-  padding: 14px 16px;
-  box-shadow: inset 0 -1px color-mix(in srgb, var(--maka-border) 42%, transparent);
-}
-
-.computerHistoryEntryTime {
-  display: grid;
-  gap: 3px;
-  color: var(--maka-text-secondary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.computerHistoryEntryTime span {
-  color: var(--maka-text-tertiary);
-}
-
-.computerHistoryEntryBody {
-  display: grid;
+  width: 100%;
+  height: 100%;
   min-width: 0;
-  gap: 4px;
+  min-height: 0;
+  background: var(--surface-raised);
+  color: var(--foreground);
+  font: var(--maka-text-body);
+  letter-spacing: 0;
+  container-type: inline-size;
 }
 
-.computerHistoryEntryBody h4,
-.computerHistoryEntryBody p {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.computerHistoryEntryMeta {
-  gap: 5px;
+.computer-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
+  gap: 12px;
+  padding: 20px 28px 16px;
 }
 
-.computerHistoryEntryMeta span {
-  max-width: 150px;
-  overflow: hidden;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--maka-surface-raised);
-  color: var(--maka-text-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.computer-history-heading,
+.computer-history-heading > * { min-width: 0; }
+.computer-history-title,
+.computer-history-status,
+.computer-history-header-actions,
+.computer-history-detail-meta,
+.computer-history-app-name,
+.computer-history-event-title,
+.computer-history-apps,
+.computer-history-apps > span,
+.computer-history-footer { display: flex; align-items: center; }
+.computer-history-title { gap: 10px; flex-wrap: wrap; }
+.computer-history-title > span { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-status { gap: 7px; flex-wrap: wrap; margin-right: 8px; font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-header-actions { gap: 5px; flex-shrink: 0; flex-wrap: wrap; }
+.computer-history-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 28px 14px; border-bottom: 1px solid var(--border); }
+.computer-history-search { flex: 1; min-width: 180px; }
+.computer-history-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 28px; background: var(--color-error-muted); color: var(--foreground); overflow-wrap: anywhere; font: var(--maka-text-supporting); }
+.computer-history-error > span { min-width: 0; }
+.computer-history-workspace { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; }
+.computer-history-page[data-detail-open="true"] .computer-history-workspace { grid-template-columns: 340px minmax(0, 1fr); }
+.computer-history-master { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding: 6px 28px 24px; scrollbar-width: thin; }
+.computer-history-page[data-detail-open="true"] .computer-history-master { padding-inline: 18px; border-right: 1px solid var(--border); }
+.computer-history-list-heading { margin: 0; font: var(--maka-text-heading-4); }
+.computer-history-list-heading .astryx-button { justify-content: flex-start; gap: 8px; width: 100%; height: auto; padding: 18px 0 16px; text-align: start; font: inherit; }
+.computer-history-day-count { margin-left: 4px; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.computer-history-list { margin: 0; padding: 0; list-style: none; }
+.computer-history-list .computer-history-row { min-height: 100px; padding: 0; border: 0; border-radius: 0; }
+.computer-history-row-content { display: grid; grid-template-columns: 52px 20px minmax(0, 1fr); align-items: stretch; min-width: 0; width: 100%; overflow-wrap: anywhere; }
+.computer-history-row-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 0 12px 26px 4px; }
+.computer-history-list .computer-history-row[aria-current="true"] { background: var(--surface-base); box-shadow: none; }
+.computer-history-list .computer-history-row[aria-current="true"] .computer-history-row-rail i { background: var(--accent-solid); }
+.computer-history-row-time { padding-top: 3px; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.computer-history-row-rail { position: relative; }
+.computer-history-row-rail::after { content: ""; position: absolute; width: 1px; top: 10px; bottom: -10px; left: 6px; background: var(--border); }
+.computer-history-row:last-child .computer-history-row-rail::after { bottom: 24px; }
+.computer-history-row-rail i { position: relative; display: block; width: 7px; height: 7px; top: 7px; left: 3px; border-radius: 50%; background: var(--muted-foreground); }
+.computer-history-row-title { font: var(--maka-text-heading-4); }
+.computer-history-row-description { font: var(--maka-text-supporting); color: var(--muted-foreground); line-height: 1.65; max-width: 85ch; }
+.computer-history-page[data-detail-open="true"] .computer-history-row-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.computer-history-page[data-detail-open="true"] .computer-history-row-content { grid-template-columns: 43px 16px minmax(0, 1fr); }
+.computer-history-page[data-detail-open="true"] .computer-history-row-title { font: var(--maka-text-body); font-weight: 600; }
+.computer-history-apps { gap: 10px; flex-wrap: wrap; font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-apps > span { gap: 5px; max-width: 100%; overflow-wrap: anywhere; }
+.computer-history-apps svg { flex-shrink: 0; }
+.computer-history-list-skeleton { min-height: 105px; display: flex; flex-direction: column; gap: 12px; padding: 17px 18px; border-bottom: 1px solid var(--border-soft); }
+.computer-history-detail { min-width: 0; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.computer-history-detail:focus { outline: none; }
+.computer-history-detail:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: -3px; }
+.computer-history-detail-content { max-width: 960px; margin-inline: auto; padding: 20px 28px 32px; overflow-wrap: anywhere; }
+.computer-history-reader-toolbar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 6px 14px; background: var(--surface-raised); border-bottom: 1px solid var(--border-soft); }
+.computer-history-reader-actions { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; }
+.computer-history-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 28px; border-bottom: 1px solid var(--border-soft); color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-empty { display: grid; place-items: center; min-height: 300px; padding: 40px 0; }
+.computer-history-detail-meta { flex-wrap: wrap; gap: 8px 14px; color: var(--muted-foreground); font: var(--maka-text-supporting); font-variant-numeric: tabular-nums; }
+.computer-history-detail-meta > svg { flex-shrink: 0; }
+.computer-history-detail-content > h2 { margin-block: 16px 12px; }
+.computer-history-description { margin: 0 0 18px; font: var(--maka-text-body); line-height: 1.7; }
+.computer-history-app-name { gap: 6px; min-width: 0; }
+.computer-history-document { min-width: 0; margin-top: 22px; }
+.computer-history-document-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding-block: 12px; margin-bottom: 20px; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+.computer-history-document-name { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 140px; color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-document-name > svg { flex-shrink: 0; }
+.computer-history-document-name > span { overflow-wrap: anywhere; }
+.computer-history-document-body { min-height: 160px; }
+.computer-history-document-body .astryx-list,
+.computer-history-document-body .astryx-checkbox-list { margin-inline: 0; }
+.computer-history-evidence { margin-top: 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.computer-history-evidence .astryx-collapsible-trigger { padding-block: 16px; font: var(--maka-text-supporting); }
+.computer-history-evidence-label { display: flex; align-items: center; gap: 16px; }
+.computer-history-evidence-label > :last-child { color: var(--muted-foreground); }
+.computer-history-evidence [role="tabpanel"] { min-height: 216px; }
+.computer-history-evidence [role="tabpanel"]:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+.computer-history-detail-skeleton { display: flex; flex-direction: column; gap: 18px; padding-block: 20px; }
+.computer-history-events { margin: 0 0 12px; padding: 0; list-style: none; }
+.computer-history-events > li { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: start; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
+.computer-history-events time { font: var(--maka-text-supporting); font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.computer-history-events > li > div { display: flex; flex-direction: column; min-width: 0; gap: 5px; }
+.computer-history-event-title { gap: 8px; font: var(--maka-text-heading-5); }
+.computer-history-event-title svg { flex-shrink: 0; }
+.computer-history-events > li > div > span:not(:first-child) { font: var(--maka-text-supporting); color: var(--muted-foreground); overflow-wrap: anywhere; }
+.computer-history-window { white-space: pre-wrap; }
+.computer-history-sources { margin: 0; padding: 0; list-style: none; }
+.computer-history-sources > li { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 10px; padding: 18px 0; border-bottom: 1px solid var(--border-soft); }
+.computer-history-sources h3 { margin: 0 0 4px; font: var(--maka-text-heading-4); }
+.computer-history-sources code { display: block; font: var(--maka-text-supporting); color: var(--muted-foreground); overflow-wrap: anywhere; }
+.computer-history-sources ul { padding-inline-start: 16px; margin: 10px 0 0; font: var(--maka-text-supporting); }
+.computer-history-sources ul > li + li { margin-top: 5px; }
+.computer-history-suggestion { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding-top: 20px; margin-top: 28px; border-top: 1px solid var(--border); }
+.computer-history-suggestion h3 { font: var(--maka-text-heading-4); }
+.computer-history-suggestion p { margin: 8px 0; font: var(--maka-text-supporting); color: var(--muted-foreground); line-height: 1.7; }
+.computer-history-footer { flex-wrap: wrap; flex-shrink: 0; gap: 8px 20px; padding: 8px 24px; border-top: 1px solid var(--border); font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-mobile-back { display: none; }
+.computer-history-draft { display: flex; flex-direction: column; gap: 16px; padding: 4px; }
+.computer-history-draft-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.computer-history-app-icon { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; overflow: hidden; border-radius: 5px; vertical-align: middle; }
+.computer-history-app-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.computer-history-app-initial { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: var(--surface-base); color: var(--muted-foreground); font-size: 12px; font-weight: 500; line-height: 1; }
+.computer-history-event-footer { display: flex; flex-direction: column; align-items: start; gap: 8px; }
+@container (max-width: 900px) {
+  .computer-history-page[data-detail-open="true"] .computer-history-workspace { grid-template-columns: 280px minmax(0, 1fr); }
+  .computer-history-header { padding: 20px 20px 16px; }
+  .computer-history-filters { padding: 0 20px 16px; gap: 10px; }
+  .computer-history-detail-content { padding: 24px; }
+  .computer-history-search { max-width: none; }
 }
 
-.computerHistoryEmpty {
-  display: grid;
-  min-height: 240px;
-  place-items: center;
-  align-content: center;
-  gap: 8px;
-  padding: 28px;
-  text-align: center;
-}
-
-.computerHistoryError {
-  padding: 9px 16px;
-  background: color-mix(in srgb, var(--maka-danger) 10%, transparent);
-  color: var(--maka-danger);
-  font-size: 12px;
-}
-
-@media (max-width: 420px) {
-  .computerHistoryEntry {
-    grid-template-columns: 42px minmax(0, 1fr);
-  }
-
-  .computerHistoryEntry > button {
-    grid-column: 2;
-    justify-self: start;
-  }
+@container (max-width: 650px) {
+  .computer-history-header { padding: 16px; gap: 8px; }
+  .computer-history-title { gap: 7px; }
+  .computer-history-title > h1 { font: var(--maka-text-heading-3); }
+  .computer-history-title > span { display: none; }
+  .computer-history-status { margin: 0 4px 0 0; gap: 4px; }
+  .computer-history-status > span:last-child { display: none; }
+  .computer-history-header-actions { gap: 2px; }
+  .computer-history-filters { padding: 0 16px 12px; gap: 8px; }
+  .computer-history-search { flex-basis: 100%; }
+  .computer-history-workspace,
+  .computer-history-page[data-detail-open="true"] .computer-history-workspace { display: flex; flex-direction: column; }
+  .computer-history-master,
+  .computer-history-page[data-detail-open="true"] .computer-history-master { flex: 1; border-right: 0; padding-inline: 16px; }
+  .computer-history-detail { display: none; flex: 1; }
+  .computer-history-page[data-detail-open="true"] .computer-history-master { display: none; }
+  .computer-history-page[data-detail-open="true"] .computer-history-detail { display: block; }
+  .computer-history-mobile-back { display: inline-flex; }
+  .computer-history-reader-toolbar { flex-wrap: wrap; padding: 6px 8px; }
+  .computer-history-row-content { grid-template-columns: 43px 16px minmax(0, 1fr); }
+  .computer-history-detail-content { padding: 18px 20px 28px; }
+  .computer-history-footer { padding: 8px 16px; gap: 4px 14px; }
+  .computer-history-error { padding: 10px 16px; }
+  .computer-history-notice { padding: 8px 16px; }
+  .computer-history-page[data-detail-open="true"] .computer-history-filters { display: none; }
 }

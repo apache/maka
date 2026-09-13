@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -60,7 +79,7 @@ export const TOOLCHAIN_IDENTITIES: Readonly<Record<ExternalProfile, ToolchainIde
   'deepseek-harness': {
     root: '/opt/maka-deepseek-harness-toolchain',
     version: '0.1.0-rc.6',
-    fingerprint: 'sha256:a0882b448718ddfb7b64e33a12369c92b0064baf8388fe08a8ff64fe3dd98896',
+    fingerprint: 'sha256:5314e15659d4c35381ce15ca4802933d61bc3af718d7eeb8260f4fa32ccf5860',
   },
 };
 

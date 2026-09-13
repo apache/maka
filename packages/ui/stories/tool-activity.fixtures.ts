@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolActivityItem, ToolOutputChunk } from '../src/materialize.js';
 
@@ -113,14 +132,6 @@ function toolItem(item: ToolActivityItem): ToolActivityItem {
 
 export const statusOverviewItems = [
   toolItem({
-    toolUseId: 'status-pending',
-    toolName: 'read_file',
-    displayName: 'Read file',
-    intent: 'Open the target component before editing.',
-    status: 'pending',
-    args: { path: 'packages/ui/src/tool-activity.tsx' },
-  }),
-  toolItem({
     toolUseId: 'status-long-running',
     toolName: 'bash',
     displayName: 'Shell command',
@@ -157,10 +168,10 @@ export const statusOverviewItems = [
   }),
   toolItem({
     toolUseId: 'status-interrupted',
-    toolName: 'explore',
-    displayName: 'Explore repository',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     status: 'interrupted',
-    args: { roots: ['packages/ui/src'], query: 'ToolActivity' },
+    args: { pattern: 'ToolActivity', path: 'packages/ui/src' },
     result: { kind: 'text', text: 'The turn was interrupted after partial output was retained.' },
     durationMs: 9_360,
   }),

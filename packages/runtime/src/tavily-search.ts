@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   WEB_SEARCH_MAX_LIMIT,
   normalizeWebSearchLimit,
@@ -134,9 +153,12 @@ function mapTavilyRows(raw: unknown, limit: number): WebSearchResultRow[] | null
     if (!location) continue;
     rows.push({
       provider: 'tavily',
-      title: safeString(rawRow.title, location.url).slice(0, TAVILY_RESULT_TITLE_MAX_CHARS),
+      title: truncateResultText(
+        safeString(rawRow.title, location.url),
+        TAVILY_RESULT_TITLE_MAX_CHARS,
+      ),
       url: location.url,
-      snippet: safeString(rawRow.content).slice(0, TAVILY_RESULT_SNIPPET_MAX_CHARS),
+      snippet: truncateResultText(safeString(rawRow.content), TAVILY_RESULT_SNIPPET_MAX_CHARS),
       source: location.source,
     });
     if (rows.length >= limit) break;
@@ -178,6 +200,12 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
 
 function safeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function truncateResultText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  // Detach bounded results from large provider strings, preserving even unpaired UTF-16 surrogates.
+  return Buffer.from(value.slice(0, maxChars), 'utf16le').toString('utf16le');
 }
 
 function normalizeResultLocation(

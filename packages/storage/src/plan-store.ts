@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -417,7 +436,7 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
       if (fingerprint) event.operationFingerprint = fingerprint;
       const state = applyPlanEvent(ledger.state, event);
       assertPlanProjectionWithinLimit(state);
-      await this.appendCanonicalEvent(sessionId, event, state);
+      await this.appendCanonicalEvent(event);
       result = { event, state };
     });
     return result;
@@ -430,9 +449,6 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
         this.#lease.database
           .prepare('DELETE FROM workflow_plan_events WHERE session_id = ?')
           .run(sessionId);
-        this.#lease.database
-          .prepare('DELETE FROM workflow_plan_projections WHERE session_id = ?')
-          .run(sessionId);
       });
     });
   }
@@ -444,14 +460,9 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
     return readSqlitePlanLedger(this.#lease.database, sessionId);
   }
 
-  private async appendCanonicalEvent(
-    sessionId: string,
-    event: PlanEvent,
-    state: PlanSessionState,
-  ): Promise<void> {
+  private async appendCanonicalEvent(event: PlanEvent): Promise<void> {
     this.#lease.transaction('write', () => {
       insertPlanEvent(this.#lease.database, event);
-      writePlanProjection(this.#lease.database, sessionId, state);
     });
   }
 }
@@ -549,22 +560,6 @@ function insertPlanEvent(database: DatabaseSync, event: PlanEvent): void {
       ) VALUES (?, ?, ?, ?, ?)
     `)
     .run(event.sessionId, row.sequence, event.id, event.storeVersion, JSON.stringify(event));
-}
-
-function writePlanProjection(
-  database: DatabaseSync,
-  sessionId: string,
-  state: PlanSessionState,
-): void {
-  database
-    .prepare(`
-      INSERT INTO workflow_plan_projections(session_id, store_version, record_json)
-      VALUES (?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        store_version = excluded.store_version,
-        record_json = excluded.record_json
-    `)
-    .run(sessionId, state.storeVersion, JSON.stringify(state));
 }
 
 export function applyPlanEvent(state: PlanSessionState, event: PlanEvent): PlanSessionState {

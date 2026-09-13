@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -35,6 +54,11 @@ describe('Artifact protocol', () => {
     }
     assert.doesNotThrow(() =>
       request('artifact.delete', { sessionId: 'session-1', artifactId: 'artifact-1' }),
+    );
+    assert.doesNotThrow(() => response('artifact.delete', { kind: 'deleted' }));
+    assert.throws(
+      () => response('artifact.delete', { kind: 'deleted', artifact: validArtifact() }),
+      isInvalidFrame,
     );
 
     for (const input of [
@@ -224,19 +248,15 @@ describe('Artifact protocol', () => {
   test('keeps operation failures closed and typed', () => {
     assert.doesNotThrow(() => failure('artifact.delete', 'not_found', 'Artifact was not found'));
     assert.doesNotThrow(() =>
-      failure(
-        'artifact.delete',
-        'operation_conflict',
-        'Protected runtime evidence cannot be deleted through Runtime Host',
-      ),
-    );
-    assert.doesNotThrow(() =>
       failure('artifact.query', 'persistence_failed', 'Artifact projection is unavailable'),
     );
     assert.doesNotThrow(() => failure('artifact.query', 'not_found', 'Session was not found'));
     assert.throws(
       () => failure('artifact.query', 'operation_conflict', 'Protected runtime evidence'),
       isInvalidFrame,
+    );
+    assert.doesNotThrow(() =>
+      failure('artifact.delete', 'operation_conflict', 'Protected runtime evidence'),
     );
     assert.throws(() => failure('artifact.delete', 'outcome_unknown', 'Unknown'), isInvalidFrame);
   });
@@ -394,9 +414,8 @@ function validArtifact() {
     kind: 'file' as const,
     sizeBytes: 4,
     mimeType: 'text/plain',
-    source: 'fixture' as const,
+    source: 'tool_result' as const,
     summary: 'bounded',
-    status: 'live' as const,
   };
 }
 
@@ -407,7 +426,10 @@ function request(
   decodeClientFrame({ requestId: 'request', operation, input });
 }
 
-function response(operation: 'artifact.ingest' | 'artifact.query', result: unknown): void {
+function response(
+  operation: 'artifact.ingest' | 'artifact.query' | 'artifact.delete',
+  result: unknown,
+): void {
   decodeHostFrame({ requestId: 'response', operation, ok: true, result });
 }
 

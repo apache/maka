@@ -1,8 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Search,
 } from '@maka/ui/icons';
 import {
@@ -101,26 +118,6 @@ export function AppShellTopbarActions(props: {
   );
 }
 
-export function WorkbarToggle(props: {
-  collapsed: boolean;
-  className?: string;
-  onToggle(): void;
-}) {
-  const locale = useUiLocale();
-  const copy = getShellCopy(locale).chrome;
-  return (
-    <ChromeColumnToggle
-      collapsed={props.collapsed}
-      expandLabel={copy.expandWorkbar}
-      collapseLabel={copy.collapseWorkbar}
-      expandIcon={PanelRightOpen}
-      collapseIcon={PanelRightClose}
-      className={props.className}
-      onToggle={props.onToggle}
-    />
-  );
-}
-
 /**
  * The titlebar's right edge.
  *
@@ -142,21 +139,3 @@ export function WorkbarToggle(props: {
  * lights and the Windows caption strip without either platform being named
  * here. A toggle parked anywhere else would have to restate that.
  */
-export function AppShellWorkspaceTopActions(props: {
-  workbarAvailable: boolean;
-  workbarCollapsed: boolean;
-  onToggleWorkbar(): void;
-}) {
-  const locale = useUiLocale();
-  const copy = getShellCopy(locale).chrome;
-  // Nothing to toggle outside a session or while the panel-local control is
-  // mounted; an empty no-drag rectangle would only subtract from the window's
-  // drag surface.
-  if (!props.workbarAvailable || !props.workbarCollapsed) return null;
-
-  return (
-    <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <WorkbarToggle collapsed onToggle={props.onToggleWorkbar} />
-    </div>
-  );
-}

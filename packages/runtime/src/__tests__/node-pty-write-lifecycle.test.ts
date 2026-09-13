@@ -1,34 +1,48 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 const CHILD_SOURCE = String.raw`
-  import { spawn as spawnPty } from 'node-pty';
-  import { execFileSync } from 'node:child_process';
+  import { createRequire } from 'node:module';
   import {
     closeSync,
     constants,
     fstatSync,
     mkdtempSync,
-    open,
     openSync,
     rmSync,
-    stat,
   } from 'node:fs';
   import { tmpdir } from 'node:os';
   import { join } from 'node:path';
-  import { promisify } from 'node:util';
 
-  const delay = promisify(setTimeout);
+  const require = createRequire(import.meta.url);
+  const fs = require('node:fs');
+  const { spawn: spawnPty } = await import('node-pty');
   const root = mkdtempSync(join(tmpdir(), 'maka-node-pty-write-lifecycle-'));
-  const fifo = join(root, 'worker-blocker');
   const sentinelPath = join(root, 'sentinel');
-  let readerFd;
-  let sentinelFd;
+  const sentinelFds = [];
   let terminal;
 
   try {
-    execFileSync('mkfifo', [fifo]);
     terminal = spawnPty(
       process.execPath,
       ['-e', 'process.stdin.pause(); setInterval(() => {}, 1000)'],
@@ -36,64 +50,63 @@ const CHILD_SOURCE = String.raw`
     );
     const terminalFd = terminal.fd;
 
-    const reader = new Promise((resolve, reject) => {
-      open(fifo, constants.O_RDONLY, (error, fd) => {
-        if (error) reject(error);
-        else {
-          readerFd = fd;
-          resolve();
-        }
-      });
-    });
-    let probeCompleted = false;
-    const blockedPoolProbe = new Promise((resolve, reject) => {
-      stat(root, (error) => {
-        if (error) reject(error);
-        else {
-          probeCompleted = true;
-          resolve();
-        }
-      });
-    });
-    await delay(50);
-    if (probeCompleted) throw new Error('FIFO did not occupy the libuv worker');
+    // Hold the unpatched writer at its raw-fd submission boundary. Replaying that
+    // request only after fd reuse models the dangerous libuv schedule without
+    // coupling PTY teardown to starvation of the process-wide worker pool.
+    const originalWrite = fs.write;
+    let deferredRawWrite;
+    fs.write = (...args) => {
+      if (deferredRawWrite !== undefined) {
+        throw new Error('Expected at most one raw PTY write before the lifecycle fence');
+      }
+      deferredRawWrite = args;
+    };
+    try {
+      terminal.write('R'.repeat(4 * 1024 * 1024));
+    } finally {
+      fs.write = originalWrite;
+    }
 
-    terminal.write('R'.repeat(4 * 1024 * 1024));
     setTimeout(() => terminal.kill('SIGKILL'), 5);
     await new Promise((resolve) => terminal.onExit(resolve));
 
-    sentinelFd = openSync(
-      sentinelPath,
-      constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC,
-      0o600,
-    );
-    if (sentinelFd !== terminalFd) {
-      throw new Error(
-        'Expected retired PTY fd ' + terminalFd + ' to be reused, received ' + sentinelFd,
+    // Retain any lower-numbered descriptors until the retired PTY fd is reused.
+    let sentinelFd;
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const fd = openSync(
+        sentinelPath,
+        constants.O_RDWR |
+          constants.O_CREAT |
+          (sentinelFds.length === 0 ? constants.O_TRUNC : 0),
+        0o600,
       );
+      sentinelFds.push(fd);
+      if (fd === terminalFd) {
+        sentinelFd = fd;
+        break;
+      }
+      if (fd > terminalFd) break;
+    }
+    if (sentinelFd === undefined) {
+      throw new Error('Could not reuse retired PTY fd ' + terminalFd);
     }
 
-    const writerFd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK);
-    closeSync(writerFd);
-    const writeCompletionBarrier = new Promise((resolve, reject) => {
-      stat(root, (error) => (error ? reject(error) : resolve()));
-    });
-    await Promise.all([reader, blockedPoolProbe, writeCompletionBarrier]);
-    closeSync(readerFd);
-    readerFd = undefined;
+    if (deferredRawWrite !== undefined) {
+      const [fd, buffer, offset] = deferredRawWrite;
+      await new Promise((resolve, reject) => {
+        originalWrite(fd, buffer, offset, (error) => (error ? reject(error) : resolve()));
+      });
+    }
 
     if (fstatSync(sentinelFd).size !== 0) {
       throw new Error('Queued PTY input reached the reused sentinel fd');
     }
-    closeSync(sentinelFd);
-    sentinelFd = undefined;
     console.log('sentinel-ok');
   } finally {
     try {
       terminal?.kill('SIGKILL');
     } catch {}
-    if (readerFd !== undefined) closeSync(readerFd);
-    if (sentinelFd !== undefined) closeSync(sentinelFd);
+    for (const fd of sentinelFds) closeSync(fd);
     rmSync(root, { recursive: true, force: true });
   }
 `;
@@ -104,7 +117,6 @@ test('does not carry queued Unix PTY writes past native exit', {
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', CHILD_SOURCE], {
     cwd: process.cwd(),
     encoding: 'utf8',
-    env: { ...process.env, UV_THREADPOOL_SIZE: '1' },
     timeout: 10_000,
   });
 

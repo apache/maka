@@ -1,0 +1,5 @@
+{
+  "epoch": 109,
+  "files": ["packages/runtime-host/src/protocol/client-capability.ts"],
+  "reason": "Moves the Node-only clientCapabilityEntityId helper out of the browser-facing protocol module (#4700). Wire shape, validation limits, and error behavior are unchanged; older and newer peers decode identical frames."
+}

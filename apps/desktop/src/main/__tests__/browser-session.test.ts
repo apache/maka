@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * BrowserSession lifecycle: lazy connect + cache, single-flight first acquire,
  * connection-loss invalidation, takeover-reload, timeout/abort severing, and
@@ -5,6 +24,7 @@
  * view Host and a fake CDP bridge), so no Electron or live CDP endpoint.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import type { IPage } from '@jackwener/opencli/types';
@@ -21,17 +41,6 @@ import {
   withBrowserPage,
 } from '../browser/session.js';
 import { type BrowserViewHost, provideBrowserViewHost } from '../browser/browser-host.js';
-
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 function makeFakePage(url: string | null = null): IPage {
@@ -83,6 +92,13 @@ type HostSpy = {
 function installHost(overrides: Partial<BrowserViewHost> = {}): HostSpy {
   const spy: HostSpy = { resolved: [], released: [], disposed: [], host: null as never };
   const host: BrowserViewHost = {
+    currentUrl: () => "https://example.com/",
+    openOriginLease: () => ({
+      approvedOrigin: 'https://example.com',
+      startNavigation: () => {},
+      snapshot: () => ({ epoch: 0, url: 'https://example.com/' }),
+      release: () => {},
+    }),
     canDrive: () => true,
     resolveEndpoint: async (id) => {
       spy.resolved.push(id);

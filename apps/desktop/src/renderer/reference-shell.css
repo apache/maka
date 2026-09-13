@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* target-layout shell rebuild.
    Hand-authored from a historical reference implementation extract; do not paste
    reference implementation compiled CSS or brand assets here. */
@@ -91,4 +110,42 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
+}
+
+/*
+ * Settings › Import/export tasks — the export list's subagent tree.
+ *
+ * The rule belongs to the list that holds the children, so it is exactly as
+ * tall as the subtree it encloses. An earlier version drew one mark beside each
+ * child: that marks the rows and draws nothing between them, so a subtree read
+ * as unrelated rows that happened to start further right.
+ */
+.maka-export-tree,
+.maka-export-subtree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.maka-export-subtree {
+  margin-inline-start: var(--spacing-3);
+  padding-inline-start: var(--spacing-4);
+  border-inline-start: 1px solid var(--border-soft);
+}
+
+.maka-export-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-4);
+  padding-block: var(--spacing-2);
+}
+
+.maka-export-name {
+  font-size: var(--font-size-base);
+}
+
+.maka-export-carries {
+  font-size: var(--font-size-sm);
+  color: var(--muted-foreground);
 }

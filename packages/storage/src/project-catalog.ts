@@ -1,20 +1,37 @@
-import { execFile } from 'node:child_process';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 import type { SessionHeader } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
+import { execGitText } from './git-exec.js';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
-import { normalizeSessionHeader } from './session-store.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
-
-const execFileAsync = promisify(execFile);
 
 export class ProjectPathMismatchError extends Error {
   readonly name = 'ProjectPathMismatchError';
@@ -109,6 +126,11 @@ export interface ProjectRegistrationOptions {
    * its published boundary.
    */
   readonly withinRoot?: string;
+  /**
+   * Whether an additional location should be recorded as recently used. A new
+   * project still establishes its sole location as the initial preference.
+   */
+  readonly prefer?: boolean;
 }
 
 interface PersistedProject {
@@ -187,7 +209,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
       throw new ProjectPathBoundaryError(resolved.canonicalPath);
     }
-    return this.upsertResolvedProject(resolved, this.now());
+    return this.upsertResolvedProject(resolved, this.now(), options?.prefer !== false);
   }
 
   async resolveHistoricalPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
@@ -216,6 +238,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   private async upsertResolvedProject(
     resolved: ResolvedProjectLocation,
     timestamp: number,
+    prefer = true,
   ): Promise<ProjectRecord> {
     const registered = await this.mutate((file) => {
       const locationPath =
@@ -224,13 +247,13 @@ class SqliteProjectCatalog implements ProjectCatalog {
       if (existing) {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
-          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
+          if (prefer) location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
           existing.locations.push({
             path: locationPath,
             isWorktree: resolved.git?.isWorktree ?? false,
-            lastUsedAt: timestamp,
+            lastUsedAt: prefer ? timestamp : 0,
           });
         }
         existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
@@ -723,8 +746,8 @@ function reassignProjectSessions(
   );
   const updatedSessionIds: string[] = [];
   for (const row of rows) {
-    const header = normalizeSessionHeader(
-      JSON.parse(row.payload_json) as SessionHeader,
+    const header = decodePersistedSessionHeader(
+      markPersisted<SessionHeader>(JSON.parse(row.payload_json)),
       row.session_id,
     );
     let patch: Pick<SessionHeader, 'cwd' | 'projectId'> | undefined;
@@ -838,6 +861,12 @@ export async function resolveProjectLocation(input: {
   path: string;
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
+  // Regular files are not valid projects. Without this check, a file inside a
+  // Git worktree reaches `git -C <file> rev-parse ...`, whose numeric failure
+  // is not treated as an invalid path by the Host coordinator and drains it.
+  if (!(await stat(canonicalPath)).isDirectory()) {
+    throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
+  }
   if (!(await hasEnclosingGitEntry(canonicalPath))) {
     return {
       canonicalPath,
@@ -886,29 +915,10 @@ function isPathWithin(root: string, candidate: string): boolean {
 async function resolveGitLocation(
   canonicalPath: string,
 ): Promise<NonNullable<ResolvedProjectLocation['git']>> {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_COMMON_DIR;
-  const { stdout: locationOutput } = await execFileAsync(
-    'git',
-    [
-      '-C',
-      canonicalPath,
-      'rev-parse',
-      '--path-format=absolute',
-      '--show-toplevel',
-      '--git-dir',
-      '--git-common-dir',
-    ],
-    {
-      env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024,
-      timeout: 3_000,
-      windowsHide: true,
-    },
+  const locationOutput = await execGitText(
+    canonicalPath,
+    ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'],
+    { maxBuffer: 64 * 1024, timeoutMs: 3_000 },
   );
   const [worktreeRootRaw, gitDirRaw, commonDirRaw] = locationOutput.trim().split(/\r?\n/);
   if (!worktreeRootRaw || !gitDirRaw || !commonDirRaw) {

@@ -1,31 +1,58 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useMemo, useRef } from "react";
-import type { DailyReviewSummary } from '@maka/core/daily-review';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionStartMode } from '@maka/core/explore-agent';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { formatDailyReviewMarkdown } from "@maka/ui";
-import type { DailyReviewMarkdownActionInput, NavSelection } from "@maka/ui";
+import type { NavSelection } from "@maka/ui";
+import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
+import type { SessionStartMode } from './application/contracts/session-start-mode.js';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import {
   buildCommandList,
   buildSessionCommands,
 } from "./command-palette-commands.js";
 import type { Command } from "./command-palette-types.js";
 import { renderConversationMarkdown } from "./conversation-markdown.js";
-import { dailyReviewActionErrorMessage } from "./daily-review-actions.js";
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
 } from "./app-shell-copy.js";
 import { getShellCopy } from "./locales/shell-copy.js";
+import { memoryOpenFailureMessage } from "./locales/settings-memory-copy.js";
 import { settingsTestResultMessage } from "./locales/settings-test-result-copy.js";
 
 type ToastApi = {
   success(title: string, description?: string): void;
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
 };
 
 type ComposerImportOwner = {
@@ -36,14 +63,6 @@ type ComposerImportOwner = {
 
 type RefBox<T> = { current: T };
 
-type ComposerAppendHandle = {
-  appendText(text: string): void;
-};
-
-type DailyReviewBridge = {
-  fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
-};
-
 export interface AppShellCommandListOptions {
   uiLocale: UiLocale;
   activeId: string | undefined;
@@ -52,19 +71,19 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  dailyReviewBridge: DailyReviewBridge;
   messages: StoredMessage[];
-  sessions: SessionSummary[];
+  newTaskProfileId: string | undefined;
+  settingsOpen: boolean;
+  settingsProfileId: string | undefined;
+  sessions: readonly SessionSummary[];
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;
-  composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
   openSideConversation: () => void;
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
-  isComposerImportOwnerActive: (owner: ComposerImportOwner) => boolean;
   openHelp: () => void;
-  openScheduledTaskForm: () => void;
+  openScheduledTaskCreate: () => void;
   openProjectFolder: () => Promise<void>;
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
@@ -72,13 +91,31 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  saveDailyReviewMarkdown: (
-    input: DailyReviewMarkdownActionInput,
-  ) => Promise<void>;
+  copyTodayDailyReview: () => Promise<void>;
+  pasteTodayDailyReview: () => Promise<void>;
+  saveTodayDailyReview: () => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
-  setPermissionMode: (mode: PermissionMode) => Promise<void>;
+  setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   setThemePref: (themePref: ThemePreference) => void;
   toastApi: ToastApi;
+}
+
+export function resolveManualDiagnosticTarget(
+  owner: Pick<ComposerImportOwner, 'navSection' | 'sessionId'>,
+  newTaskProfileId: string | undefined,
+  settingsOpen = false,
+  settingsProfileId?: string,
+): DesktopManualDiagnosticTarget | undefined {
+  if (settingsOpen) {
+    return settingsProfileId
+      ? { profileId: settingsProfileId }
+      : undefined;
+  }
+  if (owner.navSection !== 'sessions') return undefined;
+  if (owner.sessionId) return { sessionId: owner.sessionId };
+  return newTaskProfileId
+    ? { profileId: newTaskProfileId }
+    : undefined;
 }
 
 export function buildAppShellCommandList(
@@ -91,10 +128,11 @@ export function buildAppShellCommandList(
   // still acts on current data (same stable-ref pattern as
   // openSessionInChatRef in app-shell.tsx).
   const options = optionsRef.current;
-  const copy = getShellCopy(options.uiLocale).commandActions;
+  const locale = options.uiLocale;
+  const copy = getShellCopy(locale).commandActions;
 
   return buildCommandList({
-    locale: options.uiLocale,
+    locale,
     activeSessionId: options.activeId,
     themePref: options.themePref,
     connections: options.connections,
@@ -105,7 +143,7 @@ export function buildAppShellCommandList(
       const { startModeSession } = optionsRef.current;
       await startModeSession("deep_research");
     },
-    onStartScheduledTask: () => optionsRef.current.openScheduledTaskForm(),
+    onStartScheduledTask: () => optionsRef.current.openScheduledTaskCreate(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),
@@ -119,7 +157,9 @@ export function buildAppShellCommandList(
     onTestConnection: async (slug) => {
       const { connections, refreshConnections, toastApi } = optionsRef.current;
       try {
-        const result = await window.maka.connections.test(slug);
+        const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+          window.maka.connections.test(slug, undefined, host),
+        );
         const conn = connections.find((c) => c.slug === slug);
         const name = conn?.name ?? slug;
         if (result.ok) {
@@ -132,8 +172,10 @@ export function buildAppShellCommandList(
             copy.connectionTestFailed(name),
             commandPaletteConnectionTestFailureMessage(
               result,
-              options.uiLocale,
+              locale,
             ),
+            undefined,
+            diagnosticTarget,
           );
         }
         await refreshConnections();
@@ -143,15 +185,19 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.connectionUnavailable,
-            options.uiLocale,
+            locale,
           ),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(err),
         );
       }
     },
     onSetDefaultConnection: async (slug) => {
       const { connections, refreshConnections, toastApi } = optionsRef.current;
       try {
-        await window.maka.connections.setDefault(slug);
+        await runOnDefaultRuntimeHost((host) =>
+          window.maka.connections.setDefault(slug, host),
+        );
         await refreshConnections();
         const conn = connections.find((c) => c.slug === slug);
         toastApi.success(copy.setDefaultSuccess(conn?.name ?? slug));
@@ -161,8 +207,10 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.setDefaultFallback,
-            options.uiLocale,
+            locale,
           ),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(err),
         );
       }
     },
@@ -185,7 +233,7 @@ export function buildAppShellCommandList(
       const markdown = renderConversationMarkdown(
         session?.name ?? copy.newConversation,
         messages,
-        options.uiLocale,
+        locale,
       );
       try {
         await navigator.clipboard.writeText(markdown);
@@ -205,7 +253,7 @@ export function buildAppShellCommandList(
       const markdown = renderConversationMarkdown(
         sessionName,
         messages,
-        options.uiLocale,
+        locale,
       );
       const now = new Date();
       const yyyy = now.getFullYear();
@@ -241,7 +289,7 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.exportFallback,
-            options.uiLocale,
+            locale,
           ),
         );
       }
@@ -249,9 +297,16 @@ export function buildAppShellCommandList(
     onOpenLocalMemoryFile: async () => {
       const { toastApi } = optionsRef.current;
       try {
-        const result = await window.maka.memory.openFile();
+        const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+          window.maka.memory.openFile(host),
+        );
         if (!result.ok) {
-          toastApi.error(copy.memoryOpenFailedTitle, result.message);
+          toastApi.error(
+            copy.memoryOpenFailedTitle,
+            memoryOpenFailureMessage(result, locale),
+            undefined,
+            diagnosticTarget,
+          );
         }
       } catch (err) {
         toastApi.error(
@@ -259,149 +314,53 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.memoryOpenFallback,
-            options.uiLocale,
+            locale,
           ),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(err),
         );
       }
     },
     onSetPermissionMode: options.canSetPermissionMode
-      ? (mode) => optionsRef.current.setPermissionMode(mode)
+      ? async (mode) => {
+          await optionsRef.current.setPermissionMode(mode);
+        }
       : undefined,
     activePermissionMode: options.activePermissionMode,
-    onCopyTodayDailyReview: async () => {
-      const { dailyReviewBridge, toastApi } = optionsRef.current;
-      try {
-        const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        await navigator.clipboard.writeText(markdown);
-        toastApi.success(
-          copy.reviewCopiedTitle,
-          copy.reviewSummary(
-            summary.totals.sessionCount,
-            summary.totals.requestCount,
-          ),
-        );
-      } catch (err) {
-        toastApi.error(
-          copy.copyFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.reviewCopyFallback,
-            options.uiLocale,
-          ),
-        );
-      }
-    },
-    onPasteTodayDailyReviewIntoComposer: async () => {
+    onCopyTodayDailyReview: () => optionsRef.current.copyTodayDailyReview(),
+    onPasteTodayDailyReviewIntoComposer: () => optionsRef.current.pasteTodayDailyReview(),
+    onSaveTodayDailyReviewToFile: () => optionsRef.current.saveTodayDailyReview(),
+    onCopyDiagnostics: async () => {
       const {
         captureComposerImportOwner,
-        composerRef,
-        dailyReviewBridge,
-        isComposerImportOwnerActive,
+        newTaskProfileId,
+        settingsOpen,
+        settingsProfileId,
         toastApi,
       } = optionsRef.current;
       const owner = captureComposerImportOwner();
-      if (!owner.sessionId) return;
+      const target = resolveManualDiagnosticTarget(
+        owner,
+        newTaskProfileId,
+        settingsOpen,
+        settingsProfileId,
+      );
       try {
-        const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        if (!isComposerImportOwnerActive(owner)) return;
-        composerRef.current?.appendText(markdown);
-        toastApi.success(
-          copy.reviewPastedTitle,
-          copy.reviewSummary(
-            summary.totals.sessionCount,
-            summary.totals.requestCount,
-          ),
-        );
-      } catch (err) {
-        if (isComposerImportOwnerActive(owner)) {
-          toastApi.error(
-            copy.pasteFailedTitle,
-            dailyReviewActionErrorMessage(
-              err,
-              copy.reviewUnavailable,
-              options.uiLocale,
-            ),
-          );
-        }
-      }
-    },
-    onSaveTodayDailyReviewToFile: async () => {
-      const { dailyReviewBridge, saveDailyReviewMarkdown, toastApi } =
-        optionsRef.current;
-      try {
-        const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        await saveDailyReviewMarkdown({
-          day: summary.day,
-          range: 1,
-          totals: summary.totals,
-          markdown,
-          label: copy.today,
+        await window.maka.diagnostics.copyReport({
+          surface: "manual",
+          ...(target ? { target } : {}),
         });
-      } catch (err) {
-        toastApi.error(
-          copy.saveFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.reviewUnavailable,
-            options.uiLocale,
-          ),
-        );
-      }
-    },
-    onCopyEnvSummary: async () => {
-      const { toastApi } = optionsRef.current;
-      try {
-        const info = await window.maka.app.info();
-        const platformPretty =
-          info.platform === "darwin"
-            ? "macOS"
-            : info.platform === "win32"
-              ? "Windows"
-              : info.platform === "linux"
-                ? "Linux"
-                : info.platform;
-        const buildLine =
-          info.buildMode === "dev"
-            ? `- Build: dev${info.buildCommit ? ` @ ${info.buildCommit}` : ""}`
-            : "- Build: packaged";
-        const summary = [
-          `**Maka** v${info.appVersion}`,
-          ``,
-          `- Electron: ${info.electronVersion}`,
-          `- Node: ${info.nodeVersion}`,
-          `- Chrome: ${info.chromeVersion}`,
-          `- Platform: ${platformPretty} ${info.osRelease}`,
-          `- Arch: ${info.arch}`,
-          buildLine,
-        ].join("\n");
-        await navigator.clipboard.writeText(summary);
-        toastApi.success(
-          copy.environmentCopiedTitle,
-          `Maka v${info.appVersion} · ${platformPretty} · ${info.arch}`,
-        );
+        toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
         toastApi.error(
           copy.copyFailedTitle,
           commandPaletteActionErrorMessage(
             err,
             copy.clipboardDenied,
-            options.uiLocale,
+            locale,
           ),
+          undefined,
+          target,
         );
       }
     },
@@ -413,13 +372,15 @@ export function buildAppShellCommandList(
         // connection issue does not need to open Settings →
         // 网络. `testNetworkProxy(undefined)` uses the
         // current persisted proxy config.
-        const result = await window.maka.settings.testNetworkProxy(undefined);
-        const message = settingsTestResultMessage(result, options.uiLocale);
+        const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+          window.maka.settings.testNetworkProxy(undefined, host),
+        );
+        const message = settingsTestResultMessage(result, locale);
         if (result.ok) {
           const latency = result.latencyMs ? ` · ${result.latencyMs}ms` : "";
           toastApi.success(copy.networkPassedTitle, `${message}${latency}`);
         } else {
-          toastApi.error(copy.networkFailedTitle, message);
+          toastApi.error(copy.networkFailedTitle, message, undefined, diagnosticTarget);
         }
       } catch (err) {
         toastApi.error(
@@ -427,8 +388,10 @@ export function buildAppShellCommandList(
           commandPaletteActionErrorMessage(
             err,
             copy.networkTestFallback,
-            options.uiLocale,
+            locale,
           ),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(err),
         );
       }
     },

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { BotProvider, BotReadinessState } from './bot-chat-settings.js';
 
 export const OS_PERMISSION_IDS = [
@@ -84,6 +103,47 @@ export type CapabilityId =
   | 'memory_write'
   | `bot:${BotProvider}`;
 
+/**
+ * Stable machine codes for capability and OS-permission reasons. Producers
+ * emit these instead of locale-bound prose; presenters own the code→copy map
+ * per locale. Bot capabilities pass their bridge status reasons through as-is
+ * (`rate-limited`, `gateway-closed-4004`, …), so signal `reason` fields stay
+ * `string` — this union types the desktop producers and the presenter maps.
+ */
+export const CAPABILITY_REASON_CODES = [
+  'disabled',
+  'platform_credentials_missing',
+  'macos_tcc_only',
+  'apple_events_tcc_status_unavailable',
+  'cu_artifact_missing',
+  'cu_backend_status',
+  'cu_backend_unavailable',
+  'cu_executor_undistributable',
+  'cu_executor_stopped',
+  'cu_executor_start_failed',
+  'cu_executor_recovering',
+  'cu_executor_ready',
+  'cu_executor_lazy_start',
+  'activity_recorder_partial',
+  'activity_recorder_probe_hint',
+  'memory_partial',
+  'memory_no_probe',
+  'accessibility_status_ambiguous',
+  'screen_recording_status_mac_only',
+  'notifications_status_unreadable_macos',
+  'notifications_status_unreadable',
+  'notifications_unsupported',
+  'permission_probe_failed',
+] as const;
+
+export type CapabilityReasonCode = (typeof CAPABILITY_REASON_CODES)[number];
+
+export function isCapabilityReasonCode(value: unknown): value is CapabilityReasonCode {
+  return (
+    typeof value === 'string' && (CAPABILITY_REASON_CODES as readonly string[]).includes(value)
+  );
+}
+
 export interface OsPermissionSnapshot {
   id: OsPermissionId;
   status: OsPermissionState;
@@ -147,7 +207,6 @@ export interface CapabilitySnapshot {
   runtimeProbe: CapabilityRuntimeProbeSignal;
   canRevoke: boolean;
   canPause: boolean;
-  guidance: string[];
   auditEvents: string[];
   updatedAt: number;
 }

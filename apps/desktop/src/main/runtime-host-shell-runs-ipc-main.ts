@@ -1,6 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../shared/runtime-host-identity.js';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
+import type { SessionDomainChange } from '@maka/runtime-host/protocol';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   handleReconnectableRead,
@@ -8,6 +29,7 @@ import {
 } from './ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserverTarget } from './runtime-host-session-observer.js';
+import type { TerminalCloseIntents } from './terminal-close-intents.js';
 
 export type RuntimeHostShellRunsClient = Pick<
   DesktopRuntimeHostClient,
@@ -20,36 +42,68 @@ export type RuntimeHostShellRunsClient = Pick<
   | 'stopRuntimeResource'
 >;
 
+export type RuntimeHostShellRunQueriesClient = Pick<
+  DesktopRuntimeHostClient,
+  'getRuntimeResource' | 'listRuntimeResources'
+>;
+
+export interface RuntimeHostShellRunQueriesIpcHandle {
+  sessionDomainChanged(change: SessionDomainChange): void;
+  sessionSubscriptionRecovered(sessionId: string): void;
+}
+
+export function registerRuntimeHostShellRunQueriesIpc(
+  deps: {
+    client: RuntimeHostShellRunQueriesClient;
+    sendToRenderer?(channel: string, payload: unknown): void;
+    onError?(error: unknown): void;
+  },
+  ipcMain: ReconnectableReadIpcMain,
+): RuntimeHostShellRunQueriesIpcHandle {
+  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
+    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
+  );
+  return {
+    sessionDomainChanged(change) {
+      if (change.domain !== 'runtime_resource') return;
+      void refreshRuntimeResources(deps, change.sessionId, change.resources);
+    },
+    sessionSubscriptionRecovered(sessionId) {
+      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
+    },
+  };
+}
+
 export function registerRuntimeHostShellRunsIpc(
   deps: {
     client: RuntimeHostShellRunsClient;
+    terminalCloses: TerminalCloseIntents;
     newId?: () => string;
     sessionObserver: {
       observe(
         sessionId: string,
         observerId: string,
         target: RuntimeHostSessionObserverTarget,
-      ): Promise<void>;
+        messageAdmissions?: boolean,
+        ptyRef?: string,
+      ): Promise<unknown>;
       unobserve(observerId: string): Promise<void>;
     };
   },
   ipcMain: ReconnectableReadIpcMain,
 ): { close(): Promise<void> } {
   const newId = deps.newId ?? randomUUID;
+  const closes = deps.terminalCloses;
   const controllers = new RuntimeResourceControllers(
     deps.client,
     newId,
     deps.sessionObserver,
   );
-
-  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
-    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
-  );
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
     const started = await deps.client.startRuntimeResource({
       sessionId: normalizedSessionId,
-      launchId: `desktop-terminal-${newId()}`,
+      launchId: `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`,
     });
     return requiredRuntimeResource(
       await deps.client.getRuntimeResource(normalizedSessionId, started.resource.ref),
@@ -67,13 +121,35 @@ export function registerRuntimeHostShellRunsIpc(
   ipcMain.handle('shell-runs:write', (_event, value: unknown) =>
     controllers.control(runtimeResourceControl(value)),
   );
-  ipcMain.handle('shell-runs:stop', async (_event, value: unknown) => {
+  handleReconnectableRead(ipcMain, 'shell-runs:recover', (_event, sessionId: unknown) => {
+    const id = requiredId(sessionId, 'Session');
+    return closes.recover(id, () => deps.client.listRuntimeResources(id));
+  });
+  ipcMain.handle('shell-runs:stop', (_event, value: unknown) => {
     const input = runtimeResourceIdentity(value, 'stop');
-    await controllers.stop(input);
-    return deps.client.getRuntimeResource(input.sessionId, input.ref);
+    return closes.stop(input, () => controllers.stop(input));
   });
 
   return { close: () => controllers.close() };
+}
+
+async function refreshRuntimeResources(
+  deps: {
+    client: Pick<DesktopRuntimeHostClient, 'getRuntimeResource'>;
+    sendToRenderer?(channel: string, payload: unknown): void;
+    onError?(error: unknown): void;
+  },
+  sessionId: string,
+  resources: readonly { ref: string }[],
+): Promise<void> {
+  for (const resource of resources) {
+    try {
+      const update = await deps.client.getRuntimeResource(sessionId, resource.ref);
+      if (update) deps.sendToRenderer?.('shell-runs:update', update);
+    } catch (error) {
+      deps.onError?.(error);
+    }
+  }
 }
 
 interface RuntimeResourceIdentity {
@@ -100,7 +176,9 @@ class RuntimeResourceControllers {
       sessionId: string,
       observerId: string,
       target: RuntimeHostSessionObserverTarget,
-    ): Promise<void>;
+      messageAdmissions?: boolean,
+      ptyRef?: string,
+    ): Promise<unknown>;
     unobserve(observerId: string): Promise<void>;
   };
   readonly #states = new Map<string, RuntimeResourceControllerState>();
@@ -114,7 +192,9 @@ class RuntimeResourceControllers {
         sessionId: string,
         observerId: string,
         target: RuntimeHostSessionObserverTarget,
-      ): Promise<void>;
+        messageAdmissions?: boolean,
+        ptyRef?: string,
+      ): Promise<unknown>;
       unobserve(observerId: string): Promise<void>;
     },
   ) {
@@ -129,7 +209,7 @@ class RuntimeResourceControllers {
   ): Promise<ShellRunPtySnapshot> {
     return this.#run(input, async () => {
       const state = this.#state(input);
-      await this.#sessionObserver.observe(input.sessionId, state.observerId, target);
+      await this.#sessionObserver.observe(input.sessionId, state.observerId, target, false, input.ref);
       return this.#acquire(input, state);
     });
   }
@@ -151,7 +231,6 @@ class RuntimeResourceControllers {
         control: protocolControl(input),
       });
       state.nextSequence = sequence + 1;
-      return this.#client.getRuntimeResource(input.sessionId, input.ref);
     });
   }
 
@@ -173,7 +252,7 @@ class RuntimeResourceControllers {
       await this.#client.stopRuntimeResource(input);
       const state = this.#states.get(resourceIdentity(input));
       this.#states.delete(resourceIdentity(input));
-      if (state) await this.#releaseObservation(state);
+      if (state) await this.#releaseObservation(state).catch(() => undefined);
     });
   }
 

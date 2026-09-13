@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/OpenHistory/HistoryRecorder.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -34,6 +41,7 @@ final class HistoryRecorder {
     private let runtimeControl: RuntimeControlStore
     private let recorderStartedAt: Date
     private let segmentDurationSeconds: TimeInterval
+    private let parent: RecorderParent
     private var policy: ObservationPolicy
     private var sequence = 0
     private var currentProcessIdentifier: pid_t?
@@ -42,25 +50,23 @@ final class HistoryRecorder {
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var mouseDown: MouseDownState?
-    private var textBuffer = ""
-    private var textSnapshot: AccessibilitySnapshot?
+    private var textBuffer = TextInputBuffer()
     private var textFlushTask: DispatchWorkItem?
     private var terminalText: String?
     private var terminalSnapshot: AccessibilitySnapshot?
     private var terminalFlushTask: DispatchWorkItem?
+    private var submitSelectionTask: DispatchWorkItem?
     private var axDebounceTasks: [String: DispatchWorkItem] = [:]
     private var lastWindowSignature: String?
     private var windowRetryTask: DispatchWorkItem?
     private var windowRetryCount = 0
     private var lastSelectionSignature: String?
     private var previousAXRevisionByWindowKey: [String: AXTreeRevisionSnapshot] = [:]
-    private var latestURLByWindowID: [UInt32: String] = [:]
     private var controlTimer: Timer?
     private var segmentTimer: Timer?
-    private var recorderState: RecorderState = .running
-    private var stopped = false
+    private var lifecycle: RecorderLifecycle
 
-    init(store: SegmentStore, policy: ObservationPolicy) {
+    init(store: SegmentStore, policy: ObservationPolicy, parent: RecorderParent) {
         self.store = store
         self.runtimeControl = RuntimeControlStore(homeURL: store.homeURL)
         self.recorderStartedAt = store.startedAt
@@ -68,23 +74,26 @@ final class HistoryRecorder {
             "OPEN_HISTORY_SEGMENT_SECONDS"
         ].flatMap(Double.init) ?? 600
         self.policy = policy
+        self.parent = parent
+        self.lifecycle = RecorderLifecycle(
+            control: RuntimeControlStore(homeURL: store.homeURL).readControl()
+        )
     }
 
     func start() throws {
+        reconcileControlState()
+        guard !lifecycle.stopped else { throw RecorderOwnershipError.invalidParent }
         SegmentStore.prune(homeURL: store.homeURL, olderThan: 48 * 60 * 60)
         observeWorkspace()
-        installEventTap()
 
-        if let app = NSWorkspace.shared.frontmostApplication {
+        if observationAllowed(), let app = NSWorkspace.shared.frontmostApplication {
+            installEventTap()
             currentProcessIdentifier = app.processIdentifier
             installAccessibilityObserver(processIdentifier: app.processIdentifier)
         }
-        try append(kind: .sessionStarted, snapshot: currentSnapshot())
-        appendWindowChangedIfNeeded(currentSnapshot())
-        if runtimeControl.readControl()?.state == .paused {
-            recorderState = .paused
-        }
-        try writeRuntimeStatus(state: recorderState)
+        try append(kind: .sessionStarted, snapshot: nil)
+        if observationAllowed() { appendWindowChangedIfNeeded(currentSnapshot()) }
+        try writeRuntimeStatus(state: lifecycle.state)
         controlTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
             [weak self] _ in
             self?.reconcileControlState()
@@ -98,21 +107,16 @@ final class HistoryRecorder {
     }
 
     func stop(reason: String) {
-        guard !stopped else {
+        guard !lifecycle.stopped else {
             return
         }
-        stopped = true
+        lifecycle.stop()
         controlTimer?.invalidate()
         controlTimer = nil
         segmentTimer?.invalidate()
         segmentTimer = nil
-        flushTextBuffer()
-        flushTerminalBuffer()
-        axDebounceTasks.values.forEach { $0.cancel() }
-        axDebounceTasks.removeAll()
-        windowRetryTask?.cancel()
-        windowRetryTask = nil
-        try? append(kind: .sessionEnded, snapshot: currentSnapshot())
+        discardPendingWork()
+        try? append(kind: .sessionEnded, snapshot: nil)
         try? store.finish(reason: reason)
         try? writeRuntimeStatus(state: .stopped, endedAt: Date())
 
@@ -135,7 +139,7 @@ final class HistoryRecorder {
     }
 
     func handleEventTap(type: CGEventType, event: CGEvent) {
-        guard recorderState == .running else {
+        guard observationAllowed() else {
             return
         }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -164,20 +168,27 @@ final class HistoryRecorder {
     }
 
     func handleAccessibilityNotification(_ notification: String) {
-        guard !stopped, recorderState == .running else {
+        guard observationAllowed() else {
             return
         }
+        if [kAXFocusedWindowChangedNotification, kAXFocusedUIElementChangedNotification,
+            kAXTitleChangedNotification].contains(notification) {
+            lifecycle.invalidatePendingWork()
+            discardPendingWork()
+        }
         axDebounceTasks[notification]?.cancel()
+        let generation = lifecycle.generation
         let task = DispatchWorkItem { [weak self] in
-            self?.axDebounceTasks.removeValue(forKey: notification)
-            self?.processAccessibilityNotification(notification)
+            guard let self, self.observationAllowed(generation: generation) else { return }
+            self.axDebounceTasks.removeValue(forKey: notification)
+            self.processAccessibilityNotification(notification)
         }
         axDebounceTasks[notification] = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: task)
     }
 
     private func processAccessibilityNotification(_ notification: String) {
-        guard !stopped, recorderState == .running else {
+        guard observationAllowed() else {
             return
         }
         let snapshot = currentSnapshot()
@@ -216,11 +227,9 @@ final class HistoryRecorder {
     }
 
     private func switchFrontmostApplication(to application: NSRunningApplication) {
-        flushTextBuffer()
-        flushTerminalBuffer()
-        windowRetryTask?.cancel()
-        windowRetryTask = nil
-        windowRetryCount = 0
+        lifecycle.invalidatePendingWork()
+        discardPendingWork()
+        guard observationAllowed() else { return }
         currentProcessIdentifier = application.processIdentifier
         installAccessibilityObserver(processIdentifier: application.processIdentifier)
         appendWindowChangedIfNeeded(currentSnapshot())
@@ -330,32 +339,43 @@ final class HistoryRecorder {
                     target: snapshot?.element
                 )
             )
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                [weak self] in
-                self?.appendSelection(self?.currentSnapshot())
+            submitSelectionTask?.cancel()
+            let generation = lifecycle.generation
+            let task = DispatchWorkItem { [weak self] in
+                guard let self, self.observationAllowed(generation: generation) else { return }
+                self.submitSelectionTask = nil
+                self.appendSelection(self.currentSnapshot())
             }
+            submitSelectionTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: task)
             return
         }
 
-        let characters = NSEvent(cgEvent: event)?.characters ?? ""
-        guard !characters.isEmpty else {
-            return
-        }
         let snapshot = currentSnapshot()
-        textSnapshot = snapshot
-        if policy.captureText, snapshot?.app.secureInput != true {
-            textBuffer.append(characters)
-        } else if textBuffer.isEmpty {
-            // An empty sentinel keeps a metadata-only typing burst observable.
-            textBuffer = "\u{0}"
+        let source = snapshot.flatMap { snapshot in
+            currentProcessIdentifier.map {
+                TextInputSource(
+                    app: snapshot.app, window: snapshot.window, element: snapshot.element,
+                    processIdentifier: $0, windowIdentifier: snapshot.windowID,
+                    focusIdentifier: snapshot.focusIdentifier
+                )
+            }
+        }
+        if let completed = textBuffer.append(
+            characters: { NSEvent(cgEvent: event)?.characters ?? "" },
+            source: source, policy: policy
+        ) {
+            appendTextInput(completed)
         }
         scheduleTextFlush()
     }
 
     private func scheduleTextFlush() {
         textFlushTask?.cancel()
+        let generation = lifecycle.generation
         let task = DispatchWorkItem { [weak self] in
-            self?.flushTextBuffer()
+            guard let self, self.observationAllowed(generation: generation) else { return }
+            self.flushTextBuffer()
         }
         textFlushTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: task)
@@ -364,23 +384,15 @@ final class HistoryRecorder {
     private func flushTextBuffer() {
         textFlushTask?.cancel()
         textFlushTask = nil
-        guard !textBuffer.isEmpty else {
-            return
-        }
-        let snapshot = textSnapshot
-        let text = textBuffer == "\u{0}" ? nil : textBuffer
-        try? append(
-            kind: .keyboardTextInput,
-            snapshot: snapshot,
-            keyboard: EventStreamKeyboardInteraction(
-                text: text,
-                keyEquivalent: nil,
-                modifiers: [],
-                target: snapshot?.element
-            )
-        )
-        textBuffer = ""
-        textSnapshot = nil
+        guard observationAllowed(), let input = textBuffer.drain() else { return }
+        appendTextInput(input)
+    }
+
+    private func appendTextInput(_ input: BufferedTextInput) {
+        let generation = lifecycle.generation
+        guard observationAllowed() else { return }
+        sequence += 1
+        try? persist(input.event(id: sequence, timestamp: Date()), generation: generation)
     }
 
     private func handleMouseUp(event: CGEvent) {
@@ -388,6 +400,7 @@ final class HistoryRecorder {
             return
         }
         mouseDown = nil
+        guard down.snapshot != nil else { return }
         let destinationSnapshot = currentSnapshot(at: event.location)
         let distance = hypot(event.location.x - down.point.x, event.location.y - down.point.y)
         let mouse: EventStreamMouseInteraction
@@ -424,67 +437,67 @@ final class HistoryRecorder {
         selection: EventStreamSelection? = nil,
         diagnostic: EventStreamDiagnostic? = nil
     ) throws {
-        sequence += 1
-        let suppressionReason = snapshot.flatMap {
-            policy.shouldSuppress(
-                bundleIdentifier: $0.app.bundleIdentifier ?? "",
-                windowTitle: $0.window?.title,
-                urlDomain: ObservationPolicy.normalizedDomain($0.window?.url),
-                role: $0.element?.role,
-                subrole: $0.element?.subrole
-            )
-        }
+        let generation = lifecycle.generation
         let isBoundary = kind == .sessionStarted || kind == .sessionEnded
-        let eventSnapshot = isBoundary && suppressionReason != nil ? nil : snapshot
+        guard isBoundary || observationAllowed() else { return }
+        sequence += 1
+        if isBoundary {
+            try persist(HistoryEvent(id: sequence, timestamp: Date(), kind: kind))
+            return
+        }
+        guard policy.allowsObservation(
+            app: snapshot?.app, window: snapshot?.window, element: snapshot?.element
+        ) else { return }
         let event = HistoryEvent(
             id: sequence,
             timestamp: Date(),
             kind: kind,
-            app: eventSnapshot?.app,
-            window: eventSnapshot?.window,
+            app: snapshot?.app,
+            window: snapshot?.window,
             mouse: mouse,
             keyboard: keyboard,
             selection: selection,
             ax: shouldIncludeAX(kind)
                 ? axTree(
-                    for: eventSnapshot,
+                    for: snapshot,
                     forceFull: kind == .keyboardSubmit
                 )
                 : nil,
             diagnostic: diagnostic
         )
 
-        if isBoundary {
-            try store.append(event)
-            return
-        }
-        guard snapshot != nil else {
-            try store.appendSuppressed(event)
-            return
-        }
-        if suppressionReason != nil {
-            try store.appendSuppressed(event)
-        } else {
-            try store.append(event)
-        }
+        try persist(event, generation: generation)
+    }
+
+    private func persist(_ event: HistoryEvent, generation: UInt64? = nil) throws {
+        reconcileControlState()
+        guard let event = lifecycle.eventForPersistence(
+            event, parentAlive: parent.isAlive(), generation: generation
+        )
+        else { return }
+        try store.append(event, policy: policy)
     }
 
     private func currentSnapshot(at point: CGPoint? = nil) -> AccessibilitySnapshot? {
-        guard let currentProcessIdentifier else {
+        guard observationAllowed(), let currentProcessIdentifier else {
             return nil
         }
-        guard var snapshot = AccessibilityReader.snapshot(
+        let generation = lifecycle.generation
+        guard let snapshot = AccessibilityReader.snapshot(
             processIdentifier: currentProcessIdentifier,
             at: point
         ) else {
+            lifecycle.invalidatePendingWork()
+            discardPendingWork(resetWindowRetries: false)
             return nil
         }
-        if let windowID = snapshot.windowID {
-            if let url = snapshot.window?.url {
-                latestURLByWindowID[windowID] = url
-            } else if let cachedURL = latestURLByWindowID[windowID] {
-                snapshot = snapshot.replacingWindowURL(cachedURL)
-            }
+        // AX can block long enough for pause or parent exit to occur.
+        guard observationAllowed(generation: generation), policy.allowsObservation(
+            app: snapshot.app, window: snapshot.window, element: snapshot.element
+        ) else {
+            lifecycle.invalidatePendingWork()
+            discardPendingWork(resetWindowRetries: false)
+            return nil
         }
         return snapshot
     }
@@ -543,7 +556,7 @@ final class HistoryRecorder {
     }
 
     private func appendWindowChangedIfNeeded(_ snapshot: AccessibilitySnapshot?) {
-        guard recorderState == .running else {
+        guard observationAllowed() else {
             return
         }
         guard let snapshot,
@@ -573,13 +586,15 @@ final class HistoryRecorder {
     }
 
     private func scheduleWindowRetry() {
-        guard windowRetryTask == nil, windowRetryCount < 10 else {
+        guard observationAllowed(), windowRetryTask == nil, windowRetryCount < 10 else {
             return
         }
         windowRetryCount += 1
+        let generation = lifecycle.generation
         let task = DispatchWorkItem { [weak self] in
-            self?.windowRetryTask = nil
-            self?.appendWindowChangedIfNeeded(self?.currentSnapshot())
+            guard let self, self.observationAllowed(generation: generation) else { return }
+            self.windowRetryTask = nil
+            self.appendWindowChangedIfNeeded(self.currentSnapshot())
         }
         windowRetryTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
@@ -632,7 +647,7 @@ final class HistoryRecorder {
     }
 
     private func appendSelection(_ snapshot: AccessibilitySnapshot?) {
-        guard let snapshot else {
+        guard observationAllowed(), let snapshot else {
             return
         }
         let selectedText = policy.captureText ? snapshot.selectedText : nil
@@ -683,33 +698,65 @@ final class HistoryRecorder {
     }
 
     private func reconcileControlState() {
-        guard !stopped, let control = runtimeControl.readControl() else {
+        guard !lifecycle.stopped else { return }
+        if !parent.isAlive() {
+            stop(reason: "parent_exited")
+            CFRunLoopStop(CFRunLoopGetMain())
             return
         }
-        let requested: RecorderState
-        if control.state == .paused,
-           let resumeAt = control.resumeAt,
-           resumeAt <= Date()
-        {
-            requested = .running
-            try? runtimeControl.writeControl(.running)
+        let generation = lifecycle.generation
+        lifecycle.reconcile(runtimeControl.readControl())
+        guard lifecycle.generation != generation else { return }
+        discardPendingWork()
+        if lifecycle.state == .stopped {
+            stop(reason: "control_stopped")
+            CFRunLoopStop(CFRunLoopGetMain())
+            return
+        }
+        if lifecycle.state == .running, let app = NSWorkspace.shared.frontmostApplication {
+            if let eventTap {
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            } else {
+                installEventTap()
+            }
+            currentProcessIdentifier = app.processIdentifier
+            installAccessibilityObserver(processIdentifier: app.processIdentifier)
         } else {
-            requested = control.state
+            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
+            if let accessibilityObserver {
+                CFRunLoopRemoveSource(
+                    CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(accessibilityObserver), .defaultMode
+                )
+                self.accessibilityObserver = nil
+            }
         }
-        switch (recorderState, requested) {
-        case (.running, .paused):
-            flushTextBuffer()
-            flushTerminalBuffer()
-            recorderState = .paused
-            try? writeRuntimeStatus(state: .paused)
-        case (.paused, .running):
-            recorderState = .running
-            lastWindowSignature = nil
-            try? writeRuntimeStatus(state: .running)
-            appendWindowChangedIfNeeded(currentSnapshot())
-        default:
-            break
-        }
+        try? writeRuntimeStatus(state: lifecycle.state)
+    }
+
+    private func observationAllowed(generation: UInt64? = nil) -> Bool {
+        reconcileControlState()
+        return lifecycle.allowsObservation(parentAlive: parent.isAlive(), generation: generation)
+    }
+
+    private func discardPendingWork(resetWindowRetries: Bool = true) {
+        textBuffer.discard()
+        terminalText = nil
+        terminalSnapshot = nil
+        mouseDown = nil
+        textFlushTask?.cancel()
+        textFlushTask = nil
+        terminalFlushTask?.cancel()
+        terminalFlushTask = nil
+        submitSelectionTask?.cancel()
+        submitSelectionTask = nil
+        axDebounceTasks.values.forEach { $0.cancel() }
+        axDebounceTasks.removeAll()
+        windowRetryTask?.cancel()
+        windowRetryTask = nil
+        if resetWindowRetries { windowRetryCount = 0 }
+        lastWindowSignature = nil
+        lastSelectionSignature = nil
+        previousAXRevisionByWindowKey.removeAll()
     }
 
     private func writeRuntimeStatus(
@@ -733,7 +780,7 @@ final class HistoryRecorder {
     }
 
     private func rotateSegment() {
-        guard !stopped, recorderState == .running else {
+        guard observationAllowed() else {
             return
         }
         flushTextBuffer()
@@ -756,8 +803,10 @@ final class HistoryRecorder {
 
     private func scheduleTerminalFlush() {
         terminalFlushTask?.cancel()
+        let generation = lifecycle.generation
         let task = DispatchWorkItem { [weak self] in
-            self?.flushTerminalBuffer()
+            guard let self, self.observationAllowed(generation: generation) else { return }
+            self.flushTerminalBuffer()
         }
         terminalFlushTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: task)
@@ -766,7 +815,7 @@ final class HistoryRecorder {
     private func flushTerminalBuffer() {
         terminalFlushTask?.cancel()
         terminalFlushTask = nil
-        guard let snapshot = terminalSnapshot else {
+        guard observationAllowed(), let snapshot = terminalSnapshot else {
             return
         }
         try? append(

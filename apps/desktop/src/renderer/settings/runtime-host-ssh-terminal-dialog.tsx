@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Banner, Button, useUiLocale } from '@maka/ui';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import '@xterm/xterm/css/xterm.css';
+import { getTerminalFontSize, subscribeTerminalFontSize } from '../theme';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
@@ -86,7 +105,7 @@ export function RuntimeHostSshTerminalDialog() {
       }
       return;
     }
-    if (event.kind === 'connected') {
+    if (event.kind === 'connected' || event.kind === 'dismissed') {
       sessionIdRef.current = undefined;
       pendingOutputRef.current = '';
       setClosed(false);
@@ -121,7 +140,7 @@ export function RuntimeHostSshTerminalDialog() {
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'Geist Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 12,
+      fontSize: getTerminalFontSize(),
       lineHeight: 1.2,
       screenReaderMode: true,
       scrollback: 2_000,
@@ -146,6 +165,10 @@ export function RuntimeHostSshTerminalDialog() {
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
+    const unsubscribeFontSize = subscribeTerminalFontSize((size) => {
+      terminal.options.fontSize = size;
+      resize();
+    });
     const input = terminal.onData((data) => {
       const sessionId = sessionIdRef.current;
       if (sessionId) {
@@ -160,6 +183,7 @@ export function RuntimeHostSshTerminalDialog() {
     });
     return () => {
       observer.disconnect();
+      unsubscribeFontSize();
       input.dispose();
       terminalRef.current = undefined;
       terminal.dispose();

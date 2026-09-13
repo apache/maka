@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
@@ -25,6 +44,44 @@ describe('parseGoalEvaluation', () => {
     assert.equal(r.progress, false);
     assert.equal(r.waiting, false);
     assert.equal(r.reason, 'No reason provided');
+  });
+
+  for (const field of ['met', 'impossible', 'progress', 'waiting']) {
+    for (const value of ['false', 'true', '', 0, 1, null, []]) {
+      test(`rejects ${field}=${JSON.stringify(value)} as a neutral evaluator failure`, () => {
+        const r = parseGoalEvaluation(
+          JSON.stringify({
+            met: false,
+            impossible: false,
+            progress: false,
+            waiting: false,
+            [field]: value,
+          }),
+        );
+        assert.equal(r.evaluatorFailed, true);
+        assert.equal(r.met, false);
+        assert.equal(r.impossible, false);
+        assert.equal(r.progress, false);
+        assert.equal(r.waiting, false);
+      });
+    }
+  }
+
+  test('rejects the whole judgment when a true verdict accompanies an invalid field', () => {
+    const r = parseGoalEvaluation('{"met":true,"progress":"false"}');
+    assert.equal(r.evaluatorFailed, true);
+    assert.equal(r.met, false);
+  });
+
+  test('accepts boolean false as a real no-progress judgment', () => {
+    const r = parseGoalEvaluation(
+      '{"met":false,"impossible":false,"progress":false,"waiting":false}',
+    );
+    assert.equal(r.evaluatorFailed, false);
+    assert.equal(r.met, false);
+    assert.equal(r.impossible, false);
+    assert.equal(r.progress, false);
+    assert.equal(r.waiting, false);
   });
 
   test('unparseable output → neutral evaluator failure (not real no-progress)', () => {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   preservesHostedExecutionEnvironment,
@@ -11,11 +30,23 @@ import { configureHostedExecutionTarget } from './hosted-execution-target.js';
 
 export interface RunHostedExecutionInput {
   readonly rootPath: string;
-  readonly execution: HostedExecutionStartInput;
+  readonly execution: HostedExecutionClientStartInput;
   readonly baseUrl?: string;
   readonly signal?: AbortSignal;
   readonly hostSettlementTimeoutMs?: number;
 }
+
+type HostedExecutionClientStartInput = Omit<HostedExecutionStartInput, 'session'> & {
+  readonly session: Omit<HostedExecutionStartInput['session'], 'modelTarget'> & {
+    readonly modelTarget:
+      | { readonly kind: 'default' }
+      | {
+          readonly kind: 'explicit';
+          readonly connectionSlug: string;
+          readonly model: string;
+        };
+  };
+};
 
 interface RunHostedExecutionDependencies {
   readonly connectOwnedRuntimeHost: typeof connectOwnedRuntimeHost;
@@ -38,7 +69,6 @@ export async function runHostedExecutionWithDependencies(
   }
   const initial = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
-    surface: 'run',
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -61,9 +91,10 @@ export async function runHostedExecutionWithDependencies(
   try {
     input.signal?.throwIfAborted();
     const target = input.execution.session.modelTarget;
+    let exactTarget: HostedExecutionStartInput['session']['modelTarget'] = { kind: 'default' };
     if (target.kind === 'explicit') {
       if (!input.baseUrl) throw new Error('Explicit model target requires baseUrl');
-      const changed = await configureHostedExecutionTarget(
+      const configured = await configureHostedExecutionTarget(
         connected.connection,
         {
           connectionSlug: target.connectionSlug,
@@ -72,14 +103,19 @@ export async function runHostedExecutionWithDependencies(
         },
         input.signal,
       );
-      if (changed) {
+      exactTarget = {
+        kind: 'explicit',
+        connectionId: configured.connectionId,
+        connectionSlug: configured.connectionSlug,
+        model: target.model,
+      };
+      if (configured.changed) {
         await connected.connection.close().catch(() => undefined);
         if (!(await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000))) {
           return indeterminate(input.execution.executionId, 'Runtime Host did not exit cleanly');
         }
         const reconnected = await dependencies.connectOwnedRuntimeHost({
           rootPath: input.rootPath,
-          surface: 'run',
           protocol: {
             min: RUNTIME_HOST_PROTOCOL_VERSION,
             max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -97,7 +133,14 @@ export async function runHostedExecutionWithDependencies(
         connected = reconnected;
       }
     }
-    projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
+    projection = await executeHostedExecution(
+      connected.connection,
+      {
+        ...input.execution,
+        session: { ...input.execution.session, modelTarget: exactTarget },
+      },
+      input.signal,
+    );
   } catch {
     projection = input.signal?.aborted
       ? indeterminate(input.execution.executionId, 'Hosted execution was cancelled')

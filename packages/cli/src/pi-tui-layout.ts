@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Container, type Component, type Terminal } from '@earendil-works/pi-tui';
+import type { UiLocale } from '@maka/core/ui-locale';
 // Deep import (pi-tui does not re-export it): the viewport shadow diff must
 // compare the same canonical lines pi-tui diffs, and pi-tui normalizes Thai/Lao
 // AM sequences before its diff. Pinned to pi-tui 0.80.3.
@@ -8,9 +28,11 @@ import {
   renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
+  type MakaPiTranscriptEntry,
   type MakaPiTranscriptMetadata,
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
+import type { TranscriptDocument } from './pi-tui-transcript-viewer.js';
 
 interface ViewportAwareEditor extends Component {
   setViewportRows(rows: number): void;
@@ -37,6 +59,53 @@ export class MakaTranscriptComponent implements Component {
   render(width: number): string[] {
     return renderMakaPiTranscript(this.state, this.metadata(), width);
   }
+
+  /**
+   * Render the complete current projection without changing the geometry used
+   * by the live terminal-scrollback reconciliation path.
+   */
+  createDocumentRenderer(): (width: number, expanded?: boolean) => TranscriptDocument {
+    // The detached keys and their rendered-line cache belong to one Session's
+    // reader. Reopening keeps its position; switching Sessions releases it.
+    const entryClones = new WeakMap<MakaPiTranscriptEntry, MakaPiTranscriptEntry>();
+    const documentEntry = (entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry => {
+      const cached = entryClones.get(entry);
+      if (cached) {
+        Object.assign(cached, entry);
+        return cached;
+      }
+      const clone = { ...entry } as MakaPiTranscriptEntry;
+      entryClones.set(entry, clone);
+      return clone;
+    };
+    return (width, expanded) => {
+      const entries = this.state.entries.map(documentEntry);
+      if (expanded !== undefined) {
+        for (const entry of entries) {
+          if (entry.kind === 'tool' || entry.kind === 'thinking') entry.expanded = expanded;
+        }
+      }
+      const detachedState: MakaPiTranscriptState = {
+        ...this.state,
+        entries,
+        renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+      };
+      const lines = renderMakaPiTranscript(detachedState, this.metadata(), width);
+      const anchors = entries.flatMap((entry, index) => {
+        if (entry.kind === 'tool' && entry.suppressed) return [];
+        const line = detachedState.renderGeometry.entryFirstLine?.get(entry);
+        if (line === undefined) return [];
+        const id =
+          entry.kind === 'tool'
+            ? `tool:${entry.turnId ?? ''}:${entry.toolUseId}`
+            : 'messageId' in entry
+              ? `${entry.kind}:${entry.messageId}`
+              : `${entry.kind}:${index}`;
+        return [{ id, line }];
+      });
+      return { lines, anchors };
+    };
+  }
 }
 
 export class MakaStatusLineComponent implements Component {
@@ -61,12 +130,15 @@ export class MakaActivityStripComponent implements Component {
 
 /** The pending-queue bar (Steering:/Queued:) rendered just above the editor. */
 export class MakaPendingQueueComponent implements Component {
-  constructor(private readonly state: MakaPiTranscriptState) {}
+  constructor(
+    private readonly state: MakaPiTranscriptState,
+    private readonly locale: UiLocale,
+  ) {}
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    return renderMakaPiPendingQueue(this.state, width);
+    return renderMakaPiPendingQueue(this.state, width, process.platform, this.locale);
   }
 }
 
@@ -96,11 +168,13 @@ export class MakaPiLayoutComponent extends Container {
     private readonly editor: ViewportAwareEditor,
     private readonly statusLine: Component,
     private readonly terminal: Terminal,
+    private readonly todoIndicator?: Component,
   ) {
     super();
     this.addChild(transcript);
     this.addChild(activityStrip);
     this.addChild(pendingQueue);
+    if (todoIndicator) this.addChild(todoIndicator);
     this.addChild(editor);
     this.addChild(statusLine);
   }
@@ -110,18 +184,32 @@ export class MakaPiLayoutComponent extends Container {
     const activityLines = this.activityStrip.render(width);
     const allPendingLines = this.pendingQueue.render(width);
     const statusLines = this.statusLine.render(width);
+    // Supplementary information must not steal the composer's minimum space.
+    const todoLines =
+      this.terminal.rows >
+      activityLines.length +
+        allPendingLines.length +
+        statusLines.length +
+        this.editor.minimumViewportRows()
+        ? (this.todoIndicator?.render(width) ?? []).slice(0, 1)
+        : [];
     const pendingRowsAvailable = this.editor.isShowingAutocomplete()
       ? Math.max(
           0,
           this.terminal.rows -
             activityLines.length -
             statusLines.length -
+            todoLines.length -
             this.editor.minimumViewportRows(),
         )
       : allPendingLines.length;
     const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
     this.editor.setViewportRows(
-      this.terminal.rows - activityLines.length - pendingLines.length - statusLines.length,
+      this.terminal.rows -
+        activityLines.length -
+        pendingLines.length -
+        statusLines.length -
+        todoLines.length,
     );
     const editorLines = this.editor.render(width);
     // #1064: when the activity strip is showing (a turn is running), separate
@@ -135,7 +223,11 @@ export class MakaPiLayoutComponent extends Container {
       activityActive && lastTranscriptLine !== undefined && lastTranscriptLine.length > 0;
     const paddedTranscript = needGap ? [...transcriptLines, ''] : transcriptLines;
     const chromeRows =
-      activityLines.length + pendingLines.length + editorLines.length + statusLines.length;
+      activityLines.length +
+      pendingLines.length +
+      todoLines.length +
+      editorLines.length +
+      statusLines.length;
     const viewportRows = Math.max(0, this.terminal.rows - chromeRows);
     const paddingRows = Math.max(0, viewportRows - paddedTranscript.length);
     const lines = [
@@ -143,6 +235,7 @@ export class MakaPiLayoutComponent extends Container {
       ...Array.from({ length: paddingRows }, () => ''),
       ...activityLines,
       ...pendingLines,
+      ...todoLines,
       ...editorLines,
       ...statusLines,
     ];

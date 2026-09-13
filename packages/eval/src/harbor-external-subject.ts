@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
@@ -20,6 +39,7 @@ import {
   type ProviderUsage as Usage,
 } from './provider-metering.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
+import { terminateProcess } from './process-termination.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
@@ -50,7 +70,10 @@ const PROFILE_PREPARERS: Record<Profile, (setup: ProfileSetup) => Promise<string
   codex: async ({ env, home, root, proxyBaseUrl }) => {
     env.OPENAI_API_KEY = 'maka-eval-local';
     env.CODEX_HOME = home;
-    const catalog = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-codex-models.json');
+    const catalog = rooted(
+      root,
+      '/opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-codex-models.json',
+    );
     await writeFile(
       join(home, 'config.toml'),
       [
@@ -242,7 +265,10 @@ const PROFILE_PREPARERS: Record<Profile, (setup: ProfileSetup) => Promise<string
     env.DSH_HOME = join(home, 'dsh');
     const profile = join(env.DSH_HOME, 'profiles', DEEPSEEK_HARNESS_PROFILE);
     await mkdir(profile, { recursive: true, mode: 0o700 });
-    const source = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+    const source = rooted(
+      root,
+      '/opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-harness-profile',
+    );
     for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
       await copyFile(join(source, file), join(profile, file));
     }
@@ -321,10 +347,10 @@ if (!systemRoot?.startsWith('/')) throw new Error('external subject system root 
 let credentialPath: string | undefined;
 let child: ChildProcess | undefined;
 let stopped = false;
-const stop = (signal: NodeJS.Signals) => {
+const stop = (signal: 'SIGINT' | 'SIGTERM') => {
   stopped = true;
   removeCredential();
-  child?.kill(signal);
+  void terminateProcess(child, signal);
 };
 const terminate = () => stop('SIGTERM');
 const interrupt = () => stop('SIGINT');
@@ -365,9 +391,11 @@ try {
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, args);
     credentialPath = prepared.credentialPath;
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(command, args, prepared.env, profile);
+    const result = await runChild(command, args, prepared.env, profile, async (exitCode) => {
+      proxy.stopAccepting();
+      if (exitCode !== undefined) await writeState('child_exited', { exitCode });
+    });
     child = undefined;
-    await writeState('child_exited', { exitCode: result.exitCode });
     const metering = await proxy.report();
     const derived = deriveMetering(metering);
     usage = metering.usage;
@@ -459,6 +487,7 @@ async function runChild(
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
   selected: Profile,
+  onExit: (exitCode?: number) => Promise<void>,
 ): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
@@ -468,8 +497,18 @@ async function runChild(
   const stdout = classifyStream(running.stdout, selected);
   const stderr = captureStreamDiagnostic(running.stderr);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
-    running.once('error', reject);
-    running.once('exit', (code) => resolveExit(code ?? 1));
+    let settled = false;
+    running.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      void onExit().then(() => reject(error), reject);
+    });
+    running.once('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      const exitCode = code ?? 1;
+      void onExit(exitCode).then(() => resolveExit(exitCode), reject);
+    });
   });
   const [stdoutResult, stderrResult] = await Promise.all([stdout, stderr]);
   return { exitCode, stdout: stdoutResult, stderr: stderrResult };
@@ -661,6 +700,7 @@ async function startMeteringProxy(
   // Metering is only readable as one settled snapshot: a request still in
   // flight when the child exits would otherwise be missing from the counts that
   // decide admission, usage, and cost.
+  stopAccepting(): void;
   report(): Promise<ProviderMeteringCounts>;
   close(): Promise<void>;
 }> {
@@ -722,6 +762,9 @@ async function startMeteringProxy(
     : new Agent(timeouts);
   const active = new Set<Promise<void>>();
   let accepting = true;
+  const stopAccepting = () => {
+    accepting = false;
+  };
   const server = createServer((request, response) => {
     // Refused rather than counted: a request the proxy declined was never
     // admitted by the provider and never billed, so it is not part of what
@@ -824,6 +867,7 @@ async function startMeteringProxy(
   if (!address || typeof address === 'string') throw new Error('provider proxy did not bind');
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    stopAccepting,
     report: async () => {
       // Admission closes before anything is drained, so settlement is made
       // true rather than asserted about a moment. The subject's own process has
@@ -833,7 +877,7 @@ async function startMeteringProxy(
       // with work in flight. Closing the socket would not do this: it stops new
       // connections while leaving established ones free to send another
       // request, and it waits on idle keep-alive sockets that may never close.
-      accepting = false;
+      stopAccepting();
       await Promise.allSettled([...active]);
       // Settlement is something this process observes; it is not recoverable
       // from the counts. A checkpoint whose last successful write happened
@@ -844,6 +888,7 @@ async function startMeteringProxy(
       return snapshot();
     },
     close: async () => {
+      stopAccepting();
       await Promise.allSettled([...active]);
       await checkpointWrites;
       await closeServer(server);

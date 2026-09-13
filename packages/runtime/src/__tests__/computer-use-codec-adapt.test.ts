@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // What the wire adapter says when it cannot build an action.
 //
 // These throws become the tool result the model reads, so the code in front of
@@ -10,7 +29,7 @@ import assert from 'node:assert/strict';
 import { adaptToCuAction, computerActionNames } from '../computer-use-codec.js';
 
 test('a missing text is reported as a missing argument, not a bad coordinate', () => {
-  for (const action of ['type', 'key', 'hold_key'] as const) {
+  for (const action of ['type', 'key'] as const) {
     assert.throws(
       () => adaptToCuAction({ action, observation_id: 'obs-1' } as never),
       (error: Error) => {
@@ -30,7 +49,7 @@ test('an unknown action is answered with the actions this tool takes', () => {
     (error: Error) => {
       assert.doesNotMatch(error.message, /invalid_coordinate/);
       // The word it sent back is not the answer; the closed set is.
-      for (const name of ['type', 'key', 'left_click', 'observe', 'click_element']) {
+      for (const name of ['type', 'key', 'screenshot', 'observe', 'click_element']) {
         assert.ok(error.message.includes(name), `the refusal should list \`${name}\``);
       }
       return true;
@@ -56,9 +75,22 @@ test('the action list is read off the schema rather than kept by hand', () => {
   assert.equal(new Set(names).size, names.length, 'no action should be listed twice');
 });
 
-test('a coordinate action that is missing its coordinate still says so', () => {
+test('a removed coordinate action is rejected as unknown', () => {
   assert.throws(
     () => adaptToCuAction({ action: 'left_click', observation_id: 'obs-1' } as never),
-    /invalid_coordinate/,
+    /unknown action/,
+  );
+});
+
+test('unsupported hold_key is rejected as unknown', () => {
+  assert.throws(
+    () =>
+      adaptToCuAction({
+        action: 'hold_key',
+        observation_id: 'obs-1',
+        text: 'shift',
+        duration: 1,
+      } as never),
+    /unknown action/,
   );
 });

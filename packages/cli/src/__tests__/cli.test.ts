@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -16,7 +35,6 @@ describe('Maka CLI args', () => {
     ) as Record<string, unknown>;
     assert.deepEqual(manifest.bin, {
       maka: './dist/cli.js',
-      'maka-agent': './dist/cli.js',
     });
     assert.deepEqual(manifest.exports, {});
     assert.equal(Object.hasOwn(manifest, 'main'), false);
@@ -29,12 +47,38 @@ describe('Maka CLI args', () => {
     assert.equal(help.kind, 'help');
     if (help.kind !== 'help') return;
     assert.match(help.text, /^  maka              Start the TUI$/m);
-    assert.match(help.text, /^  maka-agent        Start the TUI$/m);
+    assert.doesNotMatch(help.text, /maka-agent/);
     assert.match(help.text, /^  maka run /m);
     assert.match(help.text, /^  maka activate /m);
     assert.match(help.text, /^  maka eval /m);
+    assert.match(help.text, /^  maka update --target /m);
+    assert.match(
+      help.text,
+      /^  maka --acp      Serve ACP v1 over stdio \(initialize, session\/new, session\/list\)$/m,
+    );
     assert.match(help.text, /^  maka runtime-host serve /m);
     assert.doesNotMatch(help.text, /cli:dev/);
+  });
+
+  test('requires an explicit installed update target and interruption choice', () => {
+    assert.deepEqual(parseMakaCliArgs(['update', '--target', 'next'], '0.1.0'), {
+      kind: 'runtime-host-installed-update',
+      selector: { kind: 'channel', channel: 'next' },
+      allowInterruptActiveTasks: false,
+    });
+    assert.deepEqual(
+      parseMakaCliArgs(['update', '--target', '1.2.3', '--allow-interrupt-active-tasks'], '0.1.0'),
+      {
+        kind: 'runtime-host-installed-update',
+        selector: { kind: 'exact', version: '1.2.3' },
+        allowInterruptActiveTasks: true,
+      },
+    );
+    assert.deepEqual(parseMakaCliArgs(['update'], '0.1.0'), {
+      kind: 'error',
+      message: 'update requires --target <latest|next|version>',
+      exitCode: 2,
+    });
   });
 
   test('selects a Runtime Host and Project for TUI startup', () => {
@@ -43,6 +87,30 @@ describe('Maka CLI args', () => {
       hostProfileId: 'office',
       projectId: 'project-1',
     });
+  });
+
+  test('parses the ACP stdio command before TUI flags', () => {
+    assert.deepEqual(parseMakaCliArgs(['--acp'], '0.1.0'), { kind: 'acp' });
+    assert.deepEqual(parseMakaCliArgs(['--acp', 'extra'], '0.1.0'), {
+      kind: 'error',
+      message: 'maka --acp does not accept arguments',
+      exitCode: 2,
+      showHelp: false,
+    });
+    assert.deepEqual(parseMakaCliArgs(['--host', 'office', '--project', 'project-1'], '0.1.0'), {
+      kind: 'tui',
+      hostProfileId: 'office',
+      projectId: 'project-1',
+    });
+  });
+
+  test('compiled ACP launcher rejects trailing arguments without help output', async () => {
+    const result = await runCompiledCli('dev-cli.js', ['--acp', 'extra'], process.env);
+
+    assert.equal(result.signal, null);
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, 'maka --acp does not accept arguments\n');
   });
 
   test('uses the active launcher in development help and rejects an empty profile name', async () => {
@@ -71,6 +139,14 @@ describe('Maka CLI args', () => {
       }),
       /profile name must be a non-empty path segment/,
     );
+  });
+
+  test('does not add a discoverable global locale flag', () => {
+    assert.deepEqual(parseMakaCliArgs(['--locale', 'zh-CN'], '0.1.0'), {
+      kind: 'error',
+      message: 'Unexpected argument: --locale',
+      exitCode: 2,
+    });
   });
 
   test('establishes the fatal exit before reporting can throw', async () => {
@@ -239,19 +315,24 @@ async function runCompiledCli(
   entrypoint: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
     [fileURLToPath(new URL(`../${entrypoint}`, import.meta.url)), ...args],
-    { env, stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000, killSignal: 'SIGKILL' },
+    { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, killSignal: 'SIGKILL' },
   );
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
   const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
-  return { code, signal, stderr };
+  return { code, signal, stdout, stderr };
 }
 
 function platformProfileRoot(home: string, applicationData: string, profileName: string): string {

@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
-import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-agent';
+import { isSessionStartMode, type SessionStartMode } from '@maka/core/session-start-mode';
 import {
   isSessionBlockedReason,
   isSessionToolProfile,
+  type PersistedBackendKind,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -46,6 +66,8 @@ export const SESSION_CATALOG_LABEL_MAX_BYTES = 128;
 export const SESSION_CATALOG_PREVIEW_MAX_BYTES = 4 * 1024;
 export const SESSION_CATALOG_MODEL_MAX_BYTES = 512;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
+export const SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION = 1 as const;
+export const SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS = 64;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -70,7 +92,7 @@ const PROJECTION_REQUIRED_FIELDS = [
   'revision',
   'workspace',
   'createdAt',
-  'lastUsedAt',
+  'activityAt',
   'name',
   'isFlagged',
   'isArchived',
@@ -79,6 +101,7 @@ const PROJECTION_REQUIRED_FIELDS = [
   'hasUnread',
   'status',
   'backend',
+  'llmConnectionId',
   'llmConnectionSlug',
   'connectionLocked',
   'model',
@@ -102,6 +125,7 @@ const PROJECTION_FIELDS = [
   'revisionState',
   'thinkingLevel',
   'lastReadMessageId',
+  'liveRunState',
 ] as const;
 
 export type SessionCatalogRevision = `sha256:${string}`;
@@ -119,6 +143,7 @@ export type SessionModelTarget =
   | { readonly kind: 'default' }
   | {
       readonly kind: 'explicit';
+      readonly connectionId: string;
       readonly connectionSlug: string;
       readonly model: string;
     };
@@ -149,18 +174,18 @@ export interface SessionMetadataUpdateInput {
   readonly patch: SessionMetadataPatch;
 }
 
-export interface SessionConfiguration {
-  readonly modelTarget: SessionModelTarget;
-  readonly thinkingLevel: ThinkingLevel | null;
-  readonly permissionMode: PermissionMode;
-  readonly collaborationMode: CollaborationMode;
-  readonly orchestrationMode: OrchestrationMode;
+export interface SessionConfigurationPatch {
+  readonly modelTarget?: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly thinkingLevel?: ThinkingLevel | null;
+  readonly permissionMode?: PermissionMode;
+  readonly collaborationMode?: CollaborationMode;
+  readonly orchestrationMode?: OrchestrationMode;
 }
 
 export interface SessionConfigurationUpdateInput {
   readonly sessionId: string;
   readonly expectedRevision: number;
-  readonly configuration: SessionConfiguration;
+  readonly patch: SessionConfigurationPatch;
 }
 
 export interface SessionWorkspaceRelocateInput {
@@ -178,12 +203,17 @@ export interface SessionExecutionBoundaryQueryInput {
   readonly sessionId: string;
 }
 
+export interface SessionCatalogLiveRunState {
+  readonly schemaVersion: typeof SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION;
+  readonly runningTurnIds: readonly string[];
+}
+
 export interface SessionCatalogProjection {
   readonly id: string;
   readonly revision: number;
   readonly workspace: WorkspaceProjection;
   readonly createdAt: number;
-  readonly lastUsedAt: number;
+  readonly activityAt: number;
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
@@ -194,6 +224,7 @@ export interface SessionCatalogProjection {
   readonly lastMessageAt?: number;
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
+  readonly liveRunState?: SessionCatalogLiveRunState;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
   readonly parentSessionId?: string;
@@ -204,7 +235,8 @@ export interface SessionCatalogProjection {
   readonly revisionOfTurnId?: string;
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
-  readonly backend: 'ai-sdk' | 'fake';
+  readonly backend: PersistedBackendKind;
+  readonly llmConnectionId: string | null;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
@@ -221,7 +253,28 @@ export interface UnsupportedLegacySessionCatalogRecord {
   readonly reason: 'not_wire_representable';
 }
 
+export interface SharedSessionCatalogProjection {
+  readonly kind: 'shared_session';
+  readonly id: string;
+  readonly revision: number;
+  readonly createdAt: number;
+  readonly activityAt: number;
+  readonly name: string;
+  readonly lastMessageAt?: number;
+  readonly lastMessagePreview?: string;
+  readonly status: SessionStatus;
+  readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly blockedReason?: SessionBlockedReason;
+  readonly statusUpdatedAt?: number;
+}
+
 export type SessionCatalogItem = SessionCatalogProjection | UnsupportedLegacySessionCatalogRecord;
+
+export type SharedSessionCatalogQueryInput = Record<string, never>;
+
+export interface SharedSessionCatalogQueryResult {
+  readonly session: SharedSessionCatalogProjection | null;
+}
 
 export type SessionCatalogQueryResult =
   | {
@@ -249,6 +302,17 @@ export type SessionUpdateResult =
     };
 
 export const SESSION_CATALOG_OPERATION_SPECS = {
+  'session.shared.query': defineOperation<
+    SharedSessionCatalogQueryInput,
+    SharedSessionCatalogQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeSharedSessionCatalogQueryInput,
+    decodeOutput: decodeSharedSessionCatalogQueryResult,
+  }),
   'session.catalog.query': defineOperation<
     SessionCatalogQueryInput,
     SessionCatalogQueryResult,
@@ -338,6 +402,49 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodeExecutionBoundarySummary,
   }),
 } as const;
+
+function decodeSharedSessionCatalogQueryInput(value: unknown): SharedSessionCatalogQueryInput {
+  requireExactRecord(value, 'shared Session catalog query input', []);
+  return {};
+}
+
+function decodeSharedSessionCatalogQueryResult(value: unknown): SharedSessionCatalogQueryResult {
+  const record = requireExactRecord(value, 'shared Session catalog query result', ['session']);
+  const session =
+    record.session === null ? null : decodeSharedSessionCatalogProjection(record.session);
+  requireEncodedByteLimit(
+    session,
+    'shared Session catalog result',
+    SESSION_CATALOG_RESULT_MAX_BYTES,
+  );
+  return { session };
+}
+
+export function decodeSharedSessionCatalogProjection(
+  value: unknown,
+): SharedSessionCatalogProjection {
+  const exact = requireShapedRecord(
+    value,
+    'shared Session catalog projection',
+    ['kind', 'id', 'revision', 'createdAt', 'activityAt', 'name', 'status'],
+    ['lastMessageAt', 'lastMessagePreview', 'liveRunState', 'blockedReason', 'statusUpdatedAt'],
+  );
+  if (exact.kind !== 'shared_session') throw invalidProtocolFrame('Invalid shared Session kind');
+  return {
+    kind: 'shared_session',
+    id: requireEntityId(exact.id, 'Session id'),
+    revision: positiveRevision(exact.revision, 'Session revision'),
+    createdAt: timestamp(exact.createdAt, 'Session createdAt'),
+    activityAt: timestamp(exact.activityAt, 'Session activityAt'),
+    name: sessionName(exact.name),
+    ...optionalTimestamp(exact, 'lastMessageAt'),
+    ...optionalText(exact, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
+    status: decodeSessionStatus(exact.status),
+    ...optionalLiveRunState(exact),
+    ...optionalBlockedReason(exact),
+    ...optionalTimestamp(exact, 'statusUpdatedAt'),
+  };
+}
 
 export function decodeSessionExecutionBoundaryQueryInput(
   value: unknown,
@@ -487,25 +594,38 @@ export function decodeSessionConfigurationUpdateInput(
   const input = requireExactRecord(value, 'Session configuration update input', [
     'sessionId',
     'expectedRevision',
-    'configuration',
+    'patch',
   ]);
-  const configuration = requireExactRecord(input.configuration, 'Session configuration', [
-    'modelTarget',
-    'thinkingLevel',
-    'permissionMode',
-    'collaborationMode',
-    'orchestrationMode',
-  ]);
+  const patch = requireShapedRecord(
+    input.patch,
+    'Session configuration patch',
+    [],
+    ['modelTarget', 'thinkingLevel', 'permissionMode', 'collaborationMode', 'orchestrationMode'],
+  );
+  if (Object.keys(patch).length === 0) {
+    throw invalidProtocolFrame('Session configuration patch is empty');
+  }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
-    configuration: {
-      modelTarget: modelTarget(configuration.modelTarget),
-      thinkingLevel:
-        configuration.thinkingLevel === null ? null : thinkingLevel(configuration.thinkingLevel),
-      permissionMode: permissionMode(configuration.permissionMode),
-      collaborationMode: collaborationMode(configuration.collaborationMode),
-      orchestrationMode: orchestrationMode(configuration.orchestrationMode),
+    patch: {
+      ...(Object.hasOwn(patch, 'modelTarget')
+        ? { modelTarget: explicitModelTarget(patch.modelTarget) }
+        : {}),
+      ...(Object.hasOwn(patch, 'thinkingLevel')
+        ? {
+            thinkingLevel: patch.thinkingLevel === null ? null : thinkingLevel(patch.thinkingLevel),
+          }
+        : {}),
+      ...(Object.hasOwn(patch, 'permissionMode')
+        ? { permissionMode: permissionMode(patch.permissionMode) }
+        : {}),
+      ...(Object.hasOwn(patch, 'collaborationMode')
+        ? { collaborationMode: collaborationMode(patch.collaborationMode) }
+        : {}),
+      ...(Object.hasOwn(patch, 'orchestrationMode')
+        ? { orchestrationMode: orchestrationMode(patch.orchestrationMode) }
+        : {}),
     },
   };
 }
@@ -617,7 +737,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     revision: positiveRevision(record.revision, 'Session revision'),
     workspace: decodeWorkspaceProjection(record.workspace),
     createdAt: timestamp(record.createdAt, 'Session createdAt'),
-    lastUsedAt: timestamp(record.lastUsedAt, 'Session lastUsedAt'),
+    activityAt: timestamp(record.activityAt, 'Session activityAt'),
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),
@@ -628,6 +748,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalTimestamp(record, 'lastMessageAt'),
     ...optionalText(record, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(record.status),
+    ...optionalLiveRunState(record),
     ...optionalBlockedReason(record),
     ...optionalTimestamp(record, 'statusUpdatedAt'),
     ...optionalEntityId(record, 'parentSessionId'),
@@ -639,6 +760,10 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalRevisionIndex(record),
     ...optionalRevisionState(record),
     backend: backend(record.backend),
+    llmConnectionId:
+      record.llmConnectionId === null
+        ? null
+        : requireEntityId(record.llmConnectionId, 'Session Connection id'),
     llmConnectionSlug: requireUtf8String(
       record.llmConnectionSlug,
       'Session connection slug',
@@ -690,11 +815,13 @@ function modelTarget(value: unknown): SessionModelTarget {
   if (target.kind === 'explicit') {
     const exact = requireExactRecord(target, 'explicit Session model target', [
       'kind',
+      'connectionId',
       'connectionSlug',
       'model',
     ]);
     return {
       kind: 'explicit',
+      connectionId: requireEntityId(exact.connectionId, 'Session Connection id'),
       connectionSlug: requireUtf8String(
         exact.connectionSlug,
         'Session connection slug',
@@ -704,6 +831,16 @@ function modelTarget(value: unknown): SessionModelTarget {
     };
   }
   throw invalidProtocolFrame('Invalid Session model target');
+}
+
+function explicitModelTarget(
+  value: unknown,
+): Extract<SessionModelTarget, { readonly kind: 'explicit' }> {
+  const target = modelTarget(value);
+  if (target.kind !== 'explicit') {
+    throw invalidProtocolFrame('Session configuration model target must be explicit');
+  }
+  return target;
 }
 
 function labels(value: unknown): readonly string[] {
@@ -774,6 +911,38 @@ function optionalBlockedReason(
   return { blockedReason: record.blockedReason };
 }
 
+function optionalLiveRunState(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'liveRunState'> | Record<string, never> {
+  if (record.liveRunState === undefined) return {};
+  const state = requireExactRecord(record.liveRunState, 'Session catalog live run state', [
+    'schemaVersion',
+    'runningTurnIds',
+  ]);
+  if (state.schemaVersion !== SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION) {
+    throw invalidProtocolFrame('Unsupported Session catalog live run state schema version');
+  }
+  if (
+    !Array.isArray(state.runningTurnIds) ||
+    state.runningTurnIds.length > SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog running turn ids');
+  }
+  const runningTurnIds: string[] = [];
+  for (let index = 0; index < state.runningTurnIds.length; index += 1) {
+    runningTurnIds.push(requireEntityId(state.runningTurnIds[index], 'Session running turn id'));
+  }
+  if (new Set(runningTurnIds).size !== runningTurnIds.length) {
+    throw invalidProtocolFrame('Duplicate Session catalog running turn id');
+  }
+  return {
+    liveRunState: {
+      schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
+      runningTurnIds,
+    },
+  };
+}
+
 function optionalSubagent(
   record: Record<string, unknown>,
 ): Pick<SessionCatalogProjection, 'subagent'> | Record<string, never> {
@@ -824,6 +993,9 @@ function optionalThinkingLevel(
   return { thinkingLevel: thinkingLevel(record.thinkingLevel) };
 }
 
+// `'fake'` stays accepted on decode: the projection carries the session
+// header's durable backend, and rows written by builds that shipped
+// FakeBackend still hold it (#3211).
 function backend(value: unknown): SessionCatalogProjection['backend'] {
   if (value !== 'ai-sdk' && value !== 'fake') {
     throw invalidProtocolFrame('Invalid Session backend');

@@ -1,12 +1,44 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
+import {
+  findCheckpointSummaryDefect,
+  SECTIONED_SUMMARY_FORMAT,
+  type SectionedSummaryFormat,
+} from './history-compact-summary-validation.js';
 
+// v3: coverage identity and the source digest stay pinned on the RAW ledger
+// prefix — the immutable view every creation path (standalone and mid-turn)
+// and both match sites (pre-turn replay and the mid-turn durable projection)
+// share — while the model-visible summary is produced from the EFFECTIVE,
+// transition-folded prefix. A v2 checkpoint's summary could quote a Tool
+// Result body a durable projection transition had already removed, so it is
+// superseded on load and the session re-summarizes rather than replaying a
+// coverage claim whose summary this policy never audited (#4845).
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
-  'maka.compactable_runtime_event_projection.v1' as const;
+  'maka.compactable_runtime_event_projection.v3' as const;
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
@@ -24,6 +56,15 @@ export interface HistoryCompactCheckpointCoverage {
     runtimeEventId: string;
   };
   sourceDigest: string;
+  /**
+   * Digest of the EFFECTIVE (transition-folded) view of the covered prefix at
+   * creation time — the exact content the summary or provider state describes.
+   * Replay must reject the checkpoint when the current effective view no
+   * longer matches: a projection transition committed after creation changes
+   * what the model may see without touching the raw ledger, and a stale block
+   * would restore what the transition removed (#4845 review).
+   */
+  effectiveSourceDigest?: string;
 }
 
 /**
@@ -79,11 +120,13 @@ interface HistoryCompactCheckpointBase {
 export interface TextHistoryCompactCheckpoint extends HistoryCompactCheckpointBase {
   version: 2;
   summary: string;
+  /** Durable identity of the summary contract the writer honored. */
+  summaryFormat: SectionedSummaryFormat;
 }
 
 export interface OpenAiCodexRemoteCompactState {
   kind: 'openai_codex_remote_v2';
-  connectionSlug: string;
+  connectionId: string;
   modelId: string;
   itemId: string;
   encryptedContent: string;
@@ -103,6 +146,13 @@ export type HistoryCompactCheckpoint =
 interface BuildHistoryCompactCheckpointBaseInput {
   sessionId: string;
   coveredRuntimeEvents: readonly RuntimeEvent[];
+  /**
+   * The effective (transition-folded) view of `coveredRuntimeEvents`, when the
+   * caller folded it. Its digest is pinned as `coverage.effectiveSourceDigest`;
+   * without it the raw coverage doubles as the effective view, which is only
+   * true when no projection transition touches the span.
+   */
+  effectiveCoveredRuntimeEvents?: readonly RuntimeEvent[];
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpointId?: string;
@@ -122,6 +172,7 @@ export type BuildTextHistoryCompactCheckpointInput = BuildHistoryCompactCheckpoi
 export type BuildProviderHistoryCompactCheckpointInput = BuildHistoryCompactCheckpointBaseInput & {
   providerState: HistoryCompactProviderState;
   summary?: never;
+  summaryFormat?: never;
 };
 export type BuildHistoryCompactCheckpointInput =
   | BuildTextHistoryCompactCheckpointInput
@@ -173,6 +224,17 @@ export function buildHistoryCompactCheckpoint(
   if (providerState && !validHistoryCompactProviderState(providerState)) {
     throw new Error('History compact checkpoint requires valid provider compaction state');
   }
+  // The sectioned marker is proof that the complete predicate held, so only
+  // this builder assigns it — and only after re-checking structure and
+  // truncation at every construction seam, including copy. The size floor is
+  // the summarizer's own check: it needs the provider's usage for the call,
+  // which no construction seam has.
+  if (!providerState) {
+    const defect = findCheckpointSummaryDefect(summary!);
+    if (defect) {
+      throw new Error(`History compact checkpoint summary failed validation: ${defect}`);
+    }
+  }
   // A mid_turn checkpoint folds a prefix that reaches into the current turn, so
   // its head anchor MUST be one of the covered events — the projection re-renders
   // that exact event verbatim after the block, and coverage stays contiguous.
@@ -202,7 +264,7 @@ export function buildHistoryCompactCheckpoint(
       anchored.turnId !== input.headAnchor.turnId ||
       anchored.turnId !== lastCovered.turnId ||
       anchored.role !== 'user' ||
-      anchored.author !== 'user'
+      (anchored.author !== 'user' && anchored.author !== 'host')
     ) {
       throw new Error(
         "Mid-turn history compact checkpoint head anchor must be the compacted turn's user event",
@@ -228,6 +290,9 @@ export function buildHistoryCompactCheckpoint(
       runtimeEventId: lastEvent.id,
     },
     sourceDigest: historyCompactSourceDigest(input.coveredRuntimeEvents),
+    effectiveSourceDigest: historyCompactSourceDigest(
+      input.effectiveCoveredRuntimeEvents ?? input.coveredRuntimeEvents,
+    ),
   };
   const highWaterName = input.highWaterName ?? 'history-compact-high-water';
   const highWaterSeq = input.highWaterSeq ?? createdAt;
@@ -278,7 +343,12 @@ export function buildHistoryCompactCheckpoint(
   };
   const checkpoint: HistoryCompactCheckpoint = providerState
     ? { ...common, version: 3, providerState }
-    : { ...common, version: 2, summary: summary! };
+    : {
+        ...common,
+        version: 2,
+        summary: summary!,
+        summaryFormat: SECTIONED_SUMMARY_FORMAT,
+      };
   checkpoint.estimatedTokens = estimateTokens(
     isProviderHistoryCompactCheckpoint(checkpoint)
       ? JSON.stringify(historyCompactCheckpointToModelMessage(checkpoint)).length
@@ -337,13 +407,15 @@ export function isTextHistoryCompactCheckpoint(
 
 export function canReplayHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string; slug: string },
+  connection: { providerType: string },
+  connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
   return (
     connection.providerType === 'openai-codex' &&
-    checkpoint.providerState.connectionSlug === connection.slug &&
+    connectionId !== undefined &&
+    checkpoint.providerState.connectionId === connectionId &&
     checkpoint.providerState.modelId === modelId
   );
 }
@@ -351,13 +423,14 @@ export function canReplayHistoryCompactCheckpointForModel(
 /** Whether this model's configured compactor can roll forward from this checkpoint value. */
 export function canContinueHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string; slug: string },
+  connection: { providerType: string },
+  connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (isTextHistoryCompactCheckpoint(checkpoint)) {
     return connection.providerType !== 'openai-codex';
   }
-  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, modelId);
+  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
 }
 
 export function historyCompactCheckpointToRuntimeEvent(
@@ -404,6 +477,11 @@ export function validateHistoryCompactCheckpointShape(
     nonEmpty(through?.turnId) &&
     nonEmpty(through?.runtimeEventId) &&
     nonEmpty(coverage?.sourceDigest) &&
+    // A checkpoint minted under the current source policy pins the effective
+    // (transition-folded) view its summary or provider state describes;
+    // without the digest there is no content-currency binding at replay, so
+    // the record must not validate (#4845 review).
+    (checkpoint.source === undefined || nonEmpty(coverage?.effectiveSourceDigest)) &&
     (checkpoint.source === undefined ||
       validHistoryCompactCheckpointSource(checkpoint.source, checkpoint.sessionId, coverage)) &&
     (checkpoint.phase === undefined ||
@@ -430,6 +508,8 @@ export function validateHistoryCompactCheckpointShape(
     (checkpoint.version === 2
       ? typeof checkpoint.summary === 'string' &&
         checkpoint.summary.trim().length > 0 &&
+        (checkpoint as Partial<TextHistoryCompactCheckpoint>).summaryFormat ===
+          SECTIONED_SUMMARY_FORMAT &&
         !('providerState' in checkpoint)
       : !('summary' in checkpoint) &&
         validHistoryCompactProviderState(
@@ -439,6 +519,23 @@ export function validateHistoryCompactCheckpointShape(
 }
 
 /** Accept forward progress, or a compare-and-swap rewrite of the exact same source coverage. */
+/**
+ * A recorded checkpoint that this Runtime no longer holds to its own contract
+ * because it was minted under an older source policy — not a corrupt record.
+ * Every consumer already fails open on it (compaction re-summarizes, copy
+ * drops it); diagnostics use this to say so instead of crying corruption.
+ */
+export function isSupersededHistoryCompactCheckpoint(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const checkpoint = value as Partial<HistoryCompactCheckpoint>;
+  const policyVersion = checkpoint.source?.policyVersion as unknown;
+  return (
+    checkpoint.kind === 'maka.history_compact_checkpoint' &&
+    typeof policyVersion === 'string' &&
+    policyVersion !== HISTORY_COMPACT_SOURCE_POLICY_VERSION
+  );
+}
+
 export function canReplaceHistoryCompactCheckpoint(
   current: HistoryCompactCheckpoint | undefined,
   candidate: HistoryCompactCheckpoint,
@@ -527,7 +624,7 @@ export function matchHistoryCompactCheckpointPrefix(
       anchor.turnId !== checkpoint.headAnchor!.turnId ||
       anchor.turnId !== checkpoint.coverage.through.turnId ||
       anchor.role !== 'user' ||
-      anchor.author !== 'user'
+      (anchor.author !== 'user' && anchor.author !== 'host')
     ) {
       return {
         coveredEventCount: 0,
@@ -659,16 +756,46 @@ function sameHistoryCompactSourceCoverage(
   );
 }
 
-function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
+/**
+ * A checkpoint replaces a contiguous prefix of EFFECTIVE model history, so its
+ * source digest must pin exactly that: raw execution evidence a durable
+ * projection already bounded or redacted is not part of what was folded, and
+ * changing it must not invalidate a valid checkpoint. Conversely, replacing a
+ * response's effective projection does change the digest, so a checkpoint can
+ * never be replayed over content it never covered.
+ */
+export function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   const hash = createHash('sha256');
   for (const event of events) {
-    const serialized = stableStringify(event);
+    const serialized = stableStringify(effectiveDigestEvent(event));
     hash.update(String(Buffer.byteLength(serialized, 'utf8')));
     hash.update(':');
     hash.update(serialized);
     hash.update(';');
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+/**
+ * Selects the persisted field that carries a response's model-visible content,
+ * dropping the others. This is a structural choice over durable data only —
+ * never a code-derived materialization — so the digest of an already-persisted
+ * checkpoint cannot drift when a projector, a codec bound, or a placeholder
+ * string changes. A response with no durable projection (legacy, or
+ * provider-native) keeps the raw field its effective content is still derived
+ * from, which is what the pre-projection digest already hashed.
+ */
+function effectiveDigestEvent(event: RuntimeEvent): unknown {
+  const content = event.content;
+  if (content?.kind !== 'function_response') return event;
+  const { result, providerOutput, modelProjection, ...identity } = content;
+  if (content.providerExecuted && providerOutput !== undefined) {
+    return { ...event, content: { ...identity, providerOutput } };
+  }
+  if (modelProjection !== undefined) {
+    return { ...event, content: { ...identity, modelProjection } };
+  }
+  return { ...event, content: { ...identity, result } };
 }
 
 function sha256(value: string): string {
@@ -684,7 +811,7 @@ function validHistoryCompactProviderState(value: unknown): value is HistoryCompa
   const state = value as Partial<HistoryCompactProviderState>;
   return (
     state.kind === 'openai_codex_remote_v2' &&
-    nonEmpty(state.connectionSlug) &&
+    nonEmpty(state.connectionId) &&
     nonEmpty(state.modelId) &&
     nonEmpty(state.itemId) &&
     nonEmpty(state.encryptedContent)

@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Session Inspector trace projection (#1625).
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -56,6 +75,31 @@ function event(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 }
 
 describe('session trace projection', () => {
+  test('keeps the same turn identity separate across distinct runs', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [
+        attempt({ runId: 'run-1', logicalCallId: 'call-1', attemptId: 'attempt-1' }),
+        attempt({
+          runId: 'run-2',
+          logicalCallId: 'call-2',
+          attemptId: 'attempt-2',
+          startedAt: 2_000,
+          completedAt: 2_500,
+        }),
+      ],
+    });
+
+    assert.deepEqual(
+      trace.turns.map(({ runId, turnId }) => ({ runId, turnId })),
+      [
+        { runId: 'run-1', turnId: 'turn-1' },
+        { runId: 'run-2', turnId: 'turn-1' },
+      ],
+    );
+  });
+
   test('preserves durable history-compaction route and provider failure facts', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',
@@ -70,7 +114,7 @@ describe('session trace projection', () => {
           outputTokens: undefined,
           costBasis: 'unpriced',
           costUsd: undefined,
-          errorClass: 'RequestRejected',
+          errorClass: 'request_rejected',
           httpStatus: 400,
           providerCode: 'invalid_request_error',
           providerRequestId: 'req-compact-1',
@@ -90,7 +134,7 @@ describe('session trace projection', () => {
       startedAt: 1_000,
       completedAt: 1_500,
       latencyMs: 500,
-      errorClass: 'RequestRejected',
+      errorClass: 'request_rejected',
       httpStatus: 400,
       providerCode: 'invalid_request_error',
       providerRequestId: 'req-compact-1',
@@ -101,16 +145,41 @@ describe('session trace projection', () => {
     assert.equal(isSessionTrace(trace), true, 'the Host protocol accepts the projected trace');
   });
 
-  test('a session of entirely unpriced calls totals to no price, not to zero', () => {
+  test('an entirely unpriced logical call keeps its step cost absent', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',
       runtimeEvents: [],
       modelCallAttempts: [attempt({ costUsd: undefined, costBasis: 'unpriced' })],
     });
 
-    assert.equal(trace.totals.costUsd, undefined, 'absent price is not a zero price');
-    assert.equal(trace.totals.unpricedAttempts, 1);
-    assert.equal(trace.turns[0]?.steps[0]?.kind, 'model_call');
+    const call = trace.turns[0]?.steps[0];
+    assert.equal(call?.kind, 'model_call');
+    if (call?.kind !== 'model_call') return;
+    assert.equal(call.costUsd, undefined, 'absent price is not a zero price');
+    assert.equal(call.attempts[0]?.costBasis, 'unpriced');
+  });
+
+  test('a logical call sums its priced retry attempts and ignores unpriced ones', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [
+        attempt({ attemptId: 'attempt-0', attempt: 0, costUsd: 0.001 }),
+        attempt({
+          attemptId: 'attempt-1',
+          attempt: 1,
+          costUsd: undefined,
+          costBasis: 'unpriced',
+        }),
+        attempt({ attemptId: 'attempt-2', attempt: 2, costUsd: 0.002 }),
+      ],
+    });
+
+    const call = trace.turns[0]?.steps[0];
+    assert.equal(call?.kind, 'model_call');
+    if (call?.kind !== 'model_call') return;
+    assert.equal(call.attempts.length, 3);
+    assert.equal(call.costUsd, 0.003);
   });
 
   test('attributes a turn failure to what failed first, not to the terminal error', () => {
@@ -160,6 +229,133 @@ describe('session trace projection', () => {
     assert.equal(failure.message, 'turn ended after tool failure');
   });
 
+  test('projects a generic-lane function call as an in-flight tool step', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [
+        event({
+          id: 'call-1',
+          ts: 1_000,
+          content: {
+            kind: 'function_call',
+            id: 'tool-call-1',
+            name: 'AskUserQuestion',
+            args: { questions: [] },
+          },
+        }),
+      ],
+      modelCallAttempts: [],
+    });
+
+    assert.deepEqual(trace.turns[0]?.steps, [
+      {
+        kind: 'tool',
+        id: 'call-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        startedAt: 1_000,
+        toolName: 'AskUserQuestion',
+        toolCallId: 'tool-call-1',
+        status: 'in_flight',
+      },
+    ]);
+  });
+
+  test('settles a generic-lane tool step from its matching response', () => {
+    for (const expected of [
+      { isError: undefined, status: 'completed' as const },
+      { isError: true, status: 'failed' as const },
+    ]) {
+      const trace = projectSessionTrace({
+        sessionId: 'session-1',
+        runtimeEvents: [
+          event({
+            id: 'call-1',
+            ts: 1_000,
+            content: {
+              kind: 'function_call',
+              id: 'tool-call-1',
+              name: 'AskUserQuestion',
+              args: { questions: [] },
+            },
+          }),
+          event({
+            id: 'response-1',
+            ts: 1_250,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-call-1',
+              name: 'AskUserQuestion',
+              result: 'answer',
+              ...(expected.isError ? { isError: true } : {}),
+            },
+          }),
+        ],
+        modelCallAttempts: [],
+      });
+
+      const tool = trace.turns[0]?.steps[0];
+      assert.equal(tool?.kind, 'tool');
+      if (tool?.kind !== 'tool') continue;
+      assert.equal(tool.status, expected.status);
+      assert.equal(tool.endedAt, 1_250);
+      assert.equal(tool.durationMs, 250);
+    }
+  });
+
+  test('prefers the durable dispatch step when a function call also has one', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [
+        event({
+          id: 'call-1',
+          ts: 900,
+          content: {
+            kind: 'function_call',
+            id: 'tool-call-1',
+            name: 'Bash',
+            args: { command: 'pwd' },
+          },
+        }),
+        event({
+          id: 'dispatch-1',
+          ts: 1_000,
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'op-1',
+              providerToolCallId: 'tool-call-1',
+              toolName: 'Bash',
+              canonicalArgsHash: 'hash',
+              recoveryMode: 'replay_safe',
+            },
+          },
+        }),
+        event({
+          id: 'response-1',
+          ts: 1_250,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-call-1',
+            name: 'Bash',
+            result: 'ok',
+          },
+        }),
+      ],
+      modelCallAttempts: [],
+    });
+
+    const tools = trace.turns[0]?.steps.filter((step) => step.kind === 'tool') ?? [];
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]?.id, 'dispatch-1');
+    assert.equal(tools[0]?.operationId, 'op-1');
+    assert.equal(tools[0]?.status, 'completed');
+  });
+
   test('reports a backend that emits no canonical records instead of rendering an idle session', () => {
     // The pi backend emits `token_usage` and no `ModelCallAttempt` at all. An
     // empty timeline would be indistinguishable from a session that did nothing.
@@ -176,9 +372,26 @@ describe('session trace projection', () => {
     });
 
     assert.equal(trace.coverage.modelCalls, 'absent');
-    assert.deepEqual(trace.coverage.turnsMissingModelCalls, ['turn-1']);
-    assert.equal(trace.totals.modelAttempts, 0);
-    assert.equal(trace.totals.costUsd, undefined);
+    assert.deepEqual(trace.coverage.turnsMissingModelCalls, [{ runId: 'run-1', turnId: 'turn-1' }]);
+  });
+
+  test('known unreadable evidence makes an otherwise absent backend partial', () => {
+    for (const gap of [{ unreadableRecords: 1 }, { oversizedRuns: 1 }]) {
+      const trace = projectSessionTrace({
+        sessionId: 'session-1',
+        runtimeEvents: [
+          event({
+            id: 'usage-1',
+            ts: 1_000,
+            actions: { tokenUsage: { input: 100, output: 20, total: 120 } },
+          }),
+        ],
+        modelCallAttempts: [],
+        ...gap,
+      });
+
+      assert.equal(trace.coverage.modelCalls, 'partial');
+    }
   });
 
   test('distinguishes a partially covered session from a wholly uncovered one', () => {
@@ -202,7 +415,7 @@ describe('session trace projection', () => {
     });
 
     assert.equal(trace.coverage.modelCalls, 'partial');
-    assert.deepEqual(trace.coverage.turnsMissingModelCalls, ['turn-1']);
+    assert.deepEqual(trace.coverage.turnsMissingModelCalls, [{ runId: 'run-1', turnId: 'turn-1' }]);
     assert.equal(trace.turns.map((turn) => turn.turnId).join(','), 'turn-1,turn-2');
   });
 
@@ -236,9 +449,8 @@ describe('session trace projection', () => {
     if (call.kind !== 'model_call') return;
     assert.equal(call.attempts.length, 1, 'one attempt id is one attempt');
     assert.equal(call.status, 'completed', 'the later settlement wins');
-    assert.equal(trace.totals.retries, 0);
-    assert.equal(trace.totals.costUsd, 0.002, 'not double-counted against Settings → Usage');
-    assert.equal(trace.totals.unpricedAttempts, 0);
+    assert.equal(call.costUsd, 0.002, 'not double-counted against Settings → Usage');
+    assert.equal(call.attempts[0]?.costBasis, 'priced');
   });
 
   test('reports a shortfall when usage stands for more steps than there are calls', () => {
@@ -258,7 +470,9 @@ describe('session trace projection', () => {
     });
 
     assert.equal(trace.coverage.modelCalls, 'partial');
-    assert.deepEqual(trace.coverage.turnsWithFewerModelCallsThanSteps, ['turn-1']);
+    assert.deepEqual(trace.coverage.turnsWithFewerModelCallsThanSteps, [
+      { runId: 'run-1', turnId: 'turn-1' },
+    ]);
     assert.deepEqual(trace.coverage.turnsMissingModelCalls, []);
   });
 

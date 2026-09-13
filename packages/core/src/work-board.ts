@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineObjectShape, hasExactShape } from './record-schema.js';
 
 /**
@@ -99,6 +118,8 @@ export interface UpdateWorkBoardItemInput {
 
 export interface WorkBoardListQuery {
   scope?: WorkBoardScope;
+  /** Project identities included by a canonical project scope after relinking. */
+  projectIds?: readonly string[];
   includeArchived?: boolean;
   limit?: number;
   /** Opaque continuation returned by a previous page. */
@@ -172,7 +193,7 @@ const WORK_BOARD_UPDATE_INPUT_SHAPE = defineObjectShape<UpdateWorkBoardItemInput
 );
 const WORK_BOARD_LIST_QUERY_SHAPE = defineObjectShape<WorkBoardListQuery>()(
   [],
-  ['scope', 'includeArchived', 'limit', 'cursor'],
+  ['scope', 'projectIds', 'includeArchived', 'limit', 'cursor'],
 );
 
 export type WorkBoardNormalizeResult<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -413,6 +434,32 @@ export function normalizeWorkBoardListQuery(
     const scope = normalizeWorkBoardScope(input.scope);
     if (!scope.ok) return scope;
     query.scope = scope.value;
+  }
+  if (input.projectIds !== undefined) {
+    if (!Array.isArray(input.projectIds) || input.projectIds.length === 0) {
+      return fail('projectIds must be a non-empty array when provided');
+    }
+    const normalizedProjectIds: string[] = [];
+    for (const projectId of input.projectIds) {
+      const normalized = normalizeIdString(projectId, {
+        field: 'projectIds[]',
+        max: WORK_BOARD_PROJECT_ID_MAX_CHARS,
+      });
+      if (!normalized.ok) return normalized;
+      normalizedProjectIds.push(normalized.value);
+    }
+    const uniqueProjectIds = [...new Set(normalizedProjectIds)];
+    if (uniqueProjectIds.length !== normalizedProjectIds.length) {
+      return fail('projectIds contains duplicates');
+    }
+    if (query.scope?.kind !== 'project') {
+      return fail('projectIds require a project scope');
+    }
+    if (!uniqueProjectIds.includes(query.scope.projectId)) {
+      uniqueProjectIds.push(query.scope.projectId);
+    }
+    uniqueProjectIds.sort((left, right) => left.localeCompare(right));
+    query.projectIds = uniqueProjectIds;
   }
   if (input.includeArchived !== undefined) {
     if (typeof input.includeArchived !== 'boolean') {

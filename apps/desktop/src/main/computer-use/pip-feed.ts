@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // apps/desktop/src/main/computer-use/pip-feed.ts
 //
 // What the mirror is shown after an action: the overlay hook wrapper that taps
@@ -42,7 +61,6 @@ export function withComputerUsePip<
 
 interface PipFeedResult {
   screenshot?: { base64: string; mimeType: 'image/png' | 'image/jpeg'; widthPx: number; heightPx: number };
-  resolvedScreenPoint?: { x: number; y: number };
   observation?: {
     windowTitle?: string;
     windowBounds?: { x: number; y: number; width: number; height: number };
@@ -73,14 +91,10 @@ function presentToPip(
   // pixels. Scale through the window rather than subtracting the origin alone,
   // so a Retina capture (wider than the window in points) still lands on the
   // right control instead of a quarter of the way into it.
-  // The executor reports a landing point only for the coordinate paths. An
-  // element action resolves to an element, not a pointer position, so the point
-  // it was addressed to — the element's own centre, already computed for the
-  // cursor's flight — is what the mirror draws. Without this fallback the
-  // mirror cleared its cursor at the end of every accessibility action, which
-  // is every action Maka dispatches by default: the window the user is watching
-  // showed the app being driven by nothing.
-  const point = result.resolvedScreenPoint ?? context?.presentationScreenPoint;
+  // Semantic actions resolve to elements, not pointer positions. The Runtime
+  // derives an element centre for presentation only; executor results carry no
+  // coordinate that could be mistaken for model or dispatch input.
+  const point = context?.presentationScreenPoint;
   const bounds = result.observation?.windowBounds;
   if (!point || !bounds || bounds.width <= 0 || bounds.height <= 0) {
     pip.setCursor({ sessionId });

@@ -1,13 +1,41 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
+import { useStableActions } from './use-stable-actions.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
+import type {
+  DesktopProjectCapabilities,
+  DesktopRuntimeHostRef,
+} from '../preload/bridge-contract.js';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
   type RendererAppInfo,
   type SessionProjectInfoState,
 } from './app-shell-project-actions';
+import {
+  runIfDefaultRuntimeHostCurrent,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 
 type RefBox<T> = { current: T };
 
@@ -42,7 +70,7 @@ export function useAppShellProjectContext(options: {
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
-  sessionProfileKind?: 'local' | 'remote';
+  sessionProfileKind?: RuntimeHostProfileKind;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
@@ -85,9 +113,11 @@ export function useAppShellProjectContext(options: {
   const projectPickerRequestRef = useRef(0);
   const defaultRefreshGenerationRef = useRef(0);
 
-  const refreshDefaultProjectState = async (): Promise<ProjectRecord[]> => {
+  const refreshDefaultProjectState = async (
+    host: DesktopRuntimeHostRef,
+  ): Promise<ProjectRecord[]> => {
     const generation = ++defaultRefreshGenerationRef.current;
-    const { snapshot, info } = await window.maka.projects.getDefaultContext();
+    const { snapshot, info } = await window.maka.projects.getDefaultContext(host);
     if (
       !rendererMountedRef.current ||
       generation !== defaultRefreshGenerationRef.current
@@ -95,21 +125,32 @@ export function useAppShellProjectContext(options: {
       return [];
     }
     const nextProjects = [...snapshot.projects];
-    setProjects(nextProjects);
-    setProjectCapabilities(snapshot.capabilities);
-    setAppInfo({
-      projectId: info.projectId,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
+    let committed = false;
+    await runIfDefaultRuntimeHostCurrent(host, () => {
+      if (
+        !rendererMountedRef.current ||
+        generation !== defaultRefreshGenerationRef.current
+      ) {
+        return;
+      }
+      setProjects(nextProjects);
+      setProjectCapabilities(snapshot.capabilities);
+      setAppInfo({
+        projectId: info.projectId,
+        projectPath: info.projectPath,
+        projectGit: info.projectGit,
+      });
+      setSelectedProjectId(info.projectId);
+      committed = true;
     });
-    setSelectedProjectId(info.projectId);
-    return nextProjects;
+    return committed ? nextProjects : [];
   };
 
   useEffect(() => {
-    const refresh = () => void refreshDefaultProjectState().catch(() => {
-      // Project management failures surface at the next user action.
-    });
+    const refresh = () =>
+      void runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host)).catch(() => {
+        // Project management failures surface at the next user action.
+      });
     const unsubscribe = window.maka.projects.subscribeChanges(refresh);
     refresh();
     return () => {
@@ -211,7 +252,11 @@ export function useAppShellProjectContext(options: {
         (project) =>
           project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
       );
-  const actions = createAppShellProjectActions({
+  // Stable identities, because the rail's Project rows are built from these:
+  // rebuilt per render they put the whole list back on every AppShell commit
+  // (#4109). Same facade the shell's other action factories already use
+  // (#1043); this one was the last bare call site.
+  const actions = useStableActions(createAppShellProjectActions, {
     uiLocale,
     projectPickerPendingRef,
     projectPickerRequestRef,

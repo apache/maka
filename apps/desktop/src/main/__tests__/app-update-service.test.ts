@@ -1,12 +1,36 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, test } from 'node:test';
 import type { AppUpdater } from 'electron-updater';
+import { resolveUpdateFeedOverride } from '../app-update-test-context.js';
 import {
   createAppUpdateService,
   type AppUpdateInstallRequest,
   type AppUpdateStatus,
 } from '../app-update-service.js';
+import type {
+  DownloadedUpdateAttestationInput,
+  DownloadedUpdateAttestationVerifier,
+} from '../app-update-attestation.js';
 
 const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -55,9 +79,11 @@ class FakeUpdater extends EventEmitter {
   quitAndInstallDispatchError = false;
   onQuitAndInstall: (() => void) | undefined;
   feed: unknown;
+  setFeedURLCalls = 0;
   checkResult: Promise<unknown> | undefined;
 
   setFeedURL(input: unknown): void {
+    this.setFeedURLCalls += 1;
     this.feed = input;
   }
 
@@ -106,12 +132,16 @@ function createHarness(input: {
   >;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
+  testFeedUrl?: string;
+  updateChannel?: 'release' | 'nightly';
+  verifyDownloadedUpdate?: DownloadedUpdateAttestationVerifier;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
   const clock = input.clock ?? new FakeClock();
   const service = createAppUpdateService({
     currentVersion: '1.0.0',
     isPackaged: input.isPackaged ?? true,
+    updateChannel: input.updateChannel ?? 'release',
     updater: updater as unknown as AppUpdater,
     clock,
     onStatusChange: input.onStatusChange,
@@ -121,8 +151,14 @@ function createHarness(input: {
         : { kind: 'prepared', rollback() {} }),
     mockLatestVersion: input.mockLatestVersion,
     mockState: input.mockState,
+    testFeedUrl: input.testFeedUrl,
+    verifyDownloadedUpdate: input.verifyDownloadedUpdate ?? (async () => {}),
   });
   return { clock, service, updater };
+}
+
+async function settleUpdateVerification(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 describe('AppUpdateService', () => {
@@ -131,12 +167,7 @@ describe('AppUpdateService', () => {
 
     assert.equal(updater.autoDownload, true);
     assert.equal(updater.autoInstallOnAppQuit, false);
-    assert.equal(updater.allowPrerelease, false);
-    assert.deepEqual(updater.feed, {
-      provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
-    });
+    assert.equal(updater.setFeedURLCalls, 0);
 
     service.start();
     service.start();
@@ -148,6 +179,69 @@ describe('AppUpdateService', () => {
 
     service.dispose();
     assert.equal(clock.pending().length, 0);
+  });
+
+  test('accepts dev updates only in packaged Nightly builds', () => {
+    const releaseUpdater = new FakeUpdater();
+    const nightlyUpdater = new FakeUpdater();
+
+    createHarness({ updater: releaseUpdater, updateChannel: 'release' });
+    createHarness({ updater: nightlyUpdater, updateChannel: 'nightly' });
+
+    assert.equal(releaseUpdater.allowPrerelease, false);
+    assert.equal(nightlyUpdater.allowPrerelease, true);
+    assert.equal(Object.hasOwn(nightlyUpdater, 'channel'), false);
+  });
+
+  test('routes the feed to a loopback generic provider when the test override is set', () => {
+    const { updater } = createHarness({ testFeedUrl: 'http://127.0.0.1:8443/feed' });
+    assert.deepEqual(updater.feed, {
+      provider: 'generic',
+      url: 'http://127.0.0.1:8443/feed',
+    });
+    assert.equal(updater.setFeedURLCalls, 1);
+  });
+
+  test('rejects a non-loopback test feed instead of falling back to production', () => {
+    // A mistyped override must never silently install from the real GitHub
+    // feed: construction fails closed.
+    assert.throws(
+      () => createHarness({ testFeedUrl: 'https://evil.example/feed' }),
+      TypeError,
+    );
+  });
+
+  test('resolveUpdateFeedOverride accepts exactly loopback http URLs', () => {
+    assert.equal(resolveUpdateFeedOverride(undefined), undefined);
+    assert.equal(resolveUpdateFeedOverride(''), undefined);
+    assert.deepEqual(resolveUpdateFeedOverride('http://127.0.0.1:1'), {
+      provider: 'generic',
+      url: 'http://127.0.0.1:1/',
+    });
+    assert.deepEqual(resolveUpdateFeedOverride('http://127.0.0.1:65535/updates'), {
+      provider: 'generic',
+      url: 'http://127.0.0.1:65535/updates',
+    });
+    const rejected = [
+      'not-a-url',
+      'file:///C:/feed',
+      'https://127.0.0.1:1', // https is not loopback-harness shaped
+      'http://localhost:1', // alias resolution is not identity
+      'http://127.0.0.2:1', // other loopback addresses stay rejected
+      'http://[::1]:1', // IPv6 loopback stays rejected: one accepted shape only
+      'http://127.0.0.1', // no port: cannot be an ephemeral harness server
+      'http://u:p@127.0.0.1:1', // userinfo confusion
+      'http://127.0.0.1.evil.example:1', // hostname prefix confusion
+      'http://127.0.0.1:1/x?y=1', // query smuggling
+      'http://127.0.0.1:1/x#frag',
+    ];
+    for (const raw of rejected) {
+      assert.throws(
+        () => resolveUpdateFeedOverride(raw),
+        TypeError,
+        `expected rejection: ${raw}`,
+      );
+    }
   });
 
   test('does not overlap checks and cannot re-arm after disposal', async () => {
@@ -196,9 +290,13 @@ describe('AppUpdateService', () => {
       updater.emit('update-available', updateInfo('1.1.0'));
       return { isUpdateAvailable: true };
     };
+    const verified: DownloadedUpdateAttestationInput[] = [];
     const { clock, service } = createHarness({
       updater,
       onStatusChange: (status) => statuses.push(status),
+      verifyDownloadedUpdate: async (input) => {
+        verified.push(input);
+      },
     });
 
     service.start();
@@ -214,13 +312,25 @@ describe('AppUpdateService', () => {
     });
     updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
-      downloadedFile: '/tmp/maka-update.zip',
+      files: [{ url: 'Maka-1.1.0-mac-arm64.zip', sha512: '', size: 1 }],
+      downloadedFile: '/tmp/Maka-1.1.0-mac-arm64.zip',
     });
+    await settleUpdateVerification();
 
+    // The verifier identifies the payload the updater chose, so the event's
+    // own file list has to reach it alongside the cached file.
+    assert.deepEqual(verified, [
+      {
+        downloadedFile: '/tmp/Maka-1.1.0-mac-arm64.zip',
+        version: '1.1.0',
+        files: [{ url: 'Maka-1.1.0-mac-arm64.zip', sha512: '', size: 1 }],
+      },
+    ]);
     assert.deepEqual(statuses.map((status) => status.state), [
       'checking',
       'available',
       'downloading',
+      'verifying',
       'downloaded',
     ]);
     assert.deepEqual(service.getStatus(), {
@@ -228,6 +338,28 @@ describe('AppUpdateService', () => {
       currentVersion: '1.0.0',
       latestVersion: '1.1.0',
     });
+  });
+
+  test('fails closed when downloaded update provenance cannot be verified', async () => {
+    const { service, updater } = createHarness({
+      verifyDownloadedUpdate: async () => {
+        throw new Error('release provenance did not match');
+      },
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+
+    assert.deepEqual(service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'download',
+      message: 'release provenance did not match',
+    });
+    assert.equal(updater.quitAndInstallCalls, 0);
   });
 
   test('cancels a stalled auto-download before retrying it', async () => {
@@ -303,6 +435,100 @@ describe('AppUpdateService', () => {
     assert.equal(updater.checkCalls, 1);
   });
 
+  test('recovers from a transient check failure on the built-in retry', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      if (updater.checkCalls === 1) {
+        // electron-updater both emits 'error' and rejects the promise on a
+        // failed check; the feed can 406 transiently (#4790).
+        updater.emit('error', new Error('Cannot parse releases feed: HttpError: 406'));
+        throw new Error('Cannot parse releases feed: HttpError: 406');
+      }
+      updater.emit('update-not-available', updateInfo('1.0.0'));
+      return { isUpdateAvailable: false };
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 2);
+    assert.deepEqual(status, {
+      state: 'not-available',
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.0',
+    });
+    assert.equal(statuses.some((entry) => entry.state === 'error'), false);
+  });
+
+  test('surfaces the check error only after the retry has also failed', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('error', new Error('Unable to find latest version on GitHub'));
+      throw new Error('Unable to find latest version on GitHub');
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 2);
+    assert.equal(status.state, 'error');
+    assert.equal(
+      status.state === 'error' ? status.operation : undefined,
+      'check',
+    );
+    assert.equal(
+      status.state === 'error' ? status.message : undefined,
+      'Unable to find latest version on GitHub',
+    );
+    assert.equal(statuses.filter((entry) => entry.state === 'error').length, 1);
+  });
+
+  test('settles an in-flight retry when disposed during its backoff', async () => {
+    const updater = new FakeUpdater();
+    const statuses: AppUpdateStatus[] = [];
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      updater.emit('checking-for-update');
+      updater.emit('error', new Error('Cannot parse releases feed'));
+      throw new Error('Cannot parse releases feed');
+    };
+    const { clock, service } = createHarness({
+      updater,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const pending = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    service.dispose();
+    // The retry timer is intentionally allowed to fire after dispose so the
+    // in-flight promise settles instead of dangling; it must not retry.
+    await clock.runNext();
+    const status = await pending;
+
+    assert.equal(updater.checkCalls, 1);
+    assert.equal(status.state === 'error', false);
+    assert.equal(status.state, 'checking');
+    assert.equal(statuses.some((entry) => entry.state === 'error'), false);
+  });
+
   test('requires explicit authority before interrupting active tasks', async () => {
     const { service, updater } = createHarness({
       activeTasks: true,
@@ -311,6 +537,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
 
     assert.deepEqual(
       await service.installUpdate({ allowInterruptActiveTasks: false }),
@@ -329,6 +556,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await idle.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: true },
@@ -351,6 +579,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
 
     assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
       ok: true,
@@ -373,6 +602,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await synchronous.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: false, reason: 'install_failed' },
@@ -400,6 +630,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await asynchronous.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: true },

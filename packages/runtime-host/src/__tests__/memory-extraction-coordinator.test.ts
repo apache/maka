@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,6 +44,10 @@ import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extrac
 
 import { HostMemoryExtractionCoordinator } from '../server/memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
+
+function sectionedSummary(goal: string): string {
+  return `## Goal\n${goal}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+}
 
 describe('HostMemoryExtractionCoordinator', () => {
   test('extracts incidental memory through the post-terminal memory_extract path', async () => {
@@ -666,7 +689,7 @@ describe('HostMemoryExtractionCoordinator', () => {
         checkpoint: buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: [old],
-          summary: 'The older context was compacted.',
+          summary: sectionedSummary('The older context was compacted.'),
           now: 1_500,
         }),
       });
@@ -711,13 +734,13 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [first, firstBoundary],
-        summary: 'FIRST SUMMARY MUST BE REPLACED',
+        summary: sectionedSummary('FIRST SUMMARY MUST BE REPLACED'),
       });
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [first, firstBoundary, second, secondBoundary],
         previousCheckpointId: firstCheckpoint.checkpointId,
-        summary: 'LATEST SECOND SUMMARY',
+        summary: sectionedSummary('LATEST SECOND SUMMARY'),
       });
       await writer.initializeExtractionCursor('session-1', 4);
       const observed: Array<{ snapshot: MemoryExtractionSourceSnapshot; prompt: string }> = [];
@@ -789,7 +812,7 @@ describe('HostMemoryExtractionCoordinator', () => {
         checkpoint: buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: [old, anchor],
-          summary: 'The older context and current-turn prefix were compacted.',
+          summary: sectionedSummary('The older context and current-turn prefix were compacted.'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
           now: 1_500,
@@ -826,7 +849,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [old],
-        summary: 'Purported compacted context.',
+        summary: sectionedSummary('Purported compacted context.'),
         now: 1_500,
       });
       const observed: Array<{ snapshot: MemoryExtractionSourceSnapshot; prompt: string }> = [];
@@ -1215,7 +1238,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [firstUser, secondUser],
-        summary: 'The conversation contains two durable preferences.',
+        summary: sectionedSummary('The conversation contains two durable preferences.'),
         memoryExtractionBoundary: {
           runId: compactionBoundary.runId,
           turnId: compactionBoundary.turnId,
@@ -1526,7 +1549,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser],
-        summary: 'Old context.',
+        summary: sectionedSummary('Old context.'),
         memoryExtractionBoundary: {
           runId: oldBoundary.runId,
           turnId: oldBoundary.turnId,
@@ -1590,7 +1613,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser, oldBoundary, newUser],
-        summary: 'Old and new context.',
+        summary: sectionedSummary('Old and new context.'),
         previousCheckpointId: firstCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: newBoundary.runId,
@@ -1644,7 +1667,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser],
-        summary: 'Old context.',
+        summary: sectionedSummary('Old context.'),
         memoryExtractionBoundary: {
           runId: oldBoundary.runId,
           turnId: oldBoundary.turnId,
@@ -1654,7 +1677,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser, oldBoundary, newUser],
-        summary: 'Old and new context.',
+        summary: sectionedSummary('Old and new context.'),
         previousCheckpointId: firstCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: newBoundary.runId,
@@ -1742,7 +1765,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [pendingUser, pendingBoundary, deniedUser],
-        summary: 'Denied period.',
+        summary: sectionedSummary('Denied period.'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -1759,7 +1782,7 @@ describe('HostMemoryExtractionCoordinator', () => {
           deniedBoundary,
           eligibleUser,
         ],
-        summary: 'Eligible tail.',
+        summary: sectionedSummary('Eligible tail.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: eligibleBoundary.runId,
@@ -1873,7 +1896,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [requestedUser, requestedCall, deniedUser],
-        summary: 'DENIED_SUMMARY_SECRET',
+        summary: sectionedSummary('DENIED_SUMMARY_SECRET'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -1884,7 +1907,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const laterCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [requestedUser, requestedCall, deniedUser, deniedBoundary, laterUser],
-        summary: 'Cumulative summary after denial.',
+        summary: sectionedSummary('Cumulative summary after denial.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: laterBoundary.runId,
@@ -2013,7 +2036,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [deniedUser],
-        summary: 'Denied period.',
+        summary: sectionedSummary('Denied period.'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -2024,7 +2047,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const eligibleCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [deniedUser, deniedBoundary, eligibleUser],
-        summary: 'Eligible tail.',
+        summary: sectionedSummary('Eligible tail.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: eligibleBoundary.runId,
@@ -2082,7 +2105,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: 'wrong-run',
           turnId: boundary.turnId,
@@ -2125,7 +2148,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,
@@ -2180,7 +2203,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,
@@ -2221,7 +2244,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,
@@ -2468,7 +2491,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/maka',
     cwd: '/workspace/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Memory test',
     titleIsManual: false,
     isFlagged: false,

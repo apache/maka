@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
@@ -20,6 +39,7 @@ import {
 } from './work-board-list-query.js';
 import {
   acquireOperationalStateDatabase,
+  type OperationalStateDatabaseOptions,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 import { chainWrite } from './write-queue.js';
@@ -51,8 +71,11 @@ export interface WorkBoardStore {
   close(): void;
 }
 
-export function createWorkBoardStore(workspaceRoot: string): WorkBoardStore {
-  return new SqliteWorkBoardStore(workspaceRoot);
+export function createWorkBoardStore(
+  workspaceRoot: string,
+  databaseOptions: OperationalStateDatabaseOptions = {},
+): WorkBoardStore {
+  return new SqliteWorkBoardStore(workspaceRoot, databaseOptions);
 }
 
 interface WorkBoardRow {
@@ -70,8 +93,8 @@ class SqliteWorkBoardStore implements WorkBoardStore {
   readonly #lease: OperationalStateDatabaseLease;
   private readonly writeQueues = new Map<string, Promise<void>>();
 
-  constructor(workspaceRoot: string) {
-    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
+  constructor(workspaceRoot: string, databaseOptions: OperationalStateDatabaseOptions) {
+    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot), databaseOptions);
   }
 
   close(): void {

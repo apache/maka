@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Display-facing defensive secret masking.
 //
 // This module is the single source of truth for the display-layer
@@ -36,6 +55,24 @@ const PATTERNS: Pattern[] = [
     replacement: (m) => `${m[1]}${m[2]} <redacted>`,
     streamingTerminator: /[\s"'<>]/,
     streamingValueGroup: 3,
+  },
+  // URL userinfo:  https://user:pass@host  /  https://token@host
+  // Structural — any authority that contains `@` is credential-bearing, so
+  // this does not depend on a provider prefix list. Runs before the query
+  // rule so only the userinfo is replaced and host/path survive.
+  // Character class matches streamingTerminator so a bare `https://host`
+  // cannot swallow later `@` across whitespace/quotes/angle brackets.
+  // Known boundary: punctuation like commas can still join a bare URL to a
+  // later `@`; a proper fix would restrict userinfo to the RFC 3986 set.
+  // http(s) only for now. Streaming cannot recognize userinfo before `@`
+  // arrives (`https://user:pa` stays clear until then); tightening earlier
+  // would eat `https://host:8080/`.
+  {
+    label: 'url userinfo',
+    regex: /(https?:\/\/)([^\s"'<>/?#]*@)/gi,
+    replacement: (m) => `${m[1]}<redacted>@`,
+    streamingTerminator: /[/?#\s"'<>]/,
+    streamingValueGroup: 2,
   },
   // URL query secrets:  ?key=[redacted]  ?token=[redacted]  ?api_key=[redacted]  &access_token=[redacted]
   // (runs before the api-key-header rule so the URL form isn't mangled.)

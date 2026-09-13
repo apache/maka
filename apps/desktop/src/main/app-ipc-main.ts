@@ -1,13 +1,32 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { join } from 'node:path';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell } from 'electron';
-import { resolveOperationalStateDatabasePath } from '@maka/storage';
 import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
+import type { DesktopUpdateChannel } from './app-update-attestation.js';
 import type {
   AppUpdateInstallRequest,
   AppUpdateService,
@@ -29,6 +48,7 @@ export interface AppIpcDeps {
   getProjectRoot(sessionId: unknown): Promise<string>;
   workspaceRoot: string;
   buildInfo: BuildInfo;
+  updateChannel: DesktopUpdateChannel;
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
   allowLocalProjectPaths?: boolean;
@@ -48,8 +68,8 @@ export function registerAppClientIpc(
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
-  targetIpc.handle('window:notifyRendererReady', (): void => {
-    mainWindowController.notifyRendererReady();
+  targetIpc.handle('window:notifyRendererReady', (event): void => {
+    mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
   });
   targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);
@@ -71,13 +91,13 @@ export function registerAppIpc(
   deps: AppIpcDeps,
   targetIpc: ReconnectableReadIpcMain = ipcMain,
 ): void {
-  const { projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
+  const { projectRoot, workspaceRoot, buildInfo, updateChannel, e2eFixture } = deps;
   const allowLocalProjectPaths = deps.allowLocalProjectPaths !== false;
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
 
-  targetIpc.handle('app:info', async () => {
+  handleReconnectableRead(targetIpc, 'app:info', async () => {
     const selection = await deps.projectManagement.current();
     const projectPath = allowLocalProjectPaths ? selection.path : '';
     return {
@@ -95,12 +115,6 @@ export function registerAppIpc(
       // Lets the renderer collapse a home prefix to `~` in displayed paths;
       // it has no other way to learn this.
       homePath: homedir(),
-      // The exact on-disk path of the workspace's operational-state database,
-      // resolved in main (node:path) — the one authority the renderer's
-      // inspector row and the data-settings row both read. The renderer must
-      // not reconstruct this (it cannot import @maka/storage, and guessing a
-      // separator is wrong for POSIX paths containing a backslash).
-      operationalStateDatabasePath: resolveOperationalStateDatabasePath(workspaceRoot),
       projectId: selection.projectId,
       projectPath,
       projectGit: allowLocalProjectPaths
@@ -108,6 +122,7 @@ export function registerAppIpc(
         : { isGitRepo: false },
       buildMode: buildInfo.mode,
       buildCommit: buildInfo.commit,
+      updateChannel,
     };
   });
   handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>

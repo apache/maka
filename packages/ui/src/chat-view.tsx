@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ICON_SIZE,
@@ -6,14 +25,23 @@ import {
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
+import {
+  mergePromptAnchorRailTurns,
+  PromptAnchorRail,
+  type PromptAnchorRailTurn,
+} from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { ShellRunUpdate } from '@maka/core/events';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
+import type {
+  AttachmentRef,
+  InlineReference,
+  QuoteRef,
+  ShellRunUpdate,
+} from '@maka/core/events';
+import { isDeepResearchSession } from '@maka/core/deep-research';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
@@ -23,43 +51,118 @@ import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
   TurnRunningStatus,
+  TurnFooter,
   TurnView,
-  type ReadAttachmentBytes,
+  TransientUserMessage,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
-import { useTurnVirtualizer } from './use-turn-virtualizer.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { SessionContextLayer } from './session-context-layer.js';
+import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
+import {
+  SessionAttachmentProvider,
+  type ReadAttachmentBytes,
+} from './attachment-image.js';
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
   entries: ReadonlyMap<string, string>;
 }
 
+export interface ChatViewGoalIndicatorProps {
+  /**
+   * Active autonomous-goal indicator for the session, or undefined when no
+   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
+   * pause/resume/clear affordances so a token-burning goal is never invisible
+   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
+   * autonomous continuation; `onPause`/`onResume` control it without a model
+   * turn.
+   */
+  goalIndicator?: SessionContextGoal;
+}
+
+/** A rail click's outstanding request that the reveal for its Turn agree with it. */
+export type RailAlignmentClaim = { turnId: string; nonce?: number };
+
+/**
+ * Which edge the transcript's reveal should use for the target the shell is
+ * publishing, and what is left of the rail's claim afterwards.
+ *
+ * A claim belongs to the one navigation its click asked for, not to the Turn:
+ * it binds to the first target that arrives for that Turn and is spent on
+ * anything else. A later search for the same Turn is a different command with
+ * its own nonce, and gets the search contract back.
+ */
+export function resolveRailAlignedTarget<T extends { turnId: string; nonce: number }>(
+  claim: RailAlignmentClaim | undefined,
+  target: T | undefined,
+): {
+  claim: RailAlignmentClaim | undefined;
+  target: (T & { align: 'start' | 'center' }) | undefined;
+} {
+  if (!target) return { claim, target: undefined };
+  const aimedByRail = claim !== undefined
+    && claim.turnId === target.turnId
+    && (claim.nonce === undefined || claim.nonce === target.nonce);
+  return {
+    claim: aimedByRail ? { turnId: target.turnId, nonce: target.nonce } : undefined,
+    target: { ...target, align: aimedByRail ? 'start' : 'center' },
+  };
+}
+
+/**
+ * A user Message this client has shown but cannot yet prove is durable.
+ *
+ * Deliberately not a `StoredMessage`: a stored one belongs to a Turn, and the
+ * Turn identity is exactly what a client does not have while Runtime Host is
+ * still deciding what the Message becomes. Borrowing that shape forced a
+ * fabricated `turnId`, which then had to be kept from being read as the real
+ * grouping. These are the presentation fields the transcript actually renders,
+ * plus `hostTurnId` for the grouping once the Host names one.
+ */
+export interface TransientUserMessageProjection {
+  /** Held above the composer until Runtime emits steering_message. */
+  pendingSteering?: boolean;
+  deliveryStatus?: string;
+  deliveryDetail?: string;
+  deliveryActions?: readonly { label: string; onClick(): void }[];
+  id: string;
+  text: string;
+  ts: number;
+  attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
+  quotes?: readonly QuoteRef[];
+  inlineReferences?: readonly InlineReference[];
+  /**
+   * Presentation-only placement until canonical transcript grouping arrives.
+   * Pending steering and next-turn messages stay in the composer queue; an
+   * unresolved current-turn root prompt can render beside its live Turn.
+   */
+  transientPlacement: 'current_turn' | 'next_turn';
+  /** The Host Turn this Message is already bound to, once the Host named one. */
+  hostTurnId?: string;
+}
+
 export function ChatView(props: {
   messages: StoredMessage[];
+  transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
-  liveTurn?: LiveTurnProjection;
+  liveTurns?: readonly LiveTurnProjection[];
   /** Live display content already present when the host activated this conversation surface. */
   initialLiveContentSnapshot?: LiveContentActivationSnapshot;
   shellRunUpdates?: readonly ShellRunUpdate[];
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
   /**
-   * True while the live turn's running status line (spinner · working phrase ·
-   * elapsed clock) should show, as the trailing entry of the tail turn.
-   *
-   * One flag for the whole turn, replacing the #646 pair that split the wait
-   * into a first-token cue and a mid-turn one and showed neither once the turn
-   * had live content on screen. That split answered "is the model between
-   * steps?"; the question a user actually asks during a five-minute tool run is
-   * "is anything still happening at all?", and nothing on screen answered it.
+   * Host-owned execution identity. Buffered content and the session catalog
+   * never decide which Turn owns the activity footer.
    */
-  runningStatus?: boolean;
+  activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
   /** Durable Deep Research projection supplied by the host for visible progress and resume state. */
   deepResearchRun?: DeepResearchClientProgress;
@@ -74,8 +177,11 @@ export function ChatView(props: {
    *  avoid bringing the full provider SVG library into @maka/ui. */
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
-  modelChangePending?: boolean;
-  onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onModelChange?(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**
@@ -102,19 +208,6 @@ export function ChatView(props: {
     renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
-  /**
-   * Active autonomous-goal indicator for the session, or undefined when no
-   * goal is running. Surfaces the loop (turn counter) with a one-click clear
-   * affordance so a token-burning goal is never invisible or unstoppable —
-   * this IS the desktop kill switch. `onClear` stops autonomous continuation.
-   */
-  goalIndicator?: {
-    condition: string;
-    status: string;
-    iterations: number;
-    maxIterations: number;
-    onClear: () => void;
-  };
   /** Error from loading the active session's persisted message log. */
   messageLoadError?: string;
   messageLoadRetryPending?: boolean;
@@ -163,16 +256,21 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  onScrollTargetHandled?(nonce: number): void;
+  /** Runtime-only reading position restored without search focus or highlight. */
+  restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  viewportNavigation?: TranscriptViewportNavigation;
+  onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  historyLoadPending?: boolean;
-  onLoadEarlierHistory?(): Promise<void> | void;
-  returnToLatest?: {
-    label: string;
-    isPending: boolean;
-    onClick(): Promise<void> | void;
-  };
+  hasNewerHistory?: boolean;
+  /** Fills the window at an edge the reader is approaching. */
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
+  onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  /** Optional identity decorations shared with a host's work navigation. */
+  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
+  onPromptRailHighlight?(turnId: string | undefined): void;
   onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
    * PR109f: when the active session is a branched session
@@ -203,12 +301,9 @@ export function ChatView(props: {
   };
   onRevisionNavigate?: (sessionId: string) => void;
   /**
-   * Host reader for image attachment bytes, threaded to each turn's user-message
-   * thumbnails. The desktop shell passes its preload `attachments.readBytes`;
-   * non-desktop hosts omit it and image thumbnails stay in their pending
-   * skeleton. Keeps @maka/ui host-agnostic with no direct host-global access.
-   * Pass an identity-stable reference so the memoized TurnViews keep skipping
-   * reconciliation on the hot streaming path.
+   * Host reader for image attachment bytes. The desktop shell passes its preload
+   * `attachments.readBytes`; non-desktop hosts may omit it. Keeps @maka/ui
+   * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
@@ -218,6 +313,8 @@ export function ChatView(props: {
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
   onOpenLinkedSession?(sessionId: string): void;
+  /** Resolve a requires-bypass tool refusal, then regenerate its owning turn. */
+  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
   onNew(): void;
   onPromptSuggestion?(prompt: string): void;
   /**
@@ -235,13 +332,14 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
-}) {
-  const conversationCopy = getConversationCopy(useUiLocale());
+} & ChatViewGoalIndicatorProps) {
+  const locale = useUiLocale();
+  const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
   // chat survives for the empty-state path; the main message log is driven by
   // `turns` (per @kenji UI-04 turn-grouping projection).
   const drainingMessageIdsKey = JSON.stringify(
-    props.liveTurn?.steps.flatMap((step) => step.text ? [step.stepId] : []) ?? [],
+    props.liveTurns?.flatMap((turn) => turn.steps.flatMap((step) => step.text ? [step.stepId] : [])) ?? [],
   );
   const drainingMessageIds = useMemo(
     () => new Set<string>(JSON.parse(drainingMessageIdsKey) as string[]),
@@ -253,15 +351,17 @@ export function ChatView(props: {
       : props.messages,
     [drainingMessageIds, props.messages],
   );
-  const chat = useMemo(() => materializeChat(visibleMessages), [visibleMessages]);
+  const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
+  const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
   // boundary (#2030).
   const turns = useTranscriptProjection({
     sessionId: props.activeSession?.id,
+    locale,
     messages: visibleMessages,
-    liveTurn: props.liveTurn,
+    liveTurns: props.liveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
   // Derived FROM the projected turns, not beside them: the consumer keys its
@@ -289,21 +389,25 @@ export function ChatView(props: {
   // settled branch, whose derived status is `completed`, rendering an actionable
   // footer on a still-running answer (review P2-B). A tool-only tail renders the
   // running tool from its timeline with no empty live bubble.
-  // The model-wait indicator keeps the tail turn "live" too, so its footer stays
-  // the non-actionable placeholder and the indicator injects into the tail turn
-  // (not the fallback section) — it is, by derivation, only ever true when text /
-  // thinking / tools are all absent.
-  //
-  // Terminal liveTurn is evidence overlay only (e.g. empty shell_run still needs
-  // pre-handoff chunks). It must NOT block footer actions — keeping evidence and
-  // being in-flight are separate signals. Wait indicators alone still mark
-  // streaming, but delayed flags can lag one frame past complete; terminal
-  // evidence must outrank them so copy/regenerate stay actionable.
-  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal);
-  const streamingActive = liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus);
-  const tailTurnId = liveInFlight
-    ? props.liveTurn!.turnId
-    : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
+  // Execution identity comes from the Host. Buffered output can outlive it.
+  const activeContent = props.liveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
+  const isCompactionLive = props.activeTurn?.compacting === true;
+  // overlayLiveTurn renders one "compacting" system row for a live compaction
+  // Turn that has no assistant steps — including in a session with no settled
+  // chat messages yet. The empty-state decision (below) keys off `chat.length`,
+  // which does not see that overlaid row, so it must treat this as visible
+  // content or the row is hidden behind the empty hero.
+  const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
+  const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
+  const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
+  const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
+  const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
+  const pendingRunningStartedAt = transientMessages.findLast((message) =>
+    message.transientPlacement === 'current_turn'
+    && tailTurnId !== undefined && message.hostTurnId === tailTurnId,
+  )?.ts ?? activeContent?.startedAt;
+  const boundaryOverlayTurnId = activeContent?.turnId
+    ?? (streamingActive ? tailTurnId : undefined);
   // One rail tick per turn that carries a user prompt (Codex-style prompt
   // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
   // on every render.
@@ -347,19 +451,15 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
-  const promptRailTurns = useMemo(() => {
-    const index = props.transcriptTurnIndex;
-    if (!index || index.length === 0) return loadedPromptRailTurns;
-    const loadedByTurnId = new Map(loadedPromptRailTurns.map((turn) => [turn.turnId, turn]));
-    return index.map((turn) => ({
-        ...(loadedByTurnId.get(turn.turnId) ?? {
-          turnId: turn.turnId,
-          label: turn.label,
-          reply: '',
-        }),
-        sequence: turn.sequence,
-      }));
-  }, [loadedPromptRailTurns, props.transcriptTurnIndex]);
+  const promptRailTurns = useMemo(
+    () => {
+      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex);
+      return props.promptRailDecorations
+        ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
+        : merged;
+    },
+    [loadedPromptRailTurns, props.transcriptTurnIndex, props.promptRailDecorations],
+  );
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -388,6 +488,12 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
+  const onSwitchToBypassAndRetryRef = useRef(props.onSwitchToBypassAndRetry);
+  onSwitchToBypassAndRetryRef.current = props.onSwitchToBypassAndRetry;
+  const stableSwitchToBypassAndRetry = useCallback(
+    (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
+    [],
+  );
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
     (props.conversationItems ?? []).map((item) => ({
@@ -406,40 +512,57 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
-  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
-  const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  const sessionId = props.activeSession?.id;
-  const {
-    start: mountStart,
-    end: mountEnd,
-    beforeHeight,
-    afterHeight,
-    revealTurn,
-  } = useTurnVirtualizer({
-    sessionId,
-    turnIds: orderedTurnIds,
-    scrollRef,
-    targetTurnId: props.scrollTargetTurn?.turnId,
-    targetKey: props.scrollTargetTurn?.nonce,
-  });
+  const scrollAuthority = useTranscriptScrollAuthority();
+  // A rail click aims itself: it puts the prompt at the top of the scrollport
+  // and holds it there while the loaded range settles. Asking the shell to load
+  // an unloaded prompt also publishes a scroll target, and that reveal centres
+  // the turn with the app's scroll motion — a second answer to "where should
+  // this turn sit", and an animated one, which walks the prompt back off the
+  // top for a second after the rail has landed it. The reveal keeps its other
+  // job of recording the reading position; it just has to agree with the rail
+  // about the edge.
+  const railClaimRef = useRef<RailAlignmentClaim | undefined>(undefined);
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
-    if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
-    else if (turn.sequence !== undefined) {
+    if (!turnIdsRef.current.has(turn.turnId) && turn.sequence !== undefined) {
+      railClaimRef.current = { turnId: turn.turnId };
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
-  }, [revealTurn]);
-  const mountedTurns = turns.slice(mountStart, mountEnd);
+  }, []);
+  const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
+  railClaimRef.current = railAlignment.claim;
+  const scrollTargetTurn = railAlignment.target;
+  // Ownership also groups retained prompts after their Turn stops running or
+  // a successor starts. Execution recency must not move a prompt below its reply.
+  const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
+  const inlineTransientMessagesByTurn = new Map<string, TransientUserMessageProjection[]>();
+  const inlineTransientMessageIds = new Set<string>();
+  for (const message of transientMessages) {
+    const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
+    if (
+      message.transientPlacement !== 'current_turn'
+      || turn === undefined
+      || turn.user !== undefined
+      || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
+    ) continue;
+    const messages = inlineTransientMessagesByTurn.get(turn.turnId) ?? [];
+    messages.push(message);
+    inlineTransientMessagesByTurn.set(turn.turnId, messages);
+    inlineTransientMessageIds.add(message.id);
+  }
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
-    hasTurns: turns.length > 0,
     messages: props.messages,
-    target: props.scrollTargetTurn,
+    target: scrollTargetTurn,
+    restoreTarget: props.restoreTargetTurn,
+    onTargetHandled: props.onScrollTargetHandled,
+    viewportNavigation: props.viewportNavigation,
+    onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
-    historyLoadPending: props.historyLoadPending,
-    onLoadEarlierHistory: props.onLoadEarlierHistory,
-    latestNavigationNonce,
+    hasNewerHistory: props.hasNewerHistory,
+    onPrefetchHistory: props.onPrefetchHistory,
+    onRetainWindow: props.onRetainWindow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -461,11 +584,22 @@ export function ChatView(props: {
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
+    // A side conversation forks lazily: its first send arms the optimistic
+    // bubble (and, after the rising-edge delay, the running-status line) BEFORE
+    // the fork commits, so there is no session yet. Render that optimistic
+    // content here too — otherwise the first question stays invisible for the
+    // whole fork round trip (#4654). Once the fork commits `activeSession`
+    // arrives and the full transcript below takes over.
+    const hasOptimisticContent = transientMessages.length > 0 || runningStatus;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
     return (
-      <main className="maka-main agents-chat-panel agents-chat-view-root">
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={conversationCopy.empty.surfaceAriaLabel}
+      >
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -483,18 +617,46 @@ export function ChatView(props: {
             owns. */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
-          density="compact"
-          gap={4}
-          emptyState={conversationItems.length === 0 ? emptyContent : undefined}
+          emptyState={
+            conversationItems.length === 0 && !hasOptimisticContent ? emptyContent : undefined
+          }
         >
-          {conversationItems.length > 0 ? (
+          {/* Keep this a single `null` child when there is nothing to show, so
+              `ChatMessageList` still renders its `emptyState` (the onboarding
+              surface / empty hero). Rendering empty `transientMessages`/running
+              fragments as separate children would leave the list "non-empty" and
+              suppress that empty state. */}
+          {conversationItems.length > 0 || hasOptimisticContent ? (
             <>
-              {emptyContent}
-              {conversationItems.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+              {conversationItems.length > 0 ? (
+                <>
+                  {emptyContent}
+                  {conversationItems.map((item) => (
+                    <Fragment key={item.id}>{item.content}</Fragment>
+                  ))}
+                </>
+              ) : null}
+              {transientMessages.map((message) => (
+                <TransientUserMessage key={message.id} message={message} />
+              ))}
+              {/* The optimistic message supplies the clock while the session is created. */}
+              {runningStatus && (
+                <section className="maka-turn" data-live-streaming="true">
+                  <LocalizedChatMessage
+                    accessibleLabel={conversationCopy.messages.assistantAriaLabel}
+                    sender="assistant"
+                    className="maka-chat-message maka-assistant-answer"
+                  >
+                    <TurnFooter actions={[]} live context="" activity={
+                      <TurnRunningStatus startedAt={pendingRunningStartedAt} />
+                    } />
+                  </LocalizedChatMessage>
+                </section>
+              )}
             </>
           ) : null}
         </ChatMessageList>
-      </main>
+      </section>
     );
   }
 
@@ -502,8 +664,11 @@ export function ChatView(props: {
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && !streamingActive && !hasVisibleConversationItem)
-    || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
+    chat.length === 0
+    && transientMessages.length === 0
+    && !streamingActive
+    && !hasVisibleConversationItem
+    && !hasLiveCompactionRow;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -537,22 +702,15 @@ export function ChatView(props: {
         );
 
   return (
-    <main className="maka-main agents-chat-panel agents-chat-view-root">
-      {props.returnToLatest ? (
-        <div className="maka-transcript-history-controls">
-          <Button
-            label={props.returnToLatest.label}
-            variant="ghost"
-            size="sm"
-            isDisabled={props.returnToLatest.isPending}
-            onClick={() => {
-              void Promise.resolve(props.returnToLatest?.onClick()).then(() => {
-                setLatestNavigationNonce((nonce) => nonce + 1);
-              });
-            }}
-          />
-        </div>
-      ) : null}
+    <SessionAttachmentProvider
+      sessionId={props.activeSession.id}
+      readBytes={props.onReadAttachmentBytes}
+    >
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+      >
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -572,70 +730,75 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        {/* First child on purpose: the rail pins itself with a sticky anchor,
-            and a sticky box only takes an offset from its own static position
-            onward. Rendered after the transcript it would stay parked at the
-            bottom of the conversation until the reader scrolled there. */}
+        {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
           turns={promptRailTurns}
+          onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
-          onNavigateStart={chatLayout.unlockAutoFollow}
+          onNavigateStart={scrollAuthority.releasePin}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
-          density="compact"
-          gap={4}
           isStreaming={streamingActive}
           emptyState={showEmptyState ? emptyContent : undefined}
         >
           {showEmptyState ? null : (
             <>
-              {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {beforeHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: beforeHeight, flex: '0 0 auto', transition: 'none' }}
-                />
-              )}
-              {mountedTurns.map((turn) => {
+              {/* A transient is already the first visible conversation row.
+                  Do not prepend the empty-chat Maka hero while that optimistic
+                  message waits for durable transcript or live-turn identity. */}
+              {chat.length === 0
+                && transientMessages.length === 0
+                && !streamingActive
+                ? emptyContent
+                : null}
+              {turns.map((turn) => {
                 return (
                   <div
                     key={turn.turnId}
-                    className="maka-turn-virtual-item"
-                    data-virtual-turn-id={turn.turnId}
+                    className="maka-transcript-turn"
+                    data-transcript-turn-id={turn.turnId}
                   >
                     <TurnView
                       turn={turn}
+                      activityObserved={turn.turnId === props.activeTurn?.turnId}
+                      transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
                       onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
                       editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
                       editUserMessageDisabled={
-                        streamingActive || props.activeSession?.status === 'running'
+                        props.activeTurn !== undefined
                       }
                       failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
-                      failedRecoveryLabel={turnPresentation?.failedRecoveryLabels[turn.turnId]}
+                      failedSeverity={turnPresentation?.failedSeverities[turn.turnId]}
+                      failedExecutionStateLabel={
+                        turnPresentation?.failedExecutionStateLabels[turn.turnId]
+                      }
                       safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                         ? props.safeResumeAction
                         : undefined}
                       lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
                       onLineageBadgeClick={stableLineageBadgeClick}
-                      onReadAttachmentBytes={props.onReadAttachmentBytes}
                       onOpenLinkedSession={
                         props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
+                      }
+                      onSwitchToBypassAndRetry={
+                        props.onSwitchToBypassAndRetry
+                          ? stableSwitchToBypassAndRetry
+                          : undefined
                       }
                       searchHighlighted={highlightedTurnId === turn.turnId}
                       liveStreaming={
                         turn.turnId === tailTurnId
                           ? {
                               onStreamingSettled: props.onStreamingSettled,
-                              runningStatus: props.runningStatus,
-                              providerRetry: props.liveTurn?.providerRetry,
-                              initialLiveContent: props.liveTurn?.turnId
+                              runningStatus,
+                              providerRetry: activeContent?.turnId === tailTurnId ? activeContent.providerRetry : undefined,
+                              initialLiveContent: activeContent?.turnId
                                 === props.initialLiveContentSnapshot?.turnId
                                 ? props.initialLiveContentSnapshot?.entries
                                 : undefined,
@@ -649,36 +812,31 @@ export function ChatView(props: {
                   </div>
                 );
               })}
-              {afterHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
+              {transientMessages.filter(
+                (message) => !inlineTransientMessageIds.has(message.id),
+              ).map((message) => (
+                <TransientUserMessage
+                  key={message.id}
+                  message={message}
                 />
-              )}
-              {/* #642 fallback: streaming began before the optimistic user turn
-                  materialized (rare — e.g. an event replay while messages are still
-                  loading), so there is no tail turn to inject into. Render the live
-                  answer in a bare `.maka-turn` so it isn't dropped. Mutually
-                  exclusive with the tail injection above (only fires when
-                  `tailTurnId` is undefined), so the answer never double-renders. */}
-              {streamingActive && !tailTurnId && (
+              ))}
+              {/* A send arm already names its Turn, but the transcript may not
+                  contain it yet. Keep feedback below the pending prompt until
+                  that same TurnView can take over. */}
+              {streamingActive && !hasRenderedLiveTurn && (
                 <section className="maka-turn" data-live-streaming="true">
                   <LocalizedChatMessage
                     accessibleLabel={conversationCopy.messages.assistantAriaLabel}
                     sender="assistant"
                     className="maka-chat-message maka-assistant-answer"
                   >
-                    <div className="maka-assistant-answer-content">
-                      {props.liveTurn?.providerRetry ? (
-                        <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
+                    <TurnFooter actions={[]} live context="" activity={
+                      activeContent?.turnId === tailTurnId && activeContent?.providerRetry ? (
+                        <ModelProviderRetryIndicator retry={activeContent.providerRetry} />
                       ) : (
-                        /* No turn here means no `startedAt`, so this one shows
-                           the working phrase without a clock. */
-                        (props.runningStatus && <TurnRunningStatus />)
-                      )}
-                    </div>
-                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                        (runningStatus && <TurnRunningStatus startedAt={pendingRunningStartedAt} />)
+                      )
+                    } />
                   </LocalizedChatMessage>
                 </section>
               )}
@@ -743,18 +901,19 @@ export function ChatView(props: {
           )
         ) : null}
       </div>
-    </main>
+      </section>
+    </SessionAttachmentProvider>
   );
 }
 
 export function DeepResearchProgressPanel({
   run,
   onContinue,
-  copy = getConversationCopy('zh').chat.deepResearchProgress,
+  copy,
 }: {
   run: DeepResearchClientProgress;
   onContinue?: (run: DeepResearchClientProgress) => void;
-  copy?: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
+  copy: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
 }) {
   const completedItems = run.checklist.filter(
     (item) => item.status === 'completed' || item.status === 'skipped',

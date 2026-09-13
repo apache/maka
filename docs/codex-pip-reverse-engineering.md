@@ -1,3 +1,34 @@
+---
+doc_id: codex-pip-reverse-engineering
+title: "Codex picture-in-picture reverse engineering"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Codex picture-in-picture reverse engineering
 
 What Maka's Computer Use mirror copies from Codex, where each fact came from,
@@ -216,5 +247,15 @@ It needs no accessibility and no unlocked screen — it drives Electron windows
 only — which makes it the one real-machine check that keeps working when the
 rest cannot run.
 
-The physics and the anchor scoring are covered exactly, without a desktop, in
-`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`.
+The physics and the anchor scoring were covered without a desktop in
+`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`; #2478
+deleted that test, which only ends the coverage it provided — nothing has
+taken its place. The module under test is untouched: `pip-motion.ts` is
+byte-identical across the #3293 cursor replacement (implemented in #3456),
+which rebuilt the agent cursor engine and its glyphs — including the PiP
+glyph — without replacing the PiP window's motion constants. The dragging
+and settling springs and the throw factors transcribed above are still
+defined there and still drive `pip-window.ts`. Cursor provenance is tracked
+in computer-use-cursor-provenance.md, and it concerns the agent cursor only;
+the PiP window's motion model is a separate surface with no provenance
+change to record.

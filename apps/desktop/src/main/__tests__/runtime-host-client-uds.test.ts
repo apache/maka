@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +27,7 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type SessionCatalogProjection,
@@ -57,7 +77,14 @@ test('drives Desktop Session operations through a real Runtime Host connection',
                 },
           'turn.message.submit': async (input) => {
             assert.equal(input.originHostEpoch, hostEpoch);
-            return { ok: true, result: { disposition: 'steering', queueRevision: 1 } };
+            return {
+              ok: true,
+              result: {
+                disposition: 'steering',
+                queueRevision: 1,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              },
+            };
           },
         }),
         beginDrain() {},
@@ -67,7 +94,6 @@ test('drives Desktop Session operations through a real Runtime Host connection',
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -89,7 +115,11 @@ test('drives Desktop Session operations through a real Runtime Host connection',
         content: { text: 'Continue with the new constraints.' },
         placement: 'current_turn',
       }),
-      { disposition: 'steering', queueRevision: 1 },
+      {
+        disposition: 'steering',
+        queueRevision: 1,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
     );
 
     await client.close();
@@ -157,15 +187,22 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.configuration.update': async (input) => {
             assert.ok(projected);
             assert.equal(input.expectedRevision, projected.revision);
+            const { thinkingLevel: _thinkingLevel, ...withoutThinkingLevel } = projected;
             projected = session(projected.id, {
-              ...projected,
+              ...(input.patch.thinkingLevel === null ? withoutThinkingLevel : projected),
               revision: projected.revision + 1,
-              permissionMode: input.configuration.permissionMode,
-              collaborationMode: input.configuration.collaborationMode,
-              orchestrationMode: input.configuration.orchestrationMode,
-              ...(input.configuration.thinkingLevel === null
+              ...(input.patch.permissionMode === undefined
                 ? {}
-                : { thinkingLevel: input.configuration.thinkingLevel }),
+                : { permissionMode: input.patch.permissionMode }),
+              ...(input.patch.collaborationMode === undefined
+                ? {}
+                : { collaborationMode: input.patch.collaborationMode }),
+              ...(input.patch.orchestrationMode === undefined
+                ? {}
+                : { orchestrationMode: input.patch.orchestrationMode }),
+              ...(input.patch.thinkingLevel === null || input.patch.thinkingLevel === undefined
+                ? {}
+                : { thinkingLevel: input.patch.thinkingLevel }),
             });
             return { ok: true, result: { kind: 'committed', session: projected } };
           },
@@ -176,7 +213,6 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
               ...projected,
               revision: projected.revision + 1,
               isArchived: archived,
-              status: archived ? 'archived' : 'active',
             });
             return { ok: true, result: projected };
           },
@@ -215,21 +251,29 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     });
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
+    // This fixture replaces the real execution composition; initialize its
+    // owned storage before Desktop admits the local candidate.
+    acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
+      mainWindowController: {
+        showSaveDialog: async () => ({ canceled: true }),
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      },
       attachmentApprovals: createAttachmentApprovalRegistry(),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
       nativeCapabilities: {
         browserTools: [nativeTool()],
+        resolveBrowserUrl: () => 'https://example.com/',
         releaseBrowserSession() {},
         computerUseTools: Object.assign([], {
           clearSession() {},
         }) as unknown as ComputerUseToolSet,
-        releaseComputerUseSession() {},
+        releaseDesktopInteractionSession() {},
       },
       botRegistry: {} as BotRegistry,
       resolveBotCreateTarget: async () => ({
@@ -237,9 +281,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       }),
       resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
-      completeComputerUseTurn() {},
+      completeDesktopInteractionTurn() {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
+        rejectCreation: async () => undefined,
         cleanup: async () => undefined,
         schedule: async () => undefined,
         abandonOwner: async () => undefined,
@@ -265,23 +310,26 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       );
     }
     assert.equal(
-      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'execute') as {
+      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass') as {
         permissionMode: string;
       }).permissionMode,
-      'execute',
+      'bypass',
     );
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;
-    assert.equal(
+    assert.deepEqual(
       await ipc.invoke('sessions:remove', 'session-ipc', { revisionFamily: true, requireArchived: true }),
-      'restored',
+      { disposition: 'restored', archivedSubtaskCount: 0 },
     );
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, false);
     await ipc.invoke('sessions:archive', 'session-ipc');
-    assert.equal(await ipc.invoke('sessions:remove', 'session-ipc'), 'removed');
+    assert.deepEqual(await ipc.invoke('sessions:remove', 'session-ipc'), {
+      disposition: 'removed',
+      archivedSubtaskCount: 0,
+    });
     assert.deepEqual(await ipc.invoke('sessions:list'), []);
     // Nothing was retired for the restored task: no `deleted` between the two
     // archives, and the renderer keeps everything it holds for it.
@@ -327,19 +375,16 @@ test('drives the renderer Session execution facade through real UDS framing', as
               result: { kind: 'managed', access: 'read_only', revision: 2 },
             };
           },
-          'turn.start': async (input) => {
+          'turn.message.submit': async (input) => {
             assert.equal(input.sessionId, projected.id);
+            assert.equal(input.messageId, 'turn-1');
+            assert.equal(input.placement, 'current_turn');
             assert.equal(input.content.text, 'Run through the Host');
             return {
               ok: true,
               result: {
-                kind: 'started',
-                turn: {
-                  sessionId: input.sessionId,
-                  turnId: input.turnId,
-                  runId: 'run-1',
-                  status: 'running',
-                },
+                disposition: 'turn_started',
+                turnId: 'turn-host-1',
                 skillInvocation: { loaded: [], failed: [], receipts: [] },
               },
             };
@@ -352,7 +397,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -367,7 +411,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
-        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
@@ -393,7 +436,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       }),
       {
         ok: true,
-        turnId: 'turn-1',
+        turnId: 'turn-host-1',
         attachments: [],
         inlineReferences: [],
         skillInvocation: { loaded: [], failed: [], receipts: [] },
@@ -420,23 +463,13 @@ test('drives bounded Session domain projections through real UDS framing', async
       idleGraceMs: 10_000,
       composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
-          'task.ledger.query': async (input) => ({
+          'session.todo.query': async (input) => ({
             ok: true,
             result: {
-              kind: 'page',
               sessionId: input.sessionId,
-              revision: catalogRevision('6'),
-              tasks: [
-                {
-                  id: 'task-1',
-                  key: 'T1',
-                  subject: 'Verify the Desktop adapter',
-                  status: 'in_progress',
-                  createdAt: 1,
-                  updatedAt: 2,
-                },
+              items: [
+                { content: 'Verify the Desktop adapter', status: 'in_progress' },
               ],
-              nextCursor: null,
             },
           }),
           'plan.query': async (input) => ({
@@ -477,7 +510,6 @@ test('drives bounded Session domain projections through real UDS framing', async
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -488,13 +520,14 @@ test('drives bounded Session domain projections through real UDS framing', async
     const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
     registerRuntimeHostSessionDomainsIpc(
-      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver() },
+      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver(),
+        terminalCloses: new (await import('../terminal-close-intents.js')).TerminalCloseIntents() },
       ipc,
     );
 
     assert.equal(
-      ((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id,
-      'task-1',
+      ((await ipc.invoke('todo:read', 'session-1')) as Array<{ content: string }>)[0]?.content,
+      'Verify the Desktop adapter',
     );
     assert.deepEqual(await ipc.invoke('plan-mode:getState', 'session-1'), {
       schemaVersion: 1,
@@ -556,6 +589,7 @@ function ipcHarness() {
 function unusedSessionCopyCleanup() {
   return {
     ownCreation: async <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+    async rejectCreation() {},
     async cleanup() {},
     async schedule() {},
     async abandonOwner() {},
@@ -584,7 +618,7 @@ function session(
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Desktop Host Session',
     isFlagged: false,
     isArchived: false,
@@ -593,6 +627,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

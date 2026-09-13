@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Tests for SettingsStore.upsertOnboardingMilestone (PR110b).
  *
@@ -11,7 +30,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSettingsStore } from '../settings-store.js';
@@ -251,6 +270,45 @@ describe('SettingsStore.updateIf', () => {
 });
 
 describe('SettingsStore.get file recovery', () => {
+  it('atomically removes legacy proxy credentials from settings.json on read', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-proxy-migration-'));
+    try {
+      const store = createSettingsStore(workspaceRoot);
+      const settingsPath = join(workspaceRoot, 'settings.json');
+      await writeFile(
+        settingsPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          network: {
+            proxy: {
+              enabled: true,
+              host: '127.0.0.1',
+              port: 7897,
+              password: 'legacy-plaintext-secret',
+              passwordConfigured: true,
+            },
+          },
+        }),
+        'utf8',
+      );
+
+      const settings = await store.get();
+      const migrated = JSON.parse(await readFile(settingsPath, 'utf8')) as {
+        network: { proxy: Record<string, unknown> };
+      };
+
+      assert.equal(settings.network.proxy.host, '127.0.0.1');
+      assert.equal('password' in migrated.network.proxy, false);
+      assert.equal('passwordConfigured' in migrated.network.proxy, false);
+      assert.equal(
+        (await readFile(settingsPath, 'utf8')).includes('legacy-plaintext-secret'),
+        false,
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it('serializes concurrent first reads while creating default settings', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-concurrent-defaults-'));
     const originalNow = Date.now;
@@ -298,6 +356,28 @@ describe('SettingsStore.get file recovery', () => {
       await assert.rejects(() => store.get(), SyntaxError);
       assert.equal(await readFile(settingsPath, 'utf8'), corrupt);
     } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a restrictive umask-derived settings.json mode and leaves no temp file behind', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-mode-'));
+    const previousUmask = process.umask(0o027);
+    try {
+      const store = createSettingsStore(workspaceRoot);
+
+      await store.get(); // first run writes the defaults
+
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
+      assert.equal(
+        (await stat(join(workspaceRoot, 'settings.json'))).mode & 0o777,
+        0o640,
+        'settings.json retains the mode produced by the legacy default and current umask',
+      );
+    } finally {
+      process.umask(previousUmask);
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

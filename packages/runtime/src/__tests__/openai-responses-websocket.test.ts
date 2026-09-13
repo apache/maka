@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage } from 'node:http';
@@ -12,7 +31,7 @@ import {
   webSocketProxyAgent,
 } from '../openai-responses-websocket.js';
 import { createProxiedFetchTransport } from '../network/scoped-fetch-transport.js';
-import { classifyError, providerRetryMetadata } from '../provider-error-classification.js';
+import { classifyError, providerModelFailure } from '../provider-error-classification.js';
 
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -290,8 +309,8 @@ describe('OpenAI Responses WebSocket transport', () => {
           (error as Error & { code?: string }).code,
           'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
         );
-        assert.equal(classifyError(error), 'Network');
-        assert.deepEqual(providerRetryMetadata(error), { retryable: true });
+        assert.equal(classifyError(error), 'network');
+        assert.partialDeepStrictEqual(providerModelFailure(error), { retryable: true });
         return true;
       },
     );
@@ -397,7 +416,7 @@ describe('OpenAI Responses WebSocket transport', () => {
           (error as Error & { code?: string }).code,
           'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
         );
-        assert.deepEqual(providerRetryMetadata(error), { retryable: true });
+        assert.partialDeepStrictEqual(providerModelFailure(error), { retryable: true });
         return true;
       },
     );
@@ -476,7 +495,7 @@ describe('OpenAI Responses WebSocket transport', () => {
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /Unexpected binary/);
-        assert.deepEqual(providerRetryMetadata(error), { retryable: true });
+        assert.partialDeepStrictEqual(providerModelFailure(error), { retryable: true });
         return true;
       },
     );

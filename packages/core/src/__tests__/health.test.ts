@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from './test-helpers.js';
 import {
   buildHealthSnapshot,
   healthSignalFromCapability,
   healthSignalFromConnection,
+  workspaceHasDefaultModelTarget,
   healthSignalFromConnectionRuntime,
 } from '../health.js';
 import type { CapabilitySnapshot } from '../capabilities.js';
@@ -19,9 +39,97 @@ describe('HealthSignal contract', () => {
       20,
     );
 
-    expect(result.status).toBe('ok');
-    expect(result.layer).toBe('validation');
-    expect(result.source).toBe('connection_test');
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.layer, 'validation');
+    assert.strictEqual(result.source, 'connection_test');
+  });
+
+  test('separates connection test error classes from legacy diagnostics', () => {
+    const coded = healthSignalFromConnection(
+      connection({ lastTestStatus: 'needs_reauth', lastTestMessage: 'auth' }),
+      20,
+    );
+    assert.deepStrictEqual(coded.detail, { kind: 'last_test_error_class', errorClass: 'auth' });
+
+    const legacy = healthSignalFromConnection(
+      connection({ lastTestStatus: 'error', lastTestMessage: 'HTTP 502 upstream failure' }),
+      20,
+    );
+    assert.deepStrictEqual(legacy.detail, { kind: 'last_test_message' });
+  });
+
+  test('a missing default model warns only when the workspace has no default target', () => {
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target). With a default configured elsewhere, an enabled
+    // connection with an empty `defaultModel` is the documented normal
+    // state — informational, never send-blocking, and never a prompt to
+    // find a per-connection setting that deliberately does not exist.
+    const nonDefault = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(nonDefault.status, 'info');
+    assert.strictEqual(nonDefault.blocksSend, false);
+
+    // With NO default anywhere, a new chat cannot start: that is the
+    // actionable, send-blocking configuration gap.
+    const noDefaultAnywhere = healthSignalFromConnection(connection({ defaultModel: '' }), 20, {
+      workspaceHasDefaultTarget: false,
+    });
+    assert.strictEqual(noDefaultAnywhere.status, 'warning');
+    assert.strictEqual(noDefaultAnywhere.blocksSend, true);
+
+    // The informational note must not paper over real per-connection
+    // blockers: failing validation still wins on a non-default connection…
+    const reauth = healthSignalFromConnection(
+      connection({
+        defaultModel: '',
+        enabledModelIds: ['glm-4.7'],
+        lastTestStatus: 'needs_reauth',
+      }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(reauth.status, 'error');
+    assert.strictEqual(reauth.blocksSend, true);
+
+    // …and a connection with no enabled models cannot claim that explicit
+    // selection works — there is nothing to select.
+    const emptyInventory = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: [] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(emptyInventory.status, 'warning');
+    assert.strictEqual(emptyInventory.blocksSend, false);
+
+    // The default target itself keeps its validation-layer signals.
+    const configured = healthSignalFromConnection(
+      connection({ lastTestStatus: 'verified', lastTestAt: '2026-05-22T07:30:00.000Z' }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    assert.strictEqual(configured.status, 'ok');
+  });
+
+  test('a disabled default holder does not count as a workspace default', () => {
+    // Disabling the connection that holds the default target (ordinary UI,
+    // nothing clears defaultTarget) leaves its projected defaultModel in
+    // place. Counting it would show an all-clear health page in exactly
+    // the state where sends fail with connection_disabled.
+    const disabledHolder = connection({ enabled: false }); // defaultModel: 'glm-4.7'
+    const other = connection({ slug: 'other', defaultModel: '', enabledModelIds: ['m'] });
+    assert.strictEqual(workspaceHasDefaultModelTarget([disabledHolder, other]), false);
+    assert.strictEqual(workspaceHasDefaultModelTarget([connection({}), other]), true);
+
+    // With the holder disabled, the OTHER enabled connections escalate back
+    // to the send-blocking warning — the workspace genuinely has no default.
+    const signal = healthSignalFromConnection(other, 20, {
+      workspaceHasDefaultTarget: workspaceHasDefaultModelTarget([disabledHolder, other]),
+    });
+    assert.strictEqual(signal.status, 'warning');
+    assert.strictEqual(signal.blocksSend, true);
   });
 
   test('LLM runtime probe is separate from credential validation', () => {
@@ -30,9 +138,9 @@ describe('HealthSignal contract', () => {
       undefined,
       30,
     );
-    expect(unknown?.status).toBe('unknown');
-    expect(unknown?.layer).toBe('runtime_probe');
-    expect(unknown?.source).toBe('runtime_probe');
+    assert.strictEqual(unknown?.status, 'unknown');
+    assert.strictEqual(unknown?.layer, 'runtime_probe');
+    assert.strictEqual(unknown?.source, 'runtime_probe');
 
     const ok = healthSignalFromConnectionRuntime(
       connection({ lastTestStatus: 'verified' }),
@@ -55,8 +163,8 @@ describe('HealthSignal contract', () => {
       },
       30,
     );
-    expect(ok?.status).toBe('ok');
-    expect(ok?.checkedAt).toBe(40);
+    assert.strictEqual(ok?.status, 'ok');
+    assert.strictEqual(ok?.checkedAt, 40);
 
     const failed = healthSignalFromConnectionRuntime(
       connection({ lastTestStatus: 'verified' }),
@@ -80,15 +188,17 @@ describe('HealthSignal contract', () => {
       },
       30,
     );
-    expect(failed?.status).toBe('warning');
-    expect(failed?.blocksSend).toBe(false);
+    assert.strictEqual(failed?.status, 'warning');
+    assert.strictEqual(failed?.blocksSend, false);
   });
 
   test('disabled or unconfigured connections do not emit runtime probe health', () => {
-    expect(healthSignalFromConnectionRuntime(connection({ enabled: false }), undefined, 30)).toBe(
+    assert.strictEqual(
+      healthSignalFromConnectionRuntime(connection({ enabled: false }), undefined, 30),
       undefined,
     );
-    expect(healthSignalFromConnectionRuntime(connection({ defaultModel: '' }), undefined, 30)).toBe(
+    assert.strictEqual(
+      healthSignalFromConnectionRuntime(connection({ defaultModel: '' }), undefined, 30),
       undefined,
     );
   });
@@ -107,8 +217,11 @@ describe('HealthSignal contract', () => {
     );
 
     const snapshot = buildHealthSnapshot(30, [connectionUnverified, botOperational]);
-    expect(snapshot.signals.map((signal) => signal.scope)).toEqual(['llm_connection', 'bot']);
-    expect(snapshot.summary).toEqual({ ok: 1, info: 0, warning: 0, error: 0, unknown: 1 });
+    assert.deepStrictEqual(
+      snapshot.signals.map((signal) => signal.scope),
+      ['llm_connection', 'bot'],
+    );
+    assert.deepStrictEqual(snapshot.summary, { ok: 1, info: 0, warning: 0, error: 0, unknown: 1 });
   });
 
   test('capability denied and degraded remain distinct health states', () => {
@@ -119,11 +232,11 @@ describe('HealthSignal contract', () => {
     );
     const degraded = healthSignalFromCapability(capability('bot:telegram', 'degraded'));
 
-    expect(denied.status).toBe('error');
-    expect(denied.layer).toBe('permission');
-    expect(degraded.status).toBe('error');
-    expect(degraded.layer).toBe('runtime_probe');
-    expect(degraded.scope).toBe('bot');
+    assert.strictEqual(denied.status, 'error');
+    assert.strictEqual(denied.layer, 'permission');
+    assert.strictEqual(degraded.status, 'error');
+    assert.strictEqual(degraded.layer, 'runtime_probe');
+    assert.strictEqual(degraded.scope, 'bot');
   });
 
   test('partial-only capabilities are warnings, not app-wide error states', () => {
@@ -142,9 +255,13 @@ describe('HealthSignal contract', () => {
       }),
     );
 
-    expect(partial.status).toBe('warning');
-    expect(partial.layer).toBe('feature');
-    expect(partial.blocksCapability).toBe(false);
+    assert.strictEqual(partial.status, 'warning');
+    assert.strictEqual(partial.layer, 'feature');
+    assert.strictEqual(partial.blocksCapability, false);
+    assert.deepStrictEqual(partial.detail, {
+      kind: 'capability_reason',
+      reason: '打开 Daily Review 可查看本地活动聚合结果',
+    });
   });
 });
 
@@ -181,7 +298,6 @@ function capability(
     },
     canRevoke: false,
     canPause: false,
-    guidance: [],
     auditEvents: [],
     updatedAt: 1,
     ...patch,

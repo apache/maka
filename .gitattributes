@@ -4,3 +4,18 @@
 # bytes differ from the macOS build of the same release. Nothing in this
 # repository needs CRLF, so the working tree stays LF everywhere.
 * text=auto eol=lf
+
+# Unified diffs require a leading space for context, including empty and tab-indented lines.
+/patches/*.patch whitespace=-space-before-tab,-blank-at-eol
+/patches/*.diff whitespace=-space-before-tab,-blank-at-eol
+
+# Repository-local agent configuration, visual review evidence, and incubation
+# working notes are not source-release inputs.
+/.claude export-ignore
+/.maka-shots export-ignore
+/maka-proposal-zh-review.txt export-ignore
+
+# DeepSeek Harness remains available to repository development and benchmarks,
+# but its external runtime dependency closure is not an ASF source-release input.
+/packages/eval/harbor/deepseek-harness-toolchain/package.json export-ignore
+/packages/eval/harbor/deepseek-harness-toolchain/package-lock.json export-ignore

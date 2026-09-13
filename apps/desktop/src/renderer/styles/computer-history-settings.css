@@ -1,0 +1,117 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.computer-history-settings {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.computer-history-settings-status,
+.computer-history-settings-model,
+.computer-history-settings-delete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.computer-history-settings-model > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.computer-history-settings-model {
+  max-width: 100%;
+}
+
+@container settings-rows (max-width: 460px) {
+  .computer-history-settings .astryx-item:has(.computer-history-settings-model) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .computer-history-settings .astryx-item:has(.computer-history-settings-model) > span:last-child {
+    min-width: 0;
+    max-width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .computer-history-settings-model,
+  .computer-history-settings .settingsRowEnd:has(.computer-history-settings-model) {
+    width: 100%;
+  }
+}
+
+.computer-history-settings-error {
+  color: var(--color-error);
+  font: var(--maka-text-supporting);
+  overflow-wrap: anywhere;
+}
+
+.computer-history-settings-sources {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.computer-history-settings-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.computer-history-settings-source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.computer-history-settings-source-list > li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--border);
+}
+
+.computer-history-settings-source-list > li > svg,
+.computer-history-settings-source-list .computer-history-app-icon {
+  flex-shrink: 0;
+}
+
+.computer-history-settings-source-name {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .computer-history-settings-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .computer-history-settings-add > button {
+    justify-self: start;
+  }
+}

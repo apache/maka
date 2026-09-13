@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createDefaultRuntimePolicy,
   decodeCanonicalConnectionCatalogEntry,
   decodeCanonicalRuntimePolicy,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   normalizeCreateCatalogConnectionInput,
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
@@ -39,6 +58,26 @@ test('normalizes policy input while canonical policy decode rejects producer dri
       ...createDefaultRuntimePolicy(),
       networkProxy: { ...mutation.operation.value, host: 'proxy.local' },
     }),
+  );
+});
+
+test('Code Mode is opt-in and survives policy decoding', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.notEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults.codeModeEnabled, true);
+  assert.equal(
+    decodeCanonicalRuntimePolicy({
+      ...policy,
+      chatDefaults: { ...policy.chatDefaults, codeModeEnabled: true },
+    }).chatDefaults.codeModeEnabled,
+    true,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalRuntimePolicy({
+        ...policy,
+        chatDefaults: { ...policy.chatDefaults, codeModeEnabled: 'true' },
+      }),
+    RuntimePolicyDomainDecodeError,
   );
 });
 
@@ -79,6 +118,42 @@ test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
       operation: { kind: 'set_subagents', value: { presets: [preset] } },
     }),
     { expectedRevision: 2, operation: { kind: 'set_subagents', value: { presets: [preset] } } },
+  );
+});
+
+test('normalizes the explicit Git Bash preference and rejects arbitrary shell kinds', () => {
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 3,
+      operation: {
+        kind: 'set_shell',
+        value: {
+          preference: 'git_bash',
+          executable: ' C:\\Program Files\\Git\\bin\\bash.exe ',
+        },
+      },
+    }),
+    {
+      expectedRevision: 3,
+      operation: {
+        kind: 'set_shell',
+        value: {
+          preference: 'git_bash',
+          executable: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 3,
+        operation: {
+          kind: 'set_shell',
+          value: { preference: 'custom', executable: 'C:\\tools\\fish.exe' },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
   );
 });
 
@@ -163,6 +238,29 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
   );
 });
 
+for (const [slug, detail] of [
+  ['', 'Slug is required'],
+  ['Not A Slug', 'Slug must be lowercase letters, digits, and hyphens'],
+  ['a'.repeat(65), 'Slug must be 64 characters or fewer'],
+]) {
+  test(`catalog decoding preserves the diagnostic: ${detail}`, () => {
+    assert.throws(
+      () =>
+        decodeCanonicalConnectionCatalogEntry({
+          connectionId: '123e4567-e89b-42d3-a456-426614174000',
+          revision: 1,
+          slug,
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: [],
+          models: [],
+        }),
+      { name: 'RuntimePolicyDomainDecodeError', message: `connection slug: ${detail}` },
+    );
+  });
+}
+
 test('rejects new connections for the retired Gemini CLI account provider', () => {
   assert.throws(
     () =>
@@ -186,6 +284,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       thinkingLevels: ['minimal', 'low'],
       vision: true,
       contextWindow: 128_000,
+      serviceTier: 'fast',
     },
   };
   const draft = normalizeCreateCatalogConnectionInput({
@@ -197,10 +296,23 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       baseUrl: 'https://relay.example/v1',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
+      modelOverrides: table,
     },
   });
-  assert.deepEqual(draft.connection.relayModelProfiles, table);
+  assert.deepEqual(draft.connection.modelOverrides, table);
+  const responsesDraft = normalizeCreateCatalogConnectionInput({
+    expectedCatalogRevision: 0,
+    connection: {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: 'https://responses.example/v1',
+      enabled: true,
+      enabledModelIds: ['relay-reasoner'],
+      modelOverrides: table,
+    },
+  });
+  assert.deepEqual(responsesDraft.connection.modelOverrides, table);
   // The canonical path re-decodes the same table (entry = draft + identity).
   const entry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
@@ -208,7 +320,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     revision: 1,
     models: [],
   });
-  assert.deepEqual(entry.relayModelProfiles, table);
+  assert.deepEqual(entry.modelOverrides, table);
 
   // An empty table is never a state: drafts omit the key, updates read it as
   // the same clear-instruction `null` gives.
@@ -220,17 +332,17 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       providerType: 'openai-compatible',
       enabled: true,
       enabledModelIds: [],
-      relayModelProfiles: {},
+      modelOverrides: {},
     },
   });
-  assert.equal(emptyDraft.connection.relayModelProfiles, undefined);
+  assert.equal(emptyDraft.connection.modelOverrides, undefined);
   const emptyUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: {},
+    modelOverrides: {},
   });
-  assert.equal(emptyUpdate.relayModelProfiles, null);
+  assert.equal(emptyUpdate.modelOverrides, null);
 
   // The update input is tri-state: null (or the equivalent {}) clears, a
   // table replaces, and an ABSENT key means untouched — absent must never
@@ -240,9 +352,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: null,
+    modelOverrides: null,
   });
-  assert.equal(update.relayModelProfiles, null);
+  assert.equal(update.modelOverrides, null);
   const absentUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
@@ -254,69 +366,106 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     enabledModelIds: [],
   });
 
-  // Profiles are a relay-only feature: non-empty tables on other providers
-  // are rejected at the write seam (null/absent stay legal for cleanup).
-  assert.throws(
-    () =>
-      normalizeCreateCatalogConnectionInput({
-        expectedCatalogRevision: 0,
-        connection: {
-          slug: 'not-a-relay',
-          name: 'Other',
-          providerType: 'openai',
-          enabled: true,
-          enabledModelIds: ['relay-reasoner'],
-          relayModelProfiles: table,
-        },
-      }),
-    RuntimePolicyDomainDecodeError,
+  // The write seam splits the table by FIELD, not by provider (#1584).
+  // `contextWindow` and `vision` state facts about a model, and a user has
+  // them when Maka does not — a model newer than the bundled snapshot, or any
+  // model on a provider with no model-list endpoint — so they are legal
+  // everywhere.
+  const facts = { 'relay-reasoner': { vision: true, contextWindow: 128_000 } };
+  assert.deepEqual(
+    normalizeCreateCatalogConnectionInput({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'not-a-relay',
+        name: 'Other',
+        providerType: 'openai',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        modelOverrides: facts,
+      },
+    }).connection.modelOverrides,
+    facts,
   );
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdateForProvider(
-        {
-          name: 'Other',
-          enabled: true,
-          enabledModelIds: ['relay-reasoner'],
-          relayModelProfiles: table,
-        },
-        'anthropic',
-      ),
-    RuntimePolicyDomainDecodeError,
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdateForProvider(
+      {
+        name: 'Other',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        modelOverrides: facts,
+      },
+      'anthropic',
+    ).modelOverrides,
+    facts,
   );
+
+  // `thinkingLevels` and `serviceTier` name a wire feature only the
+  // OpenAI-compatible relays accept, so they stay relay-only on both write
+  // paths: elsewhere they are a request Maka would never send.
+  for (const wireShaped of [
+    { 'relay-reasoner': { thinkingLevels: ['low'] } },
+    { 'relay-reasoner': { serviceTier: 'fast' } },
+  ]) {
+    assert.throws(
+      () =>
+        normalizeCreateCatalogConnectionInput({
+          expectedCatalogRevision: 0,
+          connection: {
+            slug: 'not-a-relay',
+            name: 'Other',
+            providerType: 'openai',
+            enabled: true,
+            enabledModelIds: ['relay-reasoner'],
+            modelOverrides: wireShaped,
+          },
+        }),
+      /require[s]? an OpenAI-compatible connection/,
+      JSON.stringify(wireShaped),
+    );
+    assert.throws(
+      () =>
+        normalizeConnectionCatalogEntryUpdateForProvider(
+          {
+            name: 'Other',
+            enabled: true,
+            enabledModelIds: ['relay-reasoner'],
+            modelOverrides: wireShaped,
+          },
+          'anthropic',
+        ),
+      /require[s]? an OpenAI-compatible connection/,
+      JSON.stringify(wireShaped),
+    );
+  }
+
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
-      { name: 'Other', enabled: true, enabledModelIds: [], relayModelProfiles: null },
+      { name: 'Other', enabled: true, enabledModelIds: [], modelOverrides: null },
       'anthropic',
-    ).relayModelProfiles,
+    ).modelOverrides,
     null,
   );
 
-  // The subset invariant: profiles exist only for ENABLED models. The store
-  // prunes profiles of deselected models, so a key outside the set marks a
-  // document the store never wrote.
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdate({
-        name: 'Relay',
-        enabled: true,
-        enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: { 'disabled-model': { vision: true } },
-      }),
-    RuntimePolicyDomainDecodeError,
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdate({
+      name: 'Relay',
+      enabled: true,
+      enabledModelIds: [],
+      modelOverrides: { 'disabled-model': { vision: true } },
+    }).modelOverrides,
+    { 'disabled-model': { vision: true } },
   );
 
   // Model ids are relay-supplied strings; __proto__/constructor/toString
   // must survive the table as ordinary own keys — the decode builds the
   // table with fromEntries precisely so '__proto__' cannot poison the result
   // object's prototype and quietly drop the entry.
-  const hostileTable = decodeRelayModelProfilesTable(
+  const hostileTable = decodeModelOverridesTable(
     // An object literal could not even express `__proto__` as an own key —
     // the deserialized document is the realistic carrier of a hostile id.
     JSON.parse(
       '{"__proto__":{"vision":true},"constructor":{"vision":false},"toString":{"contextWindow":8192}}',
     ),
-    ['__proto__', 'constructor', 'toString'],
   );
   assert.deepEqual(Object.keys(hostileTable).sort(), ['__proto__', 'constructor', 'toString']);
   assert.equal(JSON.stringify(hostileTable).includes('"__proto__"'), true);
@@ -329,7 +478,6 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { thinkingLevels: ['off'] } }, // disable wire, not a declarable tier
     { m: { thinkingLevels: ['low', 'low'] } }, // duplicate
     { m: { thinkingLevels: [] } }, // empty level list
-    { m: {} }, // declares nothing
     { m: { vision: 'yes' } },
     { m: { contextWindow: 0 } },
     { m: { contextWindow: 1.5 } },
@@ -337,7 +485,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { vision: true, extra: 1 } }, // unknown key in the entry
   ]) {
     assert.throws(
-      () => decodeRelayModelProfilesTable(bad, ['m']),
+      () => decodeModelOverridesTable(bad),
       RuntimePolicyDomainDecodeError,
       JSON.stringify(bad),
     );
@@ -347,12 +495,12 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
 test('normalizes exact bounded model discovery results', () => {
   assert.deepEqual(
     normalizeConnectionModelDiscoveryResult({
-      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      models: [{ id: 'gpt-5', capabilities: { chat: true, parallelToolCalls: false } }],
       source: 'fetched',
       fetchedAt: 42,
     }),
     {
-      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      models: [{ id: 'gpt-5', capabilities: { chat: true, parallelToolCalls: false } }],
       source: 'fetched',
       fetchedAt: 42,
     },
@@ -371,6 +519,63 @@ test('normalizes exact bounded model discovery results', () => {
       RuntimePolicyDomainDecodeError,
     );
   }
+});
+
+test('normalizes extended model facts used by the runtime host catalog', () => {
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [
+      {
+        id: 'custom-model',
+        description: 'A custom model',
+        inputLimit: 120_000,
+        knowledgeCutoff: '2025-01',
+        structuredOutput: true,
+        lastUpdated: '2026-01-01',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+      },
+    ],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], {
+    id: 'custom-model',
+    description: 'A custom model',
+    inputLimit: 120_000,
+    knowledgeCutoff: '2025-01',
+    structuredOutput: true,
+    lastUpdated: '2026-01-01',
+    modalities: { input: ['text', 'image'], output: ['text'] },
+  });
+});
+
+test('carries the video and pdf modalities models.dev declares', () => {
+  const modalities = {
+    input: ['text', 'image', 'video'],
+    output: ['text', 'pdf', 'video'],
+  };
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [{ id: 'custom-model', modalities }],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], { id: 'custom-model', modalities });
+});
+
+test('rejects sparse model modality arrays', () => {
+  assert.throws(
+    () =>
+      normalizeConnectionModelDiscoveryResult({
+        models: [
+          {
+            id: 'custom-model',
+            modalities: { input: Array(1), output: ['text'] },
+          },
+        ],
+        source: 'fetched',
+        fetchedAt: 42,
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
 });
 
 test('credential domain validation requires material but leaves capacity to callers', () => {

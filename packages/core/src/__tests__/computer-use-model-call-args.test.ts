@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '../computer-use.js';
@@ -36,27 +55,21 @@ describe('the call a model reads back as its own', () => {
     );
   });
 
-  test('a coordinate the model chose comes back whole, and a broken one degrades', () => {
-    // Written when this projection reduced every coordinate to `<point>`, and
-    // that was the wrong half of the rule: a coordinate is not read off the
-    // screen, it is four digits the model chose and sent. Reduced to a shape, a
-    // model that clicked and missed cannot tell whether it has already tried
-    // that point — the repeated-call shape this record exists to make visible.
+  test('a semantic element id comes back whole, and a broken one degrades', () => {
     const readBack = computerUseModelCallArgs({
-      action: 'left_click',
+      action: 'click_element',
       observation_id: 'obs-1',
-      coordinate: [812, 466],
+      element_id: 'e12',
     });
 
-    assert.deepEqual(readBack.coordinate, [812, 466]);
-    // Only integers. Anything else is not a coordinate and is not echoed as one.
+    assert.equal(readBack.element_id, 'e12');
     assert.equal(
       computerUseModelCallArgs({
-        action: 'left_click',
+        action: 'click_element',
         observation_id: 'obs-1',
-        coordinate: ['812', '466'],
-      }).coordinate,
-      '<2 items>',
+        element_id: ['e12'],
+      }).element_id,
+      undefined,
     );
   });
 

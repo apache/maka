@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isDeepStrictEqual } from 'node:util';
 import {
-  messageContentsEqual,
+  messageContentDigest,
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
@@ -11,6 +30,7 @@ import type {
   RootTurnAdmissionStore,
   RootTurnSourceMessage,
 } from '@maka/storage/execution-stores';
+import { submittedTurnIntentsEqual } from '@maka/storage/execution-stores';
 
 type OwnedAdmitRootTurnInput = Omit<AdmitRootTurnInput, 'previousRootTurnId'>;
 type Immutable<T> = T extends (...args: never[]) => unknown
@@ -23,8 +43,15 @@ type Immutable<T> = T extends (...args: never[]) => unknown
 
 export type ValidatedRootTurnAdmission = Immutable<RootTurnAdmission>;
 
+type AdmissionIdentity = Omit<RootTurnAdmission, 'normalizedInput' | 'sourceMessages'> & {
+  normalizedInputDigest: string | null;
+  sourceMessages: readonly (Omit<RootTurnAdmission['sourceMessages'][number], 'content'> & {
+    contentDigest: string;
+  })[];
+};
+
 export class RootAdmissionOwner {
-  readonly #admissionsBySession = new Map<string, Map<string, RootTurnAdmission>>();
+  readonly #admissionsBySession = new Map<string, Map<string, AdmissionIdentity>>();
   readonly #tips = new Map<string, RootTurnAdmission>();
   readonly #poisonedSessions = new Set<string>();
 
@@ -47,8 +74,8 @@ export class RootAdmissionOwner {
     }
     const admissions = await this.store.listRootTurnAdmissionsForRecovery(sessionId);
     const snapshots = Object.freeze(admissions.map(snapshotAdmission));
-    const byTurnId = new Map<string, RootTurnAdmission>();
-    for (const admission of snapshots) byTurnId.set(admission.turnId, admission);
+    const byTurnId = new Map<string, AdmissionIdentity>();
+    for (const admission of snapshots) byTurnId.set(admission.turnId, admissionIdentity(admission));
     this.#admissionsBySession.set(sessionId, byTurnId);
     const tip = snapshots.at(-1);
     if (tip) this.#tips.set(sessionId, tip);
@@ -66,6 +93,13 @@ export class RootAdmissionOwner {
         previousRootTurnId: current?.turnId ?? null,
       });
       const admission = result.admission;
+      if (result.kind === 'conflict') {
+        const known = this.#admissionsBySession.get(input.sessionId)?.get(admission.turnId);
+        if (!known || !sameRootAdmission(known, admission)) {
+          throw new Error('Durable Root Turn conflict is outside the owned chain');
+        }
+        return Object.freeze({ kind: 'conflict', admission: snapshotAdmission(admission) });
+      }
       if (
         admission.sessionId !== input.sessionId ||
         admission.turnId !== input.turnId ||
@@ -80,7 +114,7 @@ export class RootAdmissionOwner {
         throw new Error('Root Turn admission identity changed within one Host Epoch');
       }
       const snapshot = snapshotAdmission(admission);
-      byTurnId.set(admission.turnId, snapshot);
+      byTurnId.set(admission.turnId, admissionIdentity(snapshot));
       this.#admissionsBySession.set(input.sessionId, byTurnId);
       this.#tips.set(input.sessionId, snapshot);
       return Object.freeze({ ...result, admission: snapshot });
@@ -91,7 +125,22 @@ export class RootAdmissionOwner {
   }
 }
 
-function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): boolean {
+// Historical admissions must remain verifiable throughout the Host Epoch, but
+// only the current tip needs to own the full message bodies.
+function admissionIdentity(admission: RootTurnAdmission): AdmissionIdentity {
+  const { normalizedInput, sourceMessages, ...metadata } = admission;
+  return Object.freeze({
+    ...structuredClone(metadata),
+    normalizedInputDigest: normalizedInput === null ? null : messageContentDigest(normalizedInput),
+    sourceMessages: Object.freeze(
+      sourceMessages.map(({ content, ...source }) =>
+        Object.freeze({ ...structuredClone(source), contentDigest: messageContentDigest(content) }),
+      ),
+    ),
+  });
+}
+
+function sameRootAdmission(left: AdmissionIdentity, right: RootTurnAdmission): boolean {
   return (
     left.schemaVersion === right.schemaVersion &&
     left.sessionId === right.sessionId &&
@@ -101,10 +150,10 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    isDeepStrictEqual(left.authorization, right.authorization) &&
     left.previousRootTurnId === right.previousRootTurnId &&
-    (left.normalizedInput === null || right.normalizedInput === null
-      ? left.normalizedInput === right.normalizedInput
-      : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
+    left.normalizedInputDigest ===
+      (right.normalizedInput === null ? null : messageContentDigest(right.normalizedInput)) &&
     left.sourceMessages.length === right.sourceMessages.length &&
     left.sourceMessages.every((source, index) => {
       const other = right.sourceMessages[index];
@@ -114,7 +163,11 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
-        messageContentsEqual(source.content, other.content)
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
+        source.contentDigest === messageContentDigest(other.content)
       );
     }) &&
     left.admittedAt === right.admittedAt
@@ -135,6 +188,9 @@ function snapshotAdmission(admission: RootTurnAdmission): RootTurnAdmission {
     ...(admission.turnOrchestration
       ? { turnOrchestration: Object.freeze({ ...admission.turnOrchestration }) }
       : {}),
+    ...(admission.authorization
+      ? { authorization: Object.freeze({ ...admission.authorization }) }
+      : {}),
     normalizedInput:
       admission.normalizedInput === null ? null : snapshotMessageContent(admission.normalizedInput),
     sourceMessages: Object.freeze(sourceMessages),
@@ -148,6 +204,8 @@ function snapshotMessageContent(content: MessageContent): MessageContent {
     Object.freeze(attachment);
   }
   if (snapshot.attachments) Object.freeze(snapshot.attachments);
+  for (const reference of snapshot.directoryReferences ?? []) Object.freeze(reference);
+  if (snapshot.directoryReferences) Object.freeze(snapshot.directoryReferences);
   for (const quote of snapshot.quotes ?? []) Object.freeze(quote);
   if (snapshot.quotes) Object.freeze(snapshot.quotes);
   return Object.freeze(snapshot);

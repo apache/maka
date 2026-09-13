@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useRef } from 'react';
-import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
@@ -10,10 +28,7 @@ import { SettingsSurface } from './settings-surface';
 import type { ArchivedTasksBridge } from './tasks-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 
-export { SETTINGS_NAV } from './settings-nav';
-export type { SettingsNavGroup } from './settings-nav';
-
-export function SettingsModal(props: {
+export default function SettingsModal(props: {
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -31,20 +46,14 @@ export function SettingsModal(props: {
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   /**
-   * Force the modal to a specific section when it (re-)mounts or when the
-   * value changes while already open. Used by the command palette so
-   * ⌘K → "网络" jumps straight to the section without an extra click.
+   * Force the modal to a specific section and Runtime Host when it mounts.
+   * Section changes while already open remain live for command-palette jumps.
    */
-  requestedSection?: SettingsSection;
+  request?: { readonly section?: SettingsSection; readonly profileId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
-  /**
-   * PR-DAILY-REVIEW-MVP-0 follow-up: navigate to the sidebar's
-   * Daily Review module. Optional so the settings page degrades
-   * gracefully when the shell does not provide the jump.
-   */
-  onOpenDailyReview?(): void;
+  onOpenComputerHistory?(): void;
   /** Opens the keyboard sheet; 关于 is its click-reachable home. */
   onOpenKeyboardHelp?(): void;
   /**
@@ -56,6 +65,8 @@ export function SettingsModal(props: {
   archivedTasks: ArchivedTasksBridge;
   /** Receives the task 导入任务 just created, and opens it. */
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
+  onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -66,20 +77,6 @@ export function SettingsModal(props: {
   // happens per streamed token), and a focus side effect keyed on it yanks
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
-
-  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
-  // always calls the current `onClose` without the listener churning on that
-  // prop's identity (it is recreated on every AppShell render, i.e. per
-  // streamed token). It also skips defaultPrevented events, which is what the
-  // old `!event.defaultPrevented` check bought: a nested dialog that already
-  // consumed Escape closes itself, not the whole Settings surface.
-  //
-  // `allowInInputs` because Escape must close Settings from inside its own
-  // fields — the hook's default would have made Escape dead in every text box
-  // on the page.
-  useHotkeys([
-    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
-  ]);
 
   return (
     <div
@@ -99,16 +96,18 @@ export function SettingsModal(props: {
         uiLocaleUpdateGate={props.uiLocaleUpdateGate}
         onUserLabelChange={props.onUserLabelChange}
         onDefaultPermissionModeChange={props.onDefaultPermissionModeChange}
-        requestedSection={props.requestedSection}
+        request={props.request}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}
         initialCreateProviderType={props.initialCreateProviderType}
         initialFocusRef={activeNavRef}
-        onOpenDailyReview={props.onOpenDailyReview}
+        onOpenComputerHistory={props.onOpenComputerHistory}
         onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
         archivedTasks={props.archivedTasks}
         onTaskImported={props.onTaskImported}
+        onRemoteHostAdded={props.onRemoteHostAdded}
+        onSelectedRuntimeHostProfileIdChange={props.onSelectedRuntimeHostProfileIdChange}
       />
     </div>
   );

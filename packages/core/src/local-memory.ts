@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Transparent local MEMORY.md contract.
  *
@@ -7,6 +26,7 @@
 
 import type { Sha256Digest } from './oauth-subscription.js';
 import { redactSecrets } from './redaction.js';
+import { truncateUtf16Safe } from './text-sanitize.js';
 
 export type { Sha256Digest };
 
@@ -288,8 +308,7 @@ export function buildLocalMemoryPromptBody(
   const body = blocks.join('\n\n').trim();
   if (body.length === 0) return undefined;
   if (body.length <= LOCAL_MEMORY_PROMPT_MAX_CHARS) return body;
-  const truncated = body.slice(0, LOCAL_MEMORY_PROMPT_MAX_CHARS);
-  const boundarySafe = /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
+  const boundarySafe = truncateUtf16Safe(body, LOCAL_MEMORY_PROMPT_MAX_CHARS);
   return `${boundarySafe.trimEnd()}\n\n${LOCAL_MEMORY_PROMPT_TRUNCATION_MARKER}`;
 }
 
@@ -1059,6 +1078,18 @@ function slugId(title: string): string {
     .slice(0, 48);
   return slug.length > 0 ? slug : 'memory-entry';
 }
+
+export type LocalMemoryOperationCode =
+  | 'no_backup'
+  | 'invalid_backup_kind'
+  | 'memory_unavailable'
+  | 'backup_not_found'
+  | 'remote_host_owned'
+  | 'not_regular_file'
+  | 'open_failed'
+  | 'file_not_found'
+  | 'revision_conflict'
+  | 'backup_revision_conflict';
 
 function hexSha256(sha256: Sha256Digest, input: string): string {
   return Array.from(sha256.digest(input), (byte) => byte.toString(16).padStart(2, '0')).join('');

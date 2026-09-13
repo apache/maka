@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isShellOutput } from '@maka/core/shell-run';
 import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
@@ -39,6 +58,12 @@ export function isPermissionDeniedToolResult(result: ToolActivityItem['result'])
   return /^(User denied permission(?: request)?|用户已拒绝权限请求)$/.test(result.text.trim());
 }
 
+export function isRequiresBypassToolResult(result: ToolActivityItem['result']): boolean {
+  return result?.kind === 'text'
+    && result.sandboxFailure?.reason === 'requires_bypass'
+    && result.sandboxFailure.source === 'client_capability';
+}
+
 /**
  * Result kinds (or tool-specific cards) that already paint their own chrome —
  * never nest them inside the shared quiet well.
@@ -50,7 +75,6 @@ export function resultOwnsOwnPanel(item: ToolActivityItem): boolean {
   switch (result.kind) {
     case 'terminal':
     case 'shell_run':
-    case 'explore_agent':
     case 'web_search':
     case 'web_search_error':
     case 'file_diff':
@@ -90,7 +114,7 @@ function resultHasCapturedStreams(result: ToolActivityItem['result']): boolean {
 export function withLiveStreamFallback(
   result: NonNullable<ToolActivityItem['result']>,
   chunks: ToolActivityItem['outputChunks'] | undefined,
-  options?: { truncated?: boolean; locale?: UiLocale },
+  options: { truncated?: boolean; locale: UiLocale },
 ): NonNullable<ToolActivityItem['result']> {
   if (result.kind !== 'terminal' && result.kind !== 'shell_run') return result;
   if (resultHasCapturedStreams(result)) return result;
@@ -110,7 +134,7 @@ export function withLiveStreamFallback(
     else stdout += chunk.text;
   }
   const truncated = existing?.mode === 'pipes' && existing.stdoutTruncated === true
-    || options?.truncated === true;
+    || options.truncated === true;
   // Empty redacted/truncated live buffer still carries diagnosis — do not
   // early-return and drop "已脱敏" / "输出已截断".
   if (!stdout && !stderr && !anyRedacted && !truncated) return result;
@@ -118,7 +142,7 @@ export function withLiveStreamFallback(
   // Match live stream's "[已脱敏]" marker when a chunk was redacted
   // (including empty bodies that only suppressed secrets).
   if (anyRedacted) {
-    const marker = getToolActivityCopy(options?.locale ?? 'zh').output.redacted;
+    const marker = getToolActivityCopy(options.locale).output.redacted;
     if (stdout.length > 0) stdout = `${stdout}${stdout.endsWith('\n') ? '' : '\n'}${marker}`;
     else if (stderr.length > 0) stderr = `${stderr}${stderr.endsWith('\n') ? '' : '\n'}${marker}`;
     else stdout = marker;

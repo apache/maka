@@ -1,0 +1,5 @@
+{
+  "epoch": 42,
+  "files": ["packages/runtime-host/src/protocol/session-turns.ts"],
+  "reason": "Uses the canonical message decoder at the wire boundary without changing the accepted Session turn contribution shape"
+}

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { type ComponentType } from 'react';
 import {
   Activity,
@@ -8,6 +27,7 @@ import {
   Cpu,
   Database,
   FolderOpen,
+  History,
   Info,
   ListTodo,
   Palette,
@@ -20,6 +40,8 @@ import {
 } from '@maka/ui/icons';
 import type { SettingsSection } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
+import type { SettingsResourceStatus } from './settings-resource-state.js';
 import { safeLocalStorageGet } from '../browser-storage.js';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import {
@@ -65,6 +87,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
   { id: 'projects', Icon: FolderOpen, enabled: true, group: 'preferences' },
   { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
+  { id: 'external-agents', Icon: Bot, enabled: true, group: 'capabilities' },
   { id: 'subagents', Icon: Workflow, enabled: true, group: 'capabilities' },
   { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },
   { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },
@@ -73,6 +96,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'archived-tasks', Icon: ListTodo, enabled: true, group: 'activity' },
   { id: 'import-tasks', Icon: Upload, enabled: true, group: 'activity' },
   { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
+  { id: 'computer-history', Icon: History, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },
   { id: 'health', Icon: Activity, enabled: true, group: 'system' },
@@ -87,14 +111,16 @@ const SETTINGS_SECTION_SCOPES: Record<
   appearance: 'client',
   projects: 'mixed',
   models: 'runtime-host',
+  'external-agents': 'runtime-host',
   subagents: 'runtime-host',
   memory: 'runtime-host',
   'bot-chat': 'client',
   search: 'runtime-host',
-  usage: 'client',
+  usage: 'runtime-host',
   'archived-tasks': 'client',
   'import-tasks': 'runtime-host',
   'daily-review': 'runtime-host',
+  'computer-history': 'client',
   data: 'mixed',
   permissions: 'runtime-host',
   health: 'runtime-host',
@@ -136,4 +162,14 @@ export function settingsSectionScope(
   section: SettingsSection,
 ): 'client' | 'mixed' | 'runtime-host' {
   return SETTINGS_SECTION_SCOPES[section];
+}
+
+/** History analysis belongs to this client machine, regardless of the Settings target. */
+export function computerHistoryModelSettingsProfile(
+  catalog: DesktopRuntimeHostProfileSnapshot | undefined,
+  status: SettingsResourceStatus,
+): string | undefined {
+  if (!status.isVerified || status.phase === 'error') return undefined;
+  return catalog?.entries.find((entry) => entry.enabled && entry.profile.kind === 'local')
+    ?.profile.id;
 }

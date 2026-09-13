@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   LOCAL_RUNTIME_HOST_PROFILE,
   createClientRuntimeHostProfileCatalog,
   type RuntimeHostRemoteTransport,
   type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
-import { resolveMakaClientDataRoot } from '@maka/storage';
+import type { RuntimeHostPosixOperatorCommand } from '@maka/runtime-host/operator';
+import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 const DEFAULT_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 
@@ -17,6 +37,14 @@ export type RuntimeHostProfileCommand =
       readonly transport: RuntimeHostRemoteTransport;
       readonly expectedRootId: string;
       readonly credentialEnv?: string;
+    }
+  | {
+      readonly kind: 'set-environment';
+      readonly id: string;
+      readonly name: string;
+      readonly distribution: string;
+      readonly operator: RuntimeHostPosixOperatorCommand;
+      readonly expectedRootId: string;
     }
   | { readonly kind: 'remove'; readonly id: string };
 
@@ -46,16 +74,27 @@ export async function runRuntimeHostProfileCommand(
     return 0;
   }
 
-  const credentialEnv = command.credentialEnv ?? DEFAULT_CREDENTIAL_ENV;
-  const suppliedCredential = deps.env[credentialEnv];
+  const environment = command.kind === 'set-environment';
+  const suppliedCredential = environment
+    ? undefined
+    : deps.env[command.credentialEnv ?? DEFAULT_CREDENTIAL_ENV];
   const document = await deps.catalog.save(
-    {
-      id: command.id,
-      name: command.name,
-      kind: 'remote',
-      transport: command.transport,
-      rootId: command.expectedRootId,
-    },
+    environment
+      ? {
+          id: command.id,
+          name: command.name,
+          kind: 'environment',
+          provider: { kind: 'wsl', distribution: command.distribution },
+          operator: command.operator,
+          rootId: command.expectedRootId,
+        }
+      : {
+          id: command.id,
+          name: command.name,
+          kind: 'remote',
+          transport: command.transport,
+          rootId: command.expectedRootId,
+        },
     suppliedCredential,
   );
   const profile = document.profiles.find((candidate) => candidate.id === command.id);

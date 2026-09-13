@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Quiet-panel formatting for tool args + generic JSON results.
  *
@@ -11,7 +30,7 @@
  */
 
 import { redactSecrets } from './display-redaction.js';
-import { readWriteStdinInputPreview } from './tool-activity-args.js';
+import { projectToolActivityArgs, readWriteStdinInputPreview } from './tool-activity-args.js';
 import type { UiLocale } from './ui-locale.js';
 
 // ── Locale ───────────────────────────────────────────────────────────────
@@ -28,10 +47,12 @@ interface QuietPreviewStrings {
   written: string;
   /** Format a byte count suffix, e.g. `共 7 字节` / `7 bytes`. */
   bytes: (n: number) => string;
+  /** Suffix for a question list previewed by its first entry, e.g. `等 2 问` / `+1 more`. */
+  moreQuestions: (total: number) => string;
 }
 
 const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
-  zh: {
+  'zh-CN': {
     backgroundTerminal: '后台终端交互',
     empty: '（空）',
     done: '已完成',
@@ -39,6 +60,17 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => `${n} 处`,
     written: '已写入',
     bytes: (n) => `共 ${n} 字节`,
+    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
+  },
+  'zh-TW': {
+    backgroundTerminal: '後臺終端互動',
+    empty: '（空）',
+    done: '已完成',
+    notDone: '未完成',
+    replacements: (n) => `${n} 處`,
+    written: '已寫入',
+    bytes: (n) => `共 ${n} 位元組`,
+    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 問` : ''),
   },
   en: {
     backgroundTerminal: 'Background terminal interaction',
@@ -48,11 +80,12 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => (n === 1 ? '1 replacement' : `${n} replacements`),
     written: 'written',
     bytes: (n) => `${n} bytes`,
+    moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
   },
 };
 
 function strings(locale: UiLocale): QuietPreviewStrings {
-  return STRINGS_BY_LOCALE[locale] ?? STRINGS_BY_LOCALE.zh;
+  return STRINGS_BY_LOCALE[locale] ?? STRINGS_BY_LOCALE['zh-CN'];
 }
 
 // ── Tool command extraction ──────────────────────────────────────────────
@@ -207,7 +240,7 @@ export interface ToolInvocationInput {
  */
 export function formatToolInvocationLine(
   item: ToolInvocationInput,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): string | undefined {
   const s = strings(locale);
   const args = asRecord(item.args);
@@ -234,6 +267,30 @@ export function formatToolInvocationLine(
     const rows = size ? numberField(size, 'rows') : undefined;
     if (cols !== undefined && rows !== undefined) parts.push(`${cols}x${rows}`);
     return parts.join(' · ');
+  }
+
+  if (name === 'deep_research_start') {
+    const objective = stringField(args, 'objective');
+    if (objective) {
+      const scopeLevel = stringField(args, 'scope_level');
+      return redactSecrets(scopeLevel ? `${objective} (${scopeLevel})` : objective);
+    }
+  }
+
+  if (name === 'GoalSet') {
+    const condition = stringField(args, 'condition');
+    if (condition) return redactSecrets(condition);
+  }
+
+  if (name === 'AskUserQuestion') {
+    const questions = Array.isArray(args.questions) ? args.questions : undefined;
+    const firstQuestion = questions
+      ?.map((question) => stringField(asRecord(question), 'question'))
+      .find((questionText) => questionText !== undefined);
+    if (firstQuestion) {
+      const total = numberField(args, 'questionsTotal') ?? questions!.length;
+      return redactSecrets(`${firstQuestion}${s.moreQuestions(total)}`);
+    }
   }
 
   if (name === 'Grep' || (pattern && (name === 'Glob' || path))) {
@@ -269,6 +326,193 @@ export function formatToolInvocationLine(
   return lines.length > 0 ? lines : undefined;
 }
 
+// ── Public API: args preview (live wire) ────────────────────────────────
+
+/**
+ * Per-value cap for the wire preview. Long commands/paths still identify the
+ * call; the full value arrives with the durable transcript at turn end.
+ */
+const ARGS_PREVIEW_STRING_MAX_CHARS = 240;
+/** Whole-preview cap; lowest-priority fields drop until the preview fits. */
+const ARGS_PREVIEW_MAX_CHARS = 2048;
+/** Question lists keep only their leading entries. */
+const ARGS_PREVIEW_LIST_MAX_ITEMS = 4;
+
+const COMMIT_RESULT_ONLY_TOOL_NAMES = new Set(['todo_write']);
+
+/**
+ * Whitelist of scalar args keys {@link formatToolInvocationLine} can read, in
+ * display-priority order. Anything not listed here (file contents, option
+ * payloads, provider blobs) never enters the live wire preview.
+ */
+const ARGS_PREVIEW_SCALAR_KEYS = [
+  'command',
+  'cmd',
+  'script',
+  'path',
+  'file',
+  'pattern',
+  'glob',
+  'cwd',
+  'query',
+  'url',
+  'name',
+  'title',
+  'subject',
+  'condition',
+  'status',
+  'id',
+  'ref',
+] as const;
+
+// This tool's objective is the compact row's durable headline. Keep it
+// explicit rather than widening the generic wire allowlist with a broad key
+// such as `input`: non-WriteStdin tools otherwise retain arbitrary payloads.
+const DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS = ['objective', 'scope_level'] as const;
+
+const ARGS_PREVIEW_NUMBER_KEYS = ['offset', 'limit'] as const;
+
+function boundPreviewString(value: string): string {
+  const redacted = redactSecrets(value);
+  const chars = Array.from(redacted);
+  return chars.length <= ARGS_PREVIEW_STRING_MAX_CHARS
+    ? redacted
+    : `${chars.slice(0, ARGS_PREVIEW_STRING_MAX_CHARS - 1).join('')}…`;
+}
+
+function previewStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const raw = record[key];
+  return typeof raw === 'string' && raw.trim().length > 0 ? boundPreviewString(raw) : undefined;
+}
+
+function previewQuestions(
+  record: Record<string, unknown>,
+): { items: Record<string, unknown>[]; total: number } | undefined {
+  const list = record.questions;
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const items: Record<string, unknown>[] = [];
+  for (const entry of list.slice(0, ARGS_PREVIEW_LIST_MAX_ITEMS)) {
+    const text = previewStringField(asRecord(entry) ?? {}, 'question');
+    if (text === undefined) continue;
+    const redacted = redactSecrets(text);
+    if (redacted.trim().length === 0) continue;
+    items.push({ question: redacted });
+  }
+  return items.length > 0 ? { items, total: list.length } : undefined;
+}
+
+function previewInputPreview(value: unknown): Record<string, unknown> | undefined {
+  const preview = asRecord(value);
+  if (!preview) return undefined;
+  const text = previewStringField(preview, 'text');
+  if (text === undefined) return undefined;
+  const bytes = numberField(preview, 'bytes');
+  return {
+    text,
+    bytes: bytes ?? Array.from(text).length,
+    truncated: preview.truncated === true,
+  };
+}
+
+function previewSize(value: unknown): Record<string, unknown> | undefined {
+  const size = asRecord(value);
+  if (!size) return undefined;
+  const cols = numberField(size, 'cols');
+  const rows = numberField(size, 'rows');
+  return cols !== undefined && rows !== undefined ? { cols, rows } : undefined;
+}
+
+/**
+ * A bounded, redacted, wire-safe preview of a tool call's args, shaped like
+ * the args themselves so `formatToolInvocationLine` renders the same line from
+ * the preview as from the full args.
+ *
+ * Runtime Host live `tool_start` frames deliberately omit full args (the lean
+ * subscription channel predates per-frame budgets; a Write can carry a whole
+ * file). Without any args signal, compact/collapsed tool rows render name-only
+ * for the whole live window — the only window a watching user sees. This
+ * preview carries just the fields the invocation-line formatter reads, each
+ * string redacted and capped, so live rows can say what the call does without
+ * streaming file bodies or option payloads.
+ *
+ * Sensitive keys are dropped structurally (never redacted-in-place) and every
+ * string still passes `redactSecrets`; the durable transcript remains the
+ * authority for full args.
+ */
+export function projectToolArgsPreview(
+  toolName: string,
+  args: unknown,
+): Record<string, unknown> | undefined {
+  const record = asRecord(args);
+  if (!record) return undefined;
+  // A Todo write's args are only a proposal. Showing them while the call is
+  // live would present uncommitted state as fact; the settled tool_result owns
+  // the complete committed snapshot.
+  if (COMMIT_RESULT_ONLY_TOOL_NAMES.has(toolName)) return undefined;
+
+  // Apply the canonical activity projection first so WriteStdin's inputPreview
+  // shape (bounded, display-safe) is what the whitelist picks up.
+  const projected = asRecord(projectToolActivityArgs(toolName, args)) ?? record;
+  const scalarKeys =
+    toolName === 'deep_research_start'
+      ? [...ARGS_PREVIEW_SCALAR_KEYS, ...DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS]
+      : ARGS_PREVIEW_SCALAR_KEYS;
+
+  const picked = new Map<string, unknown>();
+  for (const key of scalarKeys) {
+    if (isSensitiveKey(key)) continue;
+    const value = previewStringField(projected, key);
+    if (value !== undefined) picked.set(key, value);
+  }
+  for (const key of ARGS_PREVIEW_NUMBER_KEYS) {
+    const value = numberField(projected, key);
+    if (value !== undefined) picked.set(key, value);
+  }
+  // Only WriteStdin owns these shapes. Other tools retain arbitrary args, so
+  // accepting a caller-supplied inputPreview here would reopen a generic free-
+  // text payload path around its canonical safe-text projection.
+  if (toolName === 'WriteStdin') {
+    const inputPreview = previewInputPreview(projected.inputPreview);
+    if (inputPreview) picked.set('inputPreview', inputPreview);
+    const size = previewSize(projected.size);
+    if (size) picked.set('size', size);
+  }
+  // Only the built-in interaction tool owns this free-text shape. Arbitrary
+  // third-party tools may use the same field names for private payloads.
+  if (toolName === 'AskUserQuestion') {
+    const questions = previewQuestions(projected);
+    if (questions) {
+      picked.set('questions', questions.items);
+      if (questions.total > questions.items.length) picked.set('questionsTotal', questions.total);
+    }
+  }
+
+  if (picked.size === 0) return undefined;
+
+  // Enforce the whole-preview budget by dropping lowest-priority fields; the
+  // first picked (highest-priority) field always survives.
+  const keysByPriority = [
+    ...scalarKeys,
+    ...ARGS_PREVIEW_NUMBER_KEYS,
+    'inputPreview',
+    'size',
+    'questions',
+    'questionsTotal',
+  ];
+  const result: Record<string, unknown> = {};
+  for (const key of keysByPriority) {
+    const value = picked.get(key);
+    if (value !== undefined) result[key] = value;
+  }
+  const droppable = [...keysByPriority].reverse();
+  while (JSON.stringify(result).length > ARGS_PREVIEW_MAX_CHARS && droppable.length > 1) {
+    const key = droppable.shift()!;
+    if (key === keysByPriority.find((candidate) => result[candidate] !== undefined)) continue;
+    delete result[key];
+  }
+  return result;
+}
+
 // ── Public API: quiet JSON value ─────────────────────────────────────────
 
 export interface QuietPreview {
@@ -284,7 +528,7 @@ export interface QuietPreview {
  * Primary list/text fields become the main body; remaining fields (error, ok,
  * truncated, …) are appended so diagnostics cannot vanish.
  */
-export function formatQuietJsonValue(value: unknown, locale: UiLocale = 'zh'): QuietPreview {
+export function formatQuietJsonValue(value: unknown, locale: UiLocale): QuietPreview {
   const s = strings(locale);
   if (value === null || value === undefined) {
     return { body: s.empty };
@@ -304,7 +548,7 @@ export function formatQuietJsonValue(value: unknown, locale: UiLocale = 'zh'): Q
     return { body: redactSecrets(String(value)) };
   }
 
-  // Known list payloads (Grep/Glob/load_tools/…).
+  // Known list payloads (Grep/Glob/tool_search/…).
   for (const key of LIST_KEYS) {
     if (!Array.isArray(record[key])) continue;
     const consumed = new Set<string>([key]);
@@ -442,8 +686,8 @@ function formatArrayAsBody(values: unknown[], locale: UiLocale): string {
  */
 export function formatAsKeyValueLines(
   record: Record<string, unknown>,
-  depth = 0,
-  locale: UiLocale = 'zh',
+  depth: number,
+  locale: UiLocale,
 ): string {
   const s = strings(locale);
   if (depth > 3) return redactSecrets(String(record));

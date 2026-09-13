@@ -1,0 +1,691 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import {
+  applyLocalHostDeploymentTransition,
+  readLocalHostDeploymentRecord,
+  type resolveRuntimeHostManagedDeploymentAuthority,
+} from '@maka/runtime-host/operator';
+import { gzipSync } from 'node:zlib';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  type HostRegistration,
+} from '@maka/runtime-host/protocol';
+import {
+  installRuntimeHostNpmGlobalArchive,
+  runRuntimeHostInstalledUpdateCoordinator,
+} from '../runtime-host-installed-update-coordinator.js';
+import {
+  reconcilePreparedRuntimeHostNpmGlobalDeployment,
+  type RuntimeHostLocalProcessLifecycleAdapter,
+} from '../runtime-host-local-handoff.js';
+
+const ROOT_ID = 'b'.repeat(64);
+const INTEGRITY = `sha512-${Buffer.alloc(64, 4).toString('base64')}`;
+const OWNER = { kind: 'cli' as const, installationId: 'npm-global:slot' };
+
+function managedAuthority(): NonNullable<
+  Awaited<ReturnType<typeof resolveRuntimeHostManagedDeploymentAuthority>>
+> {
+  return {
+    capability: { kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID } as never,
+    record: {
+      schemaVersion: 1,
+      state: 'active',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      deploymentRoot: '/deployment',
+      root: { path: '/state', id: ROOT_ID },
+      projectDirectoryRoots: [],
+      launch: {
+        kind: 'exact_package',
+        nodePath: process.execPath,
+        package: { kind: 'npm_registry', version: '1.0.0', integrity: INTEGRITY },
+      },
+      listeners: { localIpc: true },
+      lifecycle: { mode: 'on_demand', availability: 'activation' },
+      reconciliation: { trigger: 'manual' },
+    },
+  };
+}
+
+for (const changed of ['host_epoch', 'managed_before_update', 'managed_during_cutover'] as const) {
+  test(`TUI update fences ${changed} despite the matching old CLI owner before retirement or install`, async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-update-epoch-fence-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const authorityOptions = { authorityRoot: join(base, 'authority') };
+    const previous = { kind: 'npm_registry' as const, version: '1.0.0', integrity: INTEGRITY };
+    const target = { ...previous, version: '2.0.0' };
+    const claimed = await applyLocalHostDeploymentTransition(
+      ROOT_ID,
+      {
+        kind: 'claim',
+        owner: OWNER,
+        selected: previous,
+      },
+      authorityOptions,
+    );
+    assert.ok(claimed.record);
+    let observations = 0;
+    let closes = 0;
+    let staged = false;
+    const mutationEffects: string[] = [];
+    let reconciliation:
+      | Awaited<ReturnType<typeof reconcilePreparedRuntimeHostNpmGlobalDeployment>>
+      | undefined;
+    const run = runRuntimeHostInstalledUpdateCoordinator(
+      {
+        rootPath: '/state',
+        archivePath: '/archive.tgz',
+        installedPackageRoot: '/installed',
+        installedCliPath: '/installed/dist/cli.js',
+        currentVersion: '1.0.0',
+        target,
+        allowInterruptActiveTasks: false,
+        expectedSource: {
+          rootId: ROOT_ID,
+          deploymentRevision: claimed.record.revision,
+          ownerInstallationId: OWNER.installationId,
+          hostEpoch: 'old-host',
+        },
+      },
+      authorityOptions,
+      {
+        reconcile: async (...args) => {
+          reconciliation = await reconcilePreparedRuntimeHostNpmGlobalDeployment(...args);
+          return reconciliation;
+        },
+        resolveManagedAuthority: async () => {
+          if (changed === 'managed_before_update') return managedAuthority();
+          if (changed !== 'managed_during_cutover' || !staged) return undefined;
+          assert.equal(
+            (await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions))?.state.kind,
+            'handoff',
+          );
+          return managedAuthority();
+        },
+        resolveInstallation: async () => ({
+          owner: OWNER,
+          observedRelease: {
+            version: '1.0.0',
+            packageRoot: '/installed',
+            cliPath: '/installed/dist/cli.js',
+          },
+        }),
+        resolveRoot: async () =>
+          ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+        withArchive: async (_target, archivePath, use) =>
+          use({ archivePath, packageRoot: '/target' }),
+        prepareStaged: async () => {
+          staged = true;
+          return {
+            version: target.version,
+            root: '/staged',
+            packageRoot: '/staged',
+            cliPath: '/staged/dist/cli.js',
+            candidateEntrypoint: '/staged/candidate.js',
+            launchGeneration: 'new-target',
+            cleanup: async () => {},
+            rollback: async () => {},
+          };
+        },
+        connectExisting: async () => {
+          observations += 1;
+          if (observations === 2) {
+            // Real reconcile has taken the deployment lease and written its intent.
+            assert.equal(
+              (await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions))?.state.kind,
+              'handoff',
+            );
+          }
+          return {
+            kind: 'connected',
+            registration: registration({
+              hostEpoch:
+                changed === 'host_epoch' && observations > 1 ? 'successor-host' : 'old-host',
+            }),
+            connection: {
+              close: async () => {
+                closes += 1;
+              },
+            } as never,
+          };
+        },
+        prepareRetirement: async () => {
+          mutationEffects.push('retire');
+          assert.fail('stale consent must not retire the successor');
+        },
+        activateTarget: async () => {
+          mutationEffects.push('activate');
+          assert.fail('stale consent must not activate another Host');
+        },
+        installArchive: async () => {
+          mutationEffects.push('install');
+          assert.fail('stale consent must not replace the npm installation');
+        },
+      },
+    );
+    if (changed === 'managed_before_update') {
+      await assert.rejects(run, /managed.*operator/);
+      assert.deepEqual(mutationEffects, []);
+      assert.deepEqual(
+        await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions),
+        claimed.record,
+      );
+      return;
+    }
+    const result = await run;
+    assert.deepEqual(mutationEffects, []);
+    assert.equal(result, 1); // Existing transaction truthfully reports recovery_required.
+    assert.equal(reconciliation?.kind, 'recovery_required');
+    if (reconciliation?.kind !== 'recovery_required')
+      assert.fail('the cutover must retain truthful recovery evidence');
+    assert.equal(reconciliation.phase, 'prepare_host_cutover');
+    assert.match(
+      String(reconciliation.cause),
+      changed === 'host_epoch' ? /Host changed/ : /managed.*operator/,
+    );
+    assert.equal(observations, changed === 'host_epoch' ? 2 : 1);
+    assert.equal(closes, observations);
+    const pending = await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions);
+    assert.equal(pending?.state.kind, 'handoff');
+    assert.deepEqual(pending?.state.selected, previous);
+  });
+}
+
+function tarHeader(name: string, size: number, type: string): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 'latin1');
+  header.write('0000644\0', 100, 'latin1');
+  header.write(size.toString(8).padStart(11, '0') + '\0', 124, 'latin1');
+  header.write(type, 156, 'latin1');
+  header.write('        ', 148, 'latin1');
+  let checksum = 0;
+  for (const byte of header) checksum += byte;
+  header.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 'latin1');
+  return header;
+}
+
+test('retires with the current package, activates with the target, then switches npm before commit', async () => {
+  const events: string[] = [];
+  let installationRead = 0;
+  let hostObservation = 0;
+  const oldInstallation = {
+    owner: OWNER,
+    observedRelease: {
+      version: '1.0.0',
+      packageRoot: '/global/node_modules/maka-agent',
+      cliPath: '/global/node_modules/maka-agent/dist/cli.js',
+    },
+  };
+  const target = { kind: 'npm_registry' as const, version: '2.0.0', integrity: INTEGRITY };
+
+  const exitCode = await runRuntimeHostInstalledUpdateCoordinator(
+    {
+      rootPath: '/state',
+      archivePath: '/temporary/target.tgz',
+      installedPackageRoot: oldInstallation.observedRelease.packageRoot,
+      installedCliPath: oldInstallation.observedRelease.cliPath,
+      currentVersion: oldInstallation.observedRelease.version,
+      target,
+      allowInterruptActiveTasks: true,
+    },
+    {},
+    {
+      resolveInstallation: async () => {
+        installationRead += 1;
+        events.push(
+          installationRead === 1 ? 'observe-old-installation' : 'verify-new-installation',
+        );
+        return installationRead === 1
+          ? oldInstallation
+          : {
+              owner: OWNER,
+              observedRelease: { ...oldInstallation.observedRelease, version: target.version },
+            };
+      },
+      resolveRoot: async () =>
+        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+      withArchive: async (_target, archivePath, use) => {
+        assert.equal(archivePath, '/temporary/target.tgz');
+        return use({ archivePath, packageRoot: '/temporary/target-package' });
+      },
+      prepareStaged: async (input) => {
+        events.push('stage-target');
+        assert.equal(input.sourcePackageRoot, '/temporary/target-package');
+        return {
+          version: target.version,
+          root: '/store',
+          packageRoot: '/store/target',
+          cliPath: '/store/target/dist/cli.js',
+          candidateEntrypoint: '/store/target/runtime-host.js',
+          launchGeneration: 'target-generation',
+          cleanup: async () => {},
+          rollback: async () => {},
+        };
+      },
+      connectExisting: async () => {
+        hostObservation += 1;
+        return {
+          kind: 'connected',
+          registration: registration(),
+          connection: {
+            close: async () =>
+              events.push(hostObservation === 1 ? 'close-preliminary' : 'close-old-host'),
+          } as never,
+        };
+      },
+      prepareRetirement: async (_connection, mode) => {
+        events.push(`retire:${mode}`);
+        return { kind: 'prepared', pid: 42 };
+      },
+      activateTarget: async (input) => {
+        events.push('activate-target');
+        assert.equal(input.takeoverHostEpoch, 'old-host');
+        assert.equal(input.inheritableAuthorityLeaseFd, 17);
+        assert.equal(input.ownerInstallationId, OWNER.installationId);
+        assert.deepEqual(input.target, target);
+        return {
+          kind: 'ready',
+          settle: async () => {
+            events.push('settle-target');
+          },
+        };
+      },
+      installArchive: async (archivePath, inheritableAuthorityLeaseFd) => {
+        assert.equal(archivePath, '/temporary/target.tgz');
+        assert.equal(inheritableAuthorityLeaseFd, 17);
+        events.push('switch-global-package');
+      },
+      reconcile: (async (_request: unknown, lifecycle: RuntimeHostLocalProcessLifecycleAdapter) => {
+        assert.deepEqual(
+          await lifecycle.prepareHostCutover(
+            ROOT_ID,
+            target,
+            target,
+            undefined as never,
+            'interrupt_active_work',
+            17,
+          ),
+          { kind: 'target_present' },
+        );
+        await lifecycle.verifyTargetReady(ROOT_ID, target, undefined as never);
+        await lifecycle.finalizeTarget?.(ROOT_ID, target, undefined as never, 17);
+        events.push('commit-owner');
+        return {
+          kind: 'completed',
+          record: {
+            schemaVersion: 1,
+            rootId: ROOT_ID,
+            revision: '00000000-0000-4000-8000-000000000000',
+            state: { kind: 'owned', owner: OWNER, selected: target },
+          },
+        };
+      }) as never,
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(events, [
+    'observe-old-installation',
+    'stage-target',
+    'close-preliminary',
+    'retire:interrupt_active_work',
+    'close-old-host',
+    'activate-target',
+    'switch-global-package',
+    'verify-new-installation',
+    'commit-owner',
+    'settle-target',
+  ]);
+});
+
+test('crash-retry observes its own staged target and never retires or re-activates it', async () => {
+  const events: string[] = [];
+  const oldInstallation = {
+    owner: OWNER,
+    observedRelease: {
+      version: '1.0.0',
+      packageRoot: '/global/node_modules/maka-agent',
+      cliPath: '/global/node_modules/maka-agent/dist/cli.js',
+    },
+  };
+  const target = { kind: 'npm_registry' as const, version: '2.0.0', integrity: INTEGRITY };
+
+  const exitCode = await runRuntimeHostInstalledUpdateCoordinator(
+    {
+      rootPath: '/state',
+      archivePath: '/temporary/target.tgz',
+      installedPackageRoot: oldInstallation.observedRelease.packageRoot,
+      installedCliPath: oldInstallation.observedRelease.cliPath,
+      currentVersion: oldInstallation.observedRelease.version,
+      target,
+      allowInterruptActiveTasks: true,
+    },
+    {},
+    {
+      resolveInstallation: async () =>
+        events.includes('switch-global-package')
+          ? {
+              owner: OWNER,
+              observedRelease: {
+                ...oldInstallation.observedRelease,
+                version: target.version,
+              },
+            }
+          : oldInstallation,
+      resolveRoot: async () =>
+        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+      withArchive: async (_target, archivePath, use) =>
+        use({ archivePath, packageRoot: '/temporary/target-package' }),
+      prepareStaged: async () => ({
+        version: target.version,
+        root: '/store',
+        packageRoot: '/store/target',
+        cliPath: '/store/target/dist/cli.js',
+        candidateEntrypoint: '/store/target/runtime-host.js',
+        launchGeneration: 'target-generation',
+        cleanup: async () => {},
+        rollback: async () => {},
+      }),
+      // The crashed first attempt already activated the staged target: the
+      // observed Host carries this transaction's launch generation.
+      connectExisting: async () => ({
+        kind: 'connected',
+        registration: registration({ generation: 'target-generation' }),
+        connection: { close: async () => events.push('close-observed-target') } as never,
+      }),
+      waitForReady: async () => {
+        events.push('verify-observed-target-ready');
+      },
+      prepareRetirement: async () => {
+        events.push('retire');
+        return { kind: 'prepared', pid: 42 };
+      },
+      activateTarget: async () => {
+        events.push('activate-target');
+        return {
+          kind: 'ready',
+          settle: async () => {
+            events.push('settle-target');
+          },
+        };
+      },
+      installArchive: async () => {
+        events.push('switch-global-package');
+      },
+      reconcile: (async (_request: unknown, lifecycle: RuntimeHostLocalProcessLifecycleAdapter) => {
+        assert.deepEqual(
+          await lifecycle.prepareHostCutover(
+            ROOT_ID,
+            target,
+            target,
+            undefined as never,
+            'interrupt_active_work',
+            17,
+          ),
+          { kind: 'target_present' },
+        );
+        await lifecycle.verifyTargetReady(ROOT_ID, target, undefined as never);
+        await lifecycle.finalizeTarget?.(ROOT_ID, target, undefined as never, 17);
+        events.push('commit-owner');
+        return {
+          kind: 'completed',
+          record: {
+            schemaVersion: 1,
+            rootId: ROOT_ID,
+            revision: '00000000-0000-4000-8000-000000000000',
+            state: { kind: 'owned', owner: OWNER, selected: target },
+          },
+        };
+      }) as never,
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  // No retirement: the live target is recognized as this transaction's own,
+  // while a short-lived activator re-attaches as its crash guardian through
+  // the pending durable commit.
+  assert.deepEqual(events, [
+    'close-observed-target', // preliminary observation
+    'verify-observed-target-ready',
+    'close-observed-target', // the prepare-phase observation of the live target
+    'activate-target',
+    'switch-global-package',
+    'commit-owner',
+    'settle-target',
+  ]);
+});
+
+test('crash-retry with the global package already switched skips the second install', async () => {
+  const events: string[] = [];
+  const switchedInstallation = {
+    owner: OWNER,
+    observedRelease: {
+      version: '2.0.0',
+      packageRoot: '/global/node_modules/maka-agent',
+      cliPath: '/global/node_modules/maka-agent/dist/cli.js',
+    },
+  };
+  const target = { kind: 'npm_registry' as const, version: '2.0.0', integrity: INTEGRITY };
+
+  const exitCode = await runRuntimeHostInstalledUpdateCoordinator(
+    {
+      rootPath: '/state',
+      archivePath: '/temporary/target.tgz',
+      installedPackageRoot: switchedInstallation.observedRelease.packageRoot,
+      installedCliPath: switchedInstallation.observedRelease.cliPath,
+      currentVersion: switchedInstallation.observedRelease.version,
+      target,
+      allowInterruptActiveTasks: false,
+    },
+    {},
+    {
+      resolveInstallation: async () => switchedInstallation,
+      resolveRoot: async () =>
+        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+      withArchive: async (_target, archivePath, use) =>
+        use({ archivePath, packageRoot: '/temporary/target-package' }),
+      prepareStaged: async () => ({
+        version: target.version,
+        root: '/store',
+        packageRoot: '/store/target',
+        cliPath: '/store/target/dist/cli.js',
+        candidateEntrypoint: '/store/target/runtime-host.js',
+        launchGeneration: 'target-generation',
+        cleanup: async () => {},
+        rollback: async () => {},
+      }),
+      connectExisting: async () => ({
+        kind: 'connected',
+        registration: registration({ generation: 'target-generation' }),
+        connection: { close: async () => events.push('close-observed-target') } as never,
+      }),
+      waitForReady: async () => {},
+      prepareRetirement: async () => {
+        events.push('retire');
+        return { kind: 'prepared', pid: 42 };
+      },
+      activateTarget: async () => {
+        events.push('activate-target');
+        return {
+          kind: 'ready',
+          settle: async () => {
+            events.push('settle-target');
+          },
+        };
+      },
+      installArchive: async () => {
+        events.push('switch-global-package');
+      },
+      reconcile: (async (_request: unknown, lifecycle: RuntimeHostLocalProcessLifecycleAdapter) => {
+        assert.deepEqual(
+          await lifecycle.prepareHostCutover(
+            ROOT_ID,
+            target,
+            target,
+            undefined as never,
+            'refuse_active_work',
+            17,
+          ),
+          { kind: 'target_present' },
+        );
+        await lifecycle.verifyTargetReady(ROOT_ID, target, undefined as never);
+        await lifecycle.finalizeTarget?.(ROOT_ID, target, undefined as never, 17);
+        events.push('commit-owner');
+        return {
+          kind: 'completed',
+          record: {
+            schemaVersion: 1,
+            rootId: ROOT_ID,
+            revision: '00000000-0000-4000-8000-000000000000',
+            state: { kind: 'owned', owner: OWNER, selected: target },
+          },
+        };
+      }) as never,
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(events, [
+    'close-observed-target',
+    'close-observed-target',
+    'activate-target',
+    'commit-owner',
+    'settle-target',
+  ]);
+});
+
+test('asks the target activator to adjudicate an uncertain durable commit', async () => {
+  const events: string[] = [];
+  const installation = {
+    owner: OWNER,
+    observedRelease: {
+      version: '1.0.0',
+      packageRoot: '/global/node_modules/maka-agent',
+      cliPath: '/global/node_modules/maka-agent/dist/cli.js',
+    },
+  };
+  const target = { kind: 'npm_registry' as const, version: '2.0.0', integrity: INTEGRITY };
+  const exitCode = await runRuntimeHostInstalledUpdateCoordinator(
+    {
+      rootPath: '/state',
+      archivePath: '/temporary/target.tgz',
+      installedPackageRoot: installation.observedRelease.packageRoot,
+      installedCliPath: installation.observedRelease.cliPath,
+      currentVersion: installation.observedRelease.version,
+      target,
+      allowInterruptActiveTasks: false,
+    },
+    {},
+    {
+      resolveInstallation: async () => installation,
+      resolveRoot: async () =>
+        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+      withArchive: async (_target, archivePath, use) =>
+        use({ archivePath, packageRoot: '/temporary/target-package' }),
+      prepareStaged: async () => ({
+        version: target.version,
+        root: '/store',
+        packageRoot: '/store/target',
+        cliPath: '/store/target/dist/cli.js',
+        candidateEntrypoint: '/store/target/runtime-host.js',
+        launchGeneration: 'target-generation',
+        cleanup: async () => {},
+        rollback: async () => {},
+      }),
+      connectExisting: async () => ({ kind: 'unavailable', reason: 'not_registered' }),
+      activateTarget: async () => ({
+        kind: 'ready',
+        settle: async () => {
+          events.push('settle-target');
+        },
+      }),
+      reconcile: (async (_request: unknown, lifecycle: RuntimeHostLocalProcessLifecycleAdapter) => {
+        assert.deepEqual(
+          await lifecycle.prepareUnownedHostCutover(
+            ROOT_ID,
+            target,
+            undefined as never,
+            'refuse_active_work',
+            17,
+          ),
+          { kind: 'target_present' },
+        );
+        return {
+          kind: 'recovery_required',
+          phase: 'commit_handoff',
+          cause: new Error('durability'),
+        };
+      }) as never,
+    },
+  );
+  assert.equal(exitCode, 1);
+  assert.deepEqual(events, ['settle-target']);
+});
+
+test('rejects extended tar headers before the final global npm switch can spawn', async (t) => {
+  const pax = Buffer.from('19 size=4294967296\n');
+  const archive = gzipSync(
+    Buffer.concat([
+      tarHeader('PaxHeader', pax.length, 'x'),
+      pax,
+      Buffer.alloc(512 - pax.length),
+      tarHeader('package/package.json', 0, '0'),
+      Buffer.alloc(1024),
+    ]),
+  );
+  const root = await mkdtemp(join(tmpdir(), 'maka-global-pax-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const archivePath = join(root, 'pax.tgz');
+  await writeFile(archivePath, archive);
+  await assert.rejects(
+    installRuntimeHostNpmGlobalArchive(archivePath, 17, (() =>
+      assert.fail('PAX archive must not reach npm spawn')) as never),
+    /unsupported extended tar header/u,
+  );
+});
+
+function registration(overrides: Partial<HostRegistration> = {}): HostRegistration {
+  return {
+    kind: 'maka-runtime-host',
+    schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+    rootId: ROOT_ID,
+    hostEpoch: 'old-host',
+    endpoint: '/tmp/maka.sock',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'revision',
+    lifecycleMode: 'ephemeral',
+    state: 'ready',
+    pid: 42,
+    createdAt: new Date(0).toISOString(),
+    ...overrides,
+  };
+}

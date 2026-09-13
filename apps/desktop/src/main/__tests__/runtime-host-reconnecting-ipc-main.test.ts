@@ -1,3 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
+import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import type { ReconnectableReadIpcMain } from '../ipc-reconnect-policy.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IpcMain } from "electron";
@@ -9,7 +32,317 @@ import {
   readWithFallback,
   tryReconnectableReadResult,
 } from "../ipc-reconnect-policy.js";
-import { RuntimeHostReconnectingIpcMain } from "../runtime-host-reconnecting-ipc-main.js";
+import * as ipcReconnectPolicy from "../ipc-reconnect-policy.js";
+import {
+  RuntimeHostHandlerUnavailableError,
+  RuntimeHostHandlerUnsupportedError,
+  RuntimeHostReconnectingIpcMain,
+  RuntimeHostTargetChangedError,
+} from "../runtime-host-reconnecting-ipc-main.js";
+
+test("unsupported Guest IPC fails immediately while an Owner channel still survives reconnect", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const owner = router.createTarget("owner");
+  owner.handleReconnectableRead!("onboarding:getSnapshot", async () => "owner");
+  owner.completeRegistration();
+  assert.throws(
+    () => owner.handleReconnectableRead!("late-channel", async () => "late"),
+    /registration is complete/,
+  );
+  router.activate("owner");
+  router.activate("guest");
+  // A request during first connection can wait until its actual surface is known.
+  const early = assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  router.createTarget("guest").completeRegistration();
+  await early;
+  await assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  owner.removeHandler("onboarding:getSnapshot");
+  const recovering = ipc.invoke("onboarding:getSnapshot", scope("owner"));
+  const replacement = router.createTarget("owner");
+  replacement.handleReconnectableRead!("onboarding:getSnapshot", async () => "replacement");
+  replacement.completeRegistration();
+  assert.equal(await recovering, "replacement");
+});
+
+test("reconciliation becomes unavailable when the replacement no longer supports its channel", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const target = router.createTarget("owner");
+  let dispatches = 0;
+  target.handleReconciledControl!("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+    reconciliationUnavailable: async (context) => ({ kind: "unavailable", context }),
+  });
+  target.completeRegistration();
+  router.activate("owner");
+  const result = ipc.invoke("goal:arm", scope("owner"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  target.removeHandler("goal:arm");
+  router.createTarget("owner").completeRegistration();
+  assert.deepEqual(await result, {
+    kind: "unavailable", context: { sessionId: "session-1" },
+  });
+  assert.equal(dispatches, 1);
+});
+
+test("classifies only dispatched control connection loss for reconciliation", () => {
+  const predicate = (
+    ipcReconnectPolicy as typeof ipcReconnectPolicy & {
+      isDispatchedControlConnectionLoss?: (error: unknown) => boolean;
+    }
+  ).isDispatchedControlConnectionLoss;
+  assert.equal(typeof predicate, "function");
+  assert.equal(
+    predicate?.(
+      new RuntimeHostRequestInterruptedError(
+        "goal.arm",
+        "control",
+        "dispatched",
+        "connection_lost",
+      ),
+    ),
+    true,
+  );
+  for (const error of [
+    new RuntimeHostRequestInterruptedError(
+      "goal.arm",
+      "control",
+      "not_dispatched",
+      "connection_lost",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "goal.arm",
+      "control",
+      "dispatched",
+      "timeout",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "goal.query",
+      "query",
+      "dispatched",
+      "connection_lost",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "web-search.execute",
+      "command",
+      "dispatched",
+      "connection_lost",
+    ),
+    new Error("ordinary failure"),
+  ]) {
+    assert.equal(predicate?.(error), false);
+  }
+});
+
+test("reconciles a dispatched control on a replacement without replaying it", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  assert.equal(typeof firstTarget.handleReconciledControl, "function");
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return {
+        kind: "reconcile",
+        context: { condition: "All tests pass" },
+      };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const replacementTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let reconciliations = 0;
+  replacementTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async (context) => {
+      reconciliations += 1;
+      assert.deepEqual(context, { condition: "All tests pass" });
+      return { kind: "reconciled", currentGoal: "goal-1" };
+    },
+  });
+
+  assert.deepEqual(await arming, {
+    kind: "reconciled",
+    currentGoal: "goal-1",
+  });
+  assert.equal(dispatches, 1);
+  assert.equal(reconciliations, 1);
+  router.close();
+});
+
+test("bounds reconciliation when no replacement candidate becomes available", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 5,
+  });
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The unavailable candidate must not reconcile"),
+    reconciliationUnavailable: async () => ({ kind: "reconciliation_unavailable" }),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+
+  try {
+    assert.deepEqual(
+      await Promise.race([
+        settled,
+        new Promise<{ readonly timedOut: true }>((resolve) =>
+          setTimeout(() => resolve({ timedOut: true }), 25),
+        ),
+      ]),
+      {
+        ok: true,
+        value: { kind: "reconciliation_unavailable" },
+      },
+    );
+    assert.equal(dispatches, 1);
+  } finally {
+    router.close();
+    await settled;
+  }
+});
+
+test("retries only reconciliation when its replacement connection is lost", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const failedTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  const reconciliationEntered = deferred();
+  const failReconciliation = deferred();
+  failedTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async () => {
+      reconciliationEntered.resolve();
+      await failReconciliation.promise;
+      throw new RuntimeHostRequestInterruptedError(
+        "goal.query",
+        "query",
+        "dispatched",
+        "connection_lost",
+      );
+    },
+  });
+  await reconciliationEntered.promise;
+  failReconciliation.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  failedTarget.removeHandler("goal:arm");
+  const recoveredTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let reconciliations = 0;
+  recoveredTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async (context) => {
+      reconciliations += 1;
+      assert.deepEqual(context, { sessionId: "session-1" });
+      return { kind: "reconciled", currentGoal: "goal-1" };
+    },
+  });
+
+  assert.deepEqual(await settled, {
+    ok: true,
+    value: { kind: "reconciled", currentGoal: "goal-1" },
+  });
+  assert.equal(dispatches, 1);
+  assert.equal(reconciliations, 1);
+  router.close();
+});
+
+test("never reconciles a control through a different target epoch", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    () => ({ settled: true }),
+    (error: unknown) => ({ settled: true, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const otherTarget = router.createTarget("target-b") as ReconciledControlTarget;
+  let otherReconciliations = 0;
+  otherTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async () => {
+      otherReconciliations += 1;
+      return { kind: "reconciled" };
+    },
+  });
+  router.activate("target-b");
+  const pending = Promise.race([
+    settled,
+    new Promise<{ settled: false }>((resolve) =>
+      setImmediate(() => resolve({ settled: false })),
+    ),
+  ]);
+  assert.deepEqual(await pending, { settled: false });
+
+  router.deactivate("target-a");
+  const result = await settled;
+  assert.equal(result.settled, true);
+  assert.ok(
+    "error" in result && result.error instanceof RuntimeHostTargetChangedError,
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(otherReconciliations, 0);
+  router.close();
+});
 
 test("holds an invocation across a Runtime Host candidate replacement", async () => {
   const ipc = ipcHarness();
@@ -67,6 +400,126 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
 
   router.close();
   assert.equal(ipc.size, 0);
+});
+
+test("bounds an invocation while an active Runtime Host has no handler", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  target.handle("sessions:send", async () => "sent");
+  router.activate("target-a");
+  target.removeHandler("sessions:send");
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:send", scope("target-a")),
+    RuntimeHostHandlerUnavailableError,
+  );
+  target.handle("sessions:send", async () => "retried");
+  assert.equal(await ipc.invoke("sessions:send", scope("target-a")), "retried");
+  router.close();
+});
+
+test("bounds reconnectable reads when no replacement handler becomes available", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  const failRead = deferred();
+  target.handleReconnectableRead?.("taskReadiness:getSnapshot", async () => {
+    await failRead.promise;
+    throw new RuntimeHostOperationError(
+      "session.catalog.query",
+      "host_draining",
+      "Runtime Host is draining",
+    );
+  });
+  router.activate("target-a");
+
+  const reading = ipc.invoke("taskReadiness:getSnapshot", scope("target-a"));
+  target.removeHandler("taskReadiness:getSnapshot");
+  failRead.resolve();
+
+  await assert.rejects(
+    () => reading,
+    RuntimeHostHandlerUnavailableError,
+  );
+  router.close();
+});
+
+test("settles concurrent invocations after one bounded replacement window", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  target.handleReconnectableRead?.("projects:getSnapshot", async () => ({ projects: [] }));
+  router.activate("target-a");
+  target.removeHandler("projects:getSnapshot");
+
+  const reads = Array.from({ length: 200 }, (_, index) =>
+    ipc.invoke("projects:getSnapshot", scope("target-a"), { index }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+  );
+  const settled = Promise.all(reads);
+  try {
+    const result = await Promise.race([
+      settled,
+      new Promise<{ readonly timedOut: true }>((resolve) =>
+        setTimeout(() => resolve({ timedOut: true }), 100),
+      ),
+    ]);
+    assert.ok(Array.isArray(result), "Runtime Host invocations did not settle");
+    assert.equal(result.length, 200);
+    for (const read of result) {
+      assert.equal(read.ok, false);
+      if (!read.ok) assert.ok(read.error instanceof RuntimeHostHandlerUnavailableError);
+    }
+  } finally {
+    router.close();
+    await settled;
+  }
+});
+
+test("does not reset one reconnectable read deadline across failed replacements", async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 15,
+  });
+  let monotonicNow = 0;
+  t.mock.method(performance, "now", () => monotonicNow);
+  router.activate("target-a");
+  let attempts = 0;
+  const maximumAttempts = 20;
+  const installFailingTarget = (): void => {
+    const target = router.createTarget("target-a");
+    target.handleReconnectableRead?.("projects:getSnapshot", async () => {
+      attempts += 1;
+      monotonicNow += 5;
+      target.removeHandler("projects:getSnapshot");
+      if (attempts < maximumAttempts) installFailingTarget();
+      throw new RuntimeHostOperationError(
+        "project.catalog.query",
+        "host_draining",
+        "Runtime Host is draining",
+      );
+    });
+  };
+  installFailingTarget();
+
+  try {
+    await assert.rejects(
+      () => ipc.invoke("projects:getSnapshot", scope("target-a")),
+      RuntimeHostHandlerUnavailableError,
+    );
+    assert.equal(attempts, 4);
+  } finally {
+    router.close();
+  }
 });
 
 test("does not return a late read from a replaced Runtime Host candidate", async () => {
@@ -255,7 +708,72 @@ test("read adapters project ordinary failures without hiding reconnectable failu
   );
 });
 
+test('WorkHub reconciles a lost answer through the replacement IPC owner without a fresh submission', { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const input = { turnId: 'original-turn', text: 'original payload' };
+  const dispatched = deferred<void>();
+  let submissions = 0;
+  const register = (epoch: string) => {
+    const target = router.createTarget('workhub');
+    const channels: string[] = [];
+    // Apply the same scope stripping as the candidate's ScopedIpcMain.
+    const scoped: ReconnectableReadIpcMain = {
+      handle: (channel, listener) => { channels.push(channel); target.handle(channel, (event, _scope, ...args) => listener(event, ...args)); },
+      handleReconciledControl(channel, handlers) {
+        channels.push(channel);
+        target.handleReconciledControl!(channel, {
+          dispatch: (event, _scope, ...args) => handlers.dispatch(event, ...args),
+          reconcile: (context, event, _scope, ...args) => handlers.reconcile(context, event, ...args),
+          reconciliationUnavailable: (context, event, _scope, ...args) => handlers.reconciliationUnavailable(context, event, ...args),
+        });
+      },
+    };
+    registerRuntimeHostWorkHubIpc({
+      hostEpoch: epoch,
+      answerWorkHubCoordination: async (request: Parameters<DesktopRuntimeHostClient['answerWorkHubCoordination']>[0]) => {
+        assert.deepEqual(request, input);
+        submissions++;
+        dispatched.resolve();
+        throw new RuntimeHostRequestInterruptedError('workhub.coordination.answer', 'command', 'dispatched', 'connection_lost');
+      },
+      queryTurn: async (request: Parameters<DesktopRuntimeHostClient['queryTurn']>[0]) => {
+        assert.equal(epoch, 'new-host', 'reconciliation belongs to the replacement client');
+        assert.deepEqual(request, { sessionId: 'maka_workhub_coordination', turnId: input.turnId });
+        throw new RuntimeHostOperationError('turn.query', 'not_found', 'Turn was not admitted');
+      },
+    } as unknown as DesktopRuntimeHostClient, scoped, {});
+    target.completeRegistration();
+    return () => { for (const channel of channels) target.removeHandler(channel); };
+  };
+  const retire = register('old-host');
+  router.activate('workhub');
+  const result = ipc.invoke('workhub:answer', scope('workhub'), input);
+  await dispatched.promise;
+  retire();
+  register('new-host');
+  assert.deepEqual(await result, { kind: 'not_admitted' });
+  assert.equal(submissions, 1);
+});
+
 type IpcHandler = Parameters<IpcMain["handle"]>[1];
+
+type ReconciledControlTarget = ReturnType<
+  RuntimeHostReconnectingIpcMain["createTarget"]
+> & {
+  handleReconciledControl(
+    channel: string,
+    handlers: {
+      dispatch: IpcHandler;
+      reconcile: (context: unknown, ...args: Parameters<IpcHandler>) => Promise<unknown>;
+      reconciliationUnavailable?: (
+        context: unknown,
+        ...args: Parameters<IpcHandler>
+      ) => Promise<unknown>;
+    },
+  ): void;
+};
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
@@ -280,14 +798,4 @@ function ipcHarness() {
 
 function scope(targetEpoch: string) {
   return { hostId: `host-${targetEpoch}`, targetEpoch };
-}
-
-function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
 }

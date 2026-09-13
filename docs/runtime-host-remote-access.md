@@ -1,10 +1,51 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Connect to a remote Runtime Host
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
 
-Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
+Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket. The CLI and TUI also support the experimental direct-peer transport described below.
 
-## Prepare the Host
+## Set up a Linux or macOS Host
+
+On a machine with Node.js 22.19 or newer, the released CLI can install and verify a persistent
+Runtime Host in one command. Linux uses a systemd user service; macOS uses a LaunchAgent and
+requires an active GUI login session for that user.
+
+```sh
+npx --yes --package maka-agent@latest maka runtime-host setup \
+  --principal my-desktop \
+  --preset desktop-client \
+  --root "$HOME/.maka/runtime-host" \
+  --project-root "projects=$HOME/Projects"
+```
+
+Use a stable identifier for `--principal`; rerunning the command replaces that Client's credential
+instead of accumulating credentials. The command installs its exact Maka package into a managed
+directory, starts a loopback-only service, verifies the new credential, and then prints the connection
+details once. Use `terminal-client` for TUI or CLI.
+
+Run `npx --yes --package maka-agent@latest maka runtime-host service uninstall` on the Host to remove the service and
+managed package. The State Root and Project data are retained.
+
+## Manual Host setup
 
 Build Maka on the remote machine, choose a persistent State Root, and register each Project remote Clients may use:
 
@@ -14,7 +55,7 @@ npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/e
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
 
-The Desktop directory picker publishes the service user's home directory by default. To publish a different allowlist, pass one or more named roots when starting the service:
+The Desktop directory picker publishes the service user's home directory by default. Managed services persist that default as an explicit Project root policy. To publish a different allowlist, pass one or more named roots when starting the service:
 
 ```sh
 npm --workspace maka-agent exec -- maka runtime-host serve \
@@ -25,6 +66,10 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 ```
 
 When any `--project-root <label>=<absolute-path>` option is present, only those roots are available to remote directory browsing. The option is repeatable up to eight times. Maka resolves every root at startup and keeps browsing and registration contained within the selected root.
+
+Pass `--no-project-roots` to publish an explicit empty policy. This disables directory browsing and registration without removing Projects that are already registered. Desktop-managed SSH Hosts expose the same complete policy in Host settings. Applying it uses the SSH management plane, refuses to interrupt active tasks without confirmation, and restarts the service only when the effective policy changes.
+
+For a managed service, the Host-owned service configuration is the single authority for this policy. The system service starts from that configuration instead of retaining a second copy of the roots in its launch definition.
 
 Project paths stay on the Host. Issue a credential for each Client:
 
@@ -37,7 +82,74 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 Use `terminal-client` for TUI or CLI. The command prints the credential once.
 
+On Linux or macOS, a persistent CLI installation can keep the loopback Host running after the SSH
+session ends:
+
+```sh
+maka runtime-host service install \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+maka runtime-host service status --json
+```
+
+The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
+same OS-managed service, and an omitted WebSocket port preserves the existing port. Before
+uninstalling the npm package, remove the service with `maka runtime-host service uninstall`. Service
+uninstall keeps the State Root and Project data. Linux installation requires systemd user lingering;
+macOS installation requires an active GUI login session. Run service installation from a persistent
+global Maka installation, not `npx`. A replacement is committed only after the new Runtime Host is
+ready; failure restores the previous service.
+
 ## Choose a connection method
+
+### Experimental direct peer
+
+The released CLI and Desktop include the native direct-peer transport; the Host does not need Rust
+or a source checkout. For an SSH-managed Host, Desktop can enable it from that computer's management
+dialog and creates a separate experimental profile without deleting the SSH profile. Only one
+profile for the same State Root can be enabled at a time.
+
+The equivalent CLI flow uses the exact service target printed by setup:
+
+```sh
+maka runtime-host service peer enable \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+
+maka runtime-host service peer descriptor \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+```
+
+The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
+Raw descriptor routes are diagnostic output, not a durable Client profile: routes can change and
+are not authenticated as a current reachability claim. Use a one-time connection code when adding
+a Direct peer to Desktop. Disable and re-enable preserve the PeerId and listener settings; `peer
+rotate` intentionally changes the PeerId, and service uninstall removes its key while retaining the
+State Root. Pass
+`peer enable --clear-coordination-relays` to remove every configured coordination relay.
+
+This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
+does not replace an existing TLS, SSH, or overlay-network fallback. By default, the Host uses a
+bounded client-only view of the public IPFS DHT to discover Circuit Relay v2 candidates and fills a
+target of two accepted reservations after accounting for manual relays. Manually configured relays
+remain preferred. Disable or restore this
+best-effort discovery with `peer enable --no-automatic-relay-discovery` or
+`peer enable --automatic-relay-discovery`; disabling it leaves manual relays intact. Public peers can
+observe the discovery connection and may refuse or drop reservations. Only accepted reservations
+are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
+connection instead of carrying Session traffic through the relay.
+
+Maka races its supported direct transports automatically; users do not select QUIC or WebRTC.
+WebRTC uses STUN only to discover a public address and never sends Session traffic through the STUN
+provider. The default best-effort policy uses Cloudflare's public STUN endpoint, which can observe
+the source IP and request timing and has no Maka availability guarantee. Configure this from
+Desktop's advanced Peer Mesh settings, or use `peer enable --no-public-stun`,
+`peer enable --default-public-stun`, or repeat `peer enable --webrtc-stun <stun-url>` for private
+STUN endpoints. Maka does not use TURN; if no direct path succeeds, only an explicitly approved Mesh
+member can carry application traffic.
 
 ### Direct TLS
 
@@ -85,9 +197,26 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 
 ## Connect Desktop
 
-Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and enable**.
+Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
+
+Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
+
+To reach the current computer from another Desktop, enable **Remote access** in the same settings
+page. Maka keeps the existing Local Host and State Root, moves that Host under the OS service
+manager, and adds a Direct peer listener alongside Local IPC. Share the one-time connection code
+with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
+the background service returns Local Host ownership to Desktop and retains all data.
+
+The Host can also print a complete one-time code with
+`maka runtime-host access connection-code [--name <display-name>] [--root <path>]`. Direct peer
+must already be enabled. The code contains the current live routes and a pending Owner credential;
+it expires after 15 minutes and is consumed by one Desktop.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
+
+During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
+
+For an SSH-managed computer, open its **Manage** action to create a connection code, inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
 
 ## Connect TUI or CLI
 
@@ -128,10 +257,20 @@ maka run --host office --project '<projectId>' "Summarize this project"
 
 Each TUI or CLI process connects to one Profile. TUI may interact with SSH during its initial connection; non-interactive commands require preconfigured authentication.
 
+## Compatibility troubleshooting
+
+`RUNTIME_HOST_REMOTE_INCOMPATIBLE` means the Client and remote Runtime Host cannot safely communicate. Compare the Client and Host compatibility epochs first. When the diagnostic reports them, also inspect the Client and Host protocol ranges and composition IDs (including the Host composition revision).
+
+Use compatible Client and Host builds. After updating the Host, the operator must restart its remote Runtime Host service, then retry the connection.
+
+Remote Clients never auto-upgrade or restart the Host, downgrade the transport, mutate the Profile, change the default Host or Session, or expose credentials, endpoints, paths, or State Roots in this diagnostic.
+
 ## Security boundaries
 
 - Do not put credentials on the command line or in Profile JSON.
 - Plaintext requires durable Client acknowledgement and an independent Host startup flag.
 - Session responses may include a resolved `hostCwd`. Treat it as Host metadata, never as a Client filesystem path.
-- A remote Client neither upgrades nor terminates the service process.
+- Runtime Host protocol operations cannot upgrade, restart, or terminate the service process.
+  Desktop management uses the separately authenticated SSH operator channel. The Host may still
+  drain itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.

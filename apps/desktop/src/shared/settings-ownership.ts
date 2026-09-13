@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   AppSettings,
   UpdateAppSettingsInput,
@@ -19,12 +38,27 @@ export function clientOwnedSettingsPatch(
             ? {}
             : { selectedPetId: patch.personalization.selectedPetId }),
         };
+  // Both icon slots are filtered out the way `personalization` is filtered
+  // field by field above, rather than forwarding the section wholesale: the
+  // app icon is owned by the main process's icon seam, which serializes
+  // selection against import and removal and refuses a choice whose artwork is
+  // gone. A write arriving through this generic channel would queue behind
+  // none of that and could land between a removal's settings apply and its
+  // file deletion. `appIconDark` names artwork on exactly the same terms as
+  // `appIcon`, so leaving it unfiltered would reopen that race through the
+  // other slot.
+  const appearance =
+    patch.appearance === undefined
+      ? undefined
+      : (({ appIcon: _ignored, appIconDark: _ignoredDark, ...rest }) =>
+          Object.keys(rest).length === 0 ? undefined : rest)(patch.appearance);
   return {
     ...(patch.botChat ? { botChat: patch.botChat } : {}),
     ...(patch.usage ? { usage: patch.usage } : {}),
-    ...(patch.appearance ? { appearance: patch.appearance } : {}),
+    ...(appearance ? { appearance } : {}),
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
+    ...(patch.workHub ? { workHub: patch.workHub } : {}),
     ...(patch.projects ? { projects: patch.projects } : {}),
     ...(patch.system ? { system: patch.system } : {}),
   };
@@ -34,7 +68,9 @@ export function hasRuntimeHostSettingsPatch(
   patch: UpdateAppSettingsInput,
 ): boolean {
   return Boolean(
-    patch.network ||
+    patch.externalAgents ||
+    patch.shell ||
+      patch.network ||
       patch.localMemory ||
       patch.workspaceInstructions ||
       patch.privacy ||
@@ -64,6 +100,7 @@ export function projectClientOwnedSettings(
     onboarding: client.onboarding,
     projects: client.projects,
     notifications: client.notifications,
+    workHub: client.workHub,
     system: client.system,
   };
 }

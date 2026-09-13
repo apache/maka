@@ -1,20 +1,35 @@
-import type { ScheduledTask } from '@maka/core/scheduled-task';
-import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { AlertCircle, Blocks, Download, History, Network, Settings, SquarePen, Timer } from './icons.js';
+import { useSessionRailChrome } from './session-rail-context.js';
+import { useSidebarUpdateProjection } from './sidebar-update-projection-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function SessionSidebarNav(props: {
-  selection: NavSelection;
-  scheduledTasks?: ScheduledTask[];
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onNew(): void;
-}) {
+export function SessionSidebarNav() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -38,12 +53,26 @@ export function SessionSidebarNav(props: {
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
       <SideNavItem
+        data-maka-assistant-target="app.newTask"
         label={copy.newTask}
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={(
+          <kbd className="maka-nav-kbd" aria-hidden="true">
+            <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
+          </kbd>
+        )}
       />
+      {props.workHubEntry ? (
+        <SideNavItem
+          label={props.workHubEntry.label}
+          icon={Network}
+          size="md"
+          isSelected={props.workHubEntry.active}
+          onClick={props.workHubEntry.onSelect}
+        />
+      ) : null}
       {/* No 任务 row. Expanded, the list below IS that row's destination, and a
           control that selects what is already on screen under it is the same
           redundancy as the 会话 list heading this change deleted one row down.
@@ -55,6 +84,7 @@ export function SessionSidebarNav(props: {
           save that one click would be paying a permanent slot for a state the
           user is leaving anyway. */}
       <SideNavItem
+        data-maka-assistant-target="app.extensions"
         label={copy.extensions}
         icon={Blocks}
         size="md"
@@ -62,6 +92,7 @@ export function SessionSidebarNav(props: {
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       />
       <SideNavItem
+        data-maka-assistant-target="app.automations"
         label={activeScheduledTaskCount > 0
           ? copy.pendingTasks(activeScheduledTaskCount)
           : copy.automations}
@@ -70,6 +101,15 @@ export function SessionSidebarNav(props: {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
+      <SideNavItem
+        data-maka-assistant-target="app.computerHistory"
+        label={copy.computerHistory}
+        icon={History}
+        size="md"
+        isSelected={props.selection.section === 'computer-history'}
+        onClick={() => props.onSelect({ section: 'computer-history' })}
+      />
+      {props.auxiliaryNavigation}
     </SideNavSection>
   );
 }
@@ -79,8 +119,8 @@ export function SessionSidebarNav(props: {
  *
  * The updater runs with `autoDownload = true` and `autoInstallOnAppQuit =
  * false` (app-update-service.ts), so discovery and download ask nothing of
- * anyone — the shell drops `available` and `downloading` before they reach
- * here rather than the footer rendering a control for them. The old chip sat
+ * anyone — the App Update projection drops `available` and `downloading`
+ * before they reach here rather than the footer rendering a control for them. The old chip sat
  * in the footer through that whole silent phase counting bytes at someone who
  * had nothing to decide.
  */
@@ -89,15 +129,13 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
-export function SessionSidebarFooter(props: {
-  updateReminder?: SidebarUpdateReminder;
-  onOpenSettings(): void;
-  onOpenUpdate?(): void;
-}) {
+export function SessionSidebarFooter() {
+  const props = useSessionRailChrome();
+  const update = useSidebarUpdateProjection();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
-  const reminder = props.updateReminder;
-  const updateAction = reminder && props.onOpenUpdate
+  const reminder = update.reminder;
+  const updateAction = reminder && update.onOpenUpdate
     ? {
         // One sentence, serving as both the tooltip and the accessible name.
         // The button carries no visible text, so a bare verb ("Restart")
@@ -118,7 +156,7 @@ export function SessionSidebarFooter(props: {
         // downward arrow is the convention every app store made for exactly
         // this moment.
         icon: reminder.state === 'downloaded' ? Download : AlertCircle,
-        onClick: props.onOpenUpdate,
+        onClick: update.onOpenUpdate,
       }
     : undefined;
 
@@ -137,6 +175,7 @@ export function SessionSidebarFooter(props: {
       <div className="maka-sidebar-footer-row">
         <div className="maka-sidebar-footer-row-primary">
           <SideNavItem
+            data-maka-assistant-target="settings.open"
             label={copy.settings}
             icon={Settings}
             size="md"

@@ -1,9 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
-import { type ArtifactSaveResult } from '@maka/core/artifacts';
+import {
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  normalizeArtifactImagePreviewMime,
+  resolveArtifactImagePreview,
+  type ArtifactSaveResult,
+} from '@maka/core/artifacts';
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
 import {
   handleReconnectableRead,
@@ -13,13 +37,20 @@ import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
 interface RuntimeHostArtifactsIpcDeps {
+  uiLocale(): UiLocale;
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
-  readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
   readonly showItemInFolder: (path: string) => void;
   readonly presentationRoot?: string;
 }
+
+type RuntimeHostAttachmentPreviewIpcDeps = Pick<
+  RuntimeHostArtifactsIpcDeps,
+  'ipcMain' | 'client'
+>;
+
+const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
 
 export function registerRuntimeHostArtifactsIpc(
   deps: RuntimeHostArtifactsIpcDeps,
@@ -31,16 +62,7 @@ export function registerRuntimeHostArtifactsIpc(
   handleReconnectableRead(
     deps.ipcMain,
     "artifacts:list",
-    async (
-      _event,
-      sessionId: string,
-      options?: { includeDeleted?: boolean },
-    ) => {
-      const artifacts = await deps.client.listArtifacts(sessionId);
-      return options?.includeDeleted
-        ? artifacts
-        : artifacts.filter(({ status }) => status !== "deleted");
-    },
+    (_event, sessionId: string) => deps.client.listArtifacts(sessionId),
   );
   handleReconnectableRead(
     deps.ipcMain,
@@ -56,53 +78,15 @@ export function registerRuntimeHostArtifactsIpc(
   );
   deps.ipcMain.handle(
     "artifacts:delete",
-    async (_event, sessionId: string, artifactId: string) => {
-      const result = await deps.client.deleteArtifact(sessionId, artifactId);
-      deps.sendToRenderer("artifacts:changed", {
-        reason: "deleted",
-        artifactId,
-        sessionId,
-        ts: Date.now(),
-      });
-      return result;
-    },
+    (_event, sessionId: string, artifactId: string) =>
+      deps.client.deleteArtifact(sessionId, artifactId),
   );
-  handleReconnectableRead(
-    deps.ipcMain,
-    "attachments:readBytes",
-    async (_event, sessionId: string, artifactId: string) => {
-      const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (
-        !artifact ||
-        artifact.status === "deleted" ||
-        artifact.sizeBytes > MAX_ATTACHMENT_BYTES
-      ) {
-        return { ok: false as const, reason: "not_found" };
-      }
-      const chunks: Buffer[] = [];
-      let received = 0;
-      await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
-        received += chunk.byteLength;
-        if (received > MAX_ATTACHMENT_BYTES) {
-          throw new Error("Attachment exceeds the renderer byte limit");
-        }
-        chunks.push(Buffer.from(chunk));
-      });
-      if (received !== artifact.sizeBytes) {
-        return { ok: false as const, reason: "read_failed" };
-      }
-      return {
-        ok: true as const,
-        base64: Buffer.concat(chunks, received).toString("base64"),
-        mimeType: artifact.mimeType ?? "application/octet-stream",
-      };
-    },
-  );
+  registerRuntimeHostAttachmentPreviewIpc(deps);
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (!artifact || artifact.status === "deleted") {
+      if (!artifact) {
         return { ok: false as const, reason: "missing" as const };
       }
       try {
@@ -128,9 +112,8 @@ export function registerRuntimeHostArtifactsIpc(
     ): Promise<ArtifactSaveResult> => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
       if (!artifact) return { ok: false, reason: "not_found" };
-      if (artifact.status === "deleted") return { ok: false, reason: "deleted" };
       const result = await deps.mainWindowController.showSaveDialog({
-        title: `另存为 ${artifact.name}`,
+        title: ARTIFACT_DIALOG_COPY[deps.uiLocale()].saveAs(artifact.name),
         defaultPath: artifact.name,
       });
       if (result.canceled || !result.filePath) {
@@ -145,9 +128,59 @@ export function registerRuntimeHostArtifactsIpc(
           artifact.sizeBytes,
         );
         return { ok: true, saved: artifact.name };
-      } catch {
-        return { ok: false, reason: "write_failed" };
+      } catch (error) {
+        if (error instanceof ArtifactMaterializationError) return { ok: false, reason: error.reason };
+        return { ok: false, reason: "target_write_failed" };
       }
+    },
+  );
+}
+
+/** Guest-safe projection used by transcript attachment thumbnails. */
+export function registerRuntimeHostAttachmentPreviewIpc(
+  deps: RuntimeHostAttachmentPreviewIpcDeps,
+): void {
+  handleReconnectableRead(
+    deps.ipcMain,
+    "attachments:readBytes",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (!artifact) {
+        return { ok: false as const, reason: "not_found" };
+      }
+      const preview = resolveArtifactImagePreview(artifact);
+      if (preview.kind === "unsupported") {
+        return {
+          ok: false as const,
+          reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
+        };
+      }
+      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
+      if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
+      const chunks: Buffer[] = [];
+      let received = 0;
+      try {
+        await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
+          received += chunk.byteLength;
+          if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
+          }
+          chunks.push(Buffer.from(chunk));
+        });
+      } catch (error) {
+        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
+          return { ok: false as const, reason: "too_large" };
+        }
+        throw error;
+      }
+      if (received !== artifact.sizeBytes) {
+        return { ok: false as const, reason: "read_failed" };
+      }
+      return {
+        ok: true as const,
+        base64: Buffer.concat(chunks, received).toString("base64"),
+        mimeType,
+      };
     },
   );
 }
@@ -166,11 +199,14 @@ async function materializeArtifact(
   );
   const handle = await open(stagingPath, "wx");
   let offset = 0;
+  let writingStaging = false;
+  let streamCompleted = false;
   try {
     const totalBytes = await client.streamArtifact(
       sessionId,
       artifactId,
       async (chunk) => {
+        writingStaging = true;
         let written = 0;
         while (written < chunk.byteLength) {
           const result = await handle.write(
@@ -183,18 +219,45 @@ async function materializeArtifact(
           written += result.bytesWritten;
         }
         offset += written;
+        writingStaging = false;
       },
     );
+    streamCompleted = true;
     if (totalBytes !== expectedBytes || offset !== expectedBytes) {
-      throw new Error("Artifact size changed during export");
+      throw new ArtifactMaterializationError("size_mismatch");
     }
     await handle.sync();
     await handle.close();
-    await rm(targetPath, { force: true });
-    await rename(stagingPath, targetPath);
+    try {
+      await rename(stagingPath, targetPath);
+    } catch (error) {
+      throw new ArtifactMaterializationError("replace_failed", error);
+    }
   } catch (error) {
     await handle.close().catch(() => undefined);
     await rm(stagingPath, { force: true }).catch(() => undefined);
+    if (!(error instanceof ArtifactMaterializationError)) {
+      throw new ArtifactMaterializationError(
+        writingStaging || streamCompleted ? "target_write_failed" : "source_failed",
+        error,
+      );
+    }
     throw error;
   }
 }
+
+class ArtifactMaterializationError extends Error {
+  constructor(
+    readonly reason: "source_failed" | "size_mismatch" | "target_write_failed" | "replace_failed",
+    cause?: unknown,
+  ) {
+    super(`Artifact materialization failed: ${reason}`, { cause });
+    this.name = "ArtifactMaterializationError";
+  }
+}
+
+const ARTIFACT_DIALOG_COPY = {
+  'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
+  'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
+  en: { saveAs: (name: string) => `Save ${name} as` },
+} satisfies UiCatalog<{ saveAs(name: string): string }>;

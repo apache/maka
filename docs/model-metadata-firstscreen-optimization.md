@@ -1,3 +1,34 @@
+---
+doc_id: model-metadata-firstscreen-optimization
+title: "perf(desktop): remove models.dev metadata from the renderer startup path"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-07
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # perf(desktop): remove models.dev metadata from the renderer startup path
 
 <details open>
@@ -5,9 +36,18 @@
 
 ## Problem
 
+> **Status (verified 2026-09-07):** this optimization is implemented — the five startup import paths
+> listed below are cut in the current source. One additional static path remains and is recorded as
+> accepted debt: `AppShellOverlays` (`app-shell.tsx:170`) → `useAppShellCommands` →
+> `command-palette-commands.ts:50` imports `isRetiredProvider` from `@maka/core/provider-registry`,
+> whose `PROVIDER_REGISTRY` is built from `model-metadata.generated` — a runtime import, not a lazy
+> command-palette entry — so the acceptance criterion's blanket exclusion of every startup
+> transitive metadata dependency is not fully satisfied. The Problem is kept as the 2026-08-04
+> record of the pre-optimization state.
+
 Most users configure only a few providers, but Maka currently loads metadata for every provider and hundreds of models on startup. This data should remain behind the main-process authority boundary, with the renderer receiving only the lightweight projection needed for the current UI.
 
-The Desktop AppShell startup path statically loads `packages/core/src/model-metadata.generated.ts`. This models.dev snapshot is currently about 520 KB / 13,988 lines and contains full metadata for roughly 44 providers and hundreds of models.
+The Desktop AppShell startup path statically loads `packages/core/src/model-metadata.generated.ts`. The file is generated during installation or build from the committed models.dev snapshot; the 2026-08-04 measurement below was about 520 KB / 13,988 lines and contained full metadata for roughly 44 providers and hundreds of models.
 
 Measured from the 2026-08-04 renderer build:
 
@@ -25,8 +65,8 @@ Five independent runtime import paths make the metadata reachable at startup:
 
 1. `thinkingVariantsForModel` → `model-thinking.ts` → `model-metadata.ts`
 2. `buildChatModelChoices` → `model-catalog-choices.ts` → `model-catalog.ts`
-3. `@maka/ui` `modelMenuGroups` → `PROVIDER_DEFAULTS`
-4. `provider-display.tsx` → `PROVIDER_DEFAULTS`
+3. `@maka/ui` `modelMenuGroups` → `PROVIDER_REGISTRY`
+4. `provider-display.tsx` → `PROVIDER_REGISTRY`
 5. `OnboardingHero` → `RECOMMENDED_PROVIDER_TYPES`
 
 Each path eventually reaches `model-metadata.generated.ts`. Removing only one path, or assigning the metadata to a Vite `manualChunks` entry, does not remove the static startup dependency.
@@ -47,16 +87,16 @@ The session health notice uses the last completed snapshot while an event-trigge
 
 Remove the remaining provider-registry dependencies from the startup path:
 
-- `modelMenuGroups` receives the required label from the startup projection instead of reading `PROVIDER_DEFAULTS`.
-- `providerDisplay` uses the existing exhaustive `PROVIDER_DISPLAY_COPY`; an unknown cross-version type falls back to the type string and generic local description instead of `PROVIDER_DEFAULTS`.
+- `modelMenuGroups` receives the required label from the startup projection instead of reading `PROVIDER_REGISTRY`.
+- `providerDisplay` uses the existing exhaustive `PROVIDER_DISPLAY_COPY`; an unknown cross-version type falls back to the type string and generic local description instead of `PROVIDER_REGISTRY`.
 - OnboardingHero gets its four first-run provider types from a small metadata-free product constant or equivalent lightweight projection instead of importing `RECOMMENDED_PROVIDER_TYPES` at runtime.
 
-Full metadata remains available to the main process and lazy-loaded SettingsModal. The metadata code-generation flow remains unchanged.
+Full metadata remains available to the main process and lazy-loaded SettingsModal. This renderer optimization does not otherwise change the metadata generation flow.
 
 Acceptance criteria:
 
 - The startup entry and all of its static transitive dependencies exclude `model-metadata.generated.ts`, `model-metadata.ts`, `provider-registry.ts`, `model-catalog.ts`, and `model-thinking.ts`.
-- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts` or `chat-model-selection.ts`.
+- The startup path no longer statically depends on the renderer's `model-catalog-choices.ts`; `shell-chat-model-selection.ts` deliberately remains on the static path as the lightweight selector behind `useShellChatModel` — this optimization removes the heavy metadata modules, not that selector.
 - Searching startup chunks for `claude-opus|gpt-5\.|gemini-2\.` returns zero; full metadata exists only on lazy Settings paths.
 - Model choices, headings, provider logos, and active/new-chat thinking levels remain correct.
 - OnboardingHero still shows the four recommended providers with their names, descriptions, and logos.
@@ -78,9 +118,11 @@ Acceptance criteria:
 
 ## 问题
 
+> **状态（2026-09-07 核验）：** 该优化已落地——下面列出的五条首屏依赖链在当前源码中均已切断。另有一条静态路径仍存在，现记录为已接受的遗留：`AppShellOverlays`（`app-shell.tsx:170`）→ `useAppShellCommands` → `command-palette-commands.ts:50` 从 `@maka/core/provider-registry` 导入 `isRetiredProvider`，而 `PROVIDER_REGISTRY` 由 `model-metadata.generated` 构建——这是运行时导入而非懒加载的命令面板入口，因此验收标准中"首屏全部静态传递依赖排除 metadata"的绝对表述并未完全满足。Problem 一节保留的是 2026-08-04 优化前状态的记录。
+
 大多数用户只配置少数几个 provider，但 Maka 当前会在启动时加载全部 provider 和数百个模型的元数据。完整目录应留在 main process 的权威边界内，renderer 只接收当前界面所需的轻量投影。
 
-桌面端 AppShell 的首屏静态依赖会加载 `packages/core/src/model-metadata.generated.ts`。该文件由 `scripts/sync-model-metadata.mjs` 从 models.dev 生成，当前约 520 KB、13,988 行，包含约 44 个 provider 和数百个模型的完整元数据。
+桌面端 AppShell 的首屏静态依赖会加载 `packages/core/src/model-metadata.generated.ts`。该文件在安装或构建时由 committed models.dev snapshot 生成；下面记录的 2026-08-04 实测约为 520 KB、13,988 行，包含约 44 个 provider 和数百个模型的完整元数据。
 
 2026-08-04 的 renderer 构建实测：
 
@@ -98,8 +140,8 @@ Acceptance criteria:
 
 1. `thinkingVariantsForModel` → `model-thinking.ts` → `model-metadata.ts`
 2. `buildChatModelChoices` → `model-catalog-choices.ts` → `model-catalog.ts`
-3. `@maka/ui` 的 `modelMenuGroups` → `PROVIDER_DEFAULTS`
-4. `provider-display.tsx` → `PROVIDER_DEFAULTS`
+3. `@maka/ui` 的 `modelMenuGroups` → `PROVIDER_REGISTRY`
+4. `provider-display.tsx` → `PROVIDER_REGISTRY`
 5. `OnboardingHero` → `RECOMMENDED_PROVIDER_TYPES`
 
 这些链最终都会进入 `model-metadata.generated.ts`。只处理其中一条或使用 Vite `manualChunks` 都不会解除首屏静态依赖。
@@ -120,16 +162,16 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 
 同时切断其余 provider registry 依赖：
 
-- `modelMenuGroups` 从首屏投影获取所需 label，不再直接读取 `PROVIDER_DEFAULTS`。
-- `providerDisplay` 使用已有且类型完整的 `PROVIDER_DISPLAY_COPY`；遇到跨版本未知 type 时直接显示 type 和通用本地描述，不再 fallback 到 `PROVIDER_DEFAULTS`。
+- `modelMenuGroups` 从首屏投影获取所需 label，不再直接读取 `PROVIDER_REGISTRY`。
+- `providerDisplay` 使用已有且类型完整的 `PROVIDER_DISPLAY_COPY`；遇到跨版本未知 type 时直接显示 type 和通用本地描述，不再 fallback 到 `PROVIDER_REGISTRY`。
 - OnboardingHero 的 4 个首次引导 provider 使用不依赖 provider registry 的小型产品常量或等价轻量投影，不再运行时引用 `RECOMMENDED_PROVIDER_TYPES`。
 
-完整元数据继续保留在 main process 和懒加载的 SettingsModal 中，codegen 流程保持不变。
+完整元数据继续保留在 main process 和懒加载的 SettingsModal 中；这项 renderer 优化本身不再改变元数据生成流程。
 
 验收标准：
 
 - 首屏入口及其所有静态传递依赖不包含 `model-metadata.generated.ts`、`model-metadata.ts`、`provider-registry.ts`、`model-catalog.ts` 或 `model-thinking.ts`。
-- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts` 和 `chat-model-selection.ts`。
+- 首屏不再静态依赖 renderer 的 `model-catalog-choices.ts`；`shell-chat-model-selection.ts` 作为 `useShellChatModel` 背后的轻量选择器有意保留在静态路径上——本优化移除的是重量级元数据模块，不含这个选择器。
 - 构建产物的首屏 chunk 中检索 `claude-opus|gpt-5\.|gemini-2\.` 为 0；完整元数据只存在于设置页懒加载路径。
 - model picker 的模型、heading、provider logo，以及 active/new-chat thinking level 选项保持正确。
 - OnboardingHero 正常显示 4 个推荐 provider 的名称、描述和 logo。

@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/OpenHistory/AccessibilitySnapshot.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import AppKit
 import ApplicationServices
 import Foundation
@@ -7,6 +14,7 @@ struct AccessibilitySnapshot {
     let app: EventStreamApp
     let window: EventStreamWindow?
     let windowID: UInt32?
+    let focusIdentifier: UInt?
     let element: EventStreamAXElement?
     let selectedText: String?
     let selectedRange: EventStreamTextRange?
@@ -17,22 +25,6 @@ struct AccessibilitySnapshot {
         EventStreamMouseDragEndpoint(app: app, window: window, element: element)
     }
 
-    func replacingWindowURL(_ url: String?) -> AccessibilitySnapshot {
-        AccessibilitySnapshot(
-            app: app,
-            window: EventStreamWindow(
-                title: window?.title,
-                url: url,
-                windowID: nil
-            ),
-            windowID: windowID,
-            element: element,
-            selectedText: selectedText,
-            selectedRange: selectedRange,
-            selectedItems: selectedItems,
-            axRevision: axRevision
-        )
-    }
 }
 
 enum AccessibilityReader {
@@ -104,6 +96,7 @@ enum AccessibilityReader {
                 windowID: nil
             ),
             windowID: resolvedWindowID,
+            focusIdentifier: focusedElement.map { UInt(CFHash($0)) },
             element: element,
             selectedText: secureInput
                 ? nil

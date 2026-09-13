@@ -1,12 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
 import { ICON_SIZE, Clock, MoreHorizontal, Plus, RefreshCcw } from './icons.js';
 import type { ScheduledTask, ScheduledTaskStatus } from '@maka/core/scheduled-task';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   type ScheduledTaskFormSeed,
   compareScheduledTaskBySort,
@@ -171,11 +187,14 @@ export function ScheduledTaskPanel(props: {
 
   // Re-sync the switch to the persisted snapshot when it changes (external
   // edit, relaunch), unless a local write is mid-flight — the optimistic
-  // value wins until the write settles.
+  // value wins until the write settles. Pending is also a dependency: an
+  // external refresh can deliberately retain the same persisted Boolean and
+  // supersede a slow write, so the prop itself may not change when the write
+  // finishes.
   useEffect(() => {
-    if (keepSystemAwakePendingRef.current) return;
+    if (keepSystemAwakePending) return;
     if (props.keepSystemAwake !== undefined) setKeepSystemAwakeChecked(props.keepSystemAwake);
-  }, [props.keepSystemAwake]);
+  }, [keepSystemAwakePending, props.keepSystemAwake]);
 
   useEffect(() => {
     if (!props.createRequestNonce) return;
@@ -223,9 +242,10 @@ export function ScheduledTaskPanel(props: {
     } catch (error) {
       // Revert to reflect REALITY, and surface the failure in Chinese.
       if (scheduledTaskMountedRef.current) setKeepSystemAwakeChecked(!next);
-      toast.error(copy.page.keepAwakeErrorTitle, locale === 'zh'
-        ? generalizedErrorMessageChinese(error, copy.page.keepAwakeErrorFallback)
-        : generalizedErrorMessage(error, copy.page.keepAwakeErrorFallback));
+      toast.error(
+        copy.page.keepAwakeErrorTitle,
+        generalizedErrorMessageForLocale(error, copy.page.keepAwakeErrorFallback, locale),
+      );
     } finally {
       keepSystemAwakePendingRef.current = false;
       if (scheduledTaskMountedRef.current) setKeepSystemAwakePending(false);

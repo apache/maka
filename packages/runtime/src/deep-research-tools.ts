@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -44,7 +63,6 @@ const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
   'Read',
   'Glob',
   'Grep',
-  'ExploreAgent',
   'WebSearch',
   DEEP_RESEARCH_START_TOOL_NAME,
   DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -88,7 +106,7 @@ export interface DeepResearchArtifactStore {
   get(artifactId: string): Promise<ArtifactRecord | null>;
   readText(
     artifactId: string,
-    options?: { maxBytes?: number; includeDeleted?: boolean },
+    options?: { maxBytes?: number },
   ): Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
   delete(artifactId: string): Promise<void>;
 }
@@ -96,12 +114,6 @@ export interface DeepResearchArtifactStore {
 export interface BuildDeepResearchToolsDeps {
   store: DeepResearchStore;
   artifactStore: DeepResearchArtifactStore;
-  onArtifactCreated?: (event: {
-    reason: 'created';
-    artifactId: string;
-    sessionId: string;
-    ts: number;
-  }) => void | Promise<void>;
 }
 
 export function buildDeepResearchTools(deps: BuildDeepResearchToolsDeps): MakaTool[] {
@@ -201,12 +213,7 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       const ref = run.artifacts.find((artifact) => artifact.artifactId === input.artifact_id);
       if (!ref) throw new Error('Research artifact is not part of this session workspace');
       const record = await deps.artifactStore.get(input.artifact_id);
-      if (
-        !record ||
-        record.sessionId !== ctx.sessionId ||
-        record.source !== 'deep_research' ||
-        record.status !== 'live'
-      ) {
+      if (!record || record.sessionId !== ctx.sessionId || record.source !== 'deep_research') {
         throw new Error('Research artifact is missing, deleted, or belongs to another session');
       }
       const read = await deps.artifactStore.readText(input.artifact_id, {
@@ -219,14 +226,19 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       }
       const offset = input.offset_chars ?? 0;
       const maxChars = input.max_chars ?? DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS;
-      const characters = Array.from(read.text);
-      const end = Math.min(characters.length, offset + maxChars);
-      const chunk = safeResearchArtifactContent(characters.slice(offset, end).join(''));
+      const selected: string[] = [];
+      let total = 0;
+      for (const character of read.text) {
+        if (total >= offset && total < offset + maxChars) selected.push(character);
+        total += 1;
+      }
+      const end = Math.min(total, offset + maxChars);
+      const chunk = safeResearchArtifactContent(selected.join(''));
       return [
-        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${characters.length}">`,
+        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${total}">`,
         `Name: ${normalizeInlineText(ref.name)}`,
         ...(ref.locator ? [`Locator: ${normalizeInlineText(ref.locator)}`] : []),
-        `Truncated: ${end < characters.length}`,
+        `Truncated: ${end < total}`,
         '',
         chunk,
         '</deep-research-artifact>',
@@ -414,16 +426,6 @@ function buildSaveArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       } catch (error) {
         await deps.artifactStore.delete(artifactId).catch(() => undefined);
         throw error;
-      }
-      try {
-        await deps.onArtifactCreated?.({
-          reason: 'created',
-          artifactId,
-          sessionId: ctx.sessionId,
-          ts: artifact.createdAt,
-        });
-      } catch {
-        // Renderer notification is best effort; both durable authorities already committed.
       }
       return `Saved ${input.role} artifact ${artifactId}.\n${renderRunStatus(run)}`;
     },
@@ -630,7 +632,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     summary: string;
     open_questions?: string[];
     next_steps?: string[];
-    task_ids?: string[];
     artifact_ids?: string[];
   },
   string
@@ -644,7 +645,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     displayName: 'Checkpoint Research',
     description:
       'Record a durable research checkpoint after a meaningful round or before context compaction. ' +
-      'Include unresolved questions, next steps, task ids, and the artifacts needed to resume.',
+      'Include unresolved questions, next steps, and the artifacts needed to resume.',
     parameters: z.object({
       round: z.number().int().min(1).describe('Monotonic research round number.'),
       stage: z.enum(DEEP_RESEARCH_ACTIVE_STAGES).describe('Current two-stage workflow phase.'),
@@ -661,7 +662,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
         .optional()
         .describe('Questions still requiring evidence or resolution.'),
       next_steps: itemArray.optional().describe('Concrete continuation steps.'),
-      task_ids: refArray.optional().describe('Related ids from the session Task Ledger.'),
       artifact_ids: refArray.optional().describe('Known research artifact ids required to resume.'),
     }),
     impl: async (input, ctx) => {
@@ -675,7 +675,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           summary: input.summary,
           openQuestions: dedupe(input.open_questions ?? []),
           nextSteps: dedupe(input.next_steps ?? []),
-          taskIds: dedupe(input.task_ids ?? []),
+          taskIds: [],
           artifactIds: dedupe(input.artifact_ids ?? []),
         },
         mutationContext(ctx),
@@ -856,7 +856,7 @@ async function validateArtifactIntegrity(
   ref: DeepResearchArtifactRef,
 ): Promise<void> {
   const record = await artifactStore.get(ref.artifactId);
-  if (!record || record.status !== 'live') {
+  if (!record) {
     throw new Error(`Deep Research artifact ${ref.artifactId} is missing or deleted`);
   }
   if (record.sessionId !== sessionId || record.source !== 'deep_research') {

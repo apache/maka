@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {
@@ -9,6 +28,33 @@ import {
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+
+test('forwards the summary lifetime signal without substituting a separate cancel RPC', async () => {
+  const abort = new AbortController();
+  const calls: unknown[][] = [];
+  const content = { title: 'Docs', description: 'Edited docs', body: 'Observed documentation edits.' };
+  const connection = {
+    request: async (...args: unknown[]) => {
+      calls.push(args);
+      return content;
+    },
+    close: async () => undefined,
+  } as unknown as RuntimeHostConnection;
+  const client = new DesktopRuntimeHostClient(connection);
+  const input = {
+    level: '10min' as const,
+    start: '2026-09-13T00:00:00.000Z', end: '2026-09-13T00:10:00.000Z',
+    evidence: [{ id: 'event', text: 'Edited documentation' }],
+  };
+  assert.deepEqual(
+    await client.request('computer-history.summarize', input, 75_000, abort.signal),
+    content,
+  );
+  assert.deepEqual(calls, [['computer-history.summarize', input, 75_000, abort.signal]]);
+  abort.abort();
+  assert.equal(calls.length, 1);
+  await client.close();
+});
 
 test('loads a full transcript only on explicit request and closes Sessions before the connection', async () => {
   const lifecycle: string[] = [];
@@ -59,11 +105,6 @@ test('derives turn records from bounded contribution pages', async () => {
             firstSequence: 0,
             latestState: null,
             userPromptPreview: 'hello',
-            hasAssistantMessage: true,
-            hasAssistantOutput: true,
-            hasToolResult: false,
-            hasFailedToolResult: false,
-            hasAbortNote: false,
           }],
           nextPosition: 2,
         };
@@ -82,15 +123,9 @@ test('derives turn records from bounded contribution pages', async () => {
               turnId: 'turn-1',
               ts: 3,
               status: 'completed',
-              partialOutputRetained: false,
             },
           },
           userPromptPreview: null,
-          hasAssistantMessage: false,
-          hasAssistantOutput: false,
-          hasToolResult: true,
-          hasFailedToolResult: false,
-          hasAbortNote: false,
         }],
         nextPosition: null,
       };
@@ -105,7 +140,6 @@ test('derives turn records from bounded contribution pages', async () => {
     userPromptPreview: 'hello',
     status: 'completed',
     statusSource: 'recorded',
-    partialOutputRetained: true,
   }]);
   assert.deepEqual(positions, [0, 2]);
   await client.close();
@@ -139,6 +173,8 @@ function subscription(
   lifecycle: string[],
 ): RuntimeHostSessionSubscription {
   return {
+    subscribePtyData: () => () => undefined,
+    subscribeSessionDomainChanges: () => () => undefined,
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
@@ -155,7 +191,6 @@ function subscription(
         metadataRevision: 1,
         status: 'active',
         createdAt: 1,
-        lastUsedAt: 1,
         isArchived: false,
       },
       projectionRevision: 1,
@@ -191,6 +226,8 @@ function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: null,
   };
 }

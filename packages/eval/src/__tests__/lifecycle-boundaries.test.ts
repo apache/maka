@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import {
@@ -14,6 +33,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { FileAttemptStore } from '../attempt-store.js';
 import type { ExperimentCell, ExperimentSpec, JsonObject } from '../experiment.js';
@@ -582,7 +602,7 @@ test('the Maka shim projects only a completed subject as a zero exit', async () 
               )},shortCircuit:true}:n(s,c)}`,
             )}",import.meta.url)`,
           )}`,
-          shim.pathname,
+          fileURLToPath(shim),
           Buffer.from(
             JSON.stringify({
               rootPath: join(root, 'state'),
@@ -809,7 +829,10 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
   };
   // The DeepSeek Harness arm copies its checked-in profile out of the repo
   // mount, so the wrapper needs to find it under the fake system root.
-  const profileSource = join(root, 'opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+  const profileSource = join(
+    root,
+    'opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-harness-profile',
+  );
   await mkdir(profileSource, { recursive: true });
   for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
     await copyFile(
@@ -837,7 +860,9 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
       // These subjects run `/usr/bin/true` and never reach the provider, so
       // each one is an infrastructure failure and exits nonzero: the exit code
       // now carries the semantic status for the relay's benefit.
-      const stdout = await execFileAsync(process.execPath, [wrapper.pathname, ...args], { env })
+      const stdout = await execFileAsync(process.execPath, [fileURLToPath(wrapper), ...args], {
+        env,
+      })
         .then((settled) => settled.stdout)
         .catch((error: { stdout?: string }) => {
           assert.equal(typeof error.stdout, 'string');
@@ -979,8 +1004,8 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   );
   assert.deepEqual(spec.executor.config.egressProxy, {
     composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
-    composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
-    networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+    composeRelativePath: 'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
+    networkPolicyRelativePath: 'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
     proxyUrl: 'http://maka-eval-mitmproxy:8080',
     allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
@@ -1000,6 +1025,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.match(subjectService, /cap_drop:\s*\n\s+- NET_RAW/u);
   assert.match(egressCompose, /networks:\s*\n\s+- default/u);
   assert.match(egressCompose, /target: \/usr\/local\/bin\/network-policy/u);
+  const sidecarService = egressCompose
+    .split(/\n(?= {2}\S)/u)
+    .find((block) => block.trimStart().startsWith('harbor-docker-egress-control-sidecar:'))!;
+  assert.match(sidecarService, /maka-eval-egress-ca:\/opt\/maka-egress:ro/u);
   // The subject shares the sidecar's network namespace, so any packet mark it
   // could set is one the subject can set too. No live probe can show this any
   // more — without NET_RAW the subject cannot set a mark at all — so the rule's
@@ -1009,6 +1038,14 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     'utf8',
   );
   assert.doesNotMatch(networkPolicy, /meta mark \S+ (?:accept|return)/u);
+  assert.match(networkPolicy, /ip daddr 127\.0\.0\.11 reject/u);
+  assert.doesNotMatch(networkPolicy, /127\.0\.0\.11 (?:udp|tcp) dport 53 reject/u);
+  const dockerDnsReject = networkPolicy.indexOf('ip daddr 127.0.0.11 reject');
+  const localAccept = networkPolicy.indexOf('fib daddr type local accept');
+  assert.ok(dockerDnsReject >= 0 && localAccept > dockerDnsReject);
+  assert.match(networkPolicy, /\/opt\/maka-egress\/proxy-ipv4/u);
+  assert.doesNotMatch(networkPolicy, /\bgetent\b/u);
+  assert.match(egressCompose, /proxy-ipv4/u);
   const entrypoint = await readFile(
     new URL('../../harbor/egress-proxy/entrypoint.sh', import.meta.url),
     'utf8',
@@ -1279,8 +1316,8 @@ function experiment(): ExperimentSpec {
 test('pier cannot declare an egress proxy it never enforces', () => {
   const egressProxy = {
     composeSourceEnv: 'MAKA_TEST_BUNDLE',
-    composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
-    networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+    composeRelativePath: 'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
+    networkPolicyRelativePath: 'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
     proxyUrl: 'http://maka-eval-mitmproxy:8080',
     allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',

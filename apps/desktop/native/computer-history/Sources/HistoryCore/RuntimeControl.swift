@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/HistoryCore/RuntimeControl.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import Foundation
 
 public enum RecorderState: String, Codable, Sendable {
@@ -41,15 +48,18 @@ public struct RecorderControlRequest: Codable, Sendable {
     public let state: RecorderState
     public let updatedAt: Date
     public let resumeAt: Date?
+    public let revision: String?
 
     public init(
         state: RecorderState,
         updatedAt: Date = Date(),
-        resumeAt: Date? = nil
+        resumeAt: Date? = nil,
+        revision: String? = UUID().uuidString
     ) {
         self.state = state
         self.updatedAt = updatedAt
         self.resumeAt = resumeAt
+        self.revision = revision
     }
 }
 

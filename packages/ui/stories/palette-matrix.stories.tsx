@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * The one Design System story that survived the token-catalog cut, because the
  * test that removed the others does not apply to it.
@@ -17,7 +36,6 @@
  * only, so without this story ten palettes have no oracle whatsoever.
  */
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { useSyncExternalStore } from 'react';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';
 
 const meta = {
@@ -29,42 +47,24 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function subscribe(callback: () => void): () => void {
-  const el = document.documentElement;
-  const observer = new MutationObserver(callback);
-  observer.observe(el, { attributes: true, attributeFilter: ['class'] });
-  return () => observer.disconnect();
-}
-
-function getSnapshot(): boolean {
-  return document.documentElement.classList.contains('dark');
-}
-
-function getServerSnapshot(): boolean {
-  return false;
-}
-
-function useIsDark(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-}
-
 const paletteTokens = [
   ['background', '--background'],
   ['foreground', '--foreground'],
   ['accent', '--accent'],
-  ['info', '--info'],
   ['success', '--success'],
+  ['warning', '--warning'],
   ['destructive', '--destructive'],
 ] as const;
 
 export const AllPalettes: Story = {
   render: () => {
-    const isDark = useIsDark();
+    // No mode plumbing here: a palette block carries both modes in its values
+    // and resolves against the color-scheme the toolbar sets on the root.
     return (
       <section style={{ display: 'grid', gap: 20, maxWidth: 920 }}>
         <div style={{ display: 'grid', gap: 4 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Palette Matrix</h2>
-          <p style={{ color: 'var(--foreground-secondary)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
             {THEME_PALETTES.length} 个 palette,用工具栏切 light/dark 查看另一组。每个块独立应用 data-maka-theme。
           </p>
         </div>
@@ -79,7 +79,6 @@ export const AllPalettes: Story = {
             <div
               key={palette}
               data-maka-theme={palette}
-              className={isDark ? 'dark' : undefined}
               style={{
                 display: 'grid',
                 gap: 8,

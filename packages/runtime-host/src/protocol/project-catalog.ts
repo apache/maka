@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireRecord,
+  requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -14,14 +34,50 @@ export const PROJECT_CATALOG_PAGE_MAX_ITEMS = 64;
 export const PROJECT_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
 export const PROJECT_CATALOG_CURSOR_MAX_BYTES = 128;
 export const PROJECT_CATALOG_NAME_MAX_BYTES = 16 * 1024;
-export const PROJECT_CATALOG_PATH_MAX_BYTES = 4 * 1024;
+const PROJECT_CATALOG_PATH_MAX_BYTES = 4 * 1024;
 export const PROJECT_DIRECTORY_PAGE_MAX_ITEMS = 128;
 export const PROJECT_DIRECTORY_PAGE_MAX_BYTES = 32 * 1024;
 export const PROJECT_DIRECTORY_MAX_ENTRIES = 4_096;
 export const PROJECT_DIRECTORY_MAX_ROOTS = 8;
 export const PROJECT_DIRECTORY_MAX_SEGMENTS = 64;
 export const PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES = 128;
+const PROJECT_DIRECTORY_ROOT_PATH_MAX_BYTES = PROJECT_CATALOG_PATH_MAX_BYTES;
 export const PROJECT_DIRECTORY_SEGMENT_MAX_BYTES = 255;
+
+const PROJECT_DIRECTORY_ROOT_TEXT_ENCODER = new TextEncoder();
+
+export interface ProjectDirectoryRootSpec {
+  readonly label: string;
+  readonly path: string;
+}
+
+export function canonicalProjectDirectoryRootSpec(
+  root: ProjectDirectoryRootSpec,
+): ProjectDirectoryRootSpec {
+  return { label: root.label.trim(), path: root.path };
+}
+
+export function projectDirectoryRootSpecValid(root: ProjectDirectoryRootSpec): boolean {
+  const canonical = canonicalProjectDirectoryRootSpec(root);
+  return (
+    canonical.label.length > 0 &&
+    PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.label).byteLength <=
+      PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES &&
+    !hasProjectDirectoryRootControlCharacters(canonical.label) &&
+    canonical.path.length > 0 &&
+    PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.path).byteLength <=
+      PROJECT_DIRECTORY_ROOT_PATH_MAX_BYTES &&
+    !hasProjectDirectoryRootControlCharacters(canonical.path)
+  );
+}
+
+export function projectDirectoryPosixRootSpecValid(root: ProjectDirectoryRootSpec): boolean {
+  return projectDirectoryRootSpecValid(root) && root.path.startsWith('/');
+}
+
+function hasProjectDirectoryRootControlCharacters(value: string): boolean {
+  return /[\u0000-\u001f\u007f]/u.test(value);
+}
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -117,7 +173,7 @@ type ProjectCatalogListQueryResult =
     };
 
 export type ProjectCatalogMutateInput =
-  | { readonly kind: 'register'; readonly path: string }
+  | { readonly kind: 'register'; readonly path: string; readonly prefer?: boolean }
   | ({ readonly kind: 'register_directory' } & ProjectDirectoryRegisterInput)
   | { readonly kind: 'relink'; readonly projectId: string; readonly path: string }
   | { readonly kind: 'rename'; readonly projectId: string; readonly name: string }
@@ -404,8 +460,19 @@ export function decodeProjectCatalogMutateInput(value: unknown): ProjectCatalogM
   const record = requireRecord(value, 'project catalog mutation input');
   switch (record.kind) {
     case 'register': {
-      const input = requireExactRecord(record, 'project register input', ['kind', 'path']);
-      return { kind: 'register', path: absolutePath(input.path, 'project path') };
+      const input = requireShapedRecord(
+        record,
+        'project register input',
+        ['kind', 'path'],
+        ['prefer'],
+      );
+      return {
+        kind: 'register',
+        path: absolutePath(input.path, 'project path'),
+        ...(Object.hasOwn(input, 'prefer')
+          ? { prefer: boolean(input.prefer, 'project preference') }
+          : {}),
+      };
     }
     case 'register_directory': {
       return {

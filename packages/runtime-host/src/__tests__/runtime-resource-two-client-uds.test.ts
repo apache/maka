@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -103,7 +122,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
     });
     assert.equal(started.status, 'running');
 
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
     const desktopList = await desktop.request('runtime.resource.query', {
       kind: 'list_start',
       sessionId: SESSION_ID,
@@ -177,11 +196,8 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Runtime Host Client did not connect');
   return result.connection;

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
 import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -32,6 +51,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const INVOCABLE_QUERY_ERRORS = [...QUERY_ERRORS, 'not_found', 'session_archived'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'commit_outcome_unknown'] as const;
 
 export type SkillCatalogRevision = `sha256:${string}`;
@@ -346,12 +366,12 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
   'skill.catalog.invocable.query': defineHostPathOperation<
     SkillCatalogInvocableQueryInput,
     SkillCatalogInvocableQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof INVOCABLE_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: INVOCABLE_QUERY_ERRORS,
       decodeInput: decodeInvocableQueryInput,
       decodeOutput: decodeInvocableQueryResult,
     },

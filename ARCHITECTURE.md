@@ -1,14 +1,33 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 [中文](./ARCHITECTURE.zh-CN.md)
 
 # Maka Backend Architecture
 
-Maka has one execution authority: Runtime Host. Desktop, TUI, CLI, bots, and evaluation clients ask Runtime Host to execute work; none owns a second Runtime.
+Each State Root has its own Runtime Host as execution and write authority. Desktop, TUI, CLI, bots, and evaluation clients execute work through that Host boundary rather than creating a second Runtime for the same state. Multiple Hosts may own different State Roots; Peer Mesh supplies endpoint membership and connections without combining their execution authorities.
 
 ```mermaid
 flowchart LR
     C["Desktop / TUI / CLI / Bot"] --> H["Runtime Host"]
     H --> S["SessionManager"]
-    S --> R["AgentRun + Runtime Runner"]
+    S --> R["AgentRun + RuntimeKernel"]
     R --> T["Tool Runtime"]
     R --> L["Runtime Event Log"]
     S --> G["Agent Graph Control Plane"]
@@ -57,6 +76,9 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 
 ## Reading paths
 
+- Host ownership, admission, observation, Client isolation and lifecycle: [Runtime Host architecture](./docs/architecture/runtime-host-architecture.md).
+- Proposed Desktop conversation projection design (Chinese; not yet implemented): [Host-owned conversation lifecycle](./docs/architecture/desktop-conversation-host-projection.zh-CN.md).
+- Network identity, membership, path selection and stream recovery: [Peer Mesh architecture](./docs/architecture/peer-mesh-architecture.md).
 - Runtime facts and projections: [Runtime core](./docs/architecture/runtime-core-architecture-draft.md) and [compaction](./docs/architecture/llm-compaction-events-log-projection-draft.md).
 - Crash recovery and continuation: [Runtime resume](./docs/architecture/runtime-resume-architecture.md).
 - Multi-agent scheduling: [Agent Graph](./docs/architecture/agent-graph-stream-scheduling-draft.md).

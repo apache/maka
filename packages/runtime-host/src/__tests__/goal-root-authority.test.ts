@@ -1,12 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { FakeBackend } from '@maka/runtime/fake-backend';
+import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { GOAL_SET_TOOL_NAME } from '@maka/runtime/goal-tools';
 import { goalCheckpoint } from '@maka/runtime/goal-state';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
@@ -35,6 +60,7 @@ import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 test('Goal continuation uses the canonical root admission and durable origin', {
   timeout: 10_000,
@@ -78,14 +104,11 @@ test('Goal continuation uses the canonical root admission and durable origin', {
     assert.deepEqual(durableAdmission?.execution, { kind: 'goal', goalId: created.id });
     assert.ok(durableAdmission);
     if (!durableAdmission) return;
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      durableAdmission.runId,
-    );
-    assert.equal(run.goalId, created.id);
-    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.type === 'user' && message.turnId === admission.turnId,
-    );
+    const run = await readInvocation(fixture, durableAdmission.runId);
+    assert.deepEqual(run?.opening.root, { kind: 'goal', goalId: created.id });
+    const user = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === admission.turnId);
     assert.deepEqual(user?.type === 'user' ? user.origin : undefined, {
       kind: 'goal',
       goalId: created.id,
@@ -144,13 +167,13 @@ test('queued Goal control revokes a prepared root before durable admission', asy
       undefined,
     );
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).some(
-        (run) => run.goalId === created.id,
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).some(
+        (run) => run.opening.root.kind === 'goal' && run.opening.root.goalId === created.id,
       ),
       false,
     );
     assert.equal(
-      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+      (await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)).some(
         (message) => message.type === 'user' && message.turnId === admission.turnId,
       ),
       false,
@@ -286,7 +309,7 @@ test('drain revokes pending ScheduledTask before durable root admission', async 
       undefined,
     );
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).some(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).some(
         (run) => run.runId === runId,
       ),
       false,
@@ -373,7 +396,7 @@ test('Host Goal continuation bridges its exact generation into root authority', 
     if (!resumed) return;
 
     const run = await waitForGoalRun(fixture, resumed.id);
-    assert.equal(run.goalId, resumed.id);
+    assert.deepEqual(run.opening.root, { kind: 'goal', goalId: resumed.id });
     const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
       fixture.sessionId,
       run.turnId,
@@ -404,13 +427,13 @@ test('restart closes an admitted Goal without a Run instead of replaying it', as
     });
 
     await fixture.coordinator.prepareRecovery();
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
-    assert.equal(run.goalId, 'goal-restart');
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'app_restarted');
-    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
-      (message) => message.type === 'user' && message.turnId === turnId,
-    );
+    const run = await readInvocation(fixture, runId);
+    assert.deepEqual(run?.opening.root, { kind: 'goal', goalId: 'goal-restart' });
+    assert.equal(run && runtimeInvocationOutcome(run), 'failed');
+    assert.equal(run && runtimeInvocationFailureClass(run), 'app_restarted');
+    const user = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === turnId);
     assert.deepEqual(user?.type === 'user' ? user.origin : undefined, {
       kind: 'goal',
       goalId: 'goal-restart',
@@ -425,11 +448,12 @@ test('restart rejects an admitted Goal whose existing UserMessage lost its origi
   const fixture = await createFixture({ recoverAdmissions: false });
   try {
     const turnId = randomUUID();
+    const runId = randomUUID();
     const userMessageId = randomUUID();
     await fixture.stores.agentRunStore.admitRootTurn({
       sessionId: fixture.sessionId,
       turnId,
-      proposedRunId: randomUUID(),
+      proposedRunId: runId,
       proposedUserMessageId: userMessageId,
       execution: { kind: 'goal', goalId: 'goal-corrupt-origin' },
       previousRootTurnId: null,
@@ -437,12 +461,23 @@ test('restart rejects an admitted Goal whose existing UserMessage lost its origi
       sourceMessages: [],
       admittedAt: 1,
     });
-    await fixture.stores.sessionStore.appendMessage(fixture.sessionId, {
-      type: 'user',
+    const seeded = await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      opening: { root: { kind: 'goal', goalId: 'goal-corrupt-origin' } },
+    });
+    await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, runId, {
       id: userMessageId,
+      sessionId: fixture.sessionId,
+      invocationId: seeded.invocationId,
+      runId,
       turnId,
       ts: 1,
-      text: 'Preserve durable Goal provenance',
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Preserve durable Goal provenance' },
     });
 
     await assert.rejects(
@@ -471,15 +506,15 @@ test('restart rejects a Goal Run carrying delegated execution lineage', async ()
       sourceMessages: [],
       admittedAt: 1,
     });
-    await fixture.stores.agentRunStore.createRun(
-      runHeader({
-        sessionId: fixture.sessionId,
-        turnId,
-        runId,
-        goalId,
-        parentRunId: 'foreign-parent-run',
-      }),
-    );
+    await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      opening: {
+        root: { kind: 'goal', goalId },
+        lineage: { parentRunId: 'foreign-parent-run' },
+      },
+    });
 
     await assert.rejects(
       () => fixture.coordinator.prepareRecovery(),
@@ -521,7 +556,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
-    backend: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -537,28 +572,29 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   let requestedDrain = false;
   const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, lease),
-    startFromMessage: (input, lease) =>
-      requireCoordinator(coordinator).startFromMessage(input, lease),
+    startFromMessage: (input, lease, commitAdmission) =>
+      requireCoordinator(coordinator).startFromMessage(input, lease, commitAdmission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, lease),
   };
   const hostEpoch = 'goal-root-epoch';
-  await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
   const messages = new HostMessageCoordinator({
     hostEpoch,
     root: rootPort,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: admission,
     acquireResidency,
     requestDrain: () => {
@@ -599,7 +635,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onSandboxBoundarySettled: async () => {},
   });
   const backends = new BackendRegistry();
-  backends.register('fake', (context) => new FakeBackend(context));
+  backends.register('ai-sdk', (context) => new FakeBackend(context));
   const authority: RuntimeHostedRootAuthority = {
     bindRun: (identity) => messages.bindRun(identity),
     executeRoot: (input) =>
@@ -647,6 +683,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   goal = new HostGoalCoordinator({
     store: goalStore,
     stores,
+    readSessionMessages: (sessionId) => manager.getMessages(sessionId),
     executions: rootCoordinator,
     sessionAdmission: admission,
     evaluator: {
@@ -656,7 +693,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
       goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease),
-    listActionableTaskKeys: async () => [],
     acquireResidency,
     onProjectionChanged: (sessionId) => {
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
@@ -716,22 +752,22 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
+async function readInvocation(
+  fixture: Fixture,
+  runId: string,
+): Promise<RuntimeInvocationRecord | undefined> {
+  return (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).find(
+    (candidate) => candidate.runId === runId,
+  );
 }
 
-async function waitForGoalRun(
-  fixture: Fixture,
-  goalId: string,
-): Promise<Awaited<ReturnType<Fixture['stores']['agentRunStore']['readRun']>>> {
+async function waitForGoalRun(fixture: Fixture, goalId: string): Promise<RuntimeInvocationRecord> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const run = (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).find(
-      (candidate) => candidate.goalId === goalId,
+    const run = (
+      await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)
+    ).find(
+      (candidate) =>
+        candidate.opening.root.kind === 'goal' && candidate.opening.root.goalId === goalId,
     );
     if (run) return run;
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -739,29 +775,10 @@ async function waitForGoalRun(
   throw new Error('Goal continuation did not reach the root authority');
 }
 
-function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    invocationId: 'run-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    status: 'created',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/workspace',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides,
-  };
-}
-
 function operationContext() {
   return {
     hostEpoch: 'goal-root-epoch',
     connectionId: 'connection-1',
-    surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release() {} }),
   };

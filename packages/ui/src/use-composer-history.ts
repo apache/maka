@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Composer prompt-history navigation hook (issue #1044).
  *
@@ -18,7 +37,7 @@
  * and keeps this.
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import type { ComposerTextPort } from './chat-input-behavior.js';
 import {
   type ComposerHistoryState,
@@ -31,7 +50,6 @@ import {
   saveGlobalInputHistoryEntry,
   subscribeGlobalInputHistory,
 } from './input-history.js';
-import { matchPromptHistory } from './prompt-history-match.js';
 
 export interface ComposerHistoryApi {
   /**
@@ -58,15 +76,6 @@ export interface ComposerHistoryApi {
    * stop further key handling.
    */
   handleArrowKey(event: KeyboardEvent<Element>): boolean;
-  /**
-   * What would finish `draft` if it were taken from history, or null.
-   *
-   * Lives here because this hook is the history's only owner: a second holder
-   * would need its own copy of the entries, and a copy is exactly what lets a
-   * prompt cleared from Settings · 数据 be completed back into a draft. The
-   * decision itself is `matchPromptHistory`, pure and tested on its own.
-   */
-  matchCompletion(draft: string): string | null;
 }
 
 export function useComposerHistory(input: {
@@ -74,11 +83,12 @@ export function useComposerHistory(input: {
   /** Persist the applied value under the active draft key. */
   saveCurrentDraft(value?: string): void;
 }): ComposerHistoryApi {
-  const promptHistoryRef = useRef<ComposerHistoryState>({ entries: readGlobalInputHistory() ?? [], index: -1, savedDraft: '' });
-  // Re-render on a write, so an offer drawn from an entry that has just been
-  // cleared from Settings · 数据 leaves the screen with it rather than waiting
-  // for the next keystroke to recompute.
-  const [, setHistoryRevision] = useState(0);
+  const promptHistoryRef = useRef<ComposerHistoryState>(null);
+  // Capture the mount snapshot without reading/parsing a discarded initializer
+  // on every text update. The ref stays initialized for callbacks below.
+  if (promptHistoryRef.current === null) {
+    promptHistoryRef.current = { entries: readGlobalInputHistory() ?? [], index: -1, savedDraft: '' };
+  }
   // The subscription is registered once, so anything it calls must be reached
   // through the latest render rather than captured from the first. Today the
   // pieces that matter happen to be ref-backed — the text port is created once
@@ -102,21 +112,16 @@ export function useComposerHistory(input: {
     // arrow key happened to reconcile it. The pure state machine already knows
     // all of this — including when the draft is owed back.
     const { state, restoreDraft } = reconcileHistorySync(
-      promptHistoryRef.current,
+      promptHistoryRef.current!,
       readGlobalInputHistory(),
     );
     promptHistoryRef.current = state;
     if (restoreDraft) applyValueRef.current(state.savedDraft);
-    setHistoryRevision((revision) => revision + 1);
   }), []);
-
-  function matchCompletion(draft: string): string | null {
-    return matchPromptHistory(draft, promptHistoryRef.current.entries);
-  }
 
   function resetNavigation() {
     promptHistoryRef.current = {
-      entries: promptHistoryRef.current.entries,
+      entries: promptHistoryRef.current!.entries,
       index: -1,
       savedDraft: '',
     };
@@ -127,7 +132,7 @@ export function useComposerHistory(input: {
     // survives page reloads and is shared across all input surfaces.
     saveGlobalInputHistoryEntry(text);
     promptHistoryRef.current = {
-      entries: rememberComposerHistoryEntry(promptHistoryRef.current.entries, text),
+      entries: rememberComposerHistoryEntry(promptHistoryRef.current!.entries, text),
       index: -1,
       savedDraft: '',
     };
@@ -143,7 +148,7 @@ export function useComposerHistory(input: {
     const plainArrow = !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
     if (!plainArrow && !explicit) return false;
     const current = input.text.getValue();
-    const isNavigatingHistory = promptHistoryRef.current.index >= 0;
+    const isNavigatingHistory = promptHistoryRef.current!.index >= 0;
     const canStartHistory = !current.trim();
     if (!(explicit || isNavigatingHistory || canStartHistory)) return false;
     // Re-read global history from localStorage on every navigation so
@@ -153,7 +158,7 @@ export function useComposerHistory(input: {
     // reconcileHistorySync restores the saved draft if a clear happened
     // mid-navigation (so the user doesn't lose what they were typing).
     const synced = readGlobalInputHistory();
-    const { state, restoreDraft } = reconcileHistorySync(promptHistoryRef.current, synced);
+    const { state, restoreDraft } = reconcileHistorySync(promptHistoryRef.current!, synced);
     promptHistoryRef.current = state;
     if (restoreDraft) {
       applyValue(state.savedDraft);
@@ -175,5 +180,5 @@ export function useComposerHistory(input: {
     return true;
   }
 
-  return { resetNavigation, rememberSentEntry, handleArrowKey, matchCompletion };
+  return { resetNavigation, rememberSentEntry, handleArrowKey };
 }

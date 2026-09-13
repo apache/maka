@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { promises as fs } from 'node:fs';
 import { exec, execFile } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
@@ -8,6 +27,12 @@ import {
   resolveCanonicalDirectoryEntryTarget,
 } from './path-containment.js';
 import { createPatchedFile, updatePatchedFile } from './apply-patch-file.js';
+import {
+  compareAndDeleteEntry,
+  hostVisibilityAfterWrite,
+  openStableTarget,
+  writeThroughHandle,
+} from './file-stable-write.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
@@ -15,14 +40,11 @@ import type { ChildFdInput } from './child-fd-input.js';
 import type { ShellPlan } from './shell-detect.js';
 import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
+import { readTextLineWindow } from './text-line-window.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-export type WorkspaceIsolationKind = ToolExecutionFacts['isolation'];
-export type WorkspaceWriteBackMode = ToolExecutionFacts['writeBack'];
-export type WorkspaceNetworkMode = ToolExecutionFacts['network'];
-export type WorkspaceSecretMode = ToolExecutionFacts['secrets'];
 export type WorkspaceExecutorFacts = ToolExecutionFacts;
 
 export const LOCAL_WORKSPACE_EXECUTOR_FACTS: WorkspaceExecutorFacts = {
@@ -88,11 +110,53 @@ export interface WorkspaceWriteFileResult {
 }
 
 export type WorkspaceApplyPatchInput = WorkspaceResolvePathInput &
-  ({ action: 'create' | 'update'; diff: string } | { action: 'delete' });
+  ({ action: 'create' | 'update'; diff: string } | { action: 'delete' }) & {
+    /**
+     * Captured at lock acquisition; carried through to the compare-and-delete
+     * guard for delete (#2600). Optional so external callers are unaffected.
+     */
+    approvedIdentity?: { dev: string; ino: string };
+  };
 
 export interface WorkspaceApplyPatchResult {
   ok: true;
   path: string;
+}
+
+/**
+ * A read-modify-write pinned to one file descriptor, enforcing the
+ * filesystem-authority contract (#2600): the approved object is opened once,
+ * its identity validated on the descriptor, and the read/transform/write all
+ * run through that descriptor. The local executor implements this; a remote or
+ * isolated workspace cannot pin host descriptors and stays on the path-based
+ * readFile/writeFile fallback (documented as unprotected by the identity
+ * authority).
+ */
+export interface WorkspaceReadModifyWriteInput {
+  cwd: string;
+  path: string;
+  label: string;
+  scope: WorkspacePathScope;
+  /** Captured at lock acquisition; undefined for an approved-missing target. */
+  approvedIdentity?: { dev: string; ino: string };
+  /**
+   * Compute the new content from the pinned read. Return null to not write
+   * (e.g. invalid JSON in FormatJson) — nothing is modified.
+   */
+  transform: (existing: { content: string | null; existed: boolean }) => string | null;
+}
+
+export interface WorkspaceReadModifyWriteResult {
+  path: string;
+  /** What the pinned read saw, for the caller's diff. */
+  previous: 'new' | 'unknown' | string;
+  /** The content that was (or would have been) written. */
+  finalContent: string | null;
+  written: boolean;
+}
+
+export interface WorkspaceReadModifyWriteExecutor {
+  readModifyWrite(input: WorkspaceReadModifyWriteInput): Promise<WorkspaceReadModifyWriteResult>;
 }
 
 /**
@@ -226,7 +290,8 @@ export interface WorkspaceExecutor
     WorkspaceEditExecutor,
     WorkspaceGlobExecutor,
     WorkspaceGrepExecutor,
-    Partial<WorkspaceApplyPatchExecutor> {}
+    Partial<WorkspaceApplyPatchExecutor>,
+    Partial<WorkspaceReadModifyWriteExecutor> {}
 
 export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   readonly facts = LOCAL_WORKSPACE_EXECUTOR_FACTS;
@@ -260,11 +325,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
       return await readWorkspaceImage(input.path);
     }
     const content = await fs.readFile(input.path, 'utf8');
-    if (input.offset === undefined && input.limit === undefined) return { content };
-    const lines = content.split('\n');
-    const start = input.offset ?? 0;
-    const end = input.limit ? start + input.limit : lines.length;
-    return { content: lines.slice(start, end).join('\n') };
+    return { content: readTextLineWindow(content, input.offset, input.limit) };
   }
 
   async writeFile(input: WorkspaceWriteFileInput): Promise<WorkspaceWriteFileResult> {
@@ -276,6 +337,53 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
     };
   }
 
+  async readModifyWrite(
+    input: WorkspaceReadModifyWriteInput,
+  ): Promise<WorkspaceReadModifyWriteResult> {
+    // Pin the approved object (#2600): open once, validate the identity on the
+    // descriptor, read/transform/write through it. A path swap mid-operation
+    // cannot divert the bytes; a failed validation leaves the file untouched.
+    // Resolve into the same canonical path space as every other operation so
+    // the approved identity (captured on the canonical path) matches what we
+    // open; callers may pass either a raw or an already-resolved path.
+    const path = input.approvedIdentity
+      ? await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope)
+      : (await canonicalPathInScope(input.cwd, input.path, input.label, input.scope)).path;
+    const handle = await openStableTarget({
+      path,
+      approvedIdentity: input.approvedIdentity,
+    });
+    try {
+      const existed = input.approvedIdentity !== undefined;
+      let previous: 'new' | 'unknown' | string;
+      let content: string | null = null;
+      if (!existed) {
+        previous = 'new'; // just created by the exclusive open
+      } else if (isSupportedImagePath(path)) {
+        // Binary/image targets are never read as text: the previous state is
+        // unknown and no diff may claim /dev/null.
+        previous = 'unknown';
+      } else {
+        try {
+          content = await handle.readFile('utf8');
+          previous = content;
+        } catch {
+          previous = 'unknown';
+        }
+      }
+      const replacement = input.transform({ content, existed });
+      if (replacement === null) {
+        return { path, previous, finalContent: null, written: false };
+      }
+      await writeThroughHandle(handle, replacement);
+      const visibility = await hostVisibilityAfterWrite(path, handle);
+      if (visibility) throw visibility;
+      return { path, previous, finalContent: replacement, written: true };
+    } finally {
+      await handle.close();
+    }
+  }
+
   async applyPatch(input: WorkspaceApplyPatchInput): Promise<WorkspaceApplyPatchResult> {
     if (input.action !== 'update') {
       const path = await resolveDirectoryEntryPathInScope(
@@ -285,7 +393,13 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
         input.scope,
       );
       if (input.action === 'create') await createPatchedFile(path, input.diff);
-      else await fs.unlink(path);
+      // Compare-and-delete (#2600): a replacement swapped in after the check
+      // is restored and reported, never silently deleted.
+      else
+        await compareAndDeleteEntry({
+          path,
+          approvedIdentity: input.approvedIdentity,
+        });
       return { ok: true, path };
     }
     const path = await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope);

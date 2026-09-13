@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PLAN_EXECUTION_STATUSES,
   PLAN_LIFECYCLE_REASON_MAX_BYTES,
@@ -44,10 +63,14 @@ const QUERY_ERRORS = [
 ] as const;
 const CONTROL_ERRORS = [
   ...QUERY_ERRORS,
+  'unauthorized',
   'session_busy',
   'operation_conflict',
   'persistence_failed',
 ] as const;
+
+/** Failure codes `plan.control` / `plan.turn.start` reject with. */
+export type PlanControlErrorCode = (typeof CONTROL_ERRORS)[number];
 
 export type PlanQueryInput =
   | { readonly kind: 'list_start'; readonly sessionId: string }

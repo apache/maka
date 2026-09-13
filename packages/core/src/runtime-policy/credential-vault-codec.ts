@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   CredentialLocator,
   CredentialStatus,
@@ -5,6 +24,7 @@ import type {
   DeleteCredentialInput,
   SetCredentialInput,
 } from '../runtime-policy.js';
+import { decodeConnectionCredentialTarget } from './connection-catalog-codec.js';
 import { WEB_SEARCH_CREDENTIAL_PROVIDERS } from '../web-search.js';
 import {
   parseRequestHeaders,
@@ -105,7 +125,12 @@ export function decodeCredentialStatus(value: unknown): CredentialStatus {
 }
 
 export function normalizeSetCredentialInput(value: unknown): SetCredentialInput {
-  const input = exactRecord(value, 'set credential input', ['locator', 'expected', 'secret']);
+  const input = exactRecord(
+    value,
+    'set credential input',
+    ['locator', 'expected', 'expectedConnection', 'secret'],
+    ['locator', 'expected', 'secret'],
+  );
   let expected: SetCredentialInput['expected'];
   if (input.expected === null) {
     expected = null;
@@ -120,10 +145,18 @@ export function normalizeSetCredentialInput(value: unknown): SetCredentialInput 
     };
   }
   const locator = decodeCredentialLocator(input.locator);
+  const expectedConnection =
+    input.expectedConnection === undefined
+      ? undefined
+      : decodeConnectionCredentialTarget(input.expectedConnection);
+  if (expectedConnection && locator.scope !== 'connection') {
+    throw domainError('only connection credentials accept a connection target basis');
+  }
   const secret = normalizeCredentialSecret(input.secret);
   return {
     locator,
     expected,
+    ...(expectedConnection === undefined ? {} : { expectedConnection }),
     secret:
       locator.scope === 'connection' && locator.kind === 'request_headers'
         ? normalizeRequestHeadersSecret(secret)

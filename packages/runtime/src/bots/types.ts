@@ -1,7 +1,50 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotMessageEvent, BotPlatform } from '@maka/core/bot-events';
+import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
 export type { BotPlatform };
+
+export type BotStatusCode =
+  | BotTestErrorCode
+  | GeneralizedErrorClass
+  | 'disabled'
+  | 'stopped'
+  | 'slack-disconnected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'rate-limited'
+  | 'polling-timeout'
+  | 'send-failed'
+  | 'get-me-failed'
+  | 'stream-failed';
+
+export type BotStatusReason =
+  | BotStatusCode
+  | `gateway-bot-${number}`
+  | `gateway-closed-${number}`
+  | `connections-open-${number}`
+  | `stream-closed-${number}`
+  | `send-failed-${number}`
+  | `getAppAccessToken-${number}`;
 
 export interface BotStatus {
   platform: BotPlatform;
@@ -97,13 +140,29 @@ export interface SendCapable {
   sendTypingIndicator?(chatId: string): Promise<boolean>;
 }
 
+/** Stable machine codes for producer-known test failures; presenters own copy. */
+export type BotTestErrorCode =
+  | 'connection_failed'
+  | 'token_missing'
+  | 'token_invalid'
+  | 'slack_tokens_missing'
+  | 'feishu_credentials_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete';
+
 export interface BotTestResult {
   ok: boolean;
   identity?: { id: string; username?: string; displayName?: string };
   messageSent?: boolean;
   capabilities?: Record<string, boolean>;
+  errorCode?: BotTestErrorCode;
+  /** Diagnostic for redacted logging only, never product copy. */
   error?: string;
-  hint?: string;
   /**
    * `false` when `ok` reflects only a shape/non-empty check and the credentials
    * could NOT be verified against a live endpoint (e.g. WeCom AI-bot creds,

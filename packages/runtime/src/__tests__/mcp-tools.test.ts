@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type {
@@ -8,7 +28,13 @@ import type {
   McpToolBinding,
   McpToolDescriptor,
 } from '@maka/core/mcp';
-import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
+import {
+  buildMcpTools,
+  buildMcpToolsWithIdentities,
+  mcpProxyToolName,
+  type McpToolProvider,
+} from '../mcp-tools.js';
+import { selectCollaborationTools } from '../plan-mode.js';
 
 test('buildMcpTools projects discovery, abort, and rich model output', async () => {
   const readBinding = binding('internal-read-binding');
@@ -75,6 +101,149 @@ test('buildMcpTools projects discovery, abort, and rich model output', async () 
     },
   ]);
   assert.match(model?.value[2]?.type === 'text' ? model.value[2].text : '', /structuredContent/u);
+});
+
+test('buildMcpTools leaves MCP JSON Schema validation to the server', async () => {
+  const inputSchema = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      values: {
+        type: 'array',
+        prefixItems: [{ type: 'string' }],
+        items: { type: 'number' },
+      },
+    },
+    required: ['values'],
+  };
+  let invocationArgs: unknown;
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [
+        boundTool(
+          {
+            ...descriptor('server', 'validated'),
+            inputSchema,
+          },
+          binding('validated-binding'),
+        ),
+      ],
+      async (_binding, args) => {
+        invocationArgs = args;
+        return { content: [] };
+      },
+    ),
+  );
+  const parameters = tool?.parameters as {
+    jsonSchema?: unknown;
+    validate?: unknown;
+  };
+  assert.deepEqual(parameters.jsonSchema, inputSchema);
+  assert.equal(parameters.validate, undefined);
+  if (!tool) throw new Error('expected MCP tool');
+  assert.deepEqual(
+    await tool.impl(
+      { values: ['head', 42] },
+      {
+        sessionId: 'session',
+        turnId: 'turn',
+        cwd: '/workspace',
+        toolCallId: 'tool-call',
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      },
+    ),
+    { content: [] },
+  );
+  assert.deepEqual(invocationArgs, { values: ['head', 42] });
+});
+
+test('buildMcpTools carries the Runtime-owned form callback to the provider', async () => {
+  const cancellation = new AbortController();
+  const provider = fakeProvider(
+    [boundTool(descriptor('client', 'deploy'), binding('nested-form-binding'))],
+    async (_binding, _args, options) => {
+      assert.ok(options.requestInteraction);
+      const answer = await options.requestInteraction(
+        {
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
+        },
+        { cancellationSignal: cancellation.signal },
+      );
+      assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+      return { content: [] };
+    },
+  );
+  const [tool] = buildMcpTools(provider);
+
+  await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      requestUserForm: async (form, options) => {
+        assert.equal(form.message, 'Choose a target');
+        assert.equal(options?.cancellationSignal, cancellation.signal);
+        return { action: 'accept', values: { target: 'staging' } };
+      },
+    },
+  );
+});
+
+test('prepared MCP execution receives the Runtime-owned form callback after admission', async () => {
+  const toolBinding = binding('prepared-form-binding');
+  const provider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [boundTool(descriptor('client', 'deploy'), toolBinding)],
+    }),
+    prepareTool: async () => ({
+      execute: async (options) => {
+        assert.ok(options?.requestInteraction);
+        const answer = await options.requestInteraction({
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
+        });
+        assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+        return { content: [] };
+      },
+      cancel: () => undefined,
+    }),
+    callTool: async () => assert.fail('Prepared provider must not use direct callTool'),
+  };
+  const [tool] = buildMcpTools(provider);
+  assert.ok(tool?.prepareExecution);
+  const controller = new AbortController();
+  const prepared = await tool.prepareExecution(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: controller.signal,
+    },
+  );
+  await prepared.execute({
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'tool-call',
+    abortSignal: controller.signal,
+    emitOutput: () => undefined,
+    requestUserForm: async () => ({ action: 'accept', values: { target: 'staging' } }),
+  });
 });
 
 test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
@@ -168,6 +337,57 @@ test('MCP annotations cannot lower permissions and model output has aggregate bo
   assert.doesNotMatch(text, /secretBlob/u);
 });
 
+test('MCP text clipping never leaves an unpaired surrogate at the boundary', async () => {
+  const provider = fakeProvider(
+    [boundTool(descriptor('untrusted', 'claims-read-only', true), binding('surrogate-binding'))],
+    async () => ({
+      // Every code point is astral, so a clip boundary inside any pair would
+      // surface as an unpaired surrogate ahead of the truncation marker.
+      content: [{ type: 'text', text: '🦊'.repeat(120_000) }],
+    }),
+  );
+  const [tool] = buildMcpTools(provider);
+  const output = await tool?.impl(
+    {},
+    {
+      sessionId: 's',
+      turnId: 't',
+      cwd: '/tmp',
+      toolCallId: 'call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    },
+  );
+  const model = await tool?.toModelOutput?.({ toolCallId: 'call', input: {}, output });
+  assert.equal(model?.type, 'content');
+  if (model?.type !== 'content') throw new Error('expected content tool output');
+  const text = model.value
+    .filter((item) => item.type === 'text')
+    .map((item) => (item.type === 'text' ? item.text : ''))
+    .join('');
+  assert.ok(text.length <= 200_000);
+  assert.match(text, /…\[truncated by Maka\]/u);
+  assert.doesNotMatch(
+    text,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+  );
+});
+
+test('MCP tools stay network sends and are excluded from Plan mode', () => {
+  const tools = buildMcpTools(
+    fakeProvider(
+      [boundTool(descriptor('untrusted', 'claims-read-only', true), binding('plan-binding'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(tools[0]?.categoryHint, 'network_send');
+  assert.deepEqual(
+    selectCollaborationTools({ mode: 'plan', tools, hasActiveExecution: false }),
+    [],
+  );
+});
+
 test('a trusted composition can apply the Client Capability permission floor and context', async () => {
   let invocationContext:
     | {
@@ -208,6 +428,22 @@ test('a trusted composition can apply the Client Capability permission floor and
   });
 });
 
+test('a trusted composition can preserve provider-owned activity semantics', () => {
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [
+        boundTool(
+          descriptor('desktop_computer_use', 'maka_computer'),
+          binding('desktop-computer-binding'),
+        ),
+      ],
+      async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    ),
+    { activityKindForDescriptor: () => 'computer' },
+  );
+  assert.equal(tool?.activityKind, 'computer');
+});
+
 test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () => {
   const first = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
   const second = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
@@ -217,6 +453,28 @@ test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () =>
   assert.notEqual(
     first,
     mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20) + 'different'),
+  );
+});
+
+test('buildMcpToolsWithIdentities pairs each proxy tool with its source identity', () => {
+  const provider = fakeProvider(
+    [
+      boundTool(descriptor('read server', 'read.item', true), binding('read-binding')),
+      boundTool(descriptor('write', 'mutate-item', undefined), binding('write-binding')),
+    ],
+    async () => ({ content: [] }),
+  );
+  const identified = buildMcpToolsWithIdentities(provider);
+  assert.deepEqual(
+    identified.map(({ tool, serverId, toolName }) => [tool.name, serverId, toolName]),
+    [
+      ['mcp__read_server__read_item', 'read server', 'read.item'],
+      ['mcp__write__mutate-item', 'write', 'mutate-item'],
+    ],
+  );
+  assert.deepEqual(
+    buildMcpTools(provider).map((tool) => tool.name),
+    identified.map(({ tool }) => tool.name),
   );
 });
 
@@ -244,3 +502,18 @@ function fakeProvider(tools: McpBoundTool[], call: McpToolProvider['callTool']):
     callTool: call,
   };
 }
+
+test('MCP descriptions are normalized to the Request Composition bound', () => {
+  const oversized = 'x'.repeat(REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH + 1);
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [boundTool({ ...descriptor('server', 'large'), description: oversized }, binding('large'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(
+    tool?.description,
+    oversized.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH),
+  );
+});

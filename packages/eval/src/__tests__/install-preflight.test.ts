@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,11 +32,13 @@ test('preflights the pinned Python framework and Docker before execution', async
   t.after(() => rm(root, { recursive: true, force: true }));
   const trials = join(root, 'trials');
   const mount = join(root, 'mount');
+  const egressTarget = join(root, 'egress-target');
   const egress = join(root, 'egress');
-  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egress)]);
+  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egressTarget)]);
+  await symlink(egressTarget, egress, process.platform === 'win32' ? 'junction' : 'dir');
   await Promise.all([
-    writeFile(join(egress, 'compose.yaml'), 'services: {}\n'),
-    writeFile(join(egress, 'network-policy.json'), '{}\n'),
+    writeFile(join(egressTarget, 'compose.yaml'), 'services: {}\n'),
+    writeFile(join(egressTarget, 'network-policy.json'), '{}\n'),
   ]);
   const restore = setMachinePaths({
     MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
@@ -46,10 +67,10 @@ test('preflights the pinned Python framework and Docker before execution', async
   assert.equal(calls[0]?.environment.MAKA_TEST_PREFLIGHT_SECRET, undefined);
   assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_REQUIRED, '1');
   assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_ALLOWED_HOST, 'api.example.test');
-  assert.equal(
-    calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH,
-    join(egress, 'network-policy.json'),
-  );
+  const networkPolicyPath = join(egress, 'network-policy.json');
+  const canonicalNetworkPolicyPath = await realpath(networkPolicyPath);
+  assert.notEqual(canonicalNetworkPolicyPath, networkPolicyPath);
+  assert.equal(calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH, canonicalNetworkPolicyPath);
   assert.deepEqual(calls[1], {
     command: 'docker',
     args: ['version', '--format', '{{.Server.Version}}'],

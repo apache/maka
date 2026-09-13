@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Unicode text-sanitize pipeline — single source of truth (#1404).
  *
@@ -38,7 +57,12 @@ const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]/g;
 //   U+200F  RLM (right-to-left mark)
 //   U+202A  LRE, U+202B RLE, U+202C PDF, U+202D LRO, U+202E RLO
 //   U+2066  LRI, U+2067 RLI, U+2068 FSI, U+2069 PDI
-const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+//   U+206A  INHIBIT SYMMETRIC SWAPPING, U+206B ACTIVATE SYMMETRIC SWAPPING,
+//   U+206C  INHIBIT ARABIC FORM SHAPING, U+206D ACTIVATE ARABIC FORM SHAPING,
+//   U+206E  NATIONAL DIGIT SHAPES, U+206F NOMINAL DIGIT SHAPES
+//     (deprecated Cf bidi-adjacent controls; invisible and not whitespace, so
+//      the `\s+` collapse never removed them — #3823)
+const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u206F]/g;
 
 // Zero-width / invisible format characters. Removed entirely (no replacement)
 // because they're meant to be invisible and replacing with space would inject
@@ -67,7 +91,7 @@ export interface SanitizeUnicodeOptions {
  *
  * Pipeline (applied in order): NFC → control chars → space, bidi format →
  * space, zero-width/invisible → removed, whitespace collapse, trim, then
- * code-point cap. The cap uses `Array.from(...)` to iterate by code points so a
+ * code-point cap. The cap iterates by code points so a
  * surrogate pair (e.g. `🦊` = U+1F98A, two UTF-16 code units) counts as one and
  * is never split in half.
  *
@@ -83,7 +107,30 @@ export function sanitizeUnicodeText(text: string, opts: SanitizeUnicodeOptions):
     .replace(ZERO_WIDTH_REGEX, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const points = Array.from(cleaned);
+  const points: string[] = [];
+  for (const point of cleaned) {
+    points.push(point);
+    // One extra point detects truncation without expanding the entire input.
+    if (opts.maxCodePoints >= 0 && points.length > opts.maxCodePoints) break;
+  }
   if (points.length <= opts.maxCodePoints) return cleaned;
   return points.slice(0, opts.maxCodePoints).join('') + suffix;
+}
+
+/**
+ * Truncate to at most `maxUnits` UTF-16 code units without ending on an
+ * unpaired high surrogate: when the cut lands inside a surrogate pair, the
+ * dangling high half is dropped with the rest of the clipped tail, so the
+ * result survives a UTF-8 round trip (durable storage, model requests)
+ * instead of decoding as U+FFFD.
+ *
+ * Budgets here are code *units*, not code points — callers clip against
+ * provider/storage limits measured in UTF-16 lengths. Marker/suffix policy
+ * stays with the caller, per the boundary note above.
+ */
+export function truncateUtf16Safe(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return '';
+  if (text.length <= maxUnits) return text;
+  const kept = text.slice(0, maxUnits);
+  return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
 }

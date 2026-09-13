@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 type IsOptionalInAnyMember<T extends object, K extends keyof T> = T extends unknown
   ? {} extends Pick<T, K>
     ? true
@@ -19,11 +38,18 @@ type Covers<Expected extends string, Actual extends string> =
 export interface ExactObjectShape {
   readonly required: readonly string[];
   readonly allowed: ReadonlySet<string>;
+  readonly retired?: ReadonlySet<string>;
 }
 
 /**
  * Defines a JSON object shape while making schema additions a type error until
  * both the required and optional key lists are updated.
+ *
+ * `retired` names keys older writers persisted that this type no longer has.
+ * They are accepted on read and dropped by {@link pickShape}, so what the shape
+ * emits may shrink freely while what it accepts only grows. Removing a key from
+ * `optional` without listing it here makes every stored record carrying it fail
+ * validation outright.
  */
 export function defineObjectShape<T extends object>() {
   return <
@@ -32,9 +58,11 @@ export function defineObjectShape<T extends object>() {
   >(
     required: Required & Covers<RequiredKey<T>, Required[number]>,
     optional: Optional & Covers<OptionalKey<T>, Optional[number]>,
+    retired: readonly string[] = [],
   ): ExactObjectShape => ({
     required,
     allowed: new Set([...required, ...optional]),
+    retired: new Set(retired),
   });
 }
 
@@ -45,8 +73,21 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function hasExactShape(value: Record<string, unknown>, shape: ExactObjectShape): boolean {
   return (
     shape.required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => shape.allowed.has(key))
+    Object.keys(value).every((key) => shape.allowed.has(key) || shape.retired?.has(key) === true)
   );
+}
+
+/**
+ * Narrows a record to the keys a shape allows. `undefined` entries are dropped
+ * so the result serializes the way {@link hasExactShape} reads it back.
+ */
+export function pickShape<T extends object>(value: T, shape: ExactObjectShape): T {
+  const picked: Record<string, unknown> = {};
+  for (const key of shape.allowed) {
+    const entry = (value as Record<string, unknown>)[key];
+    if (entry !== undefined) picked[key] = entry;
+  }
+  return picked as T;
 }
 
 export function isFiniteNumber(value: unknown): value is number {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/ui/src/skill-status.ts
 //
 // One severity reading for one Skill, shared by the list rows and the
@@ -98,26 +117,6 @@ export function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): st
 export function formatSkillLibraryDescription(skill: SkillEntry, copy: SkillsCopy): string | undefined {
   const raw = skill.description?.trim();
   if (!raw) return undefined;
-  if (/[\u3400-\u9fff]/.test(raw)) return raw;
-
-  const source = `${skill.id} ${skill.name} ${raw}`.toLowerCase();
-  if (source.includes('docx') || source.includes('word') || source.includes('google docs')) {
-    return copy.description.document;
-  }
-  if (source.includes('ppt') || source.includes('powerpoint') || source.includes('slide') || source.includes('presentation')) {
-    return copy.description.presentation;
-  }
-  if (source.includes('spreadsheet') || source.includes('excel') || source.includes('csv') || source.includes('xlsx')) {
-    return copy.description.spreadsheet;
-  }
-  if (source.includes('image') || source.includes('photo') || source.includes('bitmap')) {
-    return copy.description.image;
-  }
-  if (source.includes('browser') || source.includes('chrome') || source.includes('web target')) {
-    return copy.description.browser;
-  }
-  if (source.includes('macos') || source.includes('swiftui') || source.includes('appkit')) {
-    return copy.description.macos;
-  }
-  return copy.description.fallback;
+  if (skill.sourceType !== 'bundled' || skill.userModified) return raw;
+  return copy.bundledDescription[skill.id] ?? raw;
 }

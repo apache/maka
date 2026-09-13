@@ -1,0 +1,89 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
+import { type ConnectionTestResult } from '@maka/core/llm-connections';
+import { type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { getProviderSettingsCopy } from './settings-provider-copy.js';
+import { cleanErrorMessage } from '../../application/contracts/connection-error-cleaner.js';
+
+export type CredentialPresenceStatus = boolean | 'loading' | 'error';
+
+export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale): string {
+  const shared = getProviderSettingsCopy(locale).shared;
+  // Electron wraps ipcMain.handle rejections as "Error invoking remote method
+  // '<channel>': Error: <message>". Classify the original message, not the
+  // wrapper — channel names like 'connections:fetchModels' contain "fetch",
+  // which the keyword classifier reads as a network error.
+  const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
+  if (/connection_stale/i.test(cleaned)) {
+    return shared.connectionStale;
+  }
+  const classified = generalizedErrorMessageForLocale(new Error(cleaned), '', locale);
+  return classified || shared.actionFallback;
+}
+
+export interface ConnectionTestTroubleshootingCopy {
+  /** Auth-class failure copy (errorClass 'auth' or HTTP 401/403). */
+  auth: string;
+  /** Final fallback copy when no failure class matched. */
+  recheck: string;
+}
+
+// Shared connection-test failure classification. The Models connection
+// sheet and the Account page used to each hand-copy this table; only the
+// surface-specific troubleshooting copy differs, so callers inject it.
+export function connectionTestFailureFallback(
+  result: ConnectionTestResult,
+  copy: ConnectionTestTroubleshootingCopy,
+  locale: UiLocale,
+): string {
+  const shared = getProviderSettingsCopy(locale).shared;
+  if (result.statusCode === 429) return shared.rateLimit;
+  if (result.errorClass === 'timeout') return shared.timeout;
+  if (result.errorClass === 'auth' || result.statusCode === 401 || result.statusCode === 403) {
+    return copy.auth;
+  }
+  if (result.errorClass === 'provider_unavailable' || (result.statusCode !== undefined && result.statusCode >= 500)) {
+    return shared.unavailable;
+  }
+  if (result.errorClass === 'network') return shared.network;
+  return copy.recheck;
+}
+
+export function connectionTestFailureMessage(
+  result: ConnectionTestResult,
+  copy: ConnectionTestTroubleshootingCopy,
+  locale: UiLocale,
+): string {
+  const fallback = connectionTestFailureFallback(result, copy, locale);
+  if (!result.errorMessage) return fallback;
+  return generalizedErrorMessageForLocale(new Error(result.errorMessage), fallback, locale);
+}
+
+export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale): string | undefined {
+  if (!message) return undefined;
+  const trimmed = message.trim();
+  if (!trimmed) return undefined;
+  const copy = getProviderSettingsCopy(locale).shared;
+  return (
+    lookupCopy(copy.lastTest, trimmed) ??
+    (generalizedErrorMessageForLocale(new Error(trimmed), '', locale) || copy.statusUnavailable)
+  );
+}

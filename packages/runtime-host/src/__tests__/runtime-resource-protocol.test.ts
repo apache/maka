@@ -1,8 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
 import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
+import { requireExactRecord } from '../protocol/codec.js';
+import { RUNTIME_HOST_COMPATIBILITY_EPOCH } from '../protocol/index.js';
 import {
   decodeSubscriptionFrame,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
@@ -11,8 +32,10 @@ import {
   decodeRuntimeResourceControllerControlInput,
   decodeRuntimeResourceQueryInput,
   decodeRuntimeResourceQueryResult,
+  decodeRuntimeResourceStartInput,
   decodeRuntimeResourceStopResult,
   RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES,
+  RUNTIME_RESOURCE_COMMAND_MAX_BYTES,
   RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
   RUNTIME_RESOURCE_CURSOR_MAX_BYTES,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
@@ -25,6 +48,28 @@ type PipeShellSnapshot = Extract<ShellRunSnapshotResult, { mode: 'pipes' }>;
 
 describe('Runtime Resource protocol', () => {
   test('rejects unknown fields and non-canonical snapshots', () => {
+    assert.deepEqual(
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: 'pwd',
+      }),
+      { sessionId: 'session-1', launchId: 'user-command-1', command: 'pwd' },
+    );
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '',
+      }),
+    );
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '  ',
+      }),
+    );
     assertInvalid(() =>
       decodeRuntimeResourceQueryInput({
         kind: 'get',
@@ -51,7 +96,32 @@ describe('Runtime Resource protocol', () => {
     }
   });
 
+  test('the current epoch gates the widened runtime.resource.start input (#3210)', () => {
+    // Epoch 56 peers decode the input with exact keys and reject `command` as
+    // unknown. The compatibility cut, not an opaque first-command failure,
+    // must reject that mixed pair before domain admission.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
+    assertInvalid(() =>
+      requireExactRecord(
+        { sessionId: 'session-1', launchId: 'user-command-1', command: 'pwd' },
+        'Runtime Resource start input',
+        ['sessionId', 'launchId'],
+      ),
+    );
+    assert.deepEqual(
+      decodeRuntimeResourceStartInput({ sessionId: 'session-1', launchId: 'launch-1' }),
+      { sessionId: 'session-1', launchId: 'launch-1' },
+    );
+  });
+
   test('enforces cursor, sequence, PTY control, item, and encoded result bounds', () => {
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '界'.repeat(Math.floor(RUNTIME_RESOURCE_COMMAND_MAX_BYTES / 3) + 1),
+      }),
+    );
     const maximumToolCallId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
     assert.equal(
       Buffer.byteLength(maximumToolCallId, 'utf8'),
@@ -187,18 +257,20 @@ test('Runtime Resource invalidations batch lightweight unique identities', () =>
   );
 });
 
-test('Runtime Resource PTY data remains an ordered Session subscription frame', () => {
+test('Runtime Resource PTY data has an independent sequence and explicit recovery marker', () => {
   const frame = {
     kind: 'subscription.runtime_resource_pty_data' as const,
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
-    sequence: 4,
     sessionId: 'session-1',
     ref: runtimeRef,
     ptySequence: 9,
     data: '\u001b[2Jready',
   };
   assert.deepEqual(decodeSubscriptionFrame(frame), frame);
+  assert.deepEqual(decodeSubscriptionFrame({ ...frame, reset: true }), { ...frame, reset: true });
+  assertInvalid(() => decodeSubscriptionFrame({ ...frame, sequence: 4 }));
+  assertInvalid(() => decodeSubscriptionFrame({ ...frame, reset: false }));
   assertInvalid(() => decodeSubscriptionFrame({ ...frame, ptySequence: 0 }));
 });
 

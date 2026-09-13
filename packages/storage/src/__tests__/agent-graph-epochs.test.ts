@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -73,6 +92,47 @@ describe('SQLite Agent Graph epochs', () => {
         { epoch: 2, graphId: 'agent_graph_2' },
       ],
     );
+    assert.equal((await store.readAgentGraphEpochByGraphId('agent_graph_1'))?.epoch, 1);
+    assert.deepEqual(await store.listAgentGraphEpochPage({ rootSessionId: 'root-1', limit: 1 }), {
+      epochs: [
+        {
+          schemaVersion: 1,
+          rootSessionId: 'root-1',
+          epoch: 2,
+          graphId: 'agent_graph_2',
+          createdAt: 100,
+        },
+      ],
+      nextBeforeEpoch: 2,
+      currentEpoch: 2,
+    });
+    assert.deepEqual(
+      await store.listAgentGraphEpochPage({
+        rootSessionId: 'root-1',
+        beforeEpoch: 2,
+        limit: 1,
+      }),
+      {
+        epochs: [
+          {
+            schemaVersion: 1,
+            rootSessionId: 'root-1',
+            epoch: 1,
+            graphId: 'agent_graph_1',
+            createdAt: 0,
+          },
+        ],
+        nextBeforeEpoch: null,
+        currentEpoch: 2,
+      },
+    );
+    // A root Session without durable rows reports no current epoch, letting the
+    // caller fall back to the legacy virtual identity.
+    assert.deepEqual(await store.listAgentGraphEpochPage({ rootSessionId: 'root-2', limit: 1 }), {
+      epochs: [],
+      nextBeforeEpoch: null,
+      currentEpoch: null,
+    });
     store.close();
   });
 

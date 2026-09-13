@@ -1,3 +1,34 @@
+---
+doc_id: computer-use-provenance
+title: "Computer Use provenance"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Computer Use provenance
 
 Maka's Computer Use surface was built against other people's work in three
@@ -37,7 +68,7 @@ to travel with it.
 Maka has one Computer Use executor, `maka-cu`. It is built from Maka's own
 source by the `prepare` command in `scripts/computer-use.mjs` and pinned by digest in
 `apps/desktop/bundled-tools.json`. It is not signed, so it is not distributed:
-its `distributionReady` is false and `scripts/verify-macos-arm64-dmg.mjs`
+its `distributionReady` is false and `scripts/verify-macos-dmg.mjs`
 forbids its path in a packaged build. Nothing third-party ships inside the Maka
 artifact for Computer Use, which is why the table above has one row.
 
@@ -94,17 +125,19 @@ implementation.
 The signed Codex Desktop Computer Use executable was statically inspected. No
 OpenAI source code or executable is included or redistributed by Maka, but
 specific geometry, numeric constants, and control-flow facts recovered from the
-binary were transcribed into the cursor implementation.
+binary were transcribed into the cursor implementation. This is a claim about
+the listed facts, not a claim that the Computer Use implementation as a whole
+was derived from the binary.
 
 This inspection provides evidence, not a license grant. Pull requests #1255 and
-#1883 accurately recorded most of the binary-derived inputs, but #1883's
+#1883 accurately recorded most of the listed binary-recovered inputs, but #1883's
 "term-for-term" phrase was broader than the current mixed scorer. The detailed
 artifact, retained facts, and Maka-authored divergences are recorded in
 `docs/computer-use-cursor-provenance.md`.
 
-| Binary-derived or observed fact | Informed area |
+| Binary-recovered or observed fact | Informed area |
 |---|---|
-| Exact cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
+| Historical (removed by #3293): cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | Formerly `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts`; the #3293 replacement removed every transcribed value (the hotspot is now the glyph tip, not the center) |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |
 | The observation text shape | `packages/runtime/src/computer-use-tools.ts`, corroborated by the archived capture in §2 |
 | OOP WebContent targeting, retained-element unique refetch, and renderer-generation fencing | Reimplemented in the pinned `maka-cu` source; this repository records the exact source commit and binary digest in `apps/desktop/bundled-tools.json` |

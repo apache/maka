@@ -1,4 +1,26 @@
-import type { AgentRunHeader } from '@maka/core/agent-run';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { sessionRevisionFamilyId, type SessionHeader } from '@maka/core/session';
 import { type AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import {
@@ -7,7 +29,7 @@ import {
 } from '@maka/runtime/conversation-copy';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
-type ConversationCopyKind = 'branch' | 'revision';
+type ConversationCopyKind = 'branch' | 'revision' | 'side_conversation';
 
 export type AgentGraphRevisionReferencePreparation =
   | {
@@ -23,8 +45,8 @@ export type AgentGraphRevisionReferencePreparation =
 type GraphReader = Pick<AgentGraphCoordinator, 'readGraphState' | 'readSessionState'>;
 
 interface GraphRevisionDependencies {
-  readonly agentRunStore: {
-    listSessionRuns(sessionId: string): Promise<readonly AgentRunHeader[]>;
+  readonly runtimeEventStore: {
+    listSessionInvocations(sessionId: string): Promise<readonly RuntimeInvocationRecord[]>;
   };
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'getInSession'>;
   readonly graph: GraphReader;
@@ -79,62 +101,96 @@ export async function prepareAgentGraphRevisionReferences(
     return { ok: true, references: new Map() };
   }
   const requestedChildIds = new Set(requests.map((request) => request.childSessionId));
+  const unrepresentedChildren = directChildren.filter((child) => !requestedChildIds.has(child.id));
   if (
-    directChildren.some((child) => !child.subagentParent?.graph || !requestedChildIds.has(child.id))
+    input.kind === 'side_conversation' &&
+    unrepresentedChildren.some((child) => dependencies.isSessionActive(child.id))
   ) {
-    return failure(
-      'operation_unavailable',
-      'Session revision requires a terminal result for every retained Agent Graph child',
-    );
+    return failure('session_busy', 'A retained linked child is still active');
   }
-
   const headersById = new Map(input.sessionHeaders.map((header) => [header.id, header]));
-  try {
-    if ((await dependencies.graph.readSessionState(input.sourceSessionId)) === 'live') {
-      return failure('session_busy', 'A retained Agent Graph is not terminal');
-    }
-  } catch {
-    return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
-  }
   const referencedGraphs = new Map<string, Set<string>>();
-  for (const request of requests) {
-    const parent = headersById.get(request.childSessionId)?.subagentParent;
-    if (!parent?.graph) continue;
+  const retainGraph = (header: SessionHeader | undefined) => {
+    const parent = header?.subagentParent;
+    if (!parent?.graph) return;
     const graphIds = referencedGraphs.get(parent.parentSessionId) ?? new Set<string>();
     graphIds.add(parent.graph.graphId);
     referencedGraphs.set(parent.parentSessionId, graphIds);
+  };
+  for (const request of requests) retainGraph(headersById.get(request.childSessionId));
+  if (input.kind === 'side_conversation') {
+    for (const child of directChildren) retainGraph(child);
   }
-  for (const [rootSessionId, graphIds] of referencedGraphs) {
-    for (const graphId of graphIds) {
-      let state: 'absent' | 'live' | 'terminal';
-      try {
-        state = await dependencies.graph.readGraphState(rootSessionId, graphId);
-      } catch {
-        return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
-      }
-      if (state === 'live') {
+  const retainedSessionGraphFailure = async () => {
+    try {
+      if ((await dependencies.graph.readSessionState(input.sourceSessionId)) === 'live') {
         return failure('session_busy', 'A retained Agent Graph is not terminal');
       }
-      if (state === 'absent') {
-        return failure(
-          'operation_unavailable',
-          'Retained Agent Graph control state is unavailable',
-        );
+    } catch {
+      return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
+    }
+    return undefined;
+  };
+  const retainedExactGraphFailure = async () => {
+    for (const [rootSessionId, graphIds] of referencedGraphs) {
+      for (const graphId of graphIds) {
+        let state: 'absent' | 'live' | 'terminal';
+        try {
+          state = await dependencies.graph.readGraphState(rootSessionId, graphId);
+        } catch {
+          return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
+        }
+        if (state === 'live') {
+          return failure('session_busy', 'A retained Agent Graph is not terminal');
+        }
+        if (state === 'absent') {
+          return failure(
+            'operation_unavailable',
+            'Retained Agent Graph control state is unavailable',
+          );
+        }
       }
     }
+    return undefined;
+  };
+  if (input.kind === 'side_conversation') {
+    const graphFailure = await retainedExactGraphFailure();
+    if (graphFailure) return graphFailure;
+  }
+  if (
+    directChildren.some(
+      (child) =>
+        (input.kind === 'revision' && !child.subagentParent?.graph) ||
+        !requestedChildIds.has(child.id),
+    )
+  ) {
+    return failure(
+      'operation_unavailable',
+      input.kind === 'side_conversation'
+        ? 'Side Conversation requires a terminal result for every retained linked child'
+        : 'Session revision requires a terminal result for every retained Agent Graph child',
+    );
+  }
+  if (input.kind === 'revision') {
+    const graphFailure = await retainedSessionGraphFailure();
+    if (graphFailure) return graphFailure;
+    const exactGraphFailure = await retainedExactGraphFailure();
+    if (exactGraphFailure) return exactGraphFailure;
   }
 
   const references = new Map<string, MutableExternalChildReferences>();
-  const runsByChildSession = new Map<string, ReadonlyMap<string, AgentRunHeader>>();
+  const runsByChildSession = new Map<string, ReadonlyMap<string, RuntimeInvocationRecord>>();
   for (const request of requests) {
     const childSessionId = request.childSessionId;
     const child = headersById.get(childSessionId);
     const parent = child?.subagentParent;
     if (
       !child ||
-      !parent?.graph ||
+      !parent ||
       !familySessionIds.has(parent.parentSessionId) ||
-      !referencedGraphs.get(parent.parentSessionId)?.has(parent.graph.graphId) ||
+      (input.kind === 'revision' && !parent.graph) ||
+      (parent.graph !== undefined &&
+        !referencedGraphs.get(parent.parentSessionId)?.has(parent.graph.graphId)) ||
       !retainedTurnIds.has(parent.spawnedBy.parentTurnId)
     ) {
       return failure(
@@ -151,16 +207,16 @@ export async function prepareAgentGraphRevisionReferences(
 
     let runsById = runsByChildSession.get(childSessionId);
     if (!runsById) {
-      let runs: readonly AgentRunHeader[];
+      let runs: readonly RuntimeInvocationRecord[];
       try {
-        runs = await dependencies.agentRunStore.listSessionRuns(childSessionId);
+        runs = await dependencies.runtimeEventStore.listSessionInvocations(childSessionId);
       } catch {
         return failure(
           'operation_unavailable',
           'Retained Agent Graph child lineage is unavailable',
         );
       }
-      if (runs.some((run) => !isTerminalRunStatus(run.status))) {
+      if (runs.some((run) => runtimeInvocationOutcome(run) === undefined)) {
         return failure('session_busy', 'A retained Agent Graph child is not terminal');
       }
       runsById = new Map(runs.map((run) => [run.runId, run]));
@@ -185,14 +241,20 @@ export async function prepareAgentGraphRevisionReferences(
     ) {
       return failure('operation_unavailable', 'Retained Agent Graph run reference is unavailable');
     }
+    // A child result names every Artifact its turn held, and the ledger that
+    // records it can never be rewritten -- so an id in it outlives whatever it
+    // named. What this checks is therefore that a reference does not reach
+    // outside its own child and lineage, not that its target survived: a user
+    // may delete a child's Artifact. A reference whose target is gone stays
+    // admissible and simply resolves to nothing, while one that crosses a
+    // Session or a lineage was never admissible and still fails.
     for (const artifactId of request.artifactIds) {
       const artifact = await dependencies.artifacts
         .getInSession(childSessionId, artifactId)
         .catch(() => null);
+      if (!artifact?.record) continue;
       if (
-        !artifact?.record ||
         artifact.record.sessionId !== childSessionId ||
-        artifact.record.status === 'deleted' ||
         !lineage.turnIds.has(artifact.record.turnId)
       ) {
         return failure('operation_unavailable', 'Retained Agent Graph Artifact is unavailable');
@@ -243,29 +305,29 @@ function isTerminalRunStatus(status: string): boolean {
 
 function linkedResultStatusMatchesRun(
   request: ConversationCopyLinkedChildReference,
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
 ): boolean {
+  const outcome = runtimeInvocationOutcome(run);
   return (
-    run.status === request.status ||
-    (request.status === 'failed' &&
-      request.failureClass === 'Timeout' &&
-      run.status === 'cancelled')
+    outcome === request.status ||
+    (request.status === 'failed' && request.failureClass === 'Timeout' && outcome === 'cancelled')
   );
 }
 
 function traceChildRunLineage(
-  current: AgentRunHeader,
-  runsById: ReadonlyMap<string, AgentRunHeader>,
+  current: RuntimeInvocationRecord,
+  runsById: ReadonlyMap<string, RuntimeInvocationRecord>,
   childSessionId: string,
 ): { readonly runIds: ReadonlySet<string>; readonly turnIds: ReadonlySet<string> } | undefined {
   const runIds = new Set<string>();
   const turnIds = new Set<string>();
-  let cursor: AgentRunHeader | undefined = current;
+  let cursor: RuntimeInvocationRecord | undefined = current;
   while (cursor) {
     if (cursor.sessionId !== childSessionId || runIds.has(cursor.runId)) return undefined;
     runIds.add(cursor.runId);
     turnIds.add(cursor.turnId);
-    const previousRunId = cursor.retriedFromRunId ?? cursor.resumedFromRunId;
+    const lineage = cursor.opening.lineage;
+    const previousRunId = lineage?.retriedFromRunId ?? lineage?.resumedFromRunId;
     if (!previousRunId) break;
     cursor = runsById.get(previousRunId);
     if (!cursor) return undefined;

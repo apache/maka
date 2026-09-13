@@ -1,8 +1,41 @@
+---
+doc_id: astryx-full-surface-audit
+title: "Astryx full surface audit"
+language: en
+source_language: en
+implementation_status: historical
+document_status: historical
+translation_status: source-only
+last_verified: 2026-09-05
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Astryx full surface audit
 
 Date: 2026-08-09  
 Branch: `feat/astryx-surface-alignment`  
 Scope: every product surface under `apps/desktop/src/renderer/**` and `packages/ui/src/**` (183 inventory files).
+
+> **Status (verified 2026-09-05):** this is an audit record pinned to the `feat/astryx-surface-alignment` branch as of 2026-08-09; its citations and the 183-file inventory describe that tree. Since then the desktop surface has grown (the exact-head inventory generator reports 247 files at re-verification) and the settings kit was rebuilt — `SettingsSection` now implements open row groups and the memory/health pages use `MoreMenu` and `StatusDot`. The findings below are kept as written.
 
 This pass **read and analyzed** settings pages/modules, shell/chat/workbar/panels, module hubs, packages/ui compositions, and product CSS — not only inventory scripts.
 
@@ -65,7 +98,7 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 ### P1 — visual system
 
 - plan-mode / agent-graph plate: avoid fill + border + raw shadow stack; prefer raised ladder or single elevation token.
-- plan-mode status washes → semantic `--*-wash` tokens.
+- ~~plan-mode status washes → semantic `--*-wash` tokens.~~ Done: plan-mode reads the Astryx `-muted` rung, and the `--*-wash` family it named no longer exists.
 - quote companion composer elevation → token.
 
 ### P2 — primitives consistency

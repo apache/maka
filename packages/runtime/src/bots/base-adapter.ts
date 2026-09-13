@@ -1,6 +1,32 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { EventEmitter } from 'node:events';
 import { hasBotChannelCredentials, type BotChannelSettings } from '@maka/core/bot-chat-settings';
-import type { BotBridge, BotIncomingMessage, BotPlatform, BotStatus } from './types.js';
+import { classifyGeneralizedError, redactSecrets } from '@maka/core/redaction';
+import type {
+  BotBridge,
+  BotIncomingMessage,
+  BotPlatform,
+  BotStatus,
+  BotStatusReason,
+} from './types.js';
 
 export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
   readonly platform: BotPlatform;
@@ -8,7 +34,7 @@ export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
   protected running = false;
   protected startedAt?: number;
   protected lastEventAt?: number;
-  protected reason?: string;
+  protected reason?: BotStatusReason;
   protected readiness: BotStatus['readiness'];
   protected identity: BotStatus['identity'];
 
@@ -55,9 +81,26 @@ export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
     this.emit('statusChange', this.getStatus());
   }
 
+  protected recordFailure(error: unknown, code?: BotStatusReason): void {
+    const diagnostic = botDiagnosticMessage(this.settings, error);
+    this.reason = code ?? classifyGeneralizedError(diagnostic) ?? 'connection_failed';
+    console.warn(`[bots:${this.platform}] ${this.reason}: ${diagnostic}`);
+  }
+
   protected connectionKind(): BotStatus['connection'] {
     return 'none';
   }
+}
+
+export function botDiagnosticMessage(settings: BotChannelSettings, error: unknown): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const secret of [settings.token.trim(), settings.appSecret?.trim()]) {
+    if (!secret) continue;
+    message = message
+      .replaceAll(secret, '[redacted]')
+      .replaceAll(encodeURIComponent(secret), '[redacted]');
+  }
+  return redactSecrets(message);
 }
 
 export function botReadinessFromSettings(settings: BotChannelSettings): BotStatus['readiness'] {

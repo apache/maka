@@ -1,13 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { realpathSync, statSync } from 'node:fs';
 import { opendir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  canonicalProjectDirectoryRootSpec,
   PROJECT_DIRECTORY_MAX_ENTRIES,
   PROJECT_DIRECTORY_PAGE_MAX_BYTES,
   PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  projectDirectoryRootSpecValid,
   type ProjectDirectoryQueryInput,
   type ProjectDirectoryQueryResult,
   type ProjectDirectoryRegisterInput,
@@ -101,6 +123,10 @@ export class HostProjectDirectoryAuthority {
     const names = await boundedDirectoryNames(directory);
     const start = input.kind === 'directory_list_start' ? 0 : firstNameAfter(names, input.cursor);
     const entries: { name: string }[] = [];
+    const budget = new JsonArrayPageBudget(
+      PROJECT_DIRECTORY_PAGE_MAX_BYTES,
+      directoryPage(input, [], null),
+    );
     for (let index = start; index < names.length; index += 1) {
       const name = names[index];
       if (!name) continue;
@@ -112,11 +138,8 @@ export class HostProjectDirectoryAuthority {
         // Entries can disappear while a directory is being listed.
       }
       if (!contained) continue;
-      const page = directoryPage(input, [...entries, { name }], name);
-      if (
-        entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS ||
-        Buffer.byteLength(JSON.stringify(page), 'utf8') > PROJECT_DIRECTORY_PAGE_MAX_BYTES
-      ) {
+      // Keep reserving the candidate directory name, even for a possible final page.
+      if (entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS || !budget.tryAppend({ name }, name)) {
         if (entries.length === 0) {
           throw new TypeError('Project directory entry exceeds the response limit');
         }
@@ -149,21 +172,17 @@ function resolveRoot(
   input: PublishedProjectDirectoryRoot,
   index: number,
 ): ResolvedProjectDirectoryRoot {
-  const label = input.label.trim();
-  if (
-    label.length === 0 ||
-    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-    /[\u0000-\u001f\u007f]/u.test(label)
-  ) {
-    throw new TypeError('Project directory root label is invalid');
+  const root = canonicalProjectDirectoryRootSpec(input);
+  if (!projectDirectoryRootSpecValid(root) || !isAbsolute(root.path)) {
+    throw new TypeError('Project directory root must use a valid label and absolute Host path');
   }
-  const path = realpathSync(resolve(input.path));
+  const path = realpathSync(root.path);
   if (!statSync(path).isDirectory()) {
     throw new TypeError('Project directory root is not a directory');
   }
   return {
     id: `root-${index + 1}`,
-    label,
+    label: root.label,
     path,
   };
 }

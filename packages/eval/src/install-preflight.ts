@@ -1,4 +1,23 @@
-import { execFile } from 'node:child_process';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { execFile, type ChildProcess } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, lstat, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
@@ -9,6 +28,7 @@ import {
   resolveRealPathWithinRoot,
 } from './harness-environment.js';
 import type { HarnessFramework, HarnessOptions } from './harness-executor.js';
+import { terminateProcess } from './process-termination.js';
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const PREFLIGHT_OUTPUT_LIMIT_BYTES = 16 * 1024;
@@ -164,26 +184,49 @@ async function runCheckedCommand(
 ): Promise<void> {
   signal?.throwIfAborted();
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    execFile(
-      command,
-      [...args],
-      {
-        env: environment,
-        cwd,
-        timeout: PREFLIGHT_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-        maxBuffer: PREFLIGHT_OUTPUT_LIMIT_BYTES,
-        encoding: 'utf8',
-        ...(signal ? { signal } : {}),
-      },
-      (error, _stdout, stderr) => {
-        if (!error) {
-          resolvePromise();
-          return;
-        }
-        rejectPromise(new Error(stderr.trim() || error.message));
-      },
-    );
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let child: ChildProcess | undefined;
+    const onAbort = () => {
+      void terminateProcess(child, 'SIGTERM');
+    };
+    const settle = (error?: Error, stderr = '') => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      if (!error) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(new Error(stderr.trim() || error.message));
+    };
+    try {
+      child = execFile(
+        command,
+        [...args],
+        {
+          env: environment,
+          cwd,
+          killSignal: 'SIGTERM',
+          maxBuffer: PREFLIGHT_OUTPUT_LIMIT_BYTES,
+          encoding: 'utf8',
+        },
+        (error, _stdout, stderr) => {
+          settle(error ?? undefined, stderr);
+        },
+      );
+    } catch (error) {
+      settle(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    timeout = setTimeout(() => {
+      void terminateProcess(child, 'SIGKILL');
+    }, PREFLIGHT_TIMEOUT_MS);
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 

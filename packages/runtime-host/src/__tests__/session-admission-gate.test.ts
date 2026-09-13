@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -70,15 +90,16 @@ test('serializes overlapping multi-Session admissions without lock-order deadloc
   assert.deepEqual(order, ['first:start', 'third', 'first:end', 'second']);
 });
 
-test('keeps the admission open until admitted child work settles', async () => {
+test('keeps the admission open until joined leaf work settles', async () => {
   const gate = new SessionAdmissionGate();
   const childEntered = deferred();
   const releaseChild = deferred();
   let outerSettled = false;
 
   const outer = gate
-    .run('session', (lease) => {
-      void gate.runAdmitted('session', lease, async () => {
+    .run('session', () => {
+      assert.throws(() => gate.runOrJoin('other', () => undefined), /does not match/);
+      void gate.runOrJoin('session', async () => {
         childEntered.resolve();
         await releaseChild.promise;
       });
@@ -128,10 +149,56 @@ test('rejects accidental admission re-entry instead of deadlocking', async () =>
   });
 });
 
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
+test('work detached from an admission takes admissions of its own', async () => {
+  const gate = new SessionAdmissionGate();
+  const release = deferred();
+  const order: string[] = [];
+  let detached!: Promise<void>;
+
+  // The detached work starts inside the admission and admits before the
+  // admission ends, which is the order a drained Turn reaches its first
+  // admission in. Inherited context would reject it as re-entry.
+  await gate.run('session', async () => {
+    order.push('active:start');
+    detached = gate.detach(async () => {
+      await gate.run('session', () => {
+        order.push('detached:admitted');
+      });
+    });
+    await Promise.resolve();
+    order.push('active:end');
+    release.resolve();
   });
-  return { promise, resolve };
-}
+  await release.promise;
+  await detached;
+  assert.deepEqual(order, ['active:start', 'active:end', 'detached:admitted']);
+});
+
+test('detached stop waits for its Session admission to release', async () => {
+  const gate = new SessionAdmissionGate();
+  const entered = deferred();
+  const release = deferred();
+  const order: string[] = [];
+  let stop!: Promise<void>;
+  const active = gate.run('session', async () => {
+    order.push('active');
+    stop = gate.detach(() =>
+      gate.run('session', () => {
+        order.push('stop');
+      }),
+    );
+    entered.resolve();
+    await release.promise;
+    order.push('released');
+  });
+  await entered.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  try {
+    assert.deepEqual(order, ['active']);
+  } finally {
+    release.resolve();
+    await active;
+    await stop;
+  }
+  assert.deepEqual(order, ['active', 'released', 'stop']);
+});

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -11,11 +30,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
-import {
-  RUNTIME_HOST_PROTOCOL_VERSION,
-  type ClientSurface,
-  type SkillCatalogQueryResult,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION, type SkillCatalogQueryResult } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel } from '../server/index.js';
 
@@ -25,8 +40,7 @@ const PROTOCOL = {
 } as const;
 const REQUEST_TIMEOUT_MS = 5_000;
 
-test('two UDS clients converge on one lease-bound Skill catalog authority', {
-  skip: process.platform === 'win32',
+test('two local IPC clients converge on one lease-bound Skill catalog authority', {
   timeout: 20_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-skill-catalog-two-client-'));
@@ -70,14 +84,13 @@ Keep ${privateMarker} inside the lazy-loaded body.
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
+      composition: defineInteractiveRuntimeHostComposition((context) =>
+        createExecutionRuntimeHostComposition(context, { skillHomeDirectory: isolatedHome }),
+      ),
     });
     endpoint = host.endpoint;
 
-    const [desktop, tui] = await Promise.all([
-      connectClient(dataRoot, 'desktop'),
-      connectClient(dataRoot, 'tui'),
-    ]);
+    const [desktop, tui] = await Promise.all([connectClient(dataRoot), connectClient(dataRoot)]);
     connections.push(desktop, tui);
 
     const query = {
@@ -185,7 +198,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
       if (closure.status === 'rejected') cleanupErrors.push(closure.reason);
     }
     await host?.close().catch((error: unknown) => cleanupErrors.push(error));
-    if (endpoint)
+    if (endpoint && process.platform !== 'win32')
       await assert.rejects(lstat(endpoint), { code: 'ENOENT' }).catch((error: unknown) => {
         cleanupErrors.push(error);
       });
@@ -205,13 +218,9 @@ Keep ${privateMarker} inside the lazy-loaded body.
   }
 });
 
-async function connectClient(
-  rootPath: string,
-  surface: ClientSurface,
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     connectTimeoutMs: REQUEST_TIMEOUT_MS,
     handshakeTimeoutMs: REQUEST_TIMEOUT_MS,

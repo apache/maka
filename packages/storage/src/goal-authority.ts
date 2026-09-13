@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { decodeGoalAuthorityRecord, type GoalAuthorityRecord } from '@maka/core/goal';
 import {
   acquireOperationalStateDatabase,
@@ -9,6 +28,7 @@ import {
   StorageRootAuthorityError,
   type StorageRootLease,
 } from './root-authority.js';
+import { assertSafeStorageId } from './storage-id.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveGoalAuthorityWriter');
 const writers = new WeakSet<object>();
@@ -281,5 +301,5 @@ function cloneSnapshot(snapshot: GoalAuthoritySnapshot): GoalAuthoritySnapshot {
 }
 
 function requireId(value: string, label: string): void {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new TypeError(`${label} identity is invalid`);
+  assertSafeStorageId(value, `${label} identity is invalid`);
 }

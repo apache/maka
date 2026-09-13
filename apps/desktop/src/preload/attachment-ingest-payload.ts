@@ -1,4 +1,27 @@
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  attachmentIngestBlocked,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+} from '@maka/core/attachments';
 
 export type IngestInput =
   | { approvalId: string; name: string; mimeType?: string }
@@ -18,14 +41,14 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export async function encodeIngestItems(items: IngestInput[]): Promise<IngestPayload[]> {
-  if (items.length > MAX_ATTACHMENT_COUNT) throw new Error('附件数量超过 8 个');
+  if (items.length > MAX_ATTACHMENT_COUNT) throw attachmentIngestBlocked('count_limit');
   const out: IngestPayload[] = [];
   for (const item of items) {
     if ('file' in item) {
       // Reject oversized blobs before arrayBuffer() so the renderer never
       // loads the bytes into memory. Main-side resolveIngestItems is the
       // authoritative backstop; this guard exists only to avoid renderer OOM.
-      if (item.file.size > MAX_ATTACHMENT_BYTES) throw new Error('附件大小超过 50MB');
+      if (item.file.size > MAX_ATTACHMENT_BYTES) throw attachmentIngestBlocked('item_too_large');
       const bytes = new Uint8Array(await item.file.arrayBuffer());
       const mimeType = item.file.type || undefined;
       out.push({
@@ -36,7 +59,7 @@ export async function encodeIngestItems(items: IngestInput[]): Promise<IngestPay
     } else if (typeof item.approvalId === 'string') {
       out.push(item);
     } else {
-      throw new Error('附件信息无效。');
+      throw attachmentIngestBlocked('items_invalid');
     }
   }
   return out;

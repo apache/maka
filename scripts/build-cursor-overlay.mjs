@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Build the cursor overlay renderer bundle + preload into apps/desktop/dist/overlay.
 // - cursor-overlay.js: the Canvas engine host (IIFE, browser). The `js→ts` resolve
 //   shim lets us bundle the engine's NodeNext `./x.js` imports straight from source.
@@ -5,8 +24,8 @@
 // - cursor-overlay.html: copied verbatim.
 import * as esbuild from 'esbuild';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { mkdir, copyFile } from 'node:fs/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(here, '..', 'apps', 'desktop');
@@ -25,6 +44,7 @@ const jsToTs = {
 /** Build the overlay renderer bundle + preload + html into dist/overlay. */
 export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
   await mkdir(outDir, { recursive: true });
+  await buildBrowserDialogDesignTokens();
   await esbuild.build({
     entryPoints: [join(srcOverlay, 'cursor-overlay.ts')],
     bundle: true,
@@ -48,6 +68,34 @@ export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
   await buildPermissionOverlay({ logLevel });
   await buildComputerUsePip({ logLevel });
   return outDir;
+}
+
+/**
+ * Browser-backed recovery dialogs run outside the React renderer, but they
+ * still consume the same generated Astryx scale and Maka palette authority.
+ * Keep only maka-tokens.css's token/palette prefix: its later base/component
+ * recipes target the main document and must not leak into a standalone card.
+ */
+async function buildBrowserDialogDesignTokens() {
+  const renderer = join(desktop, 'src', 'renderer');
+  const [astryxTheme, makaTokens] = await Promise.all([
+    readFile(join(renderer, 'astryx-theme', 'maka.css'), 'utf8'),
+    readFile(join(renderer, 'maka-tokens.css'), 'utf8'),
+  ]);
+  const astryxComponentsMarker = '\n  .astryx-heading.level-1 {';
+  const astryxTokenEnd = astryxTheme.indexOf(astryxComponentsMarker);
+  const baseStylesMarker =
+    '/* =============================================================================\n   BASE STYLES';
+  const tokenEnd = makaTokens.indexOf(baseStylesMarker);
+  if (astryxTokenEnd < 0 || tokenEnd < 0) {
+    throw new Error('Unable to locate the dialog design-token boundaries');
+  }
+  const astryxTokens = `${astryxTheme.slice(0, astryxTokenEnd)}\n}\n}\n`;
+  await writeFile(
+    join(outDir, 'browser-dialog-design-tokens.css'),
+    `${astryxTokens}\n${makaTokens.slice(0, tokenEnd)}`,
+    'utf8',
+  );
 }
 
 /**
@@ -121,7 +169,7 @@ export async function buildPermissionOverlay({ logLevel = 'info' } = {}) {
 }
 
 // Run directly (npm run build:overlay) or import buildCursorOverlay (dev.mjs).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = await buildCursorOverlay();
   console.log('overlays built →', dir);
 }

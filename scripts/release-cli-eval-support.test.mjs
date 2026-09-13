@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,6 +25,7 @@ import { describe, test } from 'node:test';
 import {
   createTaskFixture,
   findEvalReleaseTarball,
+  findReleaseTarball,
   isolatedEnvironment,
   readFrameworkOutputs,
 } from './release-cli-eval-support.mjs';
@@ -18,6 +38,19 @@ describe('installed Eval release validation support', () => {
         () => findEvalReleaseTarball(join(root, 'missing-release'), 'win32', 'x64'),
         /requires Linux x64/u,
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves the one built tarball instead of assuming the checked-in version', () => {
+    const root = mkdtempSync(join(tmpdir(), 'maka-release-tarball-'));
+    try {
+      const tarball = join(root, 'maka-agent-0.2.0-dev.42.20260829.tgz');
+      writeFileSync(tarball, 'candidate');
+      assert.equal(findReleaseTarball(root), tarball);
+      writeFileSync(join(root, 'maka-agent-0.2.0.tgz'), 'other candidate');
+      assert.throws(() => findReleaseTarball(root), /Expected one release tarball/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

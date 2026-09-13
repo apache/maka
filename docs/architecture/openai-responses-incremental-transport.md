@@ -1,6 +1,46 @@
+---
+doc_id: architecture.openai-responses-incremental-transport
+title: "OpenAI Responses incremental transport"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-07
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # OpenAI Responses incremental transport
 
 ## 1. Problem and invariant
+
+> **Status (verified 2026-09-07):** this optimization is implemented — the adapter plans a turn
+> continuation and sends the suffix delta over a matching Responses WebSocket
+> (`packages/runtime/src/model-adapter.ts`, `openai-responses-continuation.ts`,
+> `openai-responses-websocket.ts`). One eligibility exclusion is part of the shipped scope: a
+> connection with request customizations (`hasRequestCustomization` in `model-factory.ts` — custom
+> headers or a body overlay) bypasses the Responses transport wrapper, keeps the full-request path,
+> and never establishes the WebSocket/continuation baseline. The Problem below is kept as the
+> record of the pre-optimization state.
 
 Long tool loops currently rebuild and upload the complete provider history on every step. The
 durable Runtime event ledger remains the source of truth, but the OpenAI Responses transport may

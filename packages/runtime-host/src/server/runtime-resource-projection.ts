@@ -1,3 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import type {
   ShellRunSnapshotResult,
@@ -27,10 +48,9 @@ export function canonicalRuntimeResources(resources: readonly ShellRunUpdate[]):
 }
 
 function boundedRuntimeResourceUpdate(update: ShellRunUpdate): ShellRunUpdate {
-  return {
-    ...structuredClone(update),
-    result: boundedState(update.result),
-  };
+  const bounded = structuredClone(update);
+  shrinkStateToFit(bounded.result);
+  return bounded;
 }
 
 export function runtimeResourceRevision(
@@ -46,20 +66,19 @@ export function createRuntimeResourcePage(
   offset: number,
 ): RuntimeResourceQueryResult {
   const pageResources: ShellRunUpdate[] = [];
+  const budget = new JsonArrayPageBudget(RUNTIME_RESOURCE_RESULT_MAX_BYTES, {
+    kind: 'page',
+    sessionId,
+    revision,
+    resources: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < resources.length; index += 1) {
     if (pageResources.length >= RUNTIME_RESOURCE_PAGE_MAX_ITEMS) break;
     const resource = resources[index];
     if (!resource) throw new Error('Runtime Resource projection index was out of bounds');
-    const candidateResources = [...pageResources, resource];
     const nextOffset = index + 1;
-    const candidate = {
-      kind: 'page' as const,
-      sessionId,
-      revision,
-      resources: candidateResources,
-      nextCursor: nextOffset < resources.length ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > RUNTIME_RESOURCE_RESULT_MAX_BYTES) {
+    if (!budget.tryAppend(resource, nextOffset < resources.length ? String(nextOffset) : null)) {
       break;
     }
     pageResources.push(resource);
@@ -94,12 +113,6 @@ export function runtimeResourceSnapshotFromResult(
   }
   const { operation: _operation, ...snapshot } = result;
   return snapshot;
-}
-
-function boundedState(state: ShellRunStateResult): ShellRunStateResult {
-  const bounded = structuredClone(state);
-  shrinkStateToFit(bounded);
-  return bounded;
 }
 
 function shrinkStateToFit(state: ShellRunStateResult): void {

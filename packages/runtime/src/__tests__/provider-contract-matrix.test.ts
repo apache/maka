@@ -1,15 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   PROVIDER_CONTRACT_MATRIX_PLAN,
+  listProviderContractCells,
   type ProviderContractDiscoveryPlan,
   type ProviderContractRow,
   type ProviderContractGeneratedCell,
   type ProviderContractWire,
 } from './provider-contract-matrix.js';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { generateText, isStepCount, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
@@ -30,6 +50,16 @@ const plan = PROVIDER_CONTRACT_MATRIX_PLAN;
 
 after(closeAllJsonServers);
 
+test('provider override cells and executable bindings are a bijection', () => {
+  const plannedKeys = listProviderContractCells(plan)
+    .flatMap(({ cell }) => (cell.state === 'override' ? [cell.overrideKey] : []))
+    .sort();
+  const bindingKeys = PROVIDER_CONTRACT_OVERRIDE_BINDINGS.flatMap(({ keys }) => keys).sort();
+  assert.deepEqual(duplicateValues(plannedKeys), [], 'override cells must be unique');
+  assert.deepEqual(duplicateValues(bindingKeys), [], 'override bindings must be unique');
+  assert.deepEqual(bindingKeys, plannedKeys);
+});
+
 describe('provider conformance matrix — override cells execute their bound contract', () => {
   for (const binding of PROVIDER_CONTRACT_OVERRIDE_BINDINGS) {
     test(`${binding.keys.join(' + ')} · ${binding.title}`, async () => {
@@ -37,6 +67,10 @@ describe('provider conformance matrix — override cells execute their bound con
     });
   }
 });
+
+function duplicateValues(values: readonly string[]): string[] {
+  return values.filter((value, index) => values.indexOf(value) !== index);
+}
 
 describe('provider conformance matrix — discovery', () => {
   for (const row of plan.rows) {
@@ -337,7 +371,7 @@ interface WireCredentialCase {
 }
 
 function wireCredentialCases(row: ProviderContractRow): WireCredentialCase[] {
-  switch (PROVIDER_DEFAULTS[row.providerType].authKind) {
+  switch (PROVIDER_REGISTRY[row.providerType].authKind) {
     case 'none':
       return [{ label: 'no-auth', apiKey: '', expectCredential: false }];
     case 'optional_api_key':
@@ -588,7 +622,7 @@ async function runAnthropicMessagesWire(
   // The native Anthropic adapter carries the credential as x-api-key by
   // default; providers declaring `auth: 'bearer'` carry an Authorization
   // Bearer token instead (getAIModel passes authToken).
-  const adapter = PROVIDER_DEFAULTS[row.providerType].runtimeAdapter;
+  const adapter = PROVIDER_REGISTRY[row.providerType].runtimeAdapter;
   const carrier =
     adapter.kind === 'anthropic' && adapter.auth === 'bearer'
       ? ('authorization-bearer' as const)

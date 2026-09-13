@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
@@ -11,6 +30,7 @@ import {
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
 import type { ToolOutcomeCommit } from './runtime-commit-sink.js';
 import type { ToolMode } from '@maka/core/tool-mode';
+import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export type ToolRecoveryDecisionStatus =
   | 'completed'
@@ -132,6 +152,22 @@ export function buildInterruptedCodeModeOutcomeCommits(
     ) {
       return [];
     }
+    const result = {
+      kind: 'json' as const,
+      value: {
+        kind: 'code_mode' as const,
+        status: 'interrupted' as const,
+        message: 'Code Mode execution was interrupted by runtime recovery.',
+      },
+    };
+    const responseContent = {
+      kind: 'function_response' as const,
+      id: call.id,
+      name: call.name,
+      result,
+      isError: true as const,
+    };
+    const modelProjection = compatibilityToolResultProjection(responseContent, callEvent.sessionId);
     const runtimeEvent: RuntimeEvent = {
       id: `${decision.operationId}_response`,
       invocationId: callEvent.invocationId,
@@ -144,20 +180,7 @@ export function buildInterruptedCodeModeOutcomeCommits(
       author: 'tool',
       origin: 'provider',
       modelVisibility: 'visible',
-      content: {
-        kind: 'function_response',
-        id: call.id,
-        name: call.name,
-        result: {
-          kind: 'json',
-          value: {
-            kind: 'code_mode',
-            status: 'interrupted',
-            message: 'Code Mode execution was interrupted by runtime recovery.',
-          },
-        },
-        isError: true,
-      },
+      content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
       refs: { operationId: decision.operationId, toolCallId: call.id },
     };
     return [

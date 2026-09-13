@@ -1,18 +1,45 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useState } from 'react';
 import type {
   HealthSignal,
   HealthSignalLayer,
+  HealthSignalStatus,
   HealthSnapshot,
 } from '@maka/core/health';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Text, VStack } from '@astryxdesign/core';
 import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
+import { capabilityReasonMessage } from '../locales/capability-reason-copy';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  SettingsStatusSummaryFilter,
+  type SettingsStatusSummaryOption,
+} from './settings-status-summary-filter';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -37,6 +64,7 @@ export function HealthCenterPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [signalFilter, setSignalFilter] = useState<HealthSignalStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,6 +87,14 @@ export function HealthCenterPage() {
     };
   }, [host, locale, refreshTick]);
 
+  useEffect(() => {
+    if (!snapshot) return;
+    setSignalFilter((current) => {
+      if (!current) return current;
+      return snapshot.signals.some((signal) => signal.status === current) ? current : null;
+    });
+  }, [snapshot]);
+
   if (loading) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
@@ -78,15 +114,18 @@ export function HealthCenterPage() {
   }
 
   const healthCheckedAtMs = snapshot.checkedAt;
-  const signalsByLayer = groupSignalsByLayer(snapshot.signals);
+  const visibleSignals = signalFilter
+    ? snapshot.signals.filter((signal) => signal.status === signalFilter)
+    : snapshot.signals;
+  const signalsByLayer = groupSignalsByLayer(visibleSignals);
   const blocksSendCount = snapshot.signals.filter((signal) => signal.blocksSend).length;
   const blocksCapabilityCount = snapshot.signals.filter((signal) => signal.blocksCapability).length;
-  const summaryParts: Array<{ key: string; label: string; count: number; tone: 'neutral' | 'warning' | 'destructive' }> = [
-    { key: 'ok', label: copy.statuses.ok.label, count: snapshot.summary.ok, tone: 'neutral' },
-    { key: 'info', label: copy.statuses.info.label, count: snapshot.summary.info, tone: 'neutral' },
-    { key: 'warning', label: copy.statuses.warning.label, count: snapshot.summary.warning, tone: 'warning' },
-    { key: 'error', label: copy.statuses.error.label, count: snapshot.summary.error, tone: 'destructive' },
-    { key: 'unknown', label: copy.statuses.unknown.label, count: snapshot.summary.unknown, tone: 'neutral' },
+  const summaryParts: Array<SettingsStatusSummaryOption<HealthSignalStatus>> = [
+    { value: 'ok', label: copy.statuses.ok.label, count: snapshot.summary.ok, tone: 'neutral' },
+    { value: 'info', label: copy.statuses.info.label, count: snapshot.summary.info, tone: 'neutral' },
+    { value: 'warning', label: copy.statuses.warning.label, count: snapshot.summary.warning, tone: 'warning' },
+    { value: 'error', label: copy.statuses.error.label, count: snapshot.summary.error, tone: 'destructive' },
+    { value: 'unknown', label: copy.statuses.unknown.label, count: snapshot.summary.unknown, tone: 'neutral' },
   ];
 
   return (
@@ -113,28 +152,30 @@ export function HealthCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
-          {summaryParts.map((part) => (
-            <span key={part.key} data-tone={part.count > 0 ? part.tone : 'neutral'}>
-              {part.label} {part.count}
-            </span>
-          ))}
-        </p>
+        <SettingsStatusSummaryFilter<HealthSignalStatus>
+          value={signalFilter}
+          options={summaryParts}
+          label={copy.summaryAria}
+          optionLabel={(option, selected) => copy.summaryFilterAria(option.label, option.count, selected)}
+          onChange={setSignalFilter}
+        />
       </SettingsSection>
 
       {blocksSendCount > 0 && (
         <Banner
           status="error"
           role="status"
-          title={copy.blockers.send(blocksSendCount)}
-          description={blocksCapabilityCount > 0 ? copy.blockers.capability(blocksCapabilityCount) : undefined}
+          title={copy.blockers.send(blocksSendCount, snapshot.signals.length)}
+          description={blocksCapabilityCount > 0
+            ? copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)
+            : undefined}
         />
       )}
       {blocksSendCount === 0 && blocksCapabilityCount > 0 && (
         <Banner
           status="warning"
           role="status"
-          title={copy.blockers.capability(blocksCapabilityCount)}
+          title={copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)}
         />
       )}
 
@@ -149,7 +190,7 @@ export function HealthCenterPage() {
               <Text type="supporting" size="sm" color="secondary">{layerCopy.description}</Text>
             </VStack>,
             ...signals.map((signal) => (
-              <HealthSignalRow key={signal.id} signal={signal} copy={copy} />
+              <HealthSignalRow key={signal.id} signal={signal} copy={copy} locale={locale} />
             )),
           ];
         })}
@@ -160,10 +201,10 @@ export function HealthCenterPage() {
   );
 }
 
-function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }) {
-  const { signal, copy } = props;
+function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy; locale: UiLocale }) {
+  const { signal, copy, locale } = props;
   const statusCopy = copy.statuses[signal.status];
-  const detail = copy.signalDetail(signal);
+  const detail = localizedSignalDetail(signal, copy, locale);
   return (
     <SettingsRow
       align="start"
@@ -208,6 +249,24 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
         </span>
       )}
     />
+  );
+}
+
+/** Exported as a test seam. Copy catalogs may not runtime-import each other, so
+ * capability codes and bot bridge reasons resolve here before the catalog's own fallback. */
+export function localizedSignalDetail(
+  signal: HealthSignal,
+  copy: HealthCenterCopy,
+  locale: UiLocale,
+): string | undefined {
+  const detail = signal.detail;
+  if (detail?.kind !== 'capability_reason') return copy.signalDetail(signal);
+  return (
+    capabilityReasonMessage(detail.reason, locale) ??
+    (signal.relatedCapabilityId?.startsWith('bot:')
+      ? botStatusReasonCopy(detail.reason, locale)
+      : undefined) ??
+    copy.signalDetail(signal)
   );
 }
 

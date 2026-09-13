@@ -9,6 +9,24 @@ derived_from:
   - "Maka Runtime 主线教学手册 v2"
   - "Maka DeepSeek-Reasonix 成本运行线初学者教纲 v3"
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 > Archived on 2026-07-13. This is an implementation-slice and open-question chronicle, not current runtime authority. Current cost, request-shape, replay, and compaction mechanisms live in the backend architecture chapters and source.
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * #1433: the composer is now the only path that starts a conversation, and it
  * creates the session BEFORE it sends. Every way that first send can fail has
@@ -13,90 +32,23 @@
  * no E2E can reach deterministically.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { act, createElement } from 'react';
+import type { StoredMessage } from '@maka/core/session';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 
-import type { SessionSummary } from '@maka/core/session';
 import type { LiveTurnProjection } from '@maka/ui';
-import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
-import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
+import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
 
-function installWindow(maka: unknown): () => void {
-  const target = globalThis as unknown as { window?: unknown };
-  const hadWindow = Object.prototype.hasOwnProperty.call(target, 'window');
-  const previousWindow = target.window;
-  Object.defineProperty(target, 'window', {
-    configurable: true,
-    value: { maka },
-    writable: true,
-  });
-  return () => {
-    if (hadWindow) {
-      Object.defineProperty(target, 'window', {
-        configurable: true,
-        value: previousWindow,
-        writable: true,
-      });
-    } else {
-      delete target.window;
-    }
-  };
-}
-
-/**
- * The live-turn arm as a real map rather than a black-hole stub: a send that
- * never lands must leave nothing behind, and that cannot be asserted against a
- * no-op setter.
- */
-function createTurnState() {
-  const liveTurnBySession: Record<string, LiveTurnProjection> = {};
-  return {
-    liveTurnBySession,
-    setLiveTurnBySession(updater: (c: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) {
-      const next = updater({ ...liveTurnBySession });
-      for (const key of Object.keys(liveTurnBySession)) delete liveTurnBySession[key];
-      Object.assign(liveTurnBySession, next);
-    },
-  };
-}
-
-function createActionsDeps() {
-  return {
-    uiLocale: 'en' as const,
-    activeIdRef: { current: undefined as string | undefined },
-    addPendingSessionAction: () => true,
-    captureComposerImportOwner: () => ({
-      sessionId: undefined,
-      navSection: 'sessions' as const,
-    }),
-    checkTaskSubmissionReadiness: async () => true,
-    clearPendingSessionAction: () => undefined,
-    isNewChatSendSurfaceActive: () => true,
-    isShellSurfaceOwnerActive: () => true,
-    markSessionReadLocally: () => undefined,
-    messageRetryPendingRef: { current: new Set<string>() },
-    refreshSessions: async () => [],
-    setActiveId: () => undefined,
-    setMessageLoadErrorBySession: () => undefined,
-    setMessageRetryPendingBySession: () => undefined,
-    setMessages: () => undefined,
-    transcriptRangeRef: { current: undefined },
-    setNavSelection: () => undefined,
-    setLiveTurnBySession: () => undefined,
-    setInteractionBySession: () => undefined,
-    showModelSetupToast: () => undefined,
-    toastApi: { error: () => undefined, info: () => undefined },
-    upsertSessionSummary: () => undefined,
-    newChatModel: null,
-    newChatPermissionMode: 'ask' as const,
-    pendingNewChatThinkingLevel: null,
-    newChatCollaborationMode: 'agent' as const,
-    newChatOrchestrationMode: 'default' as const,
-    newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
-  };
-}
+import {
+  createActionsDeps,
+  installWindow,
+} from './app-shell-chat-actions-fixture.js';
 
 describe('composer first-send cleanup', () => {
   it('cancels when the composer owner changes during the readiness check', async () => {
@@ -105,7 +57,7 @@ describe('composer first-send cleanup', () => {
     let sends = 0;
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => {
+        submitMessage: async () => {
           sends += 1;
           return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
         },
@@ -144,7 +96,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -155,8 +107,8 @@ describe('composer first-send cleanup', () => {
     try {
       const deps = {
         ...createActionsDeps(),
-        newChatPermissionMode: 'bypass' as const,
         newChatModel: {
+          llmConnectionId: 'connection-1',
           llmConnectionSlug: 'opencode-free',
           model: 'mimo-v2.5-free',
         },
@@ -171,7 +123,97 @@ describe('composer first-send cleanup', () => {
       'opencode-free',
     );
     assert.equal((createInput as { model?: unknown }).model, 'mimo-v2.5-free');
+    // Ordinary creation carries no permission mode: the Host applies its own
+    // `chatDefaults`. Sending the offered default back as an explicit override
+    // would make a cached snapshot the authority and could create a full-access
+    // Session from a value another client already lowered.
+    assert.ok(!('permissionMode' in (createInput as Record<string, unknown>)));
+  });
+
+  it('sends a composer permission choice once without writing it to the Host default', async () => {
+    let createInput: unknown;
+    let settingsUpdates = 0;
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async (_target: unknown, input: unknown) => {
+          createInput = input;
+          return { id: 'session-1' };
+        },
+      },
+      settings: {
+        update: async () => {
+          settingsUpdates += 1;
+          return {};
+        },
+      },
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const deps = {
+        ...createActionsDeps(),
+        newChatPermissionChoice: 'bypass' as const,
+      };
+      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    // An explicit choice for this draft is a per-Session override: it reaches
+    // the created Session, and it does not become the Host's default for every
+    // later task. Only the Settings surface writes `chatDefaults`.
     assert.equal((createInput as { permissionMode?: unknown }).permissionMode, 'bypass');
+    assert.equal(settingsUpdates, 0);
+  });
+
+  it('does not re-send a consumed permission choice on the next task', async () => {
+    const createInputs: unknown[] = [];
+    let cleared = 0;
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async (_target: unknown, input: unknown) => {
+          createInputs.push(input);
+          return { id: `session-${createInputs.length}` };
+        },
+      },
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      // The choice is keyed by Host/project target, not by draft, so task B on
+      // the same target sees whatever task A left behind. Consuming it on a
+      // successful create is what keeps a one-task elevation from becoming a
+      // standing one.
+      let choice: 'bypass' | undefined = 'bypass';
+      const deps = () => ({
+        ...createActionsDeps(),
+        newChatPermissionChoice: choice,
+        clearNewChatPermissionChoice: () => {
+          cleared += 1;
+          choice = undefined;
+        },
+      });
+      assert.equal(await createAppShellChatActions(deps()).send('task A'), true);
+      assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(cleared, 1);
+    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'bypass');
+    assert.ok(!('permissionMode' in (createInputs[1] as Record<string, unknown>)));
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {
@@ -186,7 +228,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -222,7 +264,7 @@ describe('composer first-send cleanup', () => {
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
         // What `prepareSkillInvocation` does when Skill discovery fails.
-        send: async () => Promise.reject(new Error('Skill discovery failed')),
+        submitMessage: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
@@ -243,7 +285,7 @@ describe('composer first-send cleanup', () => {
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -265,13 +307,107 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
+  it('projects the first message before activation while waiting to submit until observation', async () => {
+    const observation = deferred<void>();
+    const order: string[] = [];
+    const activeIdRef = { current: undefined as string | undefined };
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async () => {
+          order.push('create');
+          return { id: 'session-1' };
+        },
+      },
+      sessions: {
+        submitMessage: async () => {
+          order.push('submit');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+
+    try {
+      const sending = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        addTransientMessage: () => {
+          order.push('optimistic');
+        },
+        activateSessionForFirstSend: async (sessionId) => {
+          order.push('observe');
+          activeIdRef.current = sessionId;
+          await observation.promise;
+          order.push('seeded');
+        },
+      }).send('hello');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['create', 'optimistic', 'observe']);
+
+      observation.resolve();
+      assert.equal(await sending, true);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe', 'seeded', 'submit']);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('removes the unsent session and surfaces an observation barrier failure', async () => {
+    const activeIdRef = { current: undefined as string | undefined };
+    const removed: string[] = [];
+    const errors: string[] = [];
+    let submissions = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          activeIdRef.current = sessionId;
+          throw new Error('Timed out while preparing the new Session event stream');
+        },
+        retireSession: (sessionId) => {
+          if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
+        },
+        isNewChatSendSurfaceActive: () => activeIdRef.current === undefined,
+        isShellSurfaceOwnerActive: (owner) =>
+          owner.navSection === 'sessions' && owner.sessionId === activeIdRef.current,
+        toastApi: {
+          error: (_title, description) => {
+            if (description) errors.push(description);
+          },
+          info: () => undefined,
+        },
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(submissions, 0);
+    assert.deepEqual(removed, ['session-1']);
+    assert.equal(activeIdRef.current, undefined);
+    assert.deepEqual(errors, ['The message could not be sent. Try again later.']);
+  });
+
   it('leaves an EXISTING session alone when its send rejects', async () => {
     // Only the session this send created is disposable. A send that fails in
     // an open conversation must not delete the conversation.
     const removed: string[] = [];
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => Promise.reject(new Error('Skill discovery failed')),
+        submitMessage: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
@@ -291,13 +427,89 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
-  it('returns a sparse existing session to latest before sending', async () => {
+  it('does not report a resolved Session from an existing-Session send', async () => {
+    // `onSessionResolved` is the contract for a Session this send created and
+    // whose first message projected (the new-Session branch). An existing-
+    // Session send must never fire it, or a consumer binding follow-up state
+    // to a newly resolved Session (e.g. a Work Board start claim) would bind
+    // it to an unrelated pre-existing conversation.
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'existing-session' },
+      });
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('does not report a resolved Session when the first send is outcome_unknown', async () => {
+    // `onSessionResolved` is the contract for a Session this send created AND
+    // whose first message projected. `outcome_unknown` maps to `unreconciled`:
+    // `send()` intentionally returns `true` (the Message may well have been
+    // admitted), but the callback must not fire — a consumer binding follow-up
+    // state to a newly resolved Session (e.g. a Work Board start claim) would
+    // otherwise bind to a Session whose first message was never confirmed.
+    let resolved = 0;
+    const removed: string[] = [];
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => ({
+          ok: false,
+          reason: 'outcome_unknown' as const,
+        }),
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions(createActionsDeps());
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      // The row stays for canonical transcript to settle, so the session is
+      // kept and the send reports success — only the callback is silenced.
+      assert.equal(result, true);
+      assert.deepEqual(removed, []);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('cancels restoration and accepts a message while latest history catches up in the background', async () => {
     const latest = deferred<void>();
     const order: string[] = [];
     const activeIdRef = { current: 'existing-session' as string | undefined };
     const transcript = {
       store: {
-        range: () => ({ sessionId: 'existing-session', hasNewer: true }),
+        sessionId: 'existing-session',
+        range: () => ({ sessionId: 'existing-session', hasNewer: false }),
         snapshot: () => ({ messages: [] }),
       },
       async loadLatest() {
@@ -308,7 +520,7 @@ describe('composer first-send cleanup', () => {
     const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => {
+        submitMessage: async () => {
           order.push('send');
           return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
         },
@@ -320,26 +532,134 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         activeIdRef,
         transcriptRangeRef,
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
+          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
+          cancel: () => { order.push('cancel-restore'); }, followLatest: () => {},
+        }),
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['latest']);
-      latest.resolve();
+      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
       assert.equal(await sending, true);
-      assert.deepEqual(order, ['latest', 'send']);
+      latest.resolve();
+      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
     } finally {
       restoreWindow();
     }
   });
-});
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
+  it('refresh waits for durable messages without bypassing range publication', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    let durable = false;
+    const durableAnswer = { id: 'answer' };
+    let publishedAnswer = { id: 'answer' };
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      waitForDurableMessage: async () => { durable = true; return true; },
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [durableAnswer] }),
+        hasDurableMessage: () => durable,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const dependencies = {
+      ...deps,
+      transcriptRangeRef: { current: controller },
+      isMessagePublished: (message: unknown) => message === publishedAnswer,
+    };
+    const actions = createAppShellChatActions(dependencies);
+    const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+    assert.equal(durable, false);
+    ready.resolve();
+    assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
+    publishedAnswer = durableAnswer;
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
   });
-  return { promise, resolve };
-}
 
+  it('an in-flight refresh reads publication that commits after the call began', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [answer] }),
+        hasDurableMessage: () => true,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const { root } = installReactRenderer();
+    let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
+    function Probe(): null {
+      publication = useAppShellSessionUiState(
+        [], undefined, deps.activeIdRef,
+        (_sessionId, _messages, _controller: DesktopTranscriptRangeController) => true,
+      ).publication;
+      return null;
+    }
+    try {
+      act(() => root.render(createElement(Probe)));
+      const actions = createAppShellChatActions({
+        ...deps, transcriptRangeRef: { current: controller },
+        isMessagePublished: publication.isMessagePublished,
+      });
+      const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+      act(() => {
+        publication.messagesRef.current = [answer];
+        publication.setMessagesState([answer]);
+      });
+      ready.resolve();
+      assert.equal(await refresh, true, 'the original invocation must see the new publication');
+      assert.equal(publication.isMessagePublished({ ...answer }), false, 'same id is not the published version');
+    } finally {
+      cleanupFakeDom();
+    }
+  });
+
+  for (const initialized of [false, true]) {
+  it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
+    const submissions: string[] = [];
+    let latestReads = 0;
+    const transcript = {
+      store: {
+        sessionId: 'previous-session',
+        range: () => {
+          if (!initialized) throw new Error('Desktop transcript range is not initialized');
+          return { sessionId: 'previous-session' };
+        },
+      },
+      loadLatest: async () => { latestReads += 1; },
+    } as unknown as DesktopTranscriptRangeController;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async (sessionId: string) => {
+          submissions.push(sessionId);
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+    const activeIdRef = { current: 'selected-session' };
+    const transcriptRangeRef = { current: transcript };
+    try {
+      const result = await createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        transcriptRangeRef,
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
+          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
+          cancel: () => {},
+          followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
+        }),
+      }).send('hello');
+      assert.equal(result, true);
+      assert.deepEqual(submissions, ['selected-session']);
+      assert.equal(latestReads, 0, 'the previous Session must not be navigated');
+    } finally {
+      restoreWindow();
+    }
+  });
+  }
+});
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface
  * that sent, and `showModelSetupToast` is not just a toast — it ends in
@@ -355,7 +675,7 @@ function deferred<T>() {
 describe('composer send failure feedback', () => {
   const readinessFailure = () => ({
     sessions: {
-      send: async () =>
+      submitMessage: async () =>
         Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       remove: async () => undefined,
     },
@@ -383,28 +703,6 @@ describe('composer send failure feedback', () => {
     assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated to 设置 · 模型');
   });
 
-  // A send that never reaches the runtime must take its arm with it. A leftover
-  // arm still carries its `unconfirmed` claim, which would make
-  // `settledSessionTransientIds` protect a turn that does not exist — leaving a
-  // Stop button nothing can clear.
-  it('leaves no arm behind when the send never lands', async () => {
-    const turnState = createTurnState();
-    const restoreWindow = installWindow(readinessFailure());
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: 'session-a' },
-        setLiveTurnBySession: turnState.setLiveTurnBySession,
-      });
-      assert.equal(await actions.send('hello'), false);
-    } finally {
-      restoreWindow();
-    }
-
-    assert.deepEqual(turnState.liveTurnBySession, {}, 'the arm must be disarmed');
-  });
-
   it('still answers the surface that is actually waiting', async () => {
     const setupToasts: string[] = [];
     const restoreWindow = installWindow(readinessFailure());
@@ -422,94 +720,5 @@ describe('composer send failure feedback', () => {
     }
 
     assert.equal(setupToasts.length, 1, 'the user who is still looking must get the answer');
-  });
-});
-
-/**
- * The bug this guards, as the sequence that actually produced it: send arms the
- * turn, a session list that was already in flight lands still carrying the
- * pre-send status, and the settle reconcile runs against it.
- *
- * Nothing in that list is wrong — the runtime writes `status: 'running'` only at
- * the end of `AgentRun.begin` and announces it to nobody until `onRunStarted`.
- * The list simply predates the answer. Reading it as a settle used to drop the
- * arm, so the first content event rebuilt the projection as `'streamed'` and the
- * prominent "正在处理…" silently became the calm "继续中…".
- *
- * Asserted through the real `send`, the real state controller, and the real
- * settle rule, because the defect lived in how those three compose — each one is
- * individually correct.
- */
-describe('a send in flight versus a stale session list', () => {
-  const sessionId = 'session-a';
-
-  function sendingWindow() {
-    return {
-      sessions: {
-        send: async () => ({
-          ok: true,
-          attachments: [],
-          skillInvocation: { loaded: [], failed: [] },
-        }),
-      },
-    };
-  }
-
-  // The list as it reads before the runtime's `running` write — identical to how
-  // it reads after the turn is over, which is exactly why the status alone
-  // cannot settle anything.
-  const preSendList = [{ id: sessionId, status: 'active', statusUpdatedAt: 100 }] as SessionSummary[];
-
-  async function armViaSend(controller: ReturnType<typeof createAppShellSessionUiStateController>) {
-    const restoreWindow = installWindow(sendingWindow());
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: sessionId },
-        setLiveTurnBySession: controller.setLiveTurnBySession,
-      });
-      assert.equal(await actions.send('hello'), true);
-    } finally {
-      restoreWindow();
-    }
-    const armed = controller.getState().liveTurnBySession[sessionId];
-    assert.equal(armed?.unconfirmed, true, 'the send must arm an unconfirmed turn');
-    return armed!.turnId;
-  }
-
-  function settle(controller: ReturnType<typeof createAppShellSessionUiStateController>) {
-    return settledSessionTransientIds({
-      activeId: sessionId,
-      sessions: preSendList,
-      liveTurnBySession: controller.getState().liveTurnBySession,
-    });
-  }
-
-  it('keeps the armed turn, and settles it once the authority names that turn', async () => {
-    const controller = createAppShellSessionUiStateController();
-    const turnId = await armViaSend(controller);
-
-    assert.deepEqual(settle(controller), [], 'a list older than the answer must not settle the turn');
-    assert.equal(
-      controller.getState().liveTurnBySession[sessionId]?.phase,
-      'waiting',
-      'the first-token wait must survive the stale refresh',
-    );
-
-    // `sessions:changed` naming this turn — what `onRunStarted` now emits once
-    // the run has begun. This is the same controller entry point the shell
-    // wires that subscription to.
-    controller.confirmLiveTurn(sessionId, turnId);
-
-    assert.deepEqual(settle(controller), [sessionId], 'an answered turn settles under the plain status rules');
-  });
-
-  it('ignores an answer about a turn other than the one in flight', async () => {
-    const controller = createAppShellSessionUiStateController();
-    await armViaSend(controller);
-
-    controller.confirmLiveTurn(sessionId, 'turn-from-another-client');
-
-    assert.deepEqual(settle(controller), [], 'only this send\'s own turn may release its claim');
   });
 });

@@ -1,8 +1,27 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 [ENGLISH](./ARCHITECTURE.md)
 
 # Maka 后端架构
 
-Maka 只有一个执行 authority：Runtime Host。Desktop、TUI、CLI、bot 和 Eval client 都请求 Runtime Host 执行工作，不再拥有第二套 Runtime。
+每个 State Root 的执行与写入 authority 归属于其 Runtime Host。Desktop、TUI、CLI、bot 和 Eval client 都经过 Host 边界执行工作，不为同一份状态创建第二套 Runtime。多个 Host 可以分别拥有不同的 State Root；Peer Mesh 提供端点间的成员关系与连接，不合并这些执行 authority。
 
 ```mermaid
 flowchart LR
@@ -57,6 +76,8 @@ continuation = Maka subject 内部的 Runtime Host 行为
 
 ## 阅读路径
 
+- Host 权责、准入、观察、Client 隔离与生命周期：[Runtime Host 架构](./docs/architecture/runtime-host-architecture.zh-CN.md)。
+- 网络身份、成员关系、路径选择与 stream 恢复：[Peer Mesh 架构](./docs/architecture/peer-mesh-architecture.zh-CN.md)。
 - Runtime 事实与 projection：[Runtime core](./docs/architecture/runtime-core-architecture-draft.zh-CN.md) 与 [compaction](./docs/architecture/llm-compaction-events-log-projection-draft.zh-CN.md)。
 - Crash recovery 与 continuation：[Runtime resume](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
 - Multi-agent scheduling：[Agent Graph](./docs/architecture/agent-graph-stream-scheduling-draft.zh-CN.md)。

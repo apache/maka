@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/HistoryCore/Store.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import Foundation
 
 public final class SegmentStore {
@@ -69,14 +76,22 @@ public final class SegmentStore {
         try? suppressedHandle?.close()
     }
 
-    public func append(_ event: HistoryEvent) throws {
-        try write(event, to: eventsHandle)
+    /// Applies the supplied policy before writing. Suppressed interactions are
+    /// counted instead; suppressed session boundaries retain only their identity.
+    public func append(_ event: HistoryEvent, policy: ObservationPolicy) throws {
+        guard let projected = policy.eventForPersistence(event) else {
+            try appendSuppressed(event)
+            return
+        }
+        try write(projected, to: eventsHandle)
         eventCount += 1
     }
 
+    /// Counts an event rejected by the producer. Optional debug output contains
+    /// only its ID, timestamp and kind, never the rejected payload.
     public func appendSuppressed(_ event: HistoryEvent) throws {
         if let suppressedHandle {
-            try write(event, to: suppressedHandle)
+            try write(event.persistenceIdentity, to: suppressedHandle)
         }
         suppressedEventCount += 1
     }

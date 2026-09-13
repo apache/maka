@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -88,6 +108,16 @@ async function readWorkspaceInstructions(
   }
 
   const out: WorkspaceInstruction[] = [];
+  // Content already accepted from this directory. Sharing one instruction file
+  // across the names different agent CLIs read — Claude Code reads CLAUDE.md,
+  // Codex reads AGENTS.md, Gemini CLI reads GEMINI.md — is the documented way
+  // to do it, whether by symlink or by copy, so identical bytes arriving under
+  // two names here are redundancy rather than two instructions. Digesting the
+  // cleaned text catches both forms; `realpath` alone would miss the copy.
+  // Scoped to one directory on purpose: the same text at global and project
+  // scope is a user repeating themselves deliberately, and collapsing that
+  // would silently drop a layer.
+  const seenDigests = new Set<string>();
   for (const file of WORKSPACE_INSTRUCTION_FILES) {
     const candidate = join(root, file);
     let resolved: string;
@@ -101,12 +131,17 @@ async function readWorkspaceInstructions(
       const raw = await readFile(resolved, 'utf8');
       const cleaned = cleanPromptText(raw.trim());
       if (!cleaned) continue;
-      const chars = Array.from(cleaned).length;
+      // Digest before truncation: two files that diverge only past the cap are
+      // still different instructions.
+      const digest = createHash('sha256').update(cleaned).digest('hex');
+      if (seenDigests.has(digest)) continue;
+      seenDigests.add(digest);
+      const text = truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS);
       out.push({
         file,
         scope,
-        text: truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS),
-        truncated: chars > MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
+        text,
+        truncated: text.length < cleaned.length,
       });
     } catch {
       continue;
@@ -120,7 +155,11 @@ function cleanPromptText(text: string): string {
 }
 
 function truncateCodepoints(text: string, max: number): string {
-  const chars = Array.from(text);
-  if (chars.length <= max) return text;
-  return chars.slice(0, Math.max(0, max)).join('');
+  if (text.length <= max) return text;
+  const chars: string[] = [];
+  for (const char of text) {
+    if (chars.length >= max) return chars.join('');
+    chars.push(char);
+  }
+  return text;
 }

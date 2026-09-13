@@ -1,7 +1,34 @@
-import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type {
+  AssistantStepContentKind,
+  StoredMessage,
+  TurnStatus,
+  WorkHubCoordinationActionMessage,
+} from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   validateSandboxBoundaryExpansion,
@@ -15,7 +42,7 @@ import {
   isTerminalRuntimeEventStatus,
 } from '@maka/core/runtime-event';
 
-import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
 
 /** The statuses a settled boundary decision can carry — every status but `pending`. */
 type SettledSandboxBoundaryStatus = Exclude<
@@ -37,7 +64,6 @@ export type RuntimeEventReadModelDiagnosticCode =
   | 'archived_tool_result_placeholder'
   | 'generated_id'
   | 'tool_use_id_mismatch'
-  | 'missing_legacy_message'
   | 'unexpected_projected_message';
 
 /**
@@ -62,7 +88,6 @@ const RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY: Record<
   archived_tool_result_placeholder: 'soft',
   generated_id: 'soft',
   tool_use_id_mismatch: 'hard',
-  missing_legacy_message: 'soft',
   unexpected_projected_message: 'soft',
 };
 
@@ -79,6 +104,21 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
   );
 }
 
+export function projectRuntimeEventCoordinationReceipt(
+  event: RuntimeEvent,
+): WorkHubCoordinationActionMessage | undefined {
+  if (!event.actions?.coordination) return undefined;
+  return {
+    type: 'workhub_coordination',
+    kind: 'action_receipt',
+    schemaVersion: 1,
+    id: event.id,
+    turnId: event.turnId,
+    ts: event.ts,
+    receipt: event.actions.coordination,
+  };
+}
+
 /**
  * Whether the event can affect the StoredMessage projection or the state needed
  * to construct one. Pure control-plane facts are intentionally absent so a
@@ -86,6 +126,7 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
  */
 export function affectsRuntimeEventStoredMessageProjection(event: RuntimeEvent): boolean {
   return (
+    event.actions?.coordination !== undefined ||
     event.content !== undefined ||
     isTerminalRuntimeEvent(event) ||
     event.actions?.permissionRequest !== undefined ||
@@ -125,21 +166,20 @@ export interface RuntimeEventReadModelDiagnostic {
 export interface RuntimeEventReadModelProjection {
   messages: StoredMessage[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
+  /** The id of the event each message was projected from, by position. */
+  sourceEventIds: string[];
 }
 
 export interface ProjectRuntimeEventsToStoredMessagesOptions {
-  runHeaders: readonly AgentRunHeader[] | Readonly<Record<string, AgentRunHeader>>;
+  invocations:
+    | readonly RuntimeInvocationRecord[]
+    | Readonly<Record<string, RuntimeInvocationRecord>>;
   canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
 }
 
 export interface ArchivedToolResultReadModelStatus {
   runtimeEventId: string;
   status: Extract<ToolResultContent, { kind: 'archived_tool_result' }>['status'];
-}
-
-export interface RuntimeReadModelCompatibilityResult {
-  compatible: boolean;
-  diagnostics: RuntimeEventReadModelDiagnostic[];
 }
 
 export interface RuntimeEventTerminalFact {
@@ -159,7 +199,7 @@ export interface RuntimeEventTerminalFactResult {
 }
 
 interface ProjectionState {
-  headers: Map<string, AgentRunHeader>;
+  invocations: Map<string, RuntimeInvocationRecord>;
   diagnostics: RuntimeEventReadModelDiagnostic[];
   toolNameByUseId: Map<string, string>;
   permissionRequestById: Map<
@@ -197,7 +237,7 @@ export function projectRuntimeEventsToStoredMessages(
   options: ProjectRuntimeEventsToStoredMessagesOptions,
 ): RuntimeEventReadModelProjection {
   const state: ProjectionState = {
-    headers: normalizeHeaders(options.runHeaders),
+    invocations: normalizeInvocations(options.invocations),
     diagnostics: [],
     toolNameByUseId: new Map(),
     permissionRequestById: new Map(),
@@ -205,8 +245,23 @@ export function projectRuntimeEventsToStoredMessages(
     contentOrderByMessageId: new Map(),
   };
   const messages: StoredMessage[] = [];
+  /**
+   * Which event each message came out of, by position.
+   *
+   * A message belongs to the event being read when it was appended: nothing
+   * rewrites an earlier message, so the rows that appear while one event is
+   * handled are exactly that event's rows. A durable reader numbers its pages
+   * from this, which is why it is recorded here rather than rediscovered.
+   */
+  const sourceEventIds: string[] = [];
+  let reading: RuntimeEvent | undefined;
+  const attributeEmitted = (): void => {
+    while (sourceEventIds.length < messages.length) sourceEventIds.push(reading!.id);
+  };
 
   for (const event of events) {
+    attributeEmitted();
+    reading = event;
     recordStepContentOrder(event, state);
     if (isPartialRuntimeEvent(event)) {
       diagnostic(state, event, 'partial_skipped', 'partial RuntimeEvent skipped');
@@ -229,6 +284,14 @@ export function projectRuntimeEventsToStoredMessages(
         case 'thinking':
           projected = projectThinking(event, state, messages) || projected;
           break;
+        case 'system_note':
+          projected = projectSystemNote(event, state, messages) || projected;
+          break;
+        case 'invocation_opened':
+          // The opening fact records route, configuration and lineage once per
+          // invocation. Every reader joins it by invocationId; it has no chat row.
+          projected = true;
+          break;
         case 'error':
           if (!isTerminalRuntimeEvent(event)) {
             diagnostic(
@@ -240,6 +303,12 @@ export function projectRuntimeEventsToStoredMessages(
           }
           break;
       }
+    }
+
+    const coordinationReceipt = projectRuntimeEventCoordinationReceipt(event);
+    if (coordinationReceipt) {
+      messages.push(coordinationReceipt);
+      projected = true;
     }
 
     if (event.actions?.permissionRequest) {
@@ -265,6 +334,18 @@ export function projectRuntimeEventsToStoredMessages(
 
     if (event.actions?.userQuestionAnswerAccepted) {
       // InteractionStore owns the canonical answer. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
+    if (event.actions?.formRequest) {
+      // The matching function_call/function_response own the legacy rows;
+      // this request is live interaction state only.
+      projected = true;
+    }
+
+    if (event.actions?.formAnswerAccepted) {
+      // InteractionStore owns the canonical result. This Run-local audit fact
       // intentionally has no legacy chat row.
       projected = true;
     }
@@ -303,6 +384,13 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.managedMutationTerminal) {
+      // The matching function_response owns the provider-visible row. This
+      // action only proves that the managed reservation reached a no-effect
+      // terminal through its dedicated atomic writer.
+      projected = true;
+    }
+
     if (event.actions?.artifactDelta) {
       // Artifact counters are storage bookkeeping. The tool result that owns the
       // artifact owns its row; this delta has none of its own.
@@ -312,6 +400,11 @@ export function projectRuntimeEventsToStoredMessages(
     if (event.actions?.transferToAgent !== undefined) {
       // A hand-off is control routing. The receiving agent's own events own
       // every provider-visible row the transfer leads to.
+      projected = true;
+    }
+
+    if (event.actions?.handoffPause) {
+      // Physical pause is not a logical Turn outcome or a chat message.
       projected = true;
     }
 
@@ -348,7 +441,7 @@ export function projectRuntimeEventsToStoredMessages(
       projected = projectTokenUsage(event, state, messages) || projected;
     }
 
-    if (isTerminalRuntimeEvent(event)) {
+    if (isTerminalRuntimeEvent(event) && !event.actions?.handoffPause) {
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
 
@@ -388,7 +481,70 @@ export function projectRuntimeEventsToStoredMessages(
     }
   }
 
-  return { messages, diagnostics: state.diagnostics };
+  attributeEmitted();
+  return { messages, diagnostics: state.diagnostics, sourceEventIds };
+}
+
+/**
+ * A running invocation's events as the transcript should show them right now.
+ *
+ * Two things separate a live run from a finished one. Its last text or thinking
+ * event is still arriving, so it is presented as settled rather than withheld;
+ * and a step that has only thought so far has no assistant row to hang that
+ * thinking on, so an empty one is opened for it. Neither changes the ledger:
+ * both are how the same events read before the run ends.
+ */
+export function activePresentationRuntimeEvents(events: readonly RuntimeEvent[]): RuntimeEvent[] {
+  const textMessages = new Set<string>();
+  const lastThinkingByMessage = new Map<string, RuntimeEvent>();
+
+  for (const event of events) {
+    const content = event.content;
+    if (event.role !== 'model' || (content?.kind !== 'text' && content?.kind !== 'thinking')) {
+      continue;
+    }
+    const messageKey = activeMessageKey(event);
+    if (content.kind === 'text') textMessages.add(messageKey);
+    else lastThinkingByMessage.set(messageKey, event);
+  }
+
+  const syntheticAfter = new Map<RuntimeEvent, RuntimeEvent[]>();
+  for (const [messageKey, thinking] of lastThinkingByMessage) {
+    if (textMessages.has(messageKey)) continue;
+    const existing = syntheticAfter.get(thinking) ?? [];
+    existing.push(emptyAssistantText(thinking));
+    syntheticAfter.set(thinking, existing);
+  }
+
+  const presented: RuntimeEvent[] = [];
+  for (const event of events) {
+    presented.push(settledPresentationEvent(event));
+    presented.push(...(syntheticAfter.get(event) ?? []));
+  }
+  return presented;
+}
+
+function activeMessageKey(event: RuntimeEvent): string {
+  const messageId = event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
+  return `${event.runId}\0${messageId}`;
+}
+
+function settledPresentationEvent(event: RuntimeEvent): RuntimeEvent {
+  const content = event.content;
+  return event.partial &&
+    event.role === 'model' &&
+    (content?.kind === 'text' || content?.kind === 'thinking')
+    ? { ...event, partial: false }
+    : event;
+}
+
+function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
+  return {
+    ...thinking,
+    id: `${thinking.id}:active-transcript-empty-text`,
+    partial: false,
+    content: { kind: 'text', text: '' },
+  };
 }
 
 export function projectRuntimeEventsToStoredMessagesWithArchiveStatuses(
@@ -429,6 +585,7 @@ export function applyArchivedToolResultReadModelStatuses(
           toolCallId: placeholder.toolCallId,
           toolName: placeholder.toolName,
           artifactId: placeholder.artifactId,
+          ...(placeholder.rewriteVersion === 2 ? { resourceRef: placeholder.resourceRef } : {}),
           bodySha256: placeholder.bodySha256,
           originalEstimatedTokens: placeholder.originalEstimatedTokens,
           originalBytes: placeholder.originalBytes,
@@ -440,49 +597,16 @@ export function applyArchivedToolResultReadModelStatuses(
   });
 }
 
-export function compareRuntimeReadModelMessages(
-  projected: readonly StoredMessage[],
-  legacy: readonly StoredMessage[],
-): RuntimeReadModelCompatibilityResult {
-  const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
-  const projectedCounts = countSemanticMessages(projected);
-  const legacyCounts = countSemanticMessages(legacy);
-
-  for (const [key, count] of legacyCounts) {
-    const projectedCount = projectedCounts.get(key) ?? 0;
-    if (projectedCount < count) {
-      diagnostics.push({
-        code: 'missing_legacy_message',
-        message: 'projected RuntimeEvent read model is missing a legacy semantic message',
-        detail: JSON.parse(key) as unknown,
-      });
-    }
-  }
-
-  for (const [key, count] of projectedCounts) {
-    const legacyCount = legacyCounts.get(key) ?? 0;
-    if (legacyCount < count) {
-      diagnostics.push({
-        code: 'unexpected_projected_message',
-        message: 'projected RuntimeEvent read model has no matching legacy semantic message',
-        detail: JSON.parse(key) as unknown,
-      });
-    }
-  }
-
-  return { compatible: diagnostics.length === 0, diagnostics };
-}
-
 export function classifyRuntimeEventTerminalFact(
-  header: AgentRunHeader,
+  invocation: Pick<RuntimeInvocationRecord, 'sessionId' | 'runId' | 'turnId'>,
   events: readonly RuntimeEvent[],
 ): RuntimeEventTerminalFactResult {
   const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
   if (events.length === 0) {
     diagnostics.push(
       readModelDiagnostic('incomplete_event', 'runtime ledger has no readable RuntimeEvents', {
-        runId: header.runId,
-        turnId: header.turnId,
+        runId: invocation.runId,
+        turnId: invocation.turnId,
       }),
     );
     return { diagnostics };
@@ -491,9 +615,9 @@ export function classifyRuntimeEventTerminalFact(
   const terminalSignals = events.filter(
     (event) =>
       !isPartialRuntimeEvent(event) &&
-      event.sessionId === header.sessionId &&
-      event.runId === header.runId &&
-      event.turnId === header.turnId &&
+      event.sessionId === invocation.sessionId &&
+      event.runId === invocation.runId &&
+      event.turnId === invocation.turnId &&
       isTerminalRuntimeEvent(event),
   );
 
@@ -502,7 +626,7 @@ export function classifyRuntimeEventTerminalFact(
       readModelDiagnostic(
         'incomplete_event',
         'runtime ledger has no matching terminal RuntimeEvent',
-        { runId: header.runId, turnId: header.turnId },
+        { runId: invocation.runId, turnId: invocation.turnId },
       ),
     );
     return { diagnostics };
@@ -513,8 +637,8 @@ export function classifyRuntimeEventTerminalFact(
         'incomplete_event',
         'runtime ledger has multiple matching terminal RuntimeEvents',
         {
-          runId: header.runId,
-          turnId: header.turnId,
+          runId: invocation.runId,
+          turnId: invocation.turnId,
           eventIds: terminalSignals.map((event) => event.id),
         },
       ),
@@ -536,8 +660,8 @@ export function classifyRuntimeEventTerminalFact(
 
   if (terminalEvent.status === 'completed') {
     const fact: RuntimeEventTerminalFact = {
-      runId: header.runId,
-      turnId: header.turnId,
+      runId: invocation.runId,
+      turnId: invocation.turnId,
       runStatus: 'completed',
       turnStatus: 'completed',
       terminalEvent,
@@ -546,48 +670,51 @@ export function classifyRuntimeEventTerminalFact(
     return { fact, diagnostics };
   }
 
+  // A terminal event is the run's ending, and it is immutable once written, so
+  // an omitted failure class or abort source is a detail nobody can ever supply
+  // afterwards. Withholding the fact over it would only leave the reader with a
+  // run that ended and no way to say so; the omission is worth a diagnostic, not
+  // a refusal.
   if (terminalEvent.status === 'failed') {
-    const failureClass = failureClassFromRuntimeEvent(terminalEvent, header);
+    const failureClass = failureClassFromRuntimeEvent(terminalEvent);
     if (!failureClass) {
       diagnostics.push(
         readModelDiagnostic(
           'incomplete_event',
-          'failed terminal RuntimeEvent requires a stable failure class',
+          'failed terminal RuntimeEvent states no failure class',
           terminalEvent,
         ),
       );
-      return { diagnostics };
     }
     const fact: RuntimeEventTerminalFact = {
-      runId: header.runId,
-      turnId: header.turnId,
+      runId: invocation.runId,
+      turnId: invocation.turnId,
       runStatus: 'failed',
       turnStatus: 'failed',
       terminalEvent,
-      failureClass,
+      failureClass: failureClass ?? 'unknown',
       diagnostics,
     };
     return { fact, diagnostics };
   }
 
-  const abortSource = abortSourceFromRuntime(terminalEvent, header);
+  const abortSource = abortSourceFromRuntime(terminalEvent);
   if (!abortSource) {
     diagnostics.push(
       readModelDiagnostic(
         'incomplete_event',
-        'aborted terminal RuntimeEvent requires an abort source',
+        'aborted terminal RuntimeEvent states no abort source',
         terminalEvent,
       ),
     );
-    return { diagnostics };
   }
   const fact: RuntimeEventTerminalFact = {
-    runId: header.runId,
-    turnId: header.turnId,
+    runId: invocation.runId,
+    turnId: invocation.turnId,
     runStatus: 'cancelled',
     turnStatus: 'aborted',
     terminalEvent,
-    abortSource,
+    abortSource: abortSource ?? 'unknown',
     diagnostics,
   };
   return { fact, diagnostics };
@@ -607,13 +734,13 @@ function projectText(
   }
 
   if (event.role === 'model') {
-    const header = state.headers.get(event.runId);
-    if (!header?.modelId) {
+    const invocation = state.invocations.get(event.runId);
+    if (!invocation?.opening.route.modelId) {
       diagnostic(
         state,
         event,
         'incomplete_event',
-        'model text RuntimeEvent requires AgentRunHeader.modelId',
+        'model text RuntimeEvent requires the opening fact of its invocation',
       );
       return false;
     }
@@ -629,7 +756,7 @@ function projectText(
         ? { providerOptions: structuredClone(event.content.providerOptions) }
         : {}),
       ...(contentOrder ? { contentOrder } : {}),
-      modelId: header.modelId,
+      modelId: invocation.opening.route.modelId,
     });
     attachPendingThinking(event, state, messages, assistantId);
     return true;
@@ -660,7 +787,7 @@ export function projectRuntimeEventUserMessage(
   };
 }
 
-function nonCanonicalContentOrder(
+export function nonCanonicalContentOrder(
   order: readonly AssistantStepContentKind[] | undefined,
 ): AssistantStepContentKind[] | undefined {
   if (!order?.length) return undefined;
@@ -830,7 +957,9 @@ function projectFunctionResponse(
   let normalizedResult: ToolResultContent | undefined;
   if (!archivedPlaceholder) {
     try {
-      normalizedResult = decodeCanonicalToolResultContent(compatibleResult);
+      normalizedResult = decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(compatibleResult),
+      );
     } catch (error) {
       diagnostic(
         state,
@@ -869,6 +998,9 @@ function projectFunctionResponse(
         toolName: archivedPlaceholder.toolName,
         artifactId: archivedPlaceholder.artifactId,
         bodySha256: archivedPlaceholder.bodySha256,
+        ...(archivedPlaceholder.rewriteVersion === 2
+          ? { resourceRef: archivedPlaceholder.resourceRef }
+          : {}),
         originalEstimatedTokens: archivedPlaceholder.originalEstimatedTokens,
         originalBytes: archivedPlaceholder.originalBytes,
         rewriteVersion: archivedPlaceholder.rewriteVersion,
@@ -965,6 +1097,9 @@ function projectPermissionDecision(
     );
     return false;
   }
+  // The prompt's own wording when the request survived, and the decision's copy
+  // of it when the decision is all that is left.
+  const hint = request?.hint ?? decision.hint;
   messages.push({
     type: 'permission_decision',
     id: decision.requestId,
@@ -979,7 +1114,7 @@ function projectPermissionDecision(
     ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
     ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
     ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
-    ...(request?.hint !== undefined ? { hint: request.hint } : {}),
+    ...(hint !== undefined ? { hint } : {}),
   });
   return true;
 }
@@ -1083,6 +1218,9 @@ function projectTokenUsage(
       : {}),
     ...(usage.promptSegments !== undefined ? { promptSegments: usage.promptSegments } : {}),
     ...(usage.contextBudget !== undefined ? { contextBudget: usage.contextBudget } : {}),
+    ...(usage.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: usage.lastRequestAnchor }
+      : {}),
     ...(event.refs?.providerRequestTraceId !== undefined
       ? { providerRequestTraceId: event.refs.providerRequestTraceId }
       : {}),
@@ -1095,17 +1233,18 @@ function projectTerminalTurnState(
   state: ProjectionState,
   messages: StoredMessage[],
 ): boolean {
-  const header = state.headers.get(event.runId);
-  if (!header) {
+  const invocation = state.invocations.get(event.runId);
+  if (!invocation) {
     diagnostic(
       state,
       event,
       'incomplete_event',
-      'terminal RuntimeEvent requires an AgentRunHeader',
+      'terminal RuntimeEvent requires the opening fact of its invocation',
     );
     return false;
   }
-  const status = turnStatusFor(event.status, header.status);
+  const lineage = invocation.opening.lineage;
+  const status = turnStatusFor(event.status);
   if (!status) {
     diagnostic(
       state,
@@ -1115,32 +1254,32 @@ function projectTerminalTurnState(
     );
     return false;
   }
-  const abortSource = status === 'aborted' ? abortSourceFromRuntime(event, header) : undefined;
-  const failureClass =
-    status === 'failed' ? failureClassFromRuntimeEvent(event, header) : undefined;
-  const partialOutputRetained = messages.some(
-    (message) =>
-      message.turnId === event.turnId &&
-      ((message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result'),
-  );
+  const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
+  const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
   messages.push({
     type: 'turn_state',
     id: stableMessageId(event, state, 'turn_state'),
     turnId: event.turnId,
     ts: event.ts,
     status,
-    ...(header.parentTurnId ? { parentTurnId: header.parentTurnId } : {}),
-    ...(header.retriedFromTurnId ? { retriedFromTurnId: header.retriedFromTurnId } : {}),
-    ...(header.regeneratedFromTurnId
-      ? { regeneratedFromTurnId: header.regeneratedFromTurnId }
+    ...(lineage?.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
+    ...(lineage?.retriedFromTurnId ? { retriedFromTurnId: lineage.retriedFromTurnId } : {}),
+    ...(lineage?.regeneratedFromTurnId
+      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
       : {}),
-    ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
-    ...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
+    ...(lineage?.branchOfTurnId ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
+    ...(lineage?.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
     ...(status === 'aborted' ? { abortedAt: event.ts } : {}),
     ...(abortSource ? { abortSource } : {}),
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
-    partialOutputRetained,
+    ...(status === 'failed' && event.content?.kind === 'error' && event.content.message
+      ? {
+          failureMessage: truncateUtf8(event.content.message, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…'),
+        }
+      : {}),
+    ...(status === 'failed' && event.content?.kind === 'error' && event.content.retry
+      ? { retry: event.content.retry }
+      : {}),
   });
   if (failureClass === 'tool_step_cap_reached') {
     messages.push({
@@ -1151,22 +1290,32 @@ function projectTerminalTurnState(
       kind: 'step_limit',
     });
   }
-  if (status === 'failed' && !failureClass) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'failed terminal event did not carry an exact AgentRunHeader.failureClass',
-    );
-  }
-  if (status === 'aborted' && !abortSource) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'abortSource is not present in RuntimeEvent or AgentRunHeader metadata',
-    );
-  }
+  // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
+  // observation to make. Repeating it here would only turn a transcript row that
+  // already reads `unknown` into an unreadable Session.
+  return true;
+}
+
+/**
+ * The note row of an invocation that wrote one.
+ *
+ * There is nothing to reconcile: the event carries the kind and the payload the
+ * row is made of, so the row is the event said back in the transcript's shape.
+ */
+function projectSystemNote(
+  event: RuntimeEvent,
+  state: ProjectionState,
+  messages: StoredMessage[],
+): boolean {
+  if (event.content?.kind !== 'system_note') return false;
+  messages.push({
+    type: 'system_note',
+    id: stableMessageId(event, state, 'system_note'),
+    turnId: event.turnId,
+    ts: event.ts,
+    kind: event.content.note,
+    ...(event.content.data !== undefined ? { data: structuredClone(event.content.data) } : {}),
+  });
   return true;
 }
 
@@ -1229,29 +1378,44 @@ function thinkingMessageId(event: RuntimeEvent): string {
   return event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
 }
 
-function abortSourceFromRuntime(event: RuntimeEvent, header: AgentRunHeader): string | undefined {
+/**
+ * Why this invocation failed, according to its own terminal event.
+ *
+ * `undefined` for an invocation that is still running or did not fail. There is
+ * no second place to look: the event that ends the run also states the class.
+ */
+export function runtimeInvocationFailureClass(invocation: {
+  terminalEvent?: RuntimeEvent;
+}): string | undefined {
+  const terminalEvent = invocation.terminalEvent;
+  if (terminalEvent?.status !== 'failed') return undefined;
+  return failureClassFromRuntimeEvent(terminalEvent);
+}
+
+function abortSourceFromRuntime(event: RuntimeEvent): string | undefined {
   return (
     stringStateDelta(event, 'abortSource') ??
     stringStateDelta(event, 'source') ??
     stringRecordValue(event.refs, 'abortSource') ??
-    stringRecordValue(event.refs, 'source') ??
-    stringRecordValue(header as unknown as Record<string, unknown>, 'abortSource')
+    stringRecordValue(event.refs, 'source')
   );
 }
 
-function failureClassFromRuntimeEvent(
-  event: RuntimeEvent,
-  header: AgentRunHeader,
-): string | undefined {
-  return (
+function failureClassFromRuntimeEvent(event: RuntimeEvent): string | undefined {
+  const failureClass =
     stringStateDelta(event, 'failureClass') ??
     stringStateDelta(event, 'errorClass') ??
     stringStateDelta(event, 'reason') ??
     stringStateDelta(event, 'code') ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.reason) : undefined) ??
-    (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined) ??
-    header.failureClass
-  );
+    (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined);
+  // Retired outcome. The runtime no longer decides locally that a request
+  // cannot be shaped to fit — the provider rejects it and recovery compacts and
+  // retries — so a turn that ends over the window is a context overflow like any
+  // other. Sessions written before that still carry the old name; fold it here,
+  // at the one place the durable ledger is read, so nothing downstream has to
+  // know two names for one outcome.
+  return failureClass === 'context_budget_exhausted' ? 'context_overflow' : failureClass;
 }
 
 function stringRecordValue(value: unknown, key: string): string | undefined {
@@ -1287,25 +1451,22 @@ function toolUseIdFor(event: RuntimeEvent): string | undefined {
   return event.content.id || event.refs?.toolCallId;
 }
 
-function normalizeHeaders(
-  headers: readonly AgentRunHeader[] | Readonly<Record<string, AgentRunHeader>>,
-): Map<string, AgentRunHeader> {
-  if (Array.isArray(headers)) {
-    return new Map(headers.map((header) => [header.runId, header]));
-  }
-  return new Map(Object.values(headers).map((header) => [header.runId, header]));
+function normalizeInvocations(
+  invocations:
+    | readonly RuntimeInvocationRecord[]
+    | Readonly<Record<string, RuntimeInvocationRecord>>,
+): Map<string, RuntimeInvocationRecord> {
+  const values = Array.isArray(invocations)
+    ? (invocations as readonly RuntimeInvocationRecord[])
+    : Object.values(invocations as Readonly<Record<string, RuntimeInvocationRecord>>);
+  return new Map(values.map((invocation) => [invocation.runId, invocation]));
 }
 
-function turnStatusFor(
-  eventStatus: RuntimeEventStatus | undefined,
-  runStatus: AgentRunHeader['status'],
-): TurnStatus | undefined {
+/** The terminal event states the outcome; nothing else is allowed to disagree. */
+function turnStatusFor(eventStatus: RuntimeEventStatus | undefined): TurnStatus | undefined {
   if (eventStatus === 'completed') return 'completed';
   if (eventStatus === 'failed') return 'failed';
   if (eventStatus === 'aborted' || eventStatus === 'cancelled') return 'aborted';
-  if (runStatus === 'completed') return 'completed';
-  if (runStatus === 'failed') return 'failed';
-  if (runStatus === 'cancelled') return 'aborted';
   return undefined;
 }
 
@@ -1346,7 +1507,7 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
 }
 
 /**
- * A boundary fact is canonical only in the exact shape AiSdkFlow emits: every
+ * A boundary fact is canonical only in the exact shape the Runtime mapper emits: every
  * field of the source SessionEvent, the identity it maps to, and the tool call
  * it settles. A partial match is worse than none — it would claim a corrupt
  * ledger as sound while still paying the cost of rejecting a malformed one.
@@ -1432,133 +1593,4 @@ function isRuntimeEventDiagnosticDetail(
     typeof detail.runId === 'string' &&
     typeof detail.turnId === 'string'
   );
-}
-
-function countSemanticMessages(messages: readonly StoredMessage[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const message of messages) {
-    const key = stableSemanticKey(semanticMessage(message));
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return counts;
-}
-
-function stableSemanticKey(value: unknown): string {
-  return JSON.stringify(sortSemanticValue(value));
-}
-
-function sortSemanticValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortSemanticValue);
-  }
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((key) => [key, sortSemanticValue((value as Record<string, unknown>)[key])]),
-  );
-}
-
-function semanticMessage(message: StoredMessage): unknown {
-  switch (message.type) {
-    case 'user':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        text: message.text,
-        displayText: message.displayText,
-        origin: message.origin,
-        attachments: message.attachments ?? [],
-        quotes: message.quotes ?? [],
-      };
-    case 'assistant':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        text: message.text,
-        modelId: message.modelId,
-        thinking: message.thinking,
-      };
-    case 'tool_call':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.id,
-        toolName: message.toolName,
-        activityKind: message.activityKind,
-        displayName: message.displayName,
-        intent: message.intent,
-        args: message.args,
-      };
-    case 'tool_result':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.toolUseId,
-        isError: message.isError,
-        content: message.content,
-        durationMs: message.durationMs,
-      };
-    case 'permission_decision':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.toolUseId,
-        toolName: message.toolName,
-        decision: message.decision,
-        rememberForTurn: message.rememberForTurn,
-        hint: message.hint,
-      };
-    case 'token_usage':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        input: message.input,
-        output: message.output,
-        cacheHitInput: message.cacheHitInput,
-        cacheMissInput: message.cacheMissInput,
-        cacheMissInputSource: message.cacheMissInputSource,
-        cacheWriteInput: message.cacheWriteInput,
-        reasoning: message.reasoning,
-        total: message.total,
-        rawFinishReason: message.rawFinishReason,
-        runtimeSteps: message.runtimeSteps,
-        cacheRead: message.cacheRead,
-        cacheCreation: message.cacheCreation,
-        costUsd: message.costUsd,
-        systemPromptHash: message.systemPromptHash,
-        contextRemaining: message.contextRemaining,
-        prefixHash: message.prefixHash,
-        prefixChangeReason: message.prefixChangeReason,
-        requestShapeHash: message.requestShapeHash,
-        requestShapeChangeReason: message.requestShapeChangeReason,
-        promptSegments: message.promptSegments,
-        contextBudget: message.contextBudget,
-        providerRequestTraceId: message.providerRequestTraceId,
-      };
-    case 'turn_state':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        status: message.status,
-        parentTurnId: message.parentTurnId,
-        retriedFromTurnId: message.retriedFromTurnId,
-        regeneratedFromTurnId: message.regeneratedFromTurnId,
-        branchOfTurnId: message.branchOfTurnId,
-        parentSessionId: message.parentSessionId,
-        abortedAt: message.abortedAt,
-        abortSource: message.abortSource,
-        errorClass: message.errorClass,
-        partialOutputRetained: message.partialOutputRetained,
-      };
-    case 'system_note':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        kind: message.kind,
-        data: message.data,
-      };
-  }
 }

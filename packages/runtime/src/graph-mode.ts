@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export function renderGraphModePrompt(): string {
   return [
     '<orchestration_mode>',
@@ -15,6 +34,7 @@ export function renderGraphModePrompt(): string {
     'Stay available to the user across supervisor turns. Intervene only through the typed graph controls, and explain material supervision decisions.',
     'Before advancing dependencies or finishing, read the committed child result with agent_output like {"locator":"child_session_run","child_session_id":"<childSessionId>","run_id":"<currentRunId>","view":"result","max_bytes":32768}. Use result.resultRecordId when selecting a final committed record. Read runtime_events or view=all only for a narrow diagnostic question. Then select committed result ids with update_agent_graph.finish and synthesize those results for the user.',
     'When scheduling dependent work, pass each upstream result.resultRecordId in input_ids. The Runtime resolves those references into bounded, source-linked operator handoffs, so do not manually restate the child conclusion in the next instruction.',
+    'For a result selected by a finished earlier graph epoch, use selected_result_inputs with the exact source_graph_id and result_id returned by view_agent_graph. Keep input_ids for records in the current graph; historical inputs carry data lineage only and never reuse old operators or control state.',
     'You may continue directly when the request is small or a graph would add ceremony without useful decomposition.',
     '</orchestration_mode>',
   ].join('\n');

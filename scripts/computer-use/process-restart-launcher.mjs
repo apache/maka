@@ -1,14 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { requireComputerUseLabRoot } from './lab-root.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
 const harnessPath = join(here, 'process-restart-harness.mjs');
 const monitorPath = join(here, 'real-e2e-monitor.swift');
-const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
+const labRoot = requireComputerUseLabRoot();
 const statePath = join(labRoot, 'test-app', 'runtime', 'state.json');
 const SOAK_ROUNDS = 5;
 const FIXTURE_BUNDLE_ID = 'com.openai.codex.cualab';

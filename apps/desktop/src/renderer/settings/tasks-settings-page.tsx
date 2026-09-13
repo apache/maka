@@ -1,18 +1,42 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { Button, EmptyState, MoreMenu, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import type { SessionPurgeOutcome } from '../app-shell-session-row-actions.js';
+import type { SessionPurgeOutcome } from '../features/session-navigation';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
-import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows';
+import {
+  archivedTaskRows,
+  isOrphanedSubagentTask,
+  matchesArchivedTaskQuery,
+} from './task-catalog-rows';
 
 /**
  * Everything this page needs from the shell's session catalog, as one prop so
@@ -70,7 +94,7 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
    */
   const projectLabelOf = useCallback(
     (session: DesktopSessionSummary): string | undefined => {
-      if (session.profileKind === 'remote') return session.profileName;
+      if (runtimeHostProfileUsesHostWorkspace(session.profileKind)) return session.profileName;
       return session.projectId ? projectNames.get(session.projectId) : copy.noProject;
     },
     [copy.noProject, projectNames],
@@ -79,6 +103,10 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
   const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
+  const knownSessionIds = useMemo(
+    () => new Set(props.sessions.map((session) => session.id)),
+    [props.sessions],
+  );
   const isSearching = query.trim().length > 0;
   const visible = useMemo(
     () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectLabelOf)),
@@ -97,7 +125,7 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
       title: isSearching
         ? copy.purgeMatchesConfirmTitle(ids.length)
         : copy.purgeAllConfirmTitle(ids.length),
-      description: copy.purgeConfirmBody,
+      description: `${copy.purgeConfirmBody} ${copy.purgeSubtaskNote}`,
       confirmLabel: copy.purgeConfirmAction,
       cancelLabel: getSettingsSharedCopy(locale).cancel,
       destructive: true,
@@ -112,17 +140,32 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
       // dropping the other is how a count quietly stops adding up.
       const kept =
         outcome.restored.length > 0 ? copy.purgeKeptRestored(outcome.restored.length) : undefined;
+      // A bulk purge of parents archives their linked subtasks; say how many so
+      // the archived rows that appear next are not a surprise.
+      const moved =
+        outcome.archivedSubtasks > 0 ? copy.purgedSubtaskNote(outcome.archivedSubtasks) : undefined;
+      const detail = (...parts: Array<string | undefined>) => {
+        const text = parts.filter(Boolean).join(' ');
+        return text.length > 0 ? text : undefined;
+      };
       if (!outcome.verified || outcome.remaining.length > 0) {
         // A reason beats a count: a task refuses to retire while its turn is
         // still running, and "N still there" gives the reader nothing to do.
         const reason = !outcome.verified
           ? copy.purgeUnverified
-          : outcome.firstError
-            ? settingsActionErrorMessage(outcome.firstError, locale)
+          : outcome.firstFailure
+            ? settingsActionErrorMessage(outcome.firstFailure.error, locale)
             : copy.purgeFailedBody(outcome.remaining.length);
-        toast.error(copy.purgeFailedTitle, kept ? `${reason} ${kept}` : reason);
+        toast.error(
+          copy.purgeFailedTitle,
+          detail(reason, moved, kept),
+          undefined,
+          outcome.firstFailure
+            ? { sessionId: outcome.firstFailure.sessionId }
+            : undefined,
+        );
       } else {
-        toast.success(copy.purgedToast(outcome.removed), kept);
+        toast.success(copy.purgedToast(outcome.removed), detail(moved, kept));
       }
     } finally {
       if (mountedRef.current) setPurging(false);
@@ -176,7 +219,15 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
               const updated = session.lastMessageAt
                 ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
                 : undefined;
-              const description = [projectLabelOf(session), updated].filter(Boolean).join(' · ');
+              const description = [
+                isOrphanedSubagentTask(session, knownSessionIds)
+                  ? copy.deletedParent
+                  : undefined,
+                projectLabelOf(session),
+                updated,
+              ]
+                .filter(Boolean)
+                .join(' · ');
               return (
                 <ListItem
                   key={session.id}

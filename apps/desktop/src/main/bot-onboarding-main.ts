@@ -1,19 +1,43 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type {
   BotOnboardingBrand,
+  BotOnboardingErrorCode,
   BotOnboardingProvider,
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   BotOnboardingState,
 } from '@maka/core/bot-onboarding';
-import { generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  redactSecrets,
+} from '@maka/core/redaction';
 import { isBotOnboardingBrand, isBotOnboardingProvider } from '@maka/core/bot-onboarding';
 import type { BotRegistry } from '@maka/runtime/bots';
 import { proxiedFetch } from '@maka/runtime/bots';
-import type { SettingsStore } from '@maka/storage';
+import type { SettingsStore } from '@maka/storage/settings-store';
 import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';
 
@@ -82,7 +106,9 @@ interface BotOnboardingSession {
   pollFailures: number;
   identity?: { id?: string; displayName?: string };
   error?: string;
-  warning?: string;
+  errorCode?: BotOnboardingErrorCode;
+  warningCode?: 'saved_not_connected';
+  warningDetail?: string;
 }
 
 export interface BotOnboardingServiceDeps {
@@ -176,7 +202,8 @@ export class BotOnboardingService {
       }
       session.state = 'error';
       session.error = safeProviderError(error);
-      throw new Error(session.error);
+      session.errorCode = providerErrorCode(error);
+      return this.snapshot(session, true);
     }
   }
 
@@ -260,7 +287,9 @@ export class BotOnboardingService {
           // bridge is not running, surface an honest warning instead of lying
           // about a healthy connection. Onboarding still succeeds — the user can
           // retry the connection later from settings.
-          session.warning = this.connectionWarning(session.provider);
+          const warning = this.connectionWarning(session.provider);
+          session.warningCode = warning?.code;
+          session.warningDetail = warning?.detail;
           break;
       }
       return this.snapshot(session);
@@ -285,6 +314,7 @@ export class BotOnboardingService {
       }
       session.state = 'error';
       session.error = safeProviderError(error);
+      session.errorCode = providerErrorCode(error);
       return this.snapshot(session);
     }
   }
@@ -367,13 +397,13 @@ export class BotOnboardingService {
    * honest, secret-free notice when the credentials were saved but the bridge
    * is not actually running, or `undefined` when the connection is healthy.
    */
-  private connectionWarning(provider: BotOnboardingProvider): string | undefined {
+  private connectionWarning(
+    provider: BotOnboardingProvider,
+  ): { code: 'saved_not_connected'; detail?: string } | undefined {
     const status = this.readChannelStatus(provider);
     if (status.running) return undefined;
-    const reason = connectionFailureReason(status.reason);
-    return reason
-      ? `凭据已保存，但连接未建立：${reason}，可稍后在设置中重试。`
-      : '凭据已保存，但连接未建立，可稍后在设置中重试。';
+    const detail = connectionFailureReason(status.reason);
+    return { code: 'saved_not_connected', ...(detail ? { detail } : {}) };
   }
 
   private getSession(rawSessionId: unknown): BotOnboardingSession {
@@ -432,7 +462,9 @@ export class BotOnboardingService {
       canOpenInBrowser: Boolean(session.verificationUrl),
       ...(session.identity ? { identity: { ...session.identity } } : {}),
       ...(session.error ? { error: session.error } : {}),
-      ...(session.warning ? { warning: session.warning } : {}),
+      ...(session.errorCode ? { errorCode: session.errorCode } : {}),
+      ...(session.warningCode ? { warningCode: session.warningCode } : {}),
+      ...(session.warningDetail ? { warningDetail: session.warningDetail } : {}),
     };
   }
 }
@@ -459,12 +491,17 @@ function clampPollInterval(value: number): number {
   return Math.min(Math.max(Math.round(value), 1_000), MAX_POLL_INTERVAL_MS);
 }
 
+function providerErrorCode(error: unknown): BotOnboardingErrorCode {
+  if (error instanceof Error && error.name === 'AbortError') return 'cancelled';
+  return classifyGeneralizedError(error) ?? 'unavailable';
+}
+
 function safeProviderError(error: unknown): string {
   if (error instanceof Error && error.name === 'AbortError') return '扫码接入已取消。';
   // PR1197 review (P2-11): route through the shared categorizer so 超时 / 鉴权失败 /
   // 网络错误 survive as specific Chinese copy instead of collapsing to one generic
   // line. The helper redacts secrets before returning.
-  return generalizedErrorMessageChinese(error, '扫码接入暂时不可用，请稍后重试。');
+  return generalizedErrorMessageForLocale(error, '扫码接入暂时不可用，请稍后重试。', 'zh-CN');
 }
 
 /**

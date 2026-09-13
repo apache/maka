@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
@@ -5,8 +24,10 @@ import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
   decodeContinuationClaim,
+  decodeRuntimeBoundaryCursor,
+  invocationMatchesClaimTarget,
   runtimePrefixSegment,
-  type RuntimeBoundaryCursorV1,
+  type RuntimeBoundaryCursor,
   type RuntimePrefixIdentityV1,
 } from '../runtime-boundary.js';
 
@@ -196,7 +217,7 @@ describe('immutable RuntimeEvent boundary', () => {
     assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate invocationId/);
   });
 
-  it('rejects a boundary that reuses a source turn identity', () => {
+  it('versions consecutive same-turn physical attempts without weakening released cursors', () => {
     const firstIdentity = runtimeIdentity('run-first');
     const secondIdentity = {
       ...runtimeIdentity('run-second'),
@@ -213,7 +234,52 @@ describe('immutable RuntimeEvent boundary', () => {
       ]),
     );
 
-    assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate turnId/);
+    const cursor = createRuntimeBoundaryCursor([first, second]);
+    assert.equal(cursor.protocol, 'runtime_boundary_cursor_v2');
+    assert.deepEqual(decodeRuntimeBoundaryCursor(cursor), cursor);
+    assert.throws(
+      () => decodeRuntimeBoundaryCursor({ ...cursor, protocol: 'runtime_boundary_cursor_v1' }),
+      /version mismatch/,
+    );
+    const other = boundaryForRuns('other').segments[0];
+    assert.throws(() => createRuntimeBoundaryCursor([first, other, second]), /previous turnId/);
+  });
+
+  it('permits same-turn claims only for explicit handoff to the original logical root', () => {
+    const boundary = boundaryForRuns('run-source');
+    const manual = claimForBoundary(boundary);
+    const handoff = {
+      ...manual,
+      target: { ...manual.target, turnId: boundary.segments[0].identity.turnId },
+      targetOpening: {
+        ...manual.targetOpening,
+        source: {
+          ...manual.targetOpening.source,
+          kind: 'handoff',
+          rootRunId: 'run-source',
+        },
+      },
+    };
+    assert.equal(decodeContinuationClaim(handoff).targetOpening.source.kind, 'handoff');
+    assert.throws(
+      () => decodeContinuationClaim({ ...handoff, targetOpening: manual.targetOpening }),
+      /turnId reuses/,
+    );
+    assert.throws(
+      () => decodeContinuationClaim({ ...handoff, target: manual.target }),
+      /preserve the logical turnId/,
+    );
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...handoff,
+          targetOpening: {
+            ...handoff.targetOpening,
+            source: { ...handoff.targetOpening.source, rootRunId: 'foreign' },
+          },
+        }),
+      /logical root mismatch/,
+    );
   });
 
   it('requires a continuation target to remain in the source session', () => {
@@ -279,6 +345,55 @@ describe('immutable RuntimeEvent boundary', () => {
       /target turnId reuses source identity/,
     );
   });
+
+  it('rejects a target opening that does not name the boundary the claim holds', () => {
+    const boundary = boundaryForRuns('run-source');
+    const claim = claimForBoundary(boundary);
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          targetOpening: {
+            ...claim.targetOpening,
+            source: { ...claim.targetOpening.source, sourceRunId: 'run-elsewhere' },
+          },
+        }),
+      /target opening mismatch/,
+    );
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          targetOpening: { ...claim.targetOpening, source: { kind: 'fresh' } },
+        }),
+      /target opening mismatch/,
+    );
+  });
+
+  it('recognises the invocation the claim authorises', () => {
+    const boundary = boundaryForRuns('run-source');
+    const claim = decodeContinuationClaim(claimForBoundary(boundary));
+    const invocation = { ...claim.target, opening: claim.targetOpening };
+
+    assert.ok(invocationMatchesClaimTarget(invocation, claim));
+    assert.ok(
+      !invocationMatchesClaimTarget(
+        {
+          ...invocation,
+          opening: {
+            ...invocation.opening,
+            configuration: { ...invocation.opening.configuration, cwd: '/elsewhere' },
+          },
+        },
+        claim,
+      ),
+    );
+    assert.ok(
+      !invocationMatchesClaimTarget({ ...invocation, runId: 'another-run' }, claim),
+      'the claim fixes the target identity as well as its opening',
+    );
+  });
 });
 
 function runtimeIdentity(runId: string): RuntimePrefixIdentityV1 {
@@ -306,7 +421,7 @@ function event(
   };
 }
 
-function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursorV1 {
+function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursor {
   const segments = runIds.map((runId) => {
     const identity = runtimeIdentity(runId);
     return runtimePrefixSegment(
@@ -318,7 +433,7 @@ function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursorV1 {
   return createRuntimeBoundaryCursor(segments);
 }
 
-function claimForBoundary(boundary: RuntimeBoundaryCursorV1) {
+function claimForBoundary(boundary: RuntimeBoundaryCursor) {
   const source = boundary.segments.at(-1)!;
   const target = {
     sessionId: boundary.segments[0].identity.sessionId,
@@ -334,34 +449,36 @@ function claimForBoundary(boundary: RuntimeBoundaryCursorV1) {
     providerProjectionVersion: 1,
     providerReplayDigest: `sha256:${'b'.repeat(64)}`,
     target,
-    targetRunHeader: {
-      runId: target.runId,
-      invocationId: target.invocationId,
-      sessionId: target.sessionId,
-      turnId: target.turnId,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'connection-1',
-      modelId: 'model-1',
-      cwd: '/workspace',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      createdAt: 1,
-      updatedAt: 1,
-      parentRunId: source.identity.runId,
-      parentTurnId: source.identity.turnId,
-      continuationSource: {
-        protocol: 'continuation_source_v2',
-        claimId: 'claim-1',
-        boundaryDigest: boundary.manifestDigest,
+    targetOpening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'unknown',
+        backendKind: 'fake',
+        llmConnectionSlug: 'connection-1',
+        modelId: 'model-1',
+      },
+      configuration: {
+        cwd: '/workspace',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: { kind: 'user' },
+      source: {
+        kind: 'continuation',
         sourceInvocationId: source.identity.invocationId,
         sourceRunId: source.identity.runId,
         sourceTurnId: source.identity.turnId,
         sourceRuntimeEventHighWater: source.position.lastEventSeq,
-        sourcePrefixDigest: source.prefixDigest,
-        replayManifestDigest: boundary.manifestDigest,
+        claimId: 'claim-1',
+        boundaryDigest: boundary.manifestDigest,
+      },
+      lineage: {
+        parentRunId: source.identity.runId,
+        parentTurnId: source.identity.turnId,
       },
     },
     claimedAt: 1,

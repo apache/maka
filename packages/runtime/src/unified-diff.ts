@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Minimal unified-diff generator for tool results. Producing the diff at the
  * write site — where both contents are already in memory — lets the UI show
@@ -8,6 +27,7 @@
 
 const MAX_DIFF_SOURCE_LINES = 800;
 const MAX_DIFF_SOURCE_BYTES = 32 * 1024;
+const MAX_DIFF_OUTPUT_BYTES = 32 * 1024;
 const CONTEXT_LINES = 3;
 
 /**
@@ -38,6 +58,51 @@ export function createUnifiedDiff(
   return [...header, ...formatHunks(ops)].join('\n');
 }
 
+/**
+ * Localized unified diff for Edit's one known replacement span. Unlike the
+ * generic full-file diff, its cost depends on the changed hunk rather than the
+ * file size; the final output remains bounded for huge lines or replacements.
+ */
+export function createEditUnifiedDiff(
+  path: string,
+  oldContent: string,
+  newContent: string,
+  match: { startLine: number; endLine: number },
+): string | undefined {
+  if (oldContent.includes('\0') || newContent.includes('\0')) return undefined;
+  const oldLineCount = countLines(oldContent);
+  const newLineCount = countLines(newContent);
+  const startIndex = match.startLine - 1;
+  const oldEndIndex = match.endLine - 1;
+  if (startIndex < 0 || oldEndIndex < startIndex || oldEndIndex >= oldLineCount) {
+    return undefined;
+  }
+
+  const windowStart = Math.max(0, startIndex - CONTEXT_LINES);
+  const oldAfterStart = oldEndIndex + 1;
+  const newAfterStart = oldAfterStart + newLineCount - oldLineCount;
+  const oldWindow = readDiffWindow(
+    oldContent,
+    windowStart,
+    Math.min(oldLineCount, oldAfterStart + CONTEXT_LINES),
+  );
+  if (!oldWindow) return undefined;
+  const newWindow = readDiffWindow(
+    newContent,
+    windowStart,
+    Math.min(newLineCount, Math.max(windowStart, newAfterStart) + CONTEXT_LINES),
+  );
+  if (!newWindow) return undefined;
+  const ops = diffLines(oldWindow, newWindow);
+  if (ops.every((op) => op.kind === 'keep')) return undefined;
+  const diff = [
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    ...formatHunks(ops, windowStart, windowStart),
+  ].join('\n');
+  return Buffer.byteLength(diff, 'utf8') <= MAX_DIFF_OUTPUT_BYTES ? diff : undefined;
+}
+
 function isUndiffable(content: string): boolean {
   return content.includes('\0') || Buffer.byteLength(content, 'utf8') > MAX_DIFF_SOURCE_BYTES;
 }
@@ -47,6 +112,37 @@ function splitLines(content: string): string[] {
   // A trailing newline terminates the last line rather than starting an empty
   // one; newline-termination differences are deliberately invisible.
   if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+function countLines(content: string): number {
+  let count = content.length > 0 && !content.endsWith('\n') ? 1 : 0;
+  for (let index = content.indexOf('\n'); index !== -1; index = content.indexOf('\n', index + 1)) {
+    count += 1;
+  }
+  return count;
+}
+
+/** Collect only the requested lines, failing before an oversized window is materialized. */
+function readDiffWindow(content: string, startLine: number, endLine: number): string[] | undefined {
+  // Preserve Array.slice's fractional/NaN index normalization.
+  const from = Math.trunc(startLine) || 0;
+  const until = Math.trunc(endLine) || 0;
+  const lines: string[] = [];
+  let bytes = 0;
+  let offset = 0;
+  for (let lineIndex = 0; offset < content.length && lineIndex < until; lineIndex += 1) {
+    const newline = content.indexOf('\n', offset);
+    const end = newline === -1 ? content.length : newline;
+    if (lineIndex >= from) {
+      if (lines.length === MAX_DIFF_SOURCE_LINES) return undefined;
+      const line = content.slice(offset, end);
+      bytes += Buffer.byteLength(line, 'utf8') + (lines.length > 0 ? 1 : 0);
+      if (bytes > MAX_DIFF_SOURCE_BYTES) return undefined;
+      lines.push(line);
+    }
+    offset = end + 1;
+  }
   return lines;
 }
 
@@ -94,7 +190,7 @@ function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
 }
 
 /** Group the edit script into hunks with CONTEXT_LINES of surrounding context. */
-function formatHunks(ops: DiffOp[]): string[] {
+function formatHunks(ops: DiffOp[], oldLineOffset = 0, newLineOffset = 0): string[] {
   const changed = ops.flatMap((op, index) => (op.kind === 'keep' ? [] : [index]));
   if (changed.length === 0) return [];
 
@@ -114,8 +210,8 @@ function formatHunks(ops: DiffOp[]): string[] {
   const out: string[] = [];
   for (const group of groups) {
     const slice = ops.slice(group.start, group.end + 1);
-    const oldStart = slice[0].oldIndex + 1;
-    const newStart = slice[0].newIndex + 1;
+    const oldStart = slice[0].oldIndex + oldLineOffset + 1;
+    const newStart = slice[0].newIndex + newLineOffset + 1;
     const oldCount = slice.filter((op) => op.kind !== 'add').length;
     const newCount = slice.filter((op) => op.kind !== 'del').length;
     out.push(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Telegram bot bridge — HTTP long-poll (`getUpdates`) receive loop,
  * REST send with UTF-16 chunk splitting, reply threading, typing
@@ -8,7 +27,7 @@
 
 import type { BotAttachmentKind } from '@maka/core/bot-events';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type {
   BotPlatform,
@@ -45,28 +64,6 @@ function utf16Len(s: string): number {
 }
 
 /**
- * Return the longest prefix of `s` whose UTF-16 length is ≤ `cap`,
- * respecting surrogate-pair boundaries (we never slice a
- * multi-code-unit character in half). We iterate codepoint-by-
- * codepoint instead of binary-searching slices: the cost of
- * mistakenly splitting an emoji is far worse than the O(n) cost.
- */
-function prefixWithinUtf16(s: string, cap: number): string {
-  if (utf16Len(s) <= cap) return s;
-  let used = 0;
-  let end = 0;
-  for (let i = 0; i < s.length; ) {
-    const code = s.codePointAt(i)!;
-    const units = code > 0xffff ? 2 : 1;
-    if (used + units > cap) break;
-    used += units;
-    i += units;
-    end = i;
-  }
-  return s.slice(0, end);
-}
-
-/**
  * Split `text` into UTF-16-bounded chunks for Telegram delivery.
  * Prefers breaking on a newline within the last ~10% of the chunk;
  * falls back to a hard prefix cut when the chunk has no newline.
@@ -81,7 +78,7 @@ function splitForTelegram(text: string): string[] {
   const pieces: string[] = [];
   let remaining = text;
   while (utf16Len(remaining) > cap) {
-    let chunk = prefixWithinUtf16(remaining, cap);
+    let chunk = truncateUtf16Safe(remaining, cap);
     const minBoundary = Math.floor(chunk.length * 0.9);
     const nl = chunk.lastIndexOf('\n');
     if (nl >= minBoundary) chunk = chunk.slice(0, nl);
@@ -245,7 +242,6 @@ function classifyTelegramSendResponse(response: any): TelegramSendClassification
 
 export const __TEST__ = {
   utf16Len,
-  prefixWithinUtf16,
   splitForTelegram,
   buildTelegramSendBody,
   normalizeTelegramReplyToMessageId,
@@ -272,7 +268,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       return;
     }
     if (!this.settings.token.trim()) {
-      this.reason = 'no-token';
+      this.reason = 'token_missing';
       this.readiness = 'scaffolded';
       return;
     }
@@ -316,7 +312,10 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       }
       if (classification.kind !== 'ok') {
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-        this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+        this.recordFailure(
+          classification.kind === 'retry' ? 'rate-limited' : classification.description,
+          classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+        );
         this.emitStatusChange();
         return null;
       }
@@ -355,7 +354,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
     return createTelegramReplyStream({
       chatId,
       streamId: options.streamId,
-      prepareDraftText: (text) => prefixWithinUtf16(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
+      prepareDraftText: (text) => truncateUtf16Safe(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
       sendDraft: async (draftId, text) => {
         const response = await telegramApi(token, 'sendMessageDraft', {
           chat_id: privateChatId,
@@ -391,7 +390,10 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
     try {
       const me = await telegramApi(this.settings.token, 'getMe');
       if (!me.ok) {
-        this.reason = me.description ?? 'get-me-failed';
+        this.recordFailure(
+          me.description ?? 'get-me-failed',
+          me.error_code === 401 ? 'token_invalid' : 'get-me-failed',
+        );
         this.readiness = 'configured';
         this.emitStatusChange();
         return;
@@ -410,7 +412,7 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
       this.emitStatusChange();
       void this.pollTelegram();
     } catch (error) {
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness =
         this.readiness === 'operational' ? 'degraded' : botReadinessFromSettings(this.settings);
       this.emitStatusChange();

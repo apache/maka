@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Button, HStack, Text } from '@astryxdesign/core';
 import { SettingsField, SettingsRow } from './settings-section';
@@ -34,7 +53,8 @@ import { SettingsField, SettingsRow } from './settings-section';
  * permanently-open input would use.
  */
 export function SettingsExpandableRow(props: {
-  label: string;
+  label: ReactNode;
+  assistantTarget?: string;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
@@ -51,6 +71,13 @@ export function SettingsExpandableRow(props: {
    * this lives here instead of being hand-rolled per page.
    */
   end?: ReactNode;
+  /**
+   * Content that sits beside the built-in trigger while collapsed, after it —
+   * a model row's enable switch, say, which reads as the row's last control.
+   * Unlike `end`, this keeps the trigger and the focus return that goes with
+   * it.
+   */
+  afterAction?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -98,15 +125,19 @@ export function SettingsExpandableRow(props: {
         description={props.value}
         align="start"
         end={props.end ?? (
-          <Button
-            ref={triggerRef}
-            variant="ghost"
-            size="sm"
-            isDisabled={props.isDisabled}
-            onClick={props.onEdit}
-            label={props.actionLabel ?? ''}
-            aria-label={props.actionAriaLabel}
-          />
+          <>
+            <Button
+              ref={triggerRef}
+              data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
+              variant="ghost"
+              size="sm"
+              isDisabled={props.isDisabled}
+              onClick={props.onEdit}
+              label={props.actionLabel ?? ''}
+              aria-label={props.actionAriaLabel}
+            />
+            {props.afterAction}
+          </>
         )}
       />
     );
@@ -126,6 +157,7 @@ export function SettingsExpandableRow(props: {
           <Button
             variant="primary"
             isDisabled={props.isDisabled || props.canSave === false}
+            data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.save` : undefined}
             clickAction={() => props.onSave()}
             label={props.saveLabel}
           />

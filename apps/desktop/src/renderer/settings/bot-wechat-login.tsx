@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime/bots';
@@ -80,7 +99,8 @@ export function WechatQrLoginModal(props: {
   onRefreshStatuses(): void | Promise<unknown>;
 }) {
   const locale = useUiLocale();
-  const copy = getBotSettingsCopy(locale).wechat;
+  const botCopy = getBotSettingsCopy(locale);
+  const copy = botCopy.wechat;
   const [result, setResult] = useState<WechatBridgeQrCodeResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -101,6 +121,9 @@ export function WechatQrLoginModal(props: {
     void window.maka.settings.bots.wechatQrCode()
       .then((next) => {
         if (!active) return;
+        // The raw error is an English diagnostic, never product copy; the
+        // dialog renders hint-code titles and the localized generic hint.
+        if (!next.ok && next.error) console.warn(`[bots:wechat] QR sign-in: ${next.error}`);
         setResult(next);
         if (next.ok && next.loggedIn && !notifiedLoggedInRef.current) {
           notifiedLoggedInRef.current = true;
@@ -109,10 +132,10 @@ export function WechatQrLoginModal(props: {
       })
       .catch((error) => {
         if (!active) return;
+        console.warn('[bots:wechat] QR sign-in failed:', error);
         setResult({
           ok: false,
           error: settingsActionErrorMessage(error, locale),
-          hint: copy.readQrFailed,
         });
       })
       .finally(() => {
@@ -202,8 +225,8 @@ export function WechatQrLoginModal(props: {
               <EmptyState
                 headingLevel={4}
                 icon={<MessageSquare size={ICON_SIZE.empty} />}
-                title={error.error}
-                description={error.hint}
+                title={error.hintCode ? botCopy.testHints[error.hintCode] : copy.readQrFailed}
+                description={copy.readQrFailed}
                 actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />}
               />
             </div>

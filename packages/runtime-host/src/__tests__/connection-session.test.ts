@@ -1,10 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred, type Deferred, withTimeout } from '@maka/core/test-only/async-primitives';
+import type { ComputerHistorySummaryInput } from '@maka/core/computer-history';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -22,7 +45,9 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientFrame,
+  type EncodedProtocolMessage,
   type HostFrame,
   type ResponseFrame,
   type TurnSnapshot,
@@ -34,8 +59,9 @@ import type {
   ClientCapabilityService,
 } from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
+import type { SessionContinuityService } from '../server/session-continuity-service.js';
 import {
-  createUnavailableAccessAuthorityOperationHandlers,
+  createUnavailableHostCoreOperationHandlers,
   createUnavailableDomainOperationHandlers,
   type OperationHandlerMap,
 } from '../server/operation-dispatcher.js';
@@ -49,6 +75,7 @@ import {
   RuntimeHostOutboundQueueError,
 } from '../server/serial-outbound-writer.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 
 const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -60,12 +87,447 @@ function acceptedConnection(connectionId: string) {
     hostEpoch: 'host-epoch',
     connectionId,
     clientInstanceId: 'test-client',
-    surface: 'tui' as const,
     authority: LOCAL_OWNER_CONNECTION_AUTHORITY,
   };
 }
 
 type TurnQueryHandler = RuntimeHostComposition['handlers']['turn.query'];
+
+const HISTORY_INPUT: ComputerHistorySummaryInput = {
+  level: '10min',
+  start: '2026-09-13T00:00:00.000Z',
+  end: '2026-09-13T00:10:00.000Z',
+  evidence: [{ id: 'event', text: 'Edited project documentation.' }],
+};
+const HISTORY_RESULT = {
+  title: 'Documentation',
+  description: 'Edited docs.',
+  body: 'Observed edits.',
+};
+
+test('an aborted queued summary never dispatches after saturation clears', async (t) => {
+  const saturated = deferred();
+  const release = deferred();
+  let queries = 0;
+  let summaries = 0;
+  await withRuntimeHost(
+    async (input) => {
+      if (++queries === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1) saturated.resolve();
+      await release.promise;
+      return { ok: true, result: runningSnapshot(input.sessionId, input.turnId) };
+    },
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const blockers = Array.from(
+        { length: RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1 },
+        (_, i) => client.request('turn.query', { sessionId: 'session', turnId: `block-${i}` }),
+      );
+      try {
+        await withTimeout(saturated.promise, 1_000, 'client queue did not saturate');
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const abort = new AbortController();
+        const summary = client.request(
+          'computer-history.summarize',
+          HISTORY_INPUT,
+          75_000,
+          abort.signal,
+        );
+        const rejected = assert.rejects(summary, { name: 'AbortError' });
+        abort.abort();
+        await rejected;
+        assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+        t.mock.timers.tick(10_001);
+        assert.equal(summaries, 0);
+        t.mock.timers.reset();
+        release.resolve();
+        await Promise.all(blockers);
+        // A subsequent request proves the queue drained without reviving cancelled evidence.
+        await client.request('turn.query', { sessionId: 'session', turnId: 'barrier' });
+        assert.equal(summaries, 0);
+        assert.deepEqual(
+          await client.request('computer-history.summarize', HISTORY_INPUT),
+          HISTORY_RESULT,
+        );
+        assert.equal(summaries, 1);
+      } finally {
+        t.mock.timers.reset();
+        release.resolve();
+        await Promise.allSettled(blockers);
+      }
+    },
+    {
+      'computer-history.summarize': async () => {
+        summaries++;
+        return { ok: true, result: HISTORY_RESULT };
+      },
+    },
+  );
+});
+
+test('a dispatched summary cancels past saturated domain work and waits for terminal response', async () => {
+  const entered = deferred();
+  const cancelled = deferred();
+  const finish = deferred();
+  const saturated = deferred();
+  const release = deferred();
+  let queries = 0;
+  await withRuntimeHost(
+    async (input) => {
+      if (++queries === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 2) saturated.resolve();
+      await release.promise;
+      return { ok: true, result: runningSnapshot(input.sessionId, input.turnId) };
+    },
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const abort = new AbortController();
+      let settled = false;
+      const summary = client
+        .request('computer-history.summarize', HISTORY_INPUT, 75_000, abort.signal)
+        .finally(() => {
+          settled = true;
+        });
+      const rejected = assert.rejects(summary, { name: 'AbortError' });
+      const blockers: Promise<unknown>[] = [];
+      try {
+        await withTimeout(entered.promise, 1_000, 'summary did not enter');
+        for (let i = 0; i < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 2; i++) {
+          blockers.push(
+            client.request('turn.query', { sessionId: 'session', turnId: `block-${i}` }),
+          );
+        }
+        await withTimeout(saturated.promise, 1_000, 'client queue did not saturate');
+        abort.abort();
+        await withTimeout(cancelled.promise, 1_000, 'cancellation was trapped behind domain work');
+        assert.equal(settled, false);
+        finish.resolve();
+        await rejected;
+        assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+        // Cancel does not close the shared connection or disrupt unrelated work.
+        release.resolve();
+        await Promise.all(blockers);
+        assert.equal((await client.status()).state, 'ready');
+      } finally {
+        finish.resolve();
+        release.resolve();
+        await Promise.allSettled([rejected, ...blockers]);
+      }
+    },
+    {
+      'computer-history.summarize': async (_input, context) => {
+        assert.ok(context.requestAbortSignal);
+        context.requestAbortSignal.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await finish.promise;
+        return { ok: true, result: HISTORY_RESULT };
+      },
+    },
+  );
+});
+
+test('summary request cancellation rejects unsupported signals and cleans up success and disconnect', async () => {
+  const entered = deferred();
+  const disconnected = deferred();
+  const finish = deferred();
+  let summaries = 0;
+  await withRuntimeHost(
+    async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    }),
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      await assert.rejects(
+        client.request('computer-history.summarize', HISTORY_INPUT, 75_000, AbortSignal.abort()),
+        { name: 'AbortError' },
+      );
+      await assert.rejects(
+        client.request(
+          'turn.query',
+          { sessionId: 'session', turnId: 'unsupported' },
+          undefined,
+          new AbortController().signal,
+        ),
+        /does not support request cancellation/,
+      );
+      assert.equal(summaries, 0);
+      const completed = new AbortController();
+      await client.request(
+        'computer-history.summarize',
+        HISTORY_INPUT,
+        undefined,
+        completed.signal,
+      );
+      assert.equal(getEventListeners(completed.signal, 'abort').length, 0);
+      completed.abort();
+      const abort = new AbortController();
+      const summary = client.request(
+        'computer-history.summarize',
+        HISTORY_INPUT,
+        75_000,
+        abort.signal,
+      );
+      const rejected = assert.rejects(
+        summary,
+        (error: unknown) =>
+          error instanceof RuntimeHostRequestInterruptedError && error.reason === 'connection_lost',
+      );
+      try {
+        await withTimeout(entered.promise, 1_000, 'second summary did not enter');
+        await client.close();
+        await rejected;
+        await withTimeout(disconnected.promise, 1_000, 'disconnect did not reach summary');
+        assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+      } finally {
+        finish.resolve();
+        await rejected;
+      }
+    },
+    {
+      'computer-history.summarize': async (_input, context) => {
+        if (++summaries === 1) return { ok: true, result: HISTORY_RESULT };
+        context.inputClosedSignal!.addEventListener('abort', () => disconnected.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await finish.promise;
+        return { ok: true, result: HISTORY_RESULT };
+      },
+    },
+  );
+});
+
+test('summary timeout cancels Host work and retires its eventual response without closing the client', async (t) => {
+  const entered = deferred();
+  const cancelled = deferred();
+  const finish = deferred();
+  await withRuntimeHost(
+    async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    }),
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const abort = new AbortController();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const summary = client.request(
+        'computer-history.summarize',
+        HISTORY_INPUT,
+        75_000,
+        abort.signal,
+      );
+      const rejected = assert.rejects(
+        summary,
+        (error: unknown) =>
+          error instanceof RuntimeHostRequestInterruptedError &&
+          error.dispatch === 'dispatched' &&
+          error.reason === 'timeout',
+      );
+      try {
+        await entered.promise;
+        t.mock.timers.tick(75_000);
+        await rejected;
+        t.mock.timers.reset();
+        await withTimeout(cancelled.promise, 1_000, 'timeout did not cancel provider work');
+        assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+        finish.resolve();
+        await client.request('turn.query', { sessionId: 'session', turnId: 'after-timeout' });
+        assert.equal((await client.status()).state, 'ready');
+      } finally {
+        t.mock.timers.reset();
+        finish.resolve();
+        await rejected;
+      }
+    },
+    {
+      'computer-history.summarize': async (_input, context) => {
+        context.requestAbortSignal!.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await finish.promise;
+        return { ok: true, result: HISTORY_RESULT };
+      },
+    },
+  );
+});
+
+test('late cancellation of more than 256 completed requests cannot exhaust admission cancellation', async () => {
+  const pair = await openTransportPair();
+  const admissionEntered = deferred();
+  const admit = deferred();
+  let generations = 0;
+  let noncancellableCalls = 0;
+  let leases = 0;
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 1,
+        activeResidencies: 0,
+      },
+    }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableHostCoreOperationHandlers(),
+    ...createHandlers(async (input, context) => {
+      assert.equal(context.requestAbortSignal, undefined);
+      noncancellableCalls++;
+      return { ok: true, result: runningSnapshot(input.sessionId, input.turnId) };
+    }),
+    'computer-history.summarize': async () => {
+      generations++;
+      return { ok: true, result: HISTORY_RESULT };
+    },
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('cancellable-admission'),
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => undefined,
+    beginOperation: async (frame) => {
+      if (frame.requestId === 'pending' || frame.requestId === 'ordinary') {
+        admissionEntered.resolve();
+        await admit.promise;
+      }
+      leases++;
+      return {
+        acquireResidency: () => ({ release() {} }),
+        seal() {},
+        finish() {
+          leases--;
+        },
+      };
+    },
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    for (let i = 0; i < 300; i++) {
+      const requestId = `completed-${i}`;
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId,
+        operation: 'computer-history.summarize',
+        input: HISTORY_INPUT,
+      });
+      const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+      assert.ok('ok' in response && response.ok);
+      await writeProtocolFrame(pair.clientTransport, { kind: 'request.cancel', requestId });
+    }
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'pending',
+      operation: 'computer-history.summarize',
+      input: HISTORY_INPUT,
+    });
+    await admissionEntered.promise;
+    await writeProtocolFrame(pair.clientTransport, {
+      kind: 'request.cancel',
+      requestId: 'pending',
+    });
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'ordinary',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'ordinary' },
+    });
+    await writeProtocolFrame(pair.clientTransport, {
+      kind: 'request.cancel',
+      requestId: 'ordinary',
+    });
+    // This reply proves both control frames were consumed while admission is held.
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'barrier',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'barrier' },
+    });
+    const barrier = decodeHostFrame(await pair.clientTransport.read(1_000));
+    assert.ok('requestId' in barrier && barrier.requestId === 'barrier');
+    admit.resolve();
+    const replies = [
+      decodeHostFrame(await pair.clientTransport.read(1_000)),
+      decodeHostFrame(await pair.clientTransport.read(1_000)),
+    ];
+    const cancelled = replies.find(
+      (reply) => 'requestId' in reply && reply.requestId === 'pending',
+    );
+    assert.ok(cancelled && 'ok' in cancelled && !cancelled.ok);
+    assert.equal(cancelled.error.code, 'operation_unavailable');
+    const ordinary = replies.find(
+      (reply) => 'requestId' in reply && reply.requestId === 'ordinary',
+    );
+    assert.ok(ordinary && 'ok' in ordinary && ordinary.ok);
+    assert.equal(generations, 300);
+    assert.equal(noncancellableCalls, 2);
+    // Unmatched IDs create no state and cannot cancel future work.
+    await writeProtocolFrame(pair.clientTransport, { kind: 'request.cancel', requestId: 'future' });
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'future',
+      operation: 'computer-history.summarize',
+      input: HISTORY_INPUT,
+    });
+    const subsequent = decodeHostFrame(await pair.clientTransport.read(1_000));
+    assert.ok('ok' in subsequent && subsequent.ok);
+    assert.equal(generations, 301);
+  } finally {
+    admit.resolve();
+    pair.clientTransport.abort();
+    await Promise.all([run, pair.close()]);
+  }
+  assert.equal(leases, 0);
+});
+
+test('request cancellation cannot target the same wire ID on another connection', async () => {
+  const entered = deferred();
+  const finish = deferred();
+  let signal: AbortSignal | undefined;
+  await withRuntimeHost(
+    async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    }),
+    async ({ endpoint }) => {
+      const owner = await openAcceptedTransport(endpoint, 'summary-owner');
+      const other = await openAcceptedTransport(endpoint, 'other-client');
+      try {
+        await writeProtocolFrame(owner, {
+          requestId: 'same-wire-id',
+          operation: 'computer-history.summarize',
+          input: HISTORY_INPUT,
+        });
+        await withTimeout(entered.promise, 1_000, 'summary did not enter');
+        await writeProtocolFrame(other, { kind: 'request.cancel', requestId: 'same-wire-id' });
+        await writeProtocolFrame(other, {
+          requestId: 'barrier',
+          operation: 'turn.query',
+          input: { sessionId: 'session', turnId: 'barrier' },
+        });
+        await other.read(1_000);
+        assert.ok(signal);
+        assert.equal(signal.aborted, false);
+        finish.resolve();
+        const response = decodeHostFrame(await owner.read(1_000));
+        assert.ok('ok' in response && response.ok);
+      } finally {
+        finish.resolve();
+        owner.abort();
+        other.abort();
+        await Promise.all([owner.closed, other.closed]);
+      }
+    },
+    {
+      'computer-history.summarize': async (_input, context) => {
+        signal = context.requestAbortSignal;
+        entered.resolve();
+        await finish.promise;
+        return { ok: true, result: HISTORY_RESULT };
+      },
+    },
+  );
+});
 
 test('concurrent responses remain framed and correlated in reverse completion order', async () => {
   const requestCount = 16;
@@ -84,7 +546,7 @@ test('concurrent responses remain framed and correlated in reverse completion or
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `turn-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `turn-${index}` }, 5_000),
       );
       try {
         await withTimeout(
@@ -133,7 +595,7 @@ test('transcript pages are serialized per connection before their responses are 
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -156,6 +618,8 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: null,
         },
       };
@@ -215,10 +679,12 @@ test('transcript pages are serialized per connection before their responses are 
   }
 });
 
-test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
+test('the Client leaves Host acknowledgement headroom while backpressuring a request burst', async () => {
   const requestCount = 96;
   const firstWaveEntered = deferred();
+  const acknowledgementHeadroomCrossed = deferred();
   const releaseFirstWave = deferred();
+  const clientRequestLimit = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
   let entered = 0;
   let active = 0;
   let maxActive = 0;
@@ -228,7 +694,8 @@ test('the Client backpressures a healthy request burst at the Host connection li
       entered += 1;
       active += 1;
       maxActive = Math.max(maxActive, active);
-      if (entered === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS) firstWaveEntered.resolve();
+      if (entered === clientRequestLimit) firstWaveEntered.resolve();
+      if (entered > clientRequestLimit) acknowledgementHeadroomCrossed.resolve();
       await releaseFirstWave.promise;
       active -= 1;
       return {
@@ -239,11 +706,18 @@ test('the Client backpressures a healthy request burst at the Host connection li
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `burst-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `burst-${index}` }, 5_000),
       );
       try {
         await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
-        assert.equal(maxActive, RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS);
+        assert.equal(
+          await Promise.race([
+            acknowledgementHeadroomCrossed.promise.then(() => true),
+            delay(50, false),
+          ]),
+          false,
+        );
+        assert.equal(maxActive, clientRequestLimit);
         releaseFirstWave.resolve();
         const results = await Promise.all(requests);
         assert.equal(results.length, requestCount);
@@ -281,11 +755,68 @@ test('serial outbound writer flushes accepted frames in FIFO order over a real s
   }
 });
 
+test('outbound scheduling prioritizes controls, makes fair data progress, and fences closure', async () => {
+  const blocked = deferred<void>();
+  const writes: HostFrame[] = [];
+  const transport: RuntimeHostMessageTransport = {
+    closed: Promise.resolve(),
+    read: async () => {
+      throw new Error('unexpected read');
+    },
+    async write(message) {
+      writes.push(decodeHostFrame(JSON.parse(message.toString('utf8'))));
+      if (writes.length === 1) await blocked.promise;
+    },
+    closeAfterFlush() {},
+    abort() {},
+  };
+  const writer = new BoundedSerialOutboundWriter(transport, () => assert.fail('writer failed'));
+  const pty = (ptySequence: number): HostFrame => ({
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    ref: 'maka://runtime/background-tasks/shell-1',
+    ptySequence,
+    data: 'bytes',
+  });
+  const receipts = [writer.enqueue(pty(1)), writer.enqueue(pty(2))];
+  for (let index = 0; index < 20; index += 1)
+    receipts.push(writer.enqueue(statusResponse(`control-${index}`)));
+  receipts.push(
+    writer.enqueue({
+      kind: 'subscription.closed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      reason: 'session_removed',
+    }),
+  );
+  receipts.push(writer.enqueue(statusResponse('after-fence')));
+  blocked.resolve();
+  await Promise.all(receipts.map((receipt) => receipt.flushed));
+  assert.equal('operation' in writes[1]! && writes[1].requestId, 'control-0');
+  const ptyIndex = writes.findIndex(
+    (frame) =>
+      'kind' in frame &&
+      frame.kind === 'subscription.runtime_resource_pty_data' &&
+      frame.ptySequence === 2,
+  );
+  assert.ok(ptyIndex > 1 && ptyIndex <= 9, 'PTY must neither block controls nor starve');
+  const closed = writes.at(-2)!;
+  const last = writes.at(-1)!;
+  assert.equal('kind' in closed && closed.kind, 'subscription.closed');
+  assert.equal('operation' in last && last.requestId, 'after-fence');
+  writer.close();
+});
+
 test('serial outbound writer fails once when its real transport is closed', async () => {
   const pair = await openTransportPair();
   let failureCalls = 0;
-  const writer = new BoundedSerialOutboundWriter(pair.clientTransport, () => {
+  let reportedFailure: Error | undefined;
+  const writer = new BoundedSerialOutboundWriter(pair.clientTransport, (error) => {
     failureCalls += 1;
+    reportedFailure = error;
   });
   try {
     pair.clientTransport.abort();
@@ -293,6 +824,8 @@ test('serial outbound writer fails once when its real transport is closed', asyn
     const receipt = writer.enqueue(statusResponse('closed-transport'));
     await assert.rejects(receipt.flushed);
     assert.equal(failureCalls, 1);
+    assert.ok(reportedFailure);
+    assert.match(reportedFailure.message, /closed|write/i);
     assert.throws(() => writer.enqueue(statusResponse('after-failure')), /writer is closed/);
     assert.equal(failureCalls, 1);
   } finally {
@@ -343,6 +876,195 @@ test('serial outbound writer reports its 2 MiB byte bound before its frame bound
   }
 });
 
+test('flushes concurrent subscription opens before activating their live frame streams', async () => {
+  const releaseWrites = deferred();
+  const requestsEntered = deferred();
+  const allWrites = deferred();
+  const inbound = Array.from({ length: 16 }, (_, index) => ({
+    requestId: `open-${index}`,
+    operation: 'subscription.open',
+    input: { sessionId: `session-${index}`, transcript: { kind: 'none' } },
+  }));
+  const written: EncodedProtocolMessage[] = [];
+  let aborted = false;
+  let resolveClosed!: () => void;
+  let rejectRead: ((error: Error) => void) | undefined;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const transport: RuntimeHostMessageTransport = {
+    closed,
+    read: async () => {
+      const frame = inbound.shift();
+      if (frame) return frame;
+      return new Promise<never>((_resolve, reject) => {
+        rejectRead = reject;
+      });
+    },
+    write: async (message) => {
+      await releaseWrites.promise;
+      written.push(message);
+      if (written.length === 32) allWrites.resolve();
+    },
+    closeAfterFlush: () => {
+      resolveClosed();
+    },
+    abort: (error) => {
+      if (aborted) return;
+      aborted = true;
+      rejectRead?.(error ?? new Error('in-memory transport aborted'));
+      resolveClosed();
+    },
+  };
+  let openCalls = 0;
+  let sink: Parameters<SessionContinuityService['attachConnection']>[1] | undefined;
+  const largeSnapshot = (sessionId: string) => {
+    const snapshot = canonicalProjection(sessionId);
+    return {
+      ...snapshot,
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      projectionRevision: 1,
+      queue: {
+        ...snapshot.queue,
+        followup: Array.from({ length: 2 }, (_, index) => ({
+          entryId: `entry-${sessionId}-${index}`,
+          messageId: `message-${sessionId}-${index}`,
+          content: { text: 'q'.repeat(25 * 1024), quotes: [] },
+          placement: 'next_turn' as const,
+          state: 'queued' as const,
+        })),
+      },
+    };
+  };
+  const continuity: SessionContinuityService = {
+    handlers: {
+      'subscription.pty_interest.set': async (input) => ({
+        ok: true,
+        result: { subscriptionId: input.subscriptionId },
+      }),
+      'subscription.open': async (input) => {
+        openCalls += 1;
+        if (openCalls === 16) requestsEntered.resolve();
+        return {
+          ok: true,
+          result: {
+            hostEpoch: 'host-epoch',
+            subscriptionId: `subscription-${input.sessionId}`,
+            nextSequence: 1,
+            snapshot: largeSnapshot(input.sessionId),
+            activeAssistantStreams: Array.from({ length: 180 }, (_, index) => ({
+              kind: 'text' as const,
+              turnId: `turn-${input.sessionId}`,
+              messageId: `stream-${input.sessionId}-${index}`,
+            })),
+            transcript: transcriptBootstrapFor(input.sessionId),
+          },
+        };
+      },
+      'subscription.close': async (input) => ({
+        ok: true,
+        result: { subscriptionId: input.subscriptionId },
+      }),
+      'session.transcript.overlay.release': async () => ({
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'not used' },
+      }),
+      'session.transcript.page': async () => ({
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'not used' },
+      }),
+    },
+    attachConnection: (_connectionId, attachedSink) => {
+      sink = attachedSink;
+      return {
+        activate: (subscriptionId) => {
+          const sessionId = subscriptionId.slice('subscription-'.length);
+          void sink
+            ?.send({
+              kind: 'subscription.session_projection',
+              hostEpoch: 'host-epoch',
+              subscriptionId,
+              sequence: 1,
+              snapshot: largeSnapshot(sessionId),
+            })
+            .catch(() => undefined);
+        },
+        abort() {},
+        close() {},
+      };
+    },
+  };
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 0,
+        activeResidencies: 0,
+      },
+    }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableHostCoreOperationHandlers(),
+    ...createHandlers(async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    })),
+    ...continuity.handlers,
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport,
+    connection: acceptedConnection('concurrent-subscription-opens'),
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => continuity,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    await withTimeout(requestsEntered.promise, 1_000, 'subscription opens were not dispatched');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(aborted, false);
+
+    releaseWrites.resolve();
+    await withTimeout(allWrites.promise, 2_000, 'subscription frames were not flushed');
+    const frames = written.map((message) =>
+      decodeHostFrame(JSON.parse(message.toString('utf8')) as unknown),
+    );
+    const openResponseBytes = written.reduce(
+      (total, message, index) =>
+        !('kind' in frames[index]!) && frames[index]!.operation === 'subscription.open'
+          ? total + message.byteLength
+          : total,
+      0,
+    );
+    assert.ok(openResponseBytes < 2 * 1024 * 1024);
+    assert.ok(written.reduce((total, message) => total + message.byteLength, 0) > 2 * 1024 * 1024);
+    assert.equal(
+      frames.filter((frame) => !('kind' in frame) && frame.operation === 'subscription.open')
+        .length,
+      16,
+    );
+    assert.equal(
+      frames.filter((frame) => 'kind' in frame && frame.kind === 'subscription.session_projection')
+        .length,
+      16,
+    );
+    assert.equal(aborted, false);
+  } finally {
+    releaseWrites.resolve();
+    transport.abort();
+    await run;
+  }
+});
+
 test('clean read EOF drains an already dispatched response before closing', async () => {
   const fixture = await openHalfClosedDispatchedSession('half-close');
   try {
@@ -354,6 +1076,7 @@ test('clean read EOF drains an already dispatched response before closing', asyn
     assert.equal(response.ok, true);
     await withTimeout(fixture.run, 1_000, 'connection did not close after draining its response');
     assert.equal(fixture.teardownCalls(), 1);
+    assert.deepEqual(fixture.diagnostics, []);
   } finally {
     await fixture.close();
   }
@@ -375,6 +1098,56 @@ test('a fatal transport close during clean EOF drain tears down exactly once', a
     assert.equal(fixture.teardownCalls(), 1);
   } finally {
     await fixture.close();
+  }
+});
+
+test('records an unexpected accepted-connection failure before teardown', async () => {
+  const pair = await openTransportPair();
+  const teardownObserved = deferred();
+  const logs: string[] = [];
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('failed-admission'),
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 0,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    beginOperation: async () => {
+      throw new Error('api_key=sk-connection-secret123');
+    },
+    onDiagnostic: (diagnostic) => logs.push(diagnostic),
+    onTeardown: () => teardownObserved.resolve(),
+  });
+  const run = session.run();
+  try {
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'failed-admission-request',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'turn' },
+    });
+    await withTimeout(teardownObserved.promise, 1_000, 'connection did not tear down');
+    await withTimeout(run, 1_000, 'connection did not settle');
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? '', /connection session failed/);
+    assert.match(logs[0] ?? '', /\[redacted\]/i);
+    assert.doesNotMatch(logs[0] ?? '', /sk-connection-secret123/);
+  } finally {
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
   }
 });
 
@@ -451,78 +1224,91 @@ test('a connection accepted before composition exists resolves ready handlers wi
   }
 });
 
-test('connection reset while operation admission is pending does not execute the handler', async () => {
-  const pair = await openTransportPair();
-  const admissionEntered = deferred();
-  const releaseAdmission = deferred();
-  const teardownObserved = deferred();
-  let handlerCalls = 0;
-  let finishCalls = 0;
-  const handlers: OperationHandlerMap = {
-    'host.status': async () => ({
-      ok: true,
-      result: {
-        hostEpoch: 'host-epoch',
-        compositionId: 'maka.interactive',
-        compositionRevision: '1',
-        state: 'ready',
-        connections: 1,
-        activeOperations: 1,
-        activeResidencies: 0,
-      },
-    }),
-    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
-    ...createHandlers(async (input) => {
-      handlerCalls += 1;
-      return {
+for (const closure of ['reset', 'eof'] as const) {
+  test(`connection ${closure} during operation admission preserves closure evidence`, async () => {
+    const pair = await openTransportPair();
+    const admissionEntered = deferred();
+    const releaseAdmission = deferred();
+    const teardownObserved = deferred();
+    let handlerCalls = 0;
+    let finishCalls = 0;
+    const handlers: OperationHandlerMap = {
+      'host.status': async () => ({
         ok: true,
-        result: runningSnapshot(input.sessionId, input.turnId),
-      };
-    }),
-  };
-  const session = new RuntimeHostConnectionSession({
-    transport: pair.serverTransport,
-    connection: acceptedConnection('pending-admission'),
-    resolveHandlers: () => handlers,
-    resolveContinuity: () => undefined,
-    beginOperation: async () => {
-      admissionEntered.resolve();
-      await releaseAdmission.promise;
-      return {
-        acquireResidency: () => ({ release() {} }),
-        seal() {},
-        finish() {
-          finishCalls += 1;
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
         },
-      };
-    },
-    onTeardown: () => teardownObserved.resolve(),
-  });
-  const run = session.run();
-  try {
-    await writeProtocolFrame(pair.clientTransport, {
-      requestId: 'pending-request',
-      operation: 'turn.query',
-      input: { sessionId: 'session', turnId: 'turn' },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createHandlers(async (input, context) => {
+        handlerCalls += 1;
+        assert.equal(context.inputClosedSignal?.aborted, true);
+        return {
+          ok: true,
+          result: runningSnapshot(input.sessionId, input.turnId),
+        };
+      }),
+    };
+    const session = new RuntimeHostConnectionSession({
+      transport: pair.serverTransport,
+      connection: acceptedConnection('pending-admission'),
+      resolveHandlers: () => handlers,
+      resolveContinuity: () => undefined,
+      beginOperation: async () => {
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        return {
+          acquireResidency: () => ({ release() {} }),
+          seal() {},
+          finish() {
+            finishCalls += 1;
+          },
+        };
+      },
+      onTeardown: () => teardownObserved.resolve(),
     });
-    await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
-    pair.clientTransport.socket.resetAndDestroy();
-    await withTimeout(
-      teardownObserved.promise,
-      1_000,
-      'connection did not tear down while admission was pending',
-    );
-    releaseAdmission.resolve();
-    await withTimeout(run, 1_000, 'connection did not settle after admission completed');
-    assert.equal(handlerCalls, 0);
-    assert.equal(finishCalls, 1);
-  } finally {
-    releaseAdmission.resolve();
-    pair.clientTransport.abort();
-    await Promise.allSettled([run, pair.close()]);
-  }
-});
+    const run = session.run();
+    try {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId: 'pending-request',
+        operation: 'turn.query',
+        input: { sessionId: 'session', turnId: 'turn' },
+      });
+      await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
+      if (closure === 'reset') {
+        pair.clientTransport.socket.resetAndDestroy();
+        await withTimeout(
+          teardownObserved.promise,
+          1_000,
+          'connection did not tear down while admission was pending',
+        );
+      } else {
+        const readEnded = onceSocketEnd(pair.serverTransport.socket);
+        pair.clientTransport.socket.end();
+        await withTimeout(readEnded, 1_000, 'Host did not observe EOF during admission');
+      }
+      releaseAdmission.resolve();
+      if (closure === 'eof') {
+        const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+        assert.ok(!('kind' in response) && response.ok);
+      }
+      await withTimeout(run, 1_000, 'connection did not settle after admission completed');
+      assert.equal(handlerCalls, closure === 'reset' ? 0 : 1);
+      assert.equal(finishCalls, 1);
+    } finally {
+      releaseAdmission.resolve();
+      pair.clientTransport.abort();
+      await Promise.allSettled([run, pair.close()]);
+    }
+  });
+}
 
 test('a ready composition attaches the authenticated Client identity once', async () => {
   const pair = await openTransportPair();
@@ -561,7 +1347,7 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createUnavailableDomainOperationHandlers(),
     }),
     resolveContinuity: () => undefined,
@@ -638,7 +1424,7 @@ test('an admitted operation settles without connection or residency leakage afte
     async ({ connectClient }) => {
       const client = await connectClient();
       const requestFailure = client
-        .queryTurn({ sessionId: 'session', turnId: 'disconnect' }, 5_000)
+        .request('turn.query', { sessionId: 'session', turnId: 'disconnect' }, 5_000)
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -680,7 +1466,7 @@ test('an admitted command reports an unknown outcome when its connection closes'
     }),
     async ({ connectClient }) => {
       const client = await connectClient();
-      const command = client.startTurn({
+      const command = client.request('turn.start', {
         sessionId: 'session',
         turnId: 'interrupted-command',
         content: { text: 'start' },
@@ -859,7 +1645,7 @@ test('an in-flight status does not consume the final domain request slot', async
       };
     },
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => {
       const index = Number(input.turnId.slice('turn-'.length));
       domainEntered[index]?.resolve();
@@ -957,7 +1743,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -989,11 +1775,13 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   };
 
   try {
+    // Alternate message streams so the queued deltas cannot coalesce: this
+    // exercises eviction for a genuinely undrainable backlog.
     for (let index = 1; index <= 32; index += 1) {
       await coordinator.acceptRuntimeEvent(
         'slow-session',
         'run-slow-session',
-        connectionTextEvent('slow-session', index),
+        connectionTextEvent('slow-session', index, `message-slow-${index % 2}`),
       );
     }
     await withTimeout(writeBlocked.promise, 1_000, 'slow subscription never blocked in-flight');
@@ -1085,7 +1873,6 @@ async function withRuntimeHost(
       connectClient: async () => {
         const result = await connectRuntimeHost({
           rootPath: root,
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
         });
         assert.equal(result.kind, 'connected');
@@ -1117,7 +1904,6 @@ async function openAcceptedTransport(
   await writeProtocolFrame(transport, {
     kind: 'hello',
     clientInstanceId,
-    surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1137,6 +1923,7 @@ interface TransportPair {
 
 interface HalfClosedDispatchedSession {
   pair: TransportPair;
+  diagnostics: string[];
   releaseHandler: Deferred;
   teardownObserved: Deferred;
   run: Promise<void>;
@@ -1177,6 +1964,7 @@ async function openHalfClosedDispatchedSession(
   const handlerEntered = deferred();
   const releaseHandler = deferred();
   const teardownObserved = deferred();
+  const diagnostics: string[] = [];
   let teardownCalls = 0;
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
@@ -1195,7 +1983,7 @@ async function openHalfClosedDispatchedSession(
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createHandlers(async (input) => {
         handlerEntered.resolve();
         await releaseHandler.promise;
@@ -1211,6 +1999,7 @@ async function openHalfClosedDispatchedSession(
       seal() {},
       finish() {},
     }),
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onTeardown: () => {
       teardownCalls += 1;
       teardownObserved.resolve();
@@ -1229,6 +2018,7 @@ async function openHalfClosedDispatchedSession(
     await withTimeout(readEnded, 1_000, 'Host did not observe Client read EOF');
     return {
       pair,
+      diagnostics,
       releaseHandler,
       teardownObserved,
       run,
@@ -1283,7 +2073,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   } as const;
-  const taskLedgerUnavailable: Awaited<ReturnType<OperationHandlerMap['task.ledger.query']>> = {
+  const sessionTodoUnavailable: Awaited<ReturnType<OperationHandlerMap['session.todo.query']>> = {
     ok: false,
     error: {
       code: 'operation_unavailable',
@@ -1319,7 +2109,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'interaction.answer': async () => interactionUnavailable,
     'subscription.open': async () => subscriptionUnavailable,
     'subscription.close': async () => subscriptionUnavailable,
-    'task.ledger.query': async () => taskLedgerUnavailable,
+    'session.todo.query': async () => sessionTodoUnavailable,
   };
 }
 
@@ -1342,13 +2132,17 @@ function statusResponse(requestId: string): ResponseFrame {
 
 const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
   OperationHandlerMap,
-  'host.diagnostics.query' | 'host.upgrade.prepare'
+  'host.diagnostics.query' | 'host.resources.query' | 'host.upgrade.prepare'
 > = {
   'host.diagnostics.query': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),
   'host.upgrade.prepare': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.resources.query': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),
@@ -1402,7 +2196,6 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     rootTurn: {
@@ -1422,13 +2215,54 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
   };
 }
 
-function connectionTextEvent(sessionId: string, index: number) {
+function transcriptBootstrapFor(sessionId: string) {
+  const contents = Buffer.from('t'.repeat(16 * 1024));
+  return {
+    throughSequence: 0,
+    overlayMessageCount: 0,
+    durable: {
+      kind: 'page' as const,
+      sessionId,
+      source: 'durable' as const,
+      direction: 'older' as const,
+      throughSequence: 0,
+      rawBytes: contents.byteLength,
+      fragments: [
+        {
+          kind: 'durable' as const,
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: contents.byteLength,
+          payloadDigest: null,
+          data: contents.toString('base64'),
+        },
+      ],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor: null,
+    },
+    overlay: {
+      kind: 'page' as const,
+      sessionId,
+      source: 'overlay' as const,
+      direction: 'older' as const,
+      throughSequence: 0,
+      rawBytes: 0,
+      fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor: null,
+    },
+  };
+}
+
+function connectionTextEvent(sessionId: string, index: number, messageId?: string) {
   return {
     type: 'text_delta' as const,
     id: `event-${sessionId}-${index}`,
     turnId: `turn-${sessionId}`,
     ts: index,
-    messageId: `message-${sessionId}`,
+    messageId: messageId ?? `message-${sessionId}`,
     text: `chunk-${index}`,
   };
 }
@@ -1446,34 +2280,6 @@ async function waitForStatus(
   assert.equal(predicate(status), true, 'Host operation counters did not settle');
   return status;
 }
-
-interface Deferred {
-  promise: Promise<void>;
-  resolve(): void;
-}
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }

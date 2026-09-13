@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Decorator, Preview } from '@storybook/react-vite';
 import '../src/renderer/styles.css';
 import { Theme } from '@astryxdesign/core/theme';
@@ -19,7 +38,12 @@ const withMakaRoot: Decorator = (Story, context) => {
   // lines are ~1.8× the width of the Chinese copy, so a row that fits in zh
   // overflows, truncates, or clips in en. Stories were locked to `zh`, which
   // is exactly why those breakages only ever showed up in the shipped app.
-  const locale = context.globals.locale === 'en' ? 'en' : 'zh';
+  const locale =
+    context.globals.locale === 'en'
+      ? 'en'
+      : context.globals.locale === 'zh-TW'
+        ? 'zh-TW'
+        : 'zh-CN';
 
   root.classList.toggle('dark', colorScheme === 'dark');
   root.style.colorScheme = colorScheme;
@@ -77,7 +101,8 @@ const preview: Preview = {
       toolbar: {
         icon: 'globe',
         items: [
-          { title: '中文', value: 'zh' },
+          { title: '简体中文', value: 'zh-CN' },
+          { title: '繁體中文', value: 'zh-TW' },
           { title: 'English', value: 'en' },
         ],
       },
@@ -95,7 +120,7 @@ const preview: Preview = {
   },
   initialGlobals: {
     colorScheme: 'light',
-    locale: 'zh',
+    locale: 'zh-CN',
     palette: 'default',
   },
   parameters: {

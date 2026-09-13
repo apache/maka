@@ -1,4 +1,21 @@
 #!/bin/sh
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 set -eu
 
 STATE_DIR=/opt/maka-egress-state
@@ -23,10 +40,24 @@ CertStore.from_store(sys.argv[1], "mitmproxy", 2048)' "$STATE_DIR"
 cp "$STATE_DIR/mitmproxy-ca-cert.pem" "$CERT_DIR/.mitmproxy-ca-cert.pem"
 mv "$CERT_DIR/.mitmproxy-ca-cert.pem" "$CERT_DIR/mitmproxy-ca-cert.pem"
 
+# The subject only needs this address so HTTPS_PROXY can keep using the
+# service hostname after the namespace policy refuses Docker DNS.
+ip="$(getent ahostsv4 "$(hostname)" | awk 'NR == 1 { print $1 }')"
+case "$ip" in
+  "" | 127.*)
+    echo "could not publish Eval egress proxy IPv4" >&2
+    exit 1
+    ;;
+esac
+printf '%s\n' "$ip" > "$CERT_DIR/.proxy-ipv4"
+mv "$CERT_DIR/.proxy-ipv4" "$CERT_DIR/proxy-ipv4"
+
 exec mitmdump \
   --quiet \
   --listen-host 0.0.0.0 \
   --listen-port 8080 \
   --set block_global=false \
+  --set rawtcp=false \
   --set confdir="$STATE_DIR" \
-  --scripts /opt/maka-eval/egress_filter.py
+  --scripts /opt/maka-eval/egress_filter.py \
+  "$@"

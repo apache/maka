@@ -1,0 +1,127 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { IpcMain } from 'electron';
+import type { SessionCatalogProjection, SessionCreateInput } from '@maka/runtime-host/protocol';
+import {
+  registerRuntimeHostSessionCatalogIpc,
+  toDesktopHostSessionSummary,
+  type RuntimeHostSessionCatalogIpcDeps,
+} from '../runtime-host-session-catalog-ipc-main.js';
+
+test('maps Runtime Host live run state without collapsing unknown and known-empty', () => {
+  const unknown = toDesktopHostSessionSummary(projection());
+  const knownEmpty = toDesktopHostSessionSummary(
+    projection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
+  );
+  const running = toDesktopHostSessionSummary(
+    projection({ liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-live'] } }),
+  );
+
+  assert.equal(Object.hasOwn(unknown, 'runningTurnIds'), false);
+  assert.deepEqual(knownEmpty.runningTurnIds, []);
+  assert.deepEqual(running.runningTurnIds, ['turn-live']);
+});
+
+test('preserves the Session revision in Owner Desktop Host summaries', () => {
+  assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
+});
+
+test('session creation forwards the caller name for a mode that carries none', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+
+  await ipc.invoke('sessions:create', { mode: 'bot', name: '飞书 任务' });
+  await ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' });
+
+  assert.deepEqual(
+    creates.map((input) => [input.mode, input.name]),
+    [
+      ['bot', '飞书 任务'],
+      ['deep_research', '飞书 任务'],
+    ],
+  );
+});
+
+type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+
+function ipcHarness() {
+  const handlers = new Map<string, IpcHandler>();
+  return {
+    handle(channel: string, handler: IpcHandler) {
+      handlers.set(channel, handler);
+    },
+    async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+      const handler = handlers.get(channel);
+      assert.ok(handler, `missing handler: ${channel}`);
+      return handler({} as never, ...args);
+    },
+  };
+}
+
+function createDeps(creates: SessionCreateInput[]): RuntimeHostSessionCatalogIpcDeps {
+  return {
+    client: {
+      createSession: async (input: SessionCreateInput) => {
+        creates.push(input);
+        return projection({ id: input.sessionId });
+      },
+    } as unknown as RuntimeHostSessionCatalogIpcDeps['client'],
+    runningTurnIds: () => [],
+    resolveCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
+    emitSessionsChanged: () => {},
+    releaseSessionResources: () => {},
+    sessionCopyCleanup: {
+      ownCreation: async <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+      recover: async () => ({ removed: [], failed: [] }),
+    } as unknown as RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanup'],
+  };
+}
+
+function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
+  return {
+    id: 'session-1',
+    revision: 1,
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
+    createdAt: 1,
+    activityAt: 2,
+    name: 'Session',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    labelsTruncated: false,
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
+    llmConnectionSlug: 'openai-main',
+    connectionLocked: true,
+    model: 'gpt-5',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+    ...overrides,
+  };
+}

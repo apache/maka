@@ -1,0 +1,317 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Issue and PR lifecycle
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report planned lifecycle changes without writing to GitHub.
+        required: false
+        default: true
+        type: boolean
+  issues:
+    types: [reopened]
+  # Reopen handling mutates labels/comments. Use the trusted base workflow so
+  # fork PRs cannot force writes through a read-only pull_request token.
+  pull_request_target:
+    types: [reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: issue-pr-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    if: github.repository == 'apache/maka'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        with:
+          script: |
+            const path = require("node:path")
+            const { pathToFileURL } = require("node:url")
+
+            const {
+              LIFECYCLE_LABELS,
+              STALE_CLOSE_MARKER,
+              planLifecycle,
+            } = await import(
+              pathToFileURL(
+                path.join(process.env.GITHUB_WORKSPACE, "scripts/issue-pr-lifecycle.mjs"),
+              ).href
+            )
+
+            const { owner, repo } = context.repo
+            const dryRun = process.env.DRY_RUN === "true"
+
+            const fragments = `
+              fragment IssueFields on Issue {
+                number
+                state
+                createdAt
+                labels(first: 100) { nodes { name } }
+                assignees(first: 1) { totalCount }
+                comments(last: 100) {
+                  totalCount
+                  nodes { createdAt body author { __typename login } }
+                }
+              }
+
+              fragment PullRequestFields on PullRequest {
+                number
+                state
+                createdAt
+                labels(first: 100) { nodes { name } }
+                comments(last: 100) {
+                  totalCount
+                  nodes { createdAt body author { __typename login } }
+                }
+                commits(last: 1) { nodes { commit { committedDate } } }
+              }
+            `
+
+            const normalize = (node) => ({
+              number: node.number,
+              state: node.state,
+              kind: node.__typename === "Issue" ? "issue" : "pull_request",
+              createdAt: node.createdAt,
+              lastCommitAt: node.commits?.nodes?.[0]?.commit?.committedDate,
+              labels: (node.labels?.nodes ?? []).map((label) => label.name),
+              assigneeCount: node.assignees?.totalCount ?? 0,
+              comments: node.comments?.nodes ?? [],
+              commentCount: node.comments?.totalCount ?? node.comments?.nodes?.length ?? 0,
+            })
+
+            async function hydrateComments(item) {
+              if (item.commentCount <= item.comments.length) return item
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: item.number,
+                per_page: 100,
+              })
+              return {
+                ...item,
+                comments: comments.map((comment) => ({
+                  createdAt: comment.created_at,
+                  body: comment.body,
+                  author: {
+                    __typename: comment.user?.type === "Bot" ? "Bot" : "User",
+                    login: comment.user?.login,
+                  },
+                })),
+                commentCount: comments.length,
+              }
+            }
+
+            async function listOpenItems() {
+              const query = `
+                query LifecycleItems($searchQuery: String!, $cursor: String) {
+                  search(query: $searchQuery, type: ISSUE, first: 100, after: $cursor) {
+                    nodes {
+                      __typename
+                      ...IssueFields
+                      ...PullRequestFields
+                    }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+                ${fragments}
+              `
+              const items = []
+              let cursor
+
+              do {
+                const result = await github.graphql(query, {
+                  searchQuery: `repo:${owner}/${repo} is:open`,
+                  cursor,
+                })
+                items.push(...result.search.nodes.map(normalize))
+                cursor = result.search.pageInfo.hasNextPage
+                  ? result.search.pageInfo.endCursor
+                  : undefined
+              } while (cursor)
+
+              return items
+            }
+
+            async function refresh(number) {
+              const query = `
+                query LifecycleItem($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    issueOrPullRequest(number: $number) {
+                      __typename
+                      ...IssueFields
+                      ...PullRequestFields
+                    }
+                  }
+                }
+                ${fragments}
+              `
+              const result = await github.graphql(query, { owner, repo, number })
+              const node = result.repository.issueOrPullRequest
+              return node ? normalize(node) : undefined
+            }
+
+            async function ensureLabels() {
+              for (const label of LIFECYCLE_LABELS) {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: label.name })
+                } catch (error) {
+                  if (error.status !== 404) throw error
+                  if (dryRun) {
+                    core.info(`[dry-run] create label ${label.name}`)
+                    continue
+                  }
+                  await github.rest.issues.createLabel({ owner, repo, ...label })
+                  core.info(`created label ${label.name}`)
+                }
+              }
+            }
+
+            async function removeStale(number) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: number,
+                  name: "stale",
+                })
+              } catch (error) {
+                if (error.status !== 404) throw error
+              }
+            }
+
+            async function apply(item, plan, revalidateClose = true) {
+              const prefix = `${item.kind === "issue" ? "issue" : "PR"} #${item.number}`
+              core.info(`${dryRun ? "[dry-run] " : ""}${prefix}: ${plan.action} (${plan.reason ?? "policy threshold"})`)
+              if (dryRun || plan.action === "none") return
+
+              if (plan.action === "warn") {
+                if (!item.labels.includes("stale")) {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: item.number,
+                    labels: ["stale"],
+                  })
+                }
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                  body: plan.message,
+                })
+                return
+              }
+
+              if (plan.action === "unstale") {
+                await removeStale(item.number)
+                return
+              }
+
+              if (plan.action === "close" && revalidateClose) {
+                let current = await refresh(item.number)
+                if (!current || current.state !== "OPEN") {
+                  core.info(`${prefix}: close cancelled because the item is no longer open`)
+                  return
+                }
+                current = await hydrateComments(current)
+                const currentPlan = planLifecycle(current)
+                if (currentPlan.action !== "close") {
+                  core.info(`${prefix}: close cancelled after revalidation`)
+                  await apply(current, currentPlan, false)
+                  return
+                }
+                item = current
+                plan = currentPlan
+              }
+
+              const alreadyExplained = item.comments.some(
+                (comment) =>
+                  comment.author?.__typename === "Bot" &&
+                  comment.body.includes(STALE_CLOSE_MARKER),
+              )
+              if (!alreadyExplained) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                  body: plan.message,
+                })
+              }
+
+              if (item.kind === "issue") {
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                  state: "closed",
+                })
+              } else {
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number: item.number,
+                  state: "closed",
+                })
+              }
+            }
+
+            await ensureLabels()
+
+            if (context.payload.action === "reopened") {
+              const number = context.payload.issue?.number ?? context.payload.pull_request?.number
+              if (number !== undefined) {
+                core.info(`${dryRun ? "[dry-run] " : ""}reopened #${number}: remove stale and reset lifecycle clock`)
+                if (!dryRun) {
+                  await removeStale(number)
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: number,
+                    body: "<!-- maka-lifecycle:reopened -->",
+                  })
+                }
+                return
+              }
+            }
+
+            const items = await listOpenItems()
+            core.info(`evaluating ${items.length} open issues and pull requests`)
+            for (const item of items) {
+              const hydrated = await hydrateComments(item)
+              await apply(hydrated, planLifecycle(hydrated))
+            }

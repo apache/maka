@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -19,57 +38,47 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import { assertProductNightlyVersion } from './release-version.mjs';
 import {
+  isCurrentDevelopmentJavaScript,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
+  orderWorkspaceBuilds,
+  renderNpmReadme,
+  releaseNpmEnvironment,
+  resolveReleaseWorkspacePackages,
+  resolveWorkspaceReleaseFiles,
+  workspaceReleaseManifest,
 } from './release-cli-file-policy.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
-const releaseRoot = join(cliSource, 'release');
-const stageRoot = join(releaseRoot, 'package');
 const allowDirty = process.argv.includes('--allow-dirty');
+const developmentBuild = process.argv.includes('--development');
+const nightlyVersion = process.env.MAKA_CLI_NIGHTLY_VERSION?.trim();
 const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
+const releaseRoot = join(cliSource, 'release');
+const artifactRoot = developmentBuild ? createDevelopmentArtifactRoot() : releaseRoot;
+const stageRoot = join(artifactRoot, 'package');
+const runtimeHostTargets = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-x64'];
+const privateRuntimeHostTarget = developmentBuild
+  ? resolveDevelopmentPeerTarget()
+  : `${process.platform}-${process.arch}`;
 const unsupportedArguments = process.argv
   .slice(2)
-  .filter((argument) => argument !== '--allow-dirty');
+  .filter((argument) => !['--allow-dirty', '--development'].includes(argument));
 if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
-const internalPackageNames = [
-  '@maka/code-mode',
-  '@maka/core',
-  '@maka/eval',
-  '@maka/mcp',
-  '@maka/runtime',
-  '@maka/runtime-host',
-  '@maka/storage',
-];
+const workspacePackages = resolveReleaseWorkspacePackages(repoRoot);
+const internalPackageNames = workspacePackages
+  .map(({ name }) => name)
+  .filter((name) => name !== 'maka-agent');
 const internalPackageSet = new Set(internalPackageNames);
-const buildOrder = [
-  '@maka/code-mode',
-  '@maka/core',
-  '@maka/storage',
-  '@maka/mcp',
-  '@maka/runtime',
-  '@maka/runtime-host',
-  '@maka/eval',
-  'maka-agent',
-];
-const evalAssets = [
-  'harbor/deepseek-codex-models.json',
-  'harbor/deepseek-harness-profile/cordis.patch.yml',
-  'harbor/deepseek-harness-profile/cordis.yml',
-  'harbor/deepseek-harness-profile/package.json',
-  'harbor/docker-compose-egress-proxy.yaml',
-  'harbor/egress-proxy/Dockerfile',
-  'harbor/egress-proxy/entrypoint.sh',
-  'harbor/egress-proxy/network-policy',
-  'harbor/egress_filter.py',
-  'harbor/eval_framework.py',
-  'harbor/relay_agent.py',
-  'harbor/run_trial.py',
-];
+const buildOrder = orderWorkspaceBuilds(workspacePackages);
+const developmentGeneratedFiles = new Map([
+  ['@maka/runtime', new Set(['workers/filesystem-worker.js'])],
+]);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end
@@ -78,10 +87,35 @@ const strippedInstallScripts = new Map([
   ['protobufjs@7.6.5', new Set(['postinstall'])],
 ]);
 
-main();
+try {
+  main();
+} catch (error) {
+  if (developmentBuild) rmSync(artifactRoot, { recursive: true, force: true });
+  throw error;
+}
 
 function main() {
-  validateToolchain();
+  validateNodeVersion();
+  if (developmentBuild && nightlyVersion) {
+    throw new Error('A public Nightly cannot be combined with --development');
+  }
+  if (allowDirty && nightlyVersion) {
+    throw new Error('A public Nightly cannot be built from a dirty worktree');
+  }
+  if (nightlyVersion) {
+    const productVersion = readJson(join(repoRoot, 'package.json')).version;
+    assertProductNightlyVersion(nightlyVersion, productVersion);
+  }
+  if (!developmentBuild) validateReleaseNpmVersion();
+  if (developmentBuild) {
+    if (allowDirty || preparedTree) {
+      throw new Error('--development cannot be combined with release build options');
+    }
+    console.warn('[release-cli] producing a private development tarball');
+    buildRuntimeWorkspaces({ clean: false });
+    packageCli(false);
+    return;
+  }
   if (!preparedTree && !allowDirty) {
     validateCleanWorktree();
     buildFromCleanDependencyTree();
@@ -98,30 +132,38 @@ function main() {
       '[release-cli] WARNING: producing a private development tarball with publishing disabled',
     );
   }
-  buildRuntimeWorkspaces();
-  checkProductionAudit();
+  buildRuntimeWorkspaces({ clean: true });
+  if (!nightlyVersion && !allowDirty) checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
+  runNpm(['run', 'check:runtime-host-peer-dependencies']);
+  runNpm(['run', 'check:runtime-host-peer-notices']);
 
+  packageCli(preparedTree);
+}
+
+function packageCli(publishable) {
   const dependencyTree = readCliDependencyTree();
   const cli = dependencyTree.dependencies?.['maka-agent'];
   if (!cli) throw new Error('npm ls did not return the maka-agent workspace');
 
-  rmSync(releaseRoot, { recursive: true, force: true });
+  rmSync(artifactRoot, { recursive: true, force: true });
   mkdirSync(stageRoot, { recursive: true, mode: 0o755 });
   copyCliRuntime();
+  copyRuntimeHostNativePrebuilds(publishable);
   const expectedDependencyManifests = copyDependencyClosure(cli);
-  copyEvalMirror();
   copyReleaseDocuments();
-  writeReleaseManifest(cli, preparedTree);
-  validateStaging();
+  writeReleaseManifest(cli, publishable);
+  validateStaging(publishable);
 
-  const [pack] = JSON.parse(
-    runNpm(['pack', stageRoot, '--json', '--pack-destination', releaseRoot], {
+  const packOutput = JSON.parse(
+    runNpm(['pack', stageRoot, '--json', '--pack-destination', artifactRoot], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     }),
   );
-  if (!pack?.filename || !Array.isArray(pack.files)) {
+  const packs = Array.isArray(packOutput) ? packOutput : Object.values(packOutput);
+  const [pack] = packs;
+  if (packs.length !== 1 || !pack?.filename || !Array.isArray(pack.files)) {
     throw new Error('npm pack did not return one JSON package result');
   }
   validateCliReleaseArtifactMetrics({
@@ -129,12 +171,12 @@ function main() {
     unpackedBytes: pack.unpackedSize,
     entryCount: pack.entryCount,
   });
-  const tarballPath = join(releaseRoot, pack.filename);
-  validatePackedFiles(pack.files, expectedDependencyManifests);
+  const tarballPath = join(artifactRoot, pack.filename);
+  validatePackedFiles(pack.files, expectedDependencyManifests, publishable);
   const sha256 = digestFile(tarballPath);
   writeFileSync(`${tarballPath}.sha256`, `${sha256}  ${pack.filename}\n`, 'utf8');
   writeFileSync(
-    join(releaseRoot, `${pack.filename}.files.json`),
+    join(artifactRoot, `${pack.filename}.files.json`),
     `${JSON.stringify(pack.files, null, 2)}\n`,
     'utf8',
   );
@@ -144,6 +186,24 @@ function main() {
   console.log(
     `[release-cli] size: ${formatBytes(pack.size)} compressed, ${formatBytes(pack.unpackedSize)} unpacked, ${pack.entryCount} files`,
   );
+}
+
+function createDevelopmentArtifactRoot() {
+  const developmentRoot = join(cliSource, '.development');
+  mkdirSync(developmentRoot, { recursive: true, mode: 0o755 });
+  const parent = process.env.MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT?.trim();
+  if (!parent) return mkdtempSync(join(developmentRoot, 'artifact-'));
+  const resolvedParent = realpathSync(parent);
+  const relativeParent = relative(realpathSync(developmentRoot), resolvedParent);
+  if (
+    !relativeParent ||
+    relativeParent.startsWith('..') ||
+    isAbsolute(relativeParent) ||
+    !statSync(resolvedParent).isDirectory()
+  ) {
+    throw new Error('The CLI development output root must be a directory');
+  }
+  return join(resolvedParent, 'artifact');
 }
 
 function buildFromCleanDependencyTree() {
@@ -157,11 +217,25 @@ function buildFromCleanDependencyTree() {
       stdio: 'inherit',
     });
     execFileSync('tar', ['-xf', archivePath, '-C', cleanRoot], { stdio: 'inherit' });
+    const preparedNativePrebuilds = copyNativePrebuildInputToCleanTree(cleanRoot);
     console.log('[release-cli] installing the committed dependency tree with npm ci');
-    execFileSync('npm', ['ci'], npmSpawnOptions({ cwd: cleanRoot, stdio: 'inherit' }));
+    const cleanEnvironment = releaseNpmEnvironment(process.env, join(cleanRoot, '.npmrc'));
+    const installArguments = ['ci'];
+    if (nightlyVersion) installArguments.push('--no-audit');
+    execFileSync(
+      'npm',
+      installArguments,
+      npmSpawnOptions({ cwd: cleanRoot, env: cleanEnvironment, stdio: 'inherit' }),
+    );
     execFileSync(process.execPath, [join(cleanRoot, 'scripts/release-cli-package.mjs')], {
       cwd: cleanRoot,
-      env: { ...process.env, MAKA_CLI_RELEASE_PREPARED_TREE: '1' },
+      env: {
+        ...cleanEnvironment,
+        MAKA_CLI_RELEASE_PREPARED_TREE: '1',
+        ...(preparedNativePrebuilds
+          ? { MAKA_RUNTIME_HOST_NATIVE_PREBUILDS: preparedNativePrebuilds }
+          : {}),
+      },
       stdio: 'inherit',
     });
 
@@ -177,11 +251,22 @@ function buildFromCleanDependencyTree() {
   }
 }
 
-function validateToolchain() {
+function copyNativePrebuildInputToCleanTree(cleanRoot) {
+  const source = process.env.MAKA_RUNTIME_HOST_NATIVE_PREBUILDS?.trim();
+  if (!source) return undefined;
+  const destination = join(cleanRoot, '.release-runtime-host-native-prebuilds');
+  cpSync(realpathSync(source), destination, { recursive: true, preserveTimestamps: true });
+  return destination;
+}
+
+function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 19)) {
     throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
   }
+}
+
+function validateReleaseNpmVersion() {
   const packageManager = readJson(join(repoRoot, 'package.json')).packageManager;
   const requiredNpmVersion = /^npm@(.+)$/.exec(packageManager)?.[1];
   if (!requiredNpmVersion) {
@@ -205,8 +290,10 @@ function validateCleanWorktree() {
   }
 }
 
-function buildRuntimeWorkspaces() {
-  for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'clean']);
+function buildRuntimeWorkspaces(options) {
+  if (options.clean) {
+    for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'clean']);
+  }
   for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'build']);
 }
 
@@ -214,7 +301,12 @@ function checkProductionAudit() {
   const audit = spawnSync(
     'npm',
     ['audit', '--omit=dev', '--workspace', 'maka-agent', '--json'],
-    npmSpawnOptions({ cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+    npmSpawnOptions({
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: releaseNpmEnvironment(process.env, join(repoRoot, '.npmrc')),
+      maxBuffer: 64 * 1024 * 1024,
+    }),
   );
   const report = JSON.parse(audit.stdout || '{}');
   const vulnerabilities = report.metadata?.vulnerabilities;
@@ -235,7 +327,7 @@ function readCliDependencyTree() {
 }
 
 function copyCliRuntime() {
-  copyRuntimeDist(cliSource, stageRoot, { excludeDevCli: true });
+  copyRuntimeDist(cliSource, stageRoot);
   chmodSync(join(stageRoot, 'dist/cli.js'), 0o755);
 }
 
@@ -257,7 +349,7 @@ function copyDependencyClosure(cli) {
         }
         if (!previous) {
           if (internalPackageSet.has(dependency.name)) {
-            copyInternalPackage(source, destination, dependency.name === '@maka/eval');
+            copyInternalPackage(source, destination);
           } else {
             copyThirdPartyPackage(source, destination);
           }
@@ -276,9 +368,9 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.10.0');
+  const evalUndici = findDependency(cli, 'undici', '8.10.1');
   if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.10.0');
+    throw new Error('The installed CLI closure does not contain undici@8.10.1');
   }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
@@ -332,51 +424,30 @@ function dependencyDestination(dependency) {
   throw new Error(`Dependency path is outside the supported installed tree: ${sourcePath}`);
 }
 
-function copyInternalPackage(source, destination, includeEvalAssets) {
+function copyInternalPackage(source, destination) {
   mkdirSync(destination, { recursive: true, mode: 0o755 });
   const manifest = readJson(join(source, 'package.json'));
-  const allowedFields = [
-    'name',
-    'version',
-    'description',
-    'license',
-    'type',
-    'sideEffects',
-    'main',
-    'exports',
-    'bin',
-    'engines',
-    'dependencies',
-    'optionalDependencies',
-    'peerDependencies',
-    'peerDependenciesMeta',
-  ];
-  const releaseManifest = Object.fromEntries(
-    allowedFields
-      .filter((field) => manifest[field] !== undefined)
-      .map((field) => [field, manifest[field]]),
-  );
+  const releaseManifest = workspaceReleaseManifest(manifest);
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(releaseManifest, null, 2)}\n`);
-  copyRuntimeDist(source, destination);
-  if (includeEvalAssets) {
-    for (const asset of evalAssets) copyDeclaredFile(source, destination, asset);
+  for (const releaseFile of resolveWorkspaceReleaseFiles(source, manifest)) {
+    if (releaseFile === 'dist') copyRuntimeDist(source, destination, manifest.name);
+    else copyDeclaredReleaseFile(source, destination, releaseFile);
   }
 }
 
-function copyRuntimeDist(source, destination, options = {}) {
+function copyRuntimeDist(source, destination, packageName = 'maka-agent') {
   const sourceDist = join(source, 'dist');
   if (!existsSync(sourceDist)) throw new Error(`Missing build output: ${sourceDist}`);
   copyTreeFiles(sourceDist, join(destination, 'dist'), (relativePath) => {
-    const segments = relativePath.split(sep);
-    const file = segments.at(-1) ?? '';
-    if (segments.some((segment) => segment === '__tests__' || segment === '__fixtures__')) {
-      return false;
-    }
-    if (/(?:^|\.)test\.js$/.test(file) || file.endsWith('.d.ts') || file.endsWith('.map')) {
-      return false;
-    }
-    if (options.excludeDevCli && file === 'dev-cli.js') return false;
-    return file.endsWith('.js') || file.endsWith('.json');
+    if (isMakaDevelopmentArtifact(join('dist', relativePath))) return false;
+    return (
+      !developmentBuild ||
+      isCurrentDevelopmentJavaScript(
+        source,
+        relativePath,
+        developmentGeneratedFiles.get(packageName),
+      )
+    );
   });
 }
 
@@ -430,25 +501,159 @@ function pruneNodePtyBuildInputs(destination) {
   }
 }
 
-function copyEvalMirror() {
-  const stagedEval = join(stageRoot, 'node_modules/@maka/eval');
-  const mirror = join(stageRoot, 'packages/eval');
-  cpSync(stagedEval, mirror, {
-    recursive: true,
-    preserveTimestamps: true,
-    filter: (path) =>
-      path === stagedEval || !relative(stagedEval, path).split(sep).includes('node_modules'),
-  });
-}
-
 function copyReleaseDocuments() {
-  copyFileSync(join(cliSource, 'README.md'), join(stageRoot, 'README.md'));
+  const readme = readFileSync(join(cliSource, 'README.md'), 'utf8');
+  const readmeZhCn = readFileSync(join(cliSource, 'README.zh-CN.md'), 'utf8');
+  const disclaimer = readFileSync(join(repoRoot, 'DISCLAIMER-WIP'), 'utf8');
+  const nightlyNotice = nightlyVersion
+    ? '> **Developer snapshot:** This Nightly is not an Apache release and is not intended for production use. Its version is bound to one exact `apache/maka` commit.\n\n'
+    : '';
+  const nightlyNoticeZhCn = nightlyVersion
+    ? '> **开发快照：**此 Nightly 不是 Apache Release，不用于生产环境；其版本只对应一个精确的 `apache/maka` commit。\n\n'
+    : '';
+  writeFileSync(
+    join(stageRoot, 'README.md'),
+    `${nightlyNotice}${renderNpmReadme(readme, disclaimer)}`,
+    'utf8',
+  );
+  writeFileSync(join(stageRoot, 'README.zh-CN.md'), `${nightlyNoticeZhCn}${readmeZhCn}`, 'utf8');
   copyFileSync(join(repoRoot, 'LICENSE'), join(stageRoot, 'LICENSE'));
   copyFileSync(join(repoRoot, 'NOTICE'), join(stageRoot, 'NOTICE'));
+  // Incubator policy: every public podling artifact carries the incubating
+  // disclaimer next to LICENSE/NOTICE, including developer-only Nightlies.
+  copyFileSync(join(repoRoot, 'DISCLAIMER-WIP'), join(stageRoot, 'DISCLAIMER-WIP'));
   copyFileSync(
     join(cliSource, 'THIRD_PARTY_NOTICES.txt'),
     join(stageRoot, 'THIRD_PARTY_NOTICES.txt'),
   );
+  copyFileSync(
+    join(cliSource, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
+    join(stageRoot, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
+  );
+  copyFileSync(
+    join(cliSource, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+    join(stageRoot, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+  );
+}
+
+function copyRuntimeHostNativePrebuilds(publishable) {
+  const sourceRoot = process.env.MAKA_RUNTIME_HOST_NATIVE_PREBUILDS?.trim();
+  const targets = publishable
+    ? runtimeHostTargets
+    : privateRuntimeHostTarget === 'none'
+      ? []
+      : [privateRuntimeHostTarget];
+  if (targets.length === 0) return;
+  const peerDestinationRoot = join(stageRoot, 'native/runtime-host-peer/prebuilds');
+  const launcherDestination = join(
+    stageRoot,
+    'native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe',
+  );
+  if (!sourceRoot && !publishable) {
+    const [target] = targets;
+    buildDevelopmentPeerAddon(
+      target,
+      join(peerDestinationRoot, target, 'maka_runtime_host_peer.node'),
+    );
+    if (target === 'win32-x64') buildDevelopmentWindowsTaskLauncher(launcherDestination);
+    return;
+  }
+  if (!sourceRoot) {
+    throw new Error('MAKA_RUNTIME_HOST_NATIVE_PREBUILDS must contain all release native artifacts');
+  }
+  for (const target of targets) {
+    const source = join(sourceRoot, target, 'maka_runtime_host_peer.node');
+    if (!existsSync(source) || !statSync(source).isFile()) {
+      throw new Error(`Runtime Host peer prebuild is missing: ${target}`);
+    }
+    const destination = join(peerDestinationRoot, target, 'maka_runtime_host_peer.node');
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+    copyFileSync(source, destination);
+  }
+  if (targets.includes('win32-x64')) {
+    const source = join(sourceRoot, 'win32-x64', 'maka-runtime-host-task-launcher.exe');
+    if (!existsSync(source) || !statSync(source).isFile()) {
+      throw new Error('Runtime Host Windows task launcher prebuild is missing');
+    }
+    mkdirSync(dirname(launcherDestination), { recursive: true, mode: 0o755 });
+    copyFileSync(source, launcherDestination);
+  }
+}
+
+function resolveDevelopmentPeerTarget() {
+  const configured = process.env.MAKA_CLI_DEVELOPMENT_PEER_TARGET?.trim();
+  const target = configured || `${process.platform}-${process.arch}`;
+  if (target !== 'none' && !runtimeHostTargets.includes(target)) {
+    throw new Error(
+      `MAKA_CLI_DEVELOPMENT_PEER_TARGET must be none or a supported target; found ${target}`,
+    );
+  }
+  return target;
+}
+
+function buildDevelopmentPeerAddon(target, output) {
+  const hostTarget = `${process.platform}-${process.arch}`;
+  const buildScript = join(repoRoot, 'native/runtime-host-peer/build.mjs');
+  if (target === hostTarget) {
+    execFileSync(process.execPath, [buildScript], {
+      cwd: repoRoot,
+      env: { ...process.env, MAKA_RUNTIME_HOST_PEER_OUTPUT: output },
+      stdio: 'inherit',
+    });
+    return;
+  }
+  const rustTarget = {
+    'linux-arm64': 'aarch64-unknown-linux-gnu.2.28',
+    'linux-x64': 'x86_64-unknown-linux-gnu.2.28',
+  }[target];
+  if (!rustTarget) {
+    throw new Error(
+      `Cannot build the ${target} direct-peer addon from ${hostTarget}; run Desktop on that target or provide MAKA_RUNTIME_HOST_NATIVE_PREBUILDS`,
+    );
+  }
+  requireDevelopmentCommand(
+    'zig',
+    ['version'],
+    `Cross-compiling the ${target} direct-peer addon requires Zig on PATH (CI uses 0.16.x)`,
+  );
+  requireDevelopmentCommand(
+    'cargo-zigbuild',
+    ['--version'],
+    `Cross-compiling the ${target} direct-peer addon requires cargo-zigbuild (cargo install cargo-zigbuild --version 0.23.2 --locked)`,
+  );
+  execFileSync(process.execPath, [buildScript], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND: 'zigbuild',
+      MAKA_RUNTIME_HOST_PEER_CARGO_TARGET: rustTarget,
+      MAKA_RUNTIME_HOST_PEER_OUTPUT: output,
+    },
+    stdio: 'inherit',
+  });
+}
+
+function buildDevelopmentWindowsTaskLauncher(output) {
+  if (`${process.platform}-${process.arch}` !== 'win32-x64') {
+    throw new Error(
+      'Building the Windows task launcher requires Windows x64 or MAKA_RUNTIME_HOST_NATIVE_PREBUILDS',
+    );
+  }
+  execFileSync(
+    process.execPath,
+    [join(repoRoot, 'native/runtime-host-windows-task-launcher/build.mjs')],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, MAKA_RUNTIME_HOST_WINDOWS_TASK_LAUNCHER_OUTPUT: output },
+      stdio: 'inherit',
+    },
+  );
+}
+
+function requireDevelopmentCommand(command, args, message) {
+  const result = spawnSync(command, args, { cwd: repoRoot, encoding: 'utf8' });
+  if (result.status === 0) return;
+  throw new Error(`${message}; install it before setting up this development Runtime Host`);
 }
 
 function writeReleaseManifest(cli, publishable) {
@@ -459,52 +664,96 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.10.0');
+  const undici = findDependency(cli, 'undici', '8.10.1');
   const dependencies = { ...source.dependencies, undici: undici.version };
+  const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
+  if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
+    throw new Error(
+      'CLI manifest must define a positive managed Runtime Host update compatibility',
+    );
+  }
   const manifest = {
     name: source.name,
-    version: source.version,
-    description: 'Local-first agent workspace for the terminal.',
+    version: publishable && nightlyVersion ? nightlyVersion : source.version,
+    description: nightlyVersion
+      ? 'Apache Maka (Incubating) developer snapshot; not an Apache release.'
+      : 'Apache Maka (Incubating), a local-first agent workspace for the terminal.',
     license: source.license,
     type: source.type,
     exports: {},
     bin: source.bin,
+    maka: { managedRuntimeHostUpdateCompatibility: updateCompatibility },
     engines: root.engines,
     repository: {
       type: 'git',
-      url: 'git+https://github.com/maka-agent/maka-agent.git',
+      url: 'git+https://github.com/apache/maka.git',
       directory: 'packages/cli',
     },
-    homepage: 'https://github.com/maka-agent/maka-agent#readme',
-    bugs: { url: 'https://github.com/maka-agent/maka-agent/issues' },
-    keywords: ['ai', 'agent', 'cli', 'tui', 'local-first'],
+    homepage: 'https://github.com/apache/maka#readme',
+    bugs: { url: 'https://github.com/apache/maka/issues' },
+    keywords: ['apache', 'ai', 'agent', 'cli', 'tui', 'local-first'],
     publishConfig: publishable
       ? {
           access: 'public',
           registry: 'https://registry.npmjs.org/',
-          tag: source.version.includes('-') ? 'next' : 'latest',
+          tag: nightlyVersion ? 'nightly' : 'latest',
         }
       : {
           access: 'restricted',
           registry: 'http://127.0.0.1:9/',
           tag: 'development',
         },
-    files: ['dist', 'packages/eval', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'],
+    files: [
+      'dist',
+      'native',
+      'README.md',
+      'README.zh-CN.md',
+      'LICENSE',
+      'NOTICE',
+      'DISCLAIMER-WIP',
+      'THIRD_PARTY_NOTICES.txt',
+      'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+      'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
+    ],
     dependencies,
     bundledDependencies: Object.keys(dependencies).sort(),
     ...(!publishable ? { private: true } : {}),
   };
+  if (!publishable) {
+    manifest.version = developmentPackageVersion(source.version, manifest);
+  }
   writeFileSync(join(stageRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function validateStaging() {
+function developmentPackageVersion(baseVersion, manifest) {
+  const digest = createHash('sha256');
+  for (const path of walkFiles(stageRoot)
+    .filter((candidate) => lstatSync(candidate).isFile())
+    .sort()) {
+    digest.update(relative(stageRoot, path).split(sep).join('/'));
+    digest.update('\0');
+    digest.update(readFileSync(path));
+    digest.update('\0');
+  }
+  const { version: _version, ...manifestIdentity } = manifest;
+  digest.update('package.json\0');
+  digest.update(JSON.stringify(manifestIdentity));
+  digest.update('\0');
+  return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev-${digest.digest('hex').slice(0, 12)}`;
+}
+
+function validateStaging(publishable) {
   const required = [
     'dist/cli.js',
+    'README.zh-CN.md',
+    'DISCLAIMER-WIP',
+    'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+    'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
-    'packages/eval/dist/harbor-external-subject.js',
-    'packages/eval/harbor/relay_agent.py',
-    'packages/eval/harbor/docker-compose-egress-proxy.yaml',
+    'node_modules/@maka/eval/dist/harbor-external-subject.js',
+    'node_modules/@maka/eval/harbor/relay_agent.py',
+    'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
     'node_modules/node-pty/prebuilds/linux-x64/pty.node',
     'node_modules/node-pty/prebuilds/darwin-arm64/pty.node',
     'node_modules/node-pty/prebuilds/win32-x64/conpty.node',
@@ -512,6 +761,23 @@ function validateStaging() {
     'node_modules/fs-native-extensions/prebuilds/darwin-arm64/fs-native-extensions.node',
     'node_modules/fs-native-extensions/prebuilds/win32-x64/fs-native-extensions.node',
   ];
+  if (publishable) {
+    required.push(
+      ...runtimeHostTargets.map(
+        (target) => `native/runtime-host-peer/prebuilds/${target}/maka_runtime_host_peer.node`,
+      ),
+      'native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe',
+    );
+  } else if (privateRuntimeHostTarget !== 'none') {
+    required.push(
+      `native/runtime-host-peer/prebuilds/${privateRuntimeHostTarget}/maka_runtime_host_peer.node`,
+    );
+    if (privateRuntimeHostTarget === 'win32-x64') {
+      required.push(
+        'native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe',
+      );
+    }
+  }
   for (const path of required) {
     if (!existsSync(join(stageRoot, path)))
       throw new Error(`Required release file is missing: ${path}`);
@@ -562,7 +828,7 @@ function validateStaging() {
   }
 }
 
-function validatePackedFiles(files, expectedDependencyManifests) {
+function validatePackedFiles(files, expectedDependencyManifests, publishable) {
   const paths = files.map((file) => file.path);
   for (const file of files) {
     const { path } = file;
@@ -572,7 +838,6 @@ function validatePackedFiles(files, expectedDependencyManifests) {
     const segments = path.split('/');
     const makaOwned =
       path.startsWith('dist/') ||
-      path.startsWith('packages/eval/') ||
       (segments[0] === 'node_modules' && segments[1] === '@maka' && segments[3] !== 'node_modules');
     if (makaOwned && isMakaDevelopmentArtifact(path)) {
       throw new Error(`Development artifact escaped into the tarball: ${path}`);
@@ -593,12 +858,25 @@ function validatePackedFiles(files, expectedDependencyManifests) {
   }
   const requiredPacked = [
     'dist/cli.js',
+    'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
-    'packages/eval/harbor/relay_agent.py',
+    'node_modules/@maka/eval/harbor/relay_agent.py',
+    ...(publishable || privateRuntimeHostTarget !== 'none'
+      ? ['native/runtime-host-peer/prebuilds/']
+      : []),
+    ...(publishable || privateRuntimeHostTarget === 'win32-x64'
+      ? [
+          'native/runtime-host-windows-task-launcher/prebuilds/win32-x64/maka-runtime-host-task-launcher.exe',
+        ]
+      : []),
   ];
   for (const suffix of requiredPacked) {
-    if (!paths.some((path) => path.endsWith(suffix))) {
+    if (
+      !paths.some((path) =>
+        suffix.endsWith('/') ? path.startsWith(suffix) : path.endsWith(suffix),
+      )
+    ) {
       throw new Error(`Required file was not packed: ${suffix}`);
     }
   }
@@ -608,7 +886,7 @@ function validatePackedFiles(files, expectedDependencyManifests) {
     }
   }
   const bin = files.find((file) => file.path === 'dist/cli.js');
-  if (!bin || (bin.mode & 0o111) === 0) {
+  if (!bin || (process.platform !== 'win32' && (bin.mode & 0o111) === 0)) {
     throw new Error('The packed CLI entrypoint is not executable');
   }
 }
@@ -632,14 +910,24 @@ function findDependency(root, name, version) {
   return result;
 }
 
-function copyDeclaredFile(source, destination, relativePath) {
+function copyDeclaredReleaseFile(source, destination, relativePath) {
   const from = join(source, relativePath);
-  if (!existsSync(from) || !statSync(from).isFile()) {
-    throw new Error(`Declared Eval runtime asset is missing: ${from}`);
+  if (!existsSync(from)) throw new Error(`Declared release asset is missing: ${from}`);
+  const entry = statSync(from);
+  if (entry.isDirectory()) {
+    for (const child of readdirSync(from, { withFileTypes: true })) {
+      if (child.isSymbolicLink()) {
+        throw new Error(`Declared release directory contains a symlink: ${join(from, child.name)}`);
+      }
+      copyDeclaredReleaseFile(source, destination, join(relativePath, child.name));
+    }
+  } else if (entry.isFile()) {
+    const to = join(destination, relativePath);
+    mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
+    copyFileSync(from, to);
+  } else {
+    throw new Error(`Declared release asset is not a regular file or directory: ${from}`);
   }
-  const to = join(destination, relativePath);
-  mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
-  copyFileSync(from, to);
 }
 
 function copyTreeFiles(source, destination, allow) {
@@ -679,10 +967,16 @@ function readJson(path) {
 }
 
 function runNpm(args, options = {}) {
+  const environment = releaseNpmEnvironment(options.env ?? process.env, join(repoRoot, '.npmrc'));
   return execFileSync(
     'npm',
     args,
-    npmSpawnOptions({ cwd: repoRoot, stdio: options.encoding ? undefined : 'inherit', ...options }),
+    npmSpawnOptions({
+      cwd: repoRoot,
+      stdio: options.encoding ? undefined : 'inherit',
+      ...options,
+      env: environment,
+    }),
   );
 }
 

@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { SessionSummary } from '@maka/core/session';
-import { deriveSessionRail } from '../session-rail.js';
+import { deriveSessionRail } from '../features/session-navigation/index.js';
 
 /**
  * The archived tasks, counted the way the rail counts tasks.
@@ -22,6 +41,16 @@ import { deriveSessionRail } from '../session-rail.js';
  */
 export function archivedTaskRows<T extends SessionSummary>(sessions: readonly T[]): T[] {
   return deriveSessionRail(sessions, undefined, (session) => session.isArchived).sessions;
+}
+
+/** Whether an archived row remains because its ordinary parent task was deleted. */
+export function isOrphanedSubagentTask(
+  session: SessionSummary,
+  knownSessionIds: ReadonlySet<string>,
+): boolean {
+  const parentSessionId =
+    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
+  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
 }
 
 /**

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 #[cfg(not(windows))]
 compile_error!("maka-windows-sandbox is Windows-only");
 
@@ -22,13 +41,17 @@ mod protocol;
 mod protocol_tests;
 mod windows_launcher;
 #[cfg(test)]
+mod windows_launcher_desktop_tests;
+#[cfg(test)]
 mod windows_launcher_tests;
 
 use std::env;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
+
+use serde::Deserialize;
 
 use broker_authorization::BrokerAuthorizer;
 use broker_framing::{decode_frame, encode_frame};
@@ -58,6 +81,12 @@ fn run() -> Result<u8, String> {
             return Err("--self-probe does not accept arguments".to_owned());
         }
         return windows_launcher::self_probe();
+    }
+    if first == "--readiness-probe" {
+        if args.next().is_some() {
+            return Err("--readiness-probe does not accept arguments".to_owned());
+        }
+        return windows_launcher::readiness_probe();
     }
     if first == "--stdio-probe" {
         let sleep_seconds = match args.next() {
@@ -116,6 +145,23 @@ fn run() -> Result<u8, String> {
             &allowed_write_path.to_string_lossy(),
             port,
         );
+    }
+    if first == "--adversarial-probe" {
+        let input_path = args
+            .next()
+            .ok_or_else(|| "--adversarial-probe requires an input path".to_owned())?;
+        if args.next().is_some() {
+            return Err("--adversarial-probe accepts exactly one input path".to_owned());
+        }
+        let source = fs::read_to_string(&input_path)
+            .map_err(|error| format!("read adversarial probe input failed: {error}"))?;
+        // Windows PowerShell 5.1 may emit a UTF-8 BOM for `Set-Content
+        // -Encoding utf8`; accepting it here keeps the probe input parser
+        // deterministic across the supported PowerShell implementations.
+        let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
+        let input: AdversarialProbeInput = serde_json::from_str(source)
+            .map_err(|error| format!("decode adversarial probe input failed: {error}"))?;
+        return adversarial_probe(&input);
     }
     if first == "--launch-digest" {
         let request_path = args
@@ -262,13 +308,248 @@ fn boundary_probe(
     let allowed_write = fs::write(allowed_write_path, b"allowed-write").is_ok();
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let network_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
+    // Self-attest the desktop the confined child was *initially placed* on
+    // (RFC §6.3): the per-launch private desktop, never the interactive
+    // `Default`. Querying its own desktop name is allowed because the desktop
+    // DACL grants this AppContainer SID DESKTOP_READOBJECTS. This proves initial
+    // `STARTUPINFOW.lpDesktop` placement only — it is NOT proof of escape-proof
+    // confinement: absent a no-Win32k mitigation or a window-station/token
+    // boundary, in-process code could still `OpenDesktopW("Default")` +
+    // `SetThreadDesktop`. The escape-proof boundary is a deferred gate (§6.5).
+    let desktop = current_desktop_name()?;
+    let desktop_private_placement = desktop_is_private_placement(&desktop);
     println!(
-        "{{\"fileDenied\":{file_denied},\"allowedRead\":{allowed_read},\"allowedWrite\":{allowed_write},\"networkDenied\":{network_denied}}}"
+        "{{\"fileDenied\":{file_denied},\"allowedRead\":{allowed_read},\"allowedWrite\":{allowed_write},\"networkDenied\":{network_denied},\"desktop\":{desktop_json},\"desktopPrivatePlacement\":{desktop_private_placement}}}",
+        desktop_json = json_string(&desktop)
     );
     if !file_denied || !allowed_read || !allowed_write || !network_denied {
         return Err("AppContainer boundary did not enforce the requested resources".to_owned());
     }
+    if !desktop_private_placement {
+        return Err(format!(
+            "confined child was placed on the interactive desktop {desktop:?} instead of a private one"
+        ));
+    }
     Ok(0)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AdversarialProbeInput {
+    denied_path: String,
+    allowed_read_path: String,
+    allowed_write_path: String,
+    loopback_port: u16,
+    pipe_name: String,
+    environment_secret_name: String,
+    registry_subkey: String,
+    registry_value_name: String,
+    parent_pid: u32,
+}
+
+/// Malicious-child probe for the packaged Phase 4 matrix. Every check runs
+/// from inside the production AppContainer identity. A false field is a hard
+/// failure: the release verifier must never turn an unavailable probe into a
+/// vacuous pass.
+fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
+    let file_denied = fs::read(&input.denied_path).is_err();
+    let allowed_read = matches!(fs::read_to_string(&input.allowed_read_path), Ok(value) if value == "allowed-read");
+    let allowed_write = fs::write(&input.allowed_write_path, b"allowed-write").is_ok();
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), input.loopback_port);
+    let tcp_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
+    let named_pipe_denied = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&input.pipe_name)
+        .is_err();
+    let environment_denied = env::var_os(&input.environment_secret_name).is_none();
+    let registry_denied = registry_value_denied(&input.registry_subkey, &input.registry_value_name);
+    let parent_token_denied = parent_token_denied(input.parent_pid);
+    let (descendant_app_container, descendant_in_job, descendant_spawn_denied) =
+        descendant_boundary();
+
+    let evidence = serde_json::json!({
+        "fileDenied": file_denied,
+        "allowedRead": allowed_read,
+        "allowedWrite": allowed_write,
+        "tcpDenied": tcp_denied,
+        "namedPipeDenied": named_pipe_denied,
+        "environmentDenied": environment_denied,
+        "registryDenied": registry_denied,
+        "parentTokenDenied": parent_token_denied,
+        "descendantAppContainer": descendant_app_container,
+        "descendantInJob": descendant_in_job,
+        "descendantSpawnDenied": descendant_spawn_denied,
+    });
+    println!("{evidence}");
+
+    let passed = file_denied
+        && allowed_read
+        && allowed_write
+        && tcp_denied
+        && named_pipe_denied
+        && environment_denied
+        && registry_denied
+        && parent_token_denied
+        && (descendant_spawn_denied || (descendant_app_container && descendant_in_job));
+    if !passed {
+        return Err(format!(
+            "AppContainer adversarial matrix did not hold: {evidence}"
+        ));
+    }
+    Ok(0)
+}
+
+fn registry_value_denied(subkey: &str, value_name: &str) -> bool {
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+    };
+
+    let subkey = wide(subkey);
+    let value_name = wide(value_name);
+    let mut key = null_mut();
+    let open = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+    if open != ERROR_SUCCESS {
+        return true;
+    }
+    let mut value_type: u32 = 0;
+    let mut value_bytes: u32 = 0;
+    let query = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            null(),
+            &mut value_type,
+            null_mut(),
+            &mut value_bytes,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    query != ERROR_SUCCESS
+}
+
+fn parent_token_denied(parent_pid: u32) -> bool {
+    use std::ptr::null_mut;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent_pid) };
+    if process.is_null() {
+        return true;
+    }
+    let mut token = null_mut();
+    let denied = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0;
+    if !token.is_null() {
+        unsafe { CloseHandle(token) };
+    }
+    unsafe { CloseHandle(process) };
+    denied
+}
+
+fn descendant_boundary() -> (bool, bool, bool) {
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(_) => return (false, false, true),
+    };
+    let output = match Command::new(executable).arg("--self-probe").output() {
+        Ok(output) if output.status.success() => output,
+        Err(_) => return (false, false, true),
+        Ok(_) => return (false, false, false),
+    };
+    let evidence: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(evidence) => evidence,
+        Err(_) => return (false, false, false),
+    };
+    (
+        evidence
+            .get("appContainer")
+            .and_then(|value| value.as_bool())
+            == Some(true),
+        evidence.get("inJob").and_then(|value| value.as_bool()) == Some(true),
+        false,
+    )
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// Prefix every launcher-created private desktop name carries
+/// (`maka-sandbox-desktop.<pid>.<nonce>`). Attesting against the prefix rather
+/// than merely "not Default" means a child that somehow started on *any other*
+/// pre-existing desktop (`Winlogon`, a screensaver desktop, another product's
+/// alternate desktop) still fails the placement check.
+const PRIVATE_DESKTOP_PREFIX: &str = "maka-sandbox-desktop.";
+
+/// A confined worker must be *initially placed* on the per-launch private
+/// desktop this launcher created — never the shared interactive `Default`
+/// desktop, never an empty/unnamed one, and never some other desktop that
+/// merely isn't `Default`. This is a placement check, not an escape-proof
+/// confinement check: it only attests the initial `lpDesktop` name
+/// (RFC §6.3, §6.5).
+fn desktop_is_private_placement(name: &str) -> bool {
+    name.len() > PRIVATE_DESKTOP_PREFIX.len()
+        && name
+            .get(..PRIVATE_DESKTOP_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PRIVATE_DESKTOP_PREFIX))
+}
+
+/// JSON string encoding for names embedded in probe output. Delegates to
+/// `serde_json` (already a dependency) instead of hand-rolled escaping; string
+/// serialization is infallible.
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).expect("JSON string encoding cannot fail")
+}
+
+/// Name of the desktop the current thread is attached to. Fails closed: a
+/// worker that cannot even confirm its desktop is treated as unconfined.
+fn current_desktop_name() -> Result<String, String> {
+    use std::ffi::c_void;
+
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        GetThreadDesktop, GetUserObjectInformationW, UOI_NAME,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+    unsafe {
+        let desktop = GetThreadDesktop(GetCurrentThreadId());
+        if desktop.is_null() {
+            return Err("GetThreadDesktop returned null".to_owned());
+        }
+        let mut needed = 0u32;
+        // First call sizes the name buffer (bytes needed, including the
+        // terminating wide NUL).
+        GetUserObjectInformationW(desktop, UOI_NAME, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            return Err("GetUserObjectInformationW(UOI_NAME size) returned zero".to_owned());
+        }
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u16>());
+        let mut buffer = vec![0u16; words];
+        if GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            buffer.as_mut_ptr() as *mut c_void,
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            return Err("GetUserObjectInformationW(UOI_NAME) failed".to_owned());
+        }
+        let length = buffer.iter().position(|&code| code == 0).unwrap_or(words);
+        Ok(String::from_utf16_lossy(&buffer[..length]))
+    }
 }
 
 fn validate_broker_request(source: &str) -> Result<u8, String> {

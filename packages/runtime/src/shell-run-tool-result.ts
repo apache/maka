@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   PtyShellOutput,
   ShellOutput,
@@ -246,15 +265,21 @@ function takeTailText(text: string, budget: number): { text: string; truncated: 
 }
 
 function sliceUtf8Tail(text: string, budget: number): string {
-  const characters = Array.from(text);
-  let result = '';
+  const characters: string[] = [];
   let bytes = 0;
-  for (let index = characters.length - 1; index >= 0; index -= 1) {
-    const character = characters[index];
+  for (let end = text.length; end > 0; ) {
+    let start = end - 1;
+    const last = text.charCodeAt(start);
+    if (last >= 0xdc00 && last <= 0xdfff && start > 0) {
+      const previous = text.charCodeAt(start - 1);
+      if (previous >= 0xd800 && previous <= 0xdbff) start -= 1;
+    }
+    const character = text.slice(start, end);
     const size = Buffer.byteLength(character, 'utf8');
     if (bytes + size > budget) break;
-    result = character + result;
+    characters.push(character);
     bytes += size;
+    end = start;
   }
-  return result;
+  return characters.reverse().join('');
 }

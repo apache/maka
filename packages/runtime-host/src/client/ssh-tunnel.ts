@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/index.js';
 import type { RuntimeHostConnectionResource } from './connection.js';
 
 const SSH_BATCH_START_TIMEOUT_MS = 15_000;
@@ -57,7 +77,7 @@ export async function openRuntimeHostSshTunnel(
   } = {},
 ): Promise<RuntimeHostSshTunnel> {
   input.signal?.throwIfAborted();
-  const destination = requireSshDestination(input.destination);
+  const destination = normalizeRuntimeHostSshDestination(input.destination);
   const sshPort = input.sshPort === undefined ? undefined : requirePort(input.sshPort, 'SSH port');
   const remotePort = requirePort(input.remotePort, 'Runtime Host remote port');
   const websocketPath = requireWebSocketPath(input.websocketPath);
@@ -411,7 +431,7 @@ async function terminateWindowsProcessTree(pid: number): Promise<void> {
   });
 }
 
-function requireSshDestination(value: string): string {
+export function normalizeRuntimeHostSshDestination(value: string): string {
   const destination = value.trim();
   if (
     destination.length === 0 ||
@@ -432,8 +452,8 @@ function requirePort(value: number, label: string): number {
 }
 
 function requireWebSocketPath(value: string): string {
-  if (!value.startsWith('/') || value.includes('?') || value.includes('#')) {
-    throw new Error('Runtime Host SSH WebSocket path must be an absolute URL path');
+  if (!isCanonicalRuntimeHostWebSocketPath(value)) {
+    throw new Error('Runtime Host SSH WebSocket path must be a canonical absolute URL path');
   }
   return value;
 }

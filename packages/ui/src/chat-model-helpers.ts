@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Pure value-codec helpers backing the ChatModelSwitcher: group an
  * unsorted list of `ChatModelChoice`s by their connection, and
@@ -30,7 +49,7 @@ export type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 export function modelChoiceDescription(
   choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): string | undefined {
   const description = choice.description?.trim();
   const knowledge = choice.knowledgeCutoff?.trim();
@@ -66,7 +85,7 @@ export interface ModelMenuGroup {
  * account email `connection.name` carries for `claude-subscription` /
  * `openai-codex`.
  */
-export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = 'zh'): ModelMenuGroup[] {
+export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;
   const localizedLabels: Partial<Record<ProviderType, string>> = {
     'MiniMax-cn': copy.minimaxChina,
@@ -123,6 +142,14 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = '
 
 export function modelChoiceValue(connectionSlug: string, model: string): string {
   return `${encodeURIComponent(connectionSlug)}:${encodeURIComponent(model)}`;
+}
+
+export function exactModelChoiceValue(
+  connectionId: string,
+  connectionSlug: string,
+  model: string,
+): string {
+  return `${encodeURIComponent(connectionId)}:${modelChoiceValue(connectionSlug, model)}`;
 }
 
 export function parseModelChoiceValue(value: string): { llmConnectionSlug: string; model: string } | undefined {

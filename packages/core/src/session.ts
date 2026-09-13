@@ -1,7 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+
+import {
+  MODEL_FAILURE_MESSAGE_MAX_BYTES,
+  isModelRetryDecision,
+  type ModelRetryDecision,
+} from './model-failure.js';
+
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
   type MessageContent,
+  type AttachmentRef,
   type ToolActivityKind,
   type ToolResultContent,
 } from './events.js';
@@ -14,33 +42,33 @@ import {
 } from './permission.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode } from './orchestration.js';
+import type { ToolMode } from './tool-mode.js';
 import {
   defineObjectShape,
   hasExactShape,
   isFiniteNumber,
   isOptionalString,
   isRecord,
+  pickShape,
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
+import {
+  decodeCanonicalToolResultContent,
+  decodePersistedToolResultContent,
+} from './tool-result-record-schema.js';
+import { markPersisted, type PersistedValue } from './persisted-value.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
-export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
+export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './deep-research.js';
 
-/**
- * `archived` is still here and still written by `SessionStore.archive()`
- * alongside `isArchived`; consolidating those two onto one authority is its own
- * change (#2984, PR 3) because it rewrites stored rows.
- *
- */
+/** Runtime execution states. Archive visibility is represented by `isArchived`. */
 export const SESSION_STATUSES = [
   'active',
   'running',
   'waiting_for_user',
   'blocked',
-  'archived',
   'aborted',
 ] as const;
 
@@ -55,6 +83,16 @@ export const SESSION_BLOCKED_REASONS = [
 ] as const;
 
 export type SessionBlockedReason = (typeof SESSION_BLOCKED_REASONS)[number];
+
+/** Reserved durable role for the one WorkHub coordination conversation owned by a Runtime Host. */
+export const WORKHUB_COORDINATION_SESSION_ROLE = 'workhub_coordination' as const;
+export const WORKHUB_COORDINATION_SESSION_ID = 'maka_workhub_coordination' as const;
+export type SessionRole = typeof WORKHUB_COORDINATION_SESSION_ROLE;
+
+/** Whether an identifier targets the reserved WorkHub Coordination Session. */
+export function isWorkHubCoordinationSessionId(sessionId: string): boolean {
+  return sessionId === WORKHUB_COORDINATION_SESSION_ID;
+}
 
 export const TURN_STATUSES = ['running', 'completed', 'aborted', 'failed'] as const;
 
@@ -113,8 +151,6 @@ export interface SubagentSessionRuntime {
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
-  /** Legacy decode-only metadata. Current child sessions do not write it. */
-  permissionCeiling?: PermissionMode;
 }
 
 /**
@@ -140,9 +176,17 @@ export interface SubagentSessionSpawn {
 export interface SessionConversationCopy {
   kind: 'branch' | 'revision';
   sourceSessionId: string;
-  sourceTurnId: string;
+  /**
+   * Settled turn the copy branches through. Absent marks an empty copy: a side
+   * conversation opened before the source has any completed turn copies NO
+   * source messages, inheriting only the source's model / cwd / permission and
+   * recording provenance (`parentSessionId`) without a `branchOfTurnId`. Only
+   * valid together with `intent: 'side_conversation'`.
+   */
+  sourceTurnId?: string;
   requestFingerprint: `sha256:${string}`;
   state: 'preparing' | 'committed';
+  intent?: 'side_conversation';
 }
 
 export type SubagentSessionRuntimeSummary = Omit<
@@ -179,16 +223,29 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
-export const SESSION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export const SESSION_TOOL_PROFILES = [
+  'headless-coding-v1',
+  'workhub-coordination-v1',
+  'workhub-coordination-v2',
+] as const;
 export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
 
 export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
   return typeof value === 'string' && (SESSION_TOOL_PROFILES as readonly string[]).includes(value);
 }
 
+export interface SessionExternalOrigin {
+  readonly adapterId: string;
+  readonly sourceSessionId: string;
+}
+
 export interface SessionHeader {
+  /** Frozen at creation; absent on older tasks means direct tool calling. */
+  toolMode?: ToolMode;
   // Identity
   id: string;
+  /** Absent means an ordinary Session; special roles remain on the same Session substrate. */
+  readonly role?: SessionRole;
   workspaceRoot: string;
   cwd: string;
   /** Stable project-catalog association. Null means the user explicitly chose no project. */
@@ -196,7 +253,6 @@ export interface SessionHeader {
 
   // Lifecycle timestamps
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
 
   // User metadata
@@ -206,7 +262,6 @@ export interface SessionHeader {
   labels: string[];
 
   isArchived: boolean;
-  archivedAt?: number;
   status: SessionStatus;
   blockedReason?: SessionBlockedReason;
   statusUpdatedAt?: number;
@@ -223,6 +278,8 @@ export interface SessionHeader {
   subagentWorkspace?: SubagentWorkspaceBinding;
   /** Immutable Host publication identity for a cross-Session conversation copy. */
   conversationCopy?: SessionConversationCopy;
+  /** Immutable identity of the external Session imported into this Session. */
+  readonly externalOrigin?: SessionExternalOrigin;
   /** Stable root id for an edit-and-resend version family. */
   revisionRootSessionId?: string;
   /** Immediate previous version in the same conversation slot. */
@@ -239,9 +296,11 @@ export interface SessionHeader {
   hasUnread: boolean;
 
   // Backend / model config
-  backend: BackendKind;
+  backend: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy Session records. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
-  /** True after first UserMessage is flushed. Storage self-heals (§5.2). */
+  /** True once the Session's first UserMessage is durable. One-way. */
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
@@ -262,7 +321,44 @@ export interface SessionHeader {
   schemaVersion: 1;
 }
 
-export type BackendKind = 'ai-sdk' | 'fake';
+export type SessionHeaderPatch = Partial<Omit<SessionHeader, 'isArchived' | 'role'>> & {
+  readonly isArchived?: never;
+  readonly role?: never;
+};
+
+export function isWorkHubCoordinationSession(session: Pick<SessionHeader, 'role'>): boolean {
+  return session.role === WORKHUB_COORDINATION_SESSION_ROLE;
+}
+
+/** Whether durable state claims either half of the reserved Coordination identity/role pair. */
+export function isWorkHubCoordinationSessionTarget(
+  session: Pick<SessionHeader, 'id' | 'role'>,
+): boolean {
+  return isWorkHubCoordinationSessionId(session.id) || isWorkHubCoordinationSession(session);
+}
+
+/**
+ * The backend a live build may select.
+ *
+ * `'fake'` was retired with the in-process FakeBackend (#3211): nothing in a
+ * shipped build may choose it, so it is not a member here. Values read back
+ * from durable state use {@link PersistedBackendKind} instead.
+ */
+export type BackendKind = 'ai-sdk';
+
+/**
+ * The backend value a persisted record may carry.
+ *
+ * Sessions, runs and Automations written by builds that still shipped
+ * FakeBackend hold `'fake'` forever. Decode keeps accepting it so those rows
+ * stay readable — rewriting them to `'ai-sdk'` would only make an unrunnable
+ * task look runnable, since their `llmConnectionSlug` still points at nothing.
+ * Activation refuses them with the product's `fake_backend` reason (see the
+ * refusal registered in `execution-composition.ts`).
+ *
+ * Never write this type: writers take {@link BackendKind}.
+ */
+export type PersistedBackendKind = BackendKind | 'fake';
 
 export interface SessionSummary {
   id: string;
@@ -279,8 +375,9 @@ export interface SessionSummary {
   blockedReason?: SessionBlockedReason;
   statusUpdatedAt?: number;
   /**
-   * The turns the runtime is running for this session right now. Omitted when
-   * there are none.
+   * The turns the runtime is running for this session right now. An explicit
+   * empty array means the runtime authoritatively knows there are none; omission
+   * means the summary source does not know the live state.
    *
    * Projected from the live runs, never persisted: "a run is in flight" is a
    * fact about the running process, so it must read false again after a crash.
@@ -294,8 +391,9 @@ export interface SessionSummary {
    * answer that from an arbitrary one of them.
    *
    * Only populated where the runtime is in a position to know: session LISTS
-   * come from the authority holding the runs. A summary returned by a mutation
-   * (rename, model change) describes the header alone and omits it.
+   * come from the authority holding the runs and include the field even when it
+   * is empty. A summary returned by a mutation (rename, model change) describes
+   * the header alone and omits it.
    */
   runningTurnIds?: string[];
   parentSessionId?: string;
@@ -309,13 +407,14 @@ export interface SessionSummary {
   revisionOfTurnId?: string;
   revisionIndex?: number;
   revisionState?: 'preparing' | 'committed';
-  backend: BackendKind;
+  backend: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy summaries. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /**
    * True once the session has user messages — its connection/model is
-   * sticky and the send path will never silently rebind it. Surfaced so
-   * the renderer can project send outcomes (#1038) without a main
-   * round-trip.
+   * sticky and compatibility projections never select a replacement target.
+   * Surfaced so onboarding can project existing-session health (#1038).
    */
   connectionLocked: boolean;
   /** Sticky session default model id for renderer/header display. */
@@ -327,6 +426,11 @@ export interface SessionSummary {
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */
   orchestrationMode?: OrchestrationMode;
+}
+
+/** A complete Session catalog row. Its order key is authoritative and never synthesized by clients. */
+export interface SessionCatalogSummary extends SessionSummary {
+  activityAt: number;
 }
 
 export function sessionRevisionFamilyId(
@@ -383,15 +487,16 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'toolNames',
     'categoryPolicy',
   ],
-  ['permissionCeiling', 'presetId'],
+  ['presetId'],
+  ['permissionCeiling'],
 );
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
   [],
 );
 const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
-  ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
-  [],
+  ['kind', 'sourceSessionId', 'requestFingerprint', 'state'],
+  ['sourceTurnId', 'intent'],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -459,7 +564,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
   ) {
     return false;
   }
-  return value.permissionCeiling === undefined || isPermissionMode(value.permissionCeiling);
+  return true;
 }
 
 /** Strict decoder guard for durable child-spawn idempotency metadata. */
@@ -481,8 +586,12 @@ export function isSessionConversationCopy(value: unknown): value is SessionConve
     isRecord(value) &&
     hasExactShape(value, SESSION_CONVERSATION_COPY_SHAPE) &&
     (value.kind === 'branch' || value.kind === 'revision') &&
+    (value.intent === undefined ||
+      (value.kind === 'branch' && value.intent === 'side_conversation')) &&
     isSessionLineageId(value.sourceSessionId) &&
-    isSessionLineageId(value.sourceTurnId) &&
+    (value.sourceTurnId === undefined
+      ? value.kind === 'branch' && value.intent === 'side_conversation'
+      : isSessionLineageId(value.sourceTurnId)) &&
     typeof value.requestFingerprint === 'string' &&
     /^sha256:[0-9a-f]{64}$/.test(value.requestFingerprint) &&
     (value.state === 'preparing' || value.state === 'committed')
@@ -623,10 +732,8 @@ export type SessionChangedReason =
   | 'rebound';
 
 export interface SessionChangedEvent {
-  type: 'sessions_changed';
   reason: SessionChangedReason;
   sessionId?: string;
-  connectionSlug?: string;
   modelId?: string;
   /**
    * The turn this change is ABOUT, when the change has a turn to name.
@@ -661,9 +768,12 @@ export type StoredMessage =
   | PermissionDecisionMessage
   | TokenUsageMessage
   | TurnStateMessage
+  | WorkHubCoordinationMessage
   | SystemNoteMessage;
 
 export interface UserMessage extends MessageContent {
+  /** Derived from the admitted WorkHub action; does not change physical Turn identity. */
+  coordinationActionId?: string;
   type: 'user';
   id: string;
   turnId: string;
@@ -678,6 +788,14 @@ export interface UserMessage extends MessageContent {
 /** Prefer the human-facing view of a user message when one was stored. */
 export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'>): string {
   return message.displayText ?? message.text;
+}
+
+/**
+ * Closed policy for system notes that are part of the user-visible transcript:
+ * exactly the notes the runtime writes.
+ */
+export function isUserVisibleSessionSystemNote(kind: string): boolean {
+  return isRuntimeSystemNoteKind(kind);
 }
 
 export interface AssistantMessage {
@@ -810,7 +928,238 @@ export interface TurnStateMessage {
   /** Diagnostic source for user/renderer-triggered aborts, e.g. renderer.stop_button. */
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  failureMessage?: string;
+  retry?: ModelRetryDecision;
+}
+
+export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
+export const WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION = 2 as const;
+export const WORKHUB_COORDINATION_STOP_SCHEMA_VERSION = 3 as const;
+
+export type WorkHubDelegationDisposition = 'delegate_existing' | 'create_new';
+
+export type WorkHubDelegationWorkspace =
+  | { readonly kind: 'project'; readonly projectId: string }
+  | { readonly kind: 'host_path'; readonly path: string };
+
+/** User-selected creation defaults; never applied to an existing Work. */
+export interface WorkHubCreateDefaults {
+  readonly model?: {
+    readonly llmConnectionId: string;
+    readonly llmConnectionSlug: string;
+    readonly model: string;
+  };
+  readonly permissionMode?: PermissionMode;
+}
+
+export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateDefaults {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => key !== 'model' && key !== 'permissionMode')
+  )
+    return false;
+  if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
+  if (value.model === undefined) return true;
+  const model = value.model;
+  return (
+    isRecord(model) &&
+    Object.keys(model).length === 3 &&
+    ['llmConnectionId', 'llmConnectionSlug', 'model'].every(
+      (key) =>
+        typeof model[key] === 'string' && model[key].trim().length > 0 && model[key].length <= 512,
+    )
+  );
+}
+
+export interface WorkHubDelegationCreateSpec {
+  readonly title: string;
+  readonly workspace: WorkHubDelegationWorkspace;
+  readonly defaults?: WorkHubCreateDefaults;
+}
+
+interface WorkHubCoordinationMessageEnvelope {
+  type: 'workhub_coordination';
+  id: string;
+  /** The Coordination Turn that owns this action. */
+  turnId: string;
+  ts: number;
+  schemaVersion:
+    | typeof WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION
+    | typeof WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION;
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  targetSessionId: string;
+  disposition: WorkHubDelegationDisposition;
+  /** Original user request retained as the action's authorization evidence. */
+  userText: string;
+  attachments?: AttachmentRef[];
+  /** Actual delegated content; omitted when the original request is used verbatim. */
+  delegationText?: string;
+  /** Present exactly for create_new. */
+  create?: WorkHubDelegationCreateSpec;
+}
+
+/**
+ * Atomic proof that one Coordination action and one target Message admission
+ * were committed together by the Runtime Host.
+ */
+export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
+  kind: 'delegation_assigned';
+  delegationId: string;
+  targetTurnId: string;
+  targetMessageId: string;
+  targetSessionName: string;
+  /** Copied, target-owned attachment locators admitted atomically with this record. */
+  targetAttachments?: AttachmentRef[];
+  steered?: true;
+  /** Present only when this assignment atomically supersedes an earlier link. */
+  replacesActionId?: string;
+  replacesDelegationId?: string;
+}
+
+/** Durable recovery intent written before destructive target cancellation/Stop. */
+export interface WorkHubDelegationReplacementRequestedMessage
+  extends WorkHubCoordinationMessageEnvelope {
+  schemaVersion: typeof WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION;
+  kind: 'delegation_replacement_requested';
+  replacesActionId: string;
+  replacesDelegationId: string;
+  replacedTargetSessionId: string;
+  replacedTargetMessageId: string;
+  targetSessionName: string;
+}
+
+/** Atomic proof that the old link became superseded by the replacement assignment. */
+export interface WorkHubDelegationSupersededMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION;
+  kind: 'delegation_superseded';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  supersededActionId: string;
+  supersededDelegationId: string;
+  replacementDelegationId: string;
+}
+
+/** Durable terminal proof that retirement succeeded but replacement admission did not. */
+export interface WorkHubDelegationReplacementAbortedMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION;
+  kind: 'delegation_replacement_aborted';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  abortedActionId: string;
+  abortedDelegationId: string;
+  targetSessionId: string;
+  reason: 'target_unavailable' | 'target_waiting_for_user';
+}
+
+export type WorkHubDelegationStopOutcome =
+  | 'cancelled_pending'
+  | 'stop_delivered'
+  | 'already_terminal'
+  | 'not_owned';
+
+/** Durable destructive claim written before attempting to retire one delegation. */
+export interface WorkHubDelegationStopRequestedMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_STOP_SCHEMA_VERSION;
+  kind: 'delegation_stop_requested';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  stopsActionId: string;
+  stopsDelegationId: string;
+  targetSessionId: string;
+  targetMessageId: string;
+  targetSessionName: string;
+  userText: string;
+}
+
+/** Durable observed result of a direct-stop attempt. */
+export interface WorkHubDelegationStopResolvedMessage {
+  type: 'workhub_coordination';
+  id: string;
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_STOP_SCHEMA_VERSION;
+  kind: 'delegation_stop_resolved';
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  stopsActionId: string;
+  stopsDelegationId: string;
+  targetSessionId: string;
+  outcome: WorkHubDelegationStopOutcome;
+  targetTurnId?: string;
+}
+
+/**
+ * The exact durable operation one WorkHub action identity is allowed to own.
+ *
+ * Per-record identity is keyed by the thing each record is about — an
+ * assignment by its action, a stop or replacement by its delegation — so no
+ * single record can reject an action id that crossed to another delegation or
+ * another disposition. This vocabulary names the one global owner that can.
+ */
+export type WorkHubActionOperation =
+  | 'answer_here'
+  | 'clarify'
+  | 'delegate_existing'
+  | 'create_new'
+  | 'replace'
+  | 'stop';
+
+/** Durable global binding from one action identity to one exact operation. */
+export interface WorkHubActionClaim {
+  readonly actionId: string;
+  readonly operation: WorkHubActionOperation;
+  readonly actionFingerprint: `sha256:${string}`;
+  /** The durable identity this action owns: a delegation or a Coordination Turn. */
+  readonly subject: string;
+}
+
+export type WorkHubActionClaimOutcome = 'claimed' | 'same_claim' | 'conflict';
+
+export interface WorkHubCoordinationActionMessage {
+  type: 'workhub_coordination';
+  kind: 'action_receipt';
+  schemaVersion: 1;
+  id: string;
+  turnId: string;
+  ts: number;
+  receipt: WorkHubActionReceipt;
+}
+
+export type WorkHubCoordinationMessage =
+  | WorkHubCoordinationActionMessage
+  | WorkHubDelegationAssignedMessage
+  | WorkHubDelegationReplacementRequestedMessage
+  | WorkHubDelegationReplacementAbortedMessage
+  | WorkHubDelegationSupersededMessage
+  | WorkHubDelegationStopRequestedMessage
+  | WorkHubDelegationStopResolvedMessage;
+
+function isWorkHubDelegationStopResolution(
+  outcome: unknown,
+  targetTurnId: unknown,
+): outcome is WorkHubDelegationStopOutcome {
+  const hasTargetTurnId = typeof targetTurnId === 'string' && targetTurnId.length > 0;
+  if (outcome === 'stop_delivered' || outcome === 'not_owned') return hasTargetTurnId;
+  if (outcome === 'cancelled_pending') return targetTurnId === undefined;
+  return outcome === 'already_terminal' && (targetTurnId === undefined || hasTargetTurnId);
 }
 
 export interface TurnRecord {
@@ -835,32 +1184,75 @@ export interface TurnRecord {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  failureMessage?: string;
+  retry?: ModelRetryDecision;
+}
+
+/**
+ * The notes the runtime writes: things that happened inside one invocation and
+ * are part of what that invocation did. Their record is its RuntimeEvent ledger.
+ */
+export const RUNTIME_SYSTEM_NOTE_KINDS = [
+  'context_compacted',
+  'context_compaction_failed_open',
+  'context_provider_dropping',
+  'context_window_suggestion',
+  'context_window_overrun',
+  'context_reported_window_exceeded',
+  'context_overflow_after_compaction',
+  'step_limit',
+] as const;
+
+/**
+ * Notes only legacy transcripts carry, still decoded so those rows stay
+ * readable. Nothing writes them: the Session header and the invocation's
+ * opening and terminal facts already own what each of them said.
+ */
+export const RETIRED_SYSTEM_NOTE_KINDS = [
+  'session_start',
+  'session_resume',
+  'mode_change',
+  'model_change',
+  'error',
+  'abort',
+] as const;
+
+export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
+export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE_KINDS)[number];
+
+export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
+  return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
 }
 
 export interface SystemNoteMessage {
   type: 'system_note';
   id: string;
-  /** Session-level notes omit turnId. */
+  /** Retired session-level notes omit turnId. */
   turnId?: string;
   ts: number;
-  kind:
-    | 'session_start'
-    | 'session_resume'
-    | 'mode_change'
-    | 'model_change'
-    | 'context_compacted'
-    | 'context_compaction_failed_open'
-    | 'step_limit'
-    | 'error'
-    | 'abort';
-  /** Shape depends on `kind`. */
+  kind: SystemNoteKind;
+  /**
+   * Shape depends on `kind`. `context_compaction_failed_open` carries
+   * `{ failOpenReason?: string }` — the reason the fold was refused (e.g.
+   * `coverage_miss`, `source_hash_mismatch`); when a turn is stopped before
+   * settlement, this note is the only durable record of the reason, because
+   * the `token_usage` diagnostic is never written (#4850).
+   */
   data?: unknown;
 }
 
 const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
-  ['displayText', 'attachments', 'quotes', 'inlineReferences', 'steeringEventId', 'origin'],
+  [
+    'displayText',
+    'attachments',
+    'directoryReferences',
+    'quotes',
+    'inlineReferences',
+    'steeringEventId',
+    'coordinationActionId',
+    'origin',
+  ],
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
@@ -920,10 +1312,11 @@ const TOKEN_USAGE_MESSAGE_SHAPE = defineObjectShape<TokenUsageMessage>()(
     'promptSegments',
     'contextBudget',
     'providerRequestTraceId',
+    'lastRequestAnchor',
   ],
 );
 const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
-  ['type', 'id', 'turnId', 'ts', 'status', 'partialOutputRetained'],
+  ['type', 'id', 'turnId', 'ts', 'status'],
   [
     'parentTurnId',
     'retriedFromTurnId',
@@ -933,8 +1326,151 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'abortedAt',
     'abortSource',
     'errorClass',
+    'failureMessage',
+    'retry',
   ],
+  ['partialOutputRetained'],
 );
+const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationAssignedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'targetSessionId',
+      'disposition',
+      'userText',
+      'delegationId',
+      'targetTurnId',
+      'targetMessageId',
+      'targetSessionName',
+    ],
+    [
+      'attachments',
+      'targetAttachments',
+      'create',
+      'steered',
+      'replacesActionId',
+      'replacesDelegationId',
+      'delegationText',
+    ],
+  );
+const WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationReplacementRequestedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'targetSessionId',
+      'disposition',
+      'userText',
+      'replacesActionId',
+      'replacesDelegationId',
+      'replacedTargetSessionId',
+      'replacedTargetMessageId',
+      'targetSessionName',
+    ],
+    ['attachments', 'create', 'delegationText'],
+  );
+const WORKHUB_DELEGATION_SUPERSEDED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationSupersededMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'supersededActionId',
+      'supersededDelegationId',
+      'replacementDelegationId',
+    ],
+    [],
+  );
+const WORKHUB_DELEGATION_REPLACEMENT_ABORTED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationReplacementAbortedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'abortedActionId',
+      'abortedDelegationId',
+      'targetSessionId',
+      'reason',
+    ],
+    [],
+  );
+const WORKHUB_DELEGATION_STOP_REQUESTED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationStopRequestedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'stopsActionId',
+      'stopsDelegationId',
+      'targetSessionId',
+      'targetMessageId',
+      'targetSessionName',
+      'userText',
+    ],
+    [],
+  );
+const WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationStopResolvedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'stopsActionId',
+      'stopsDelegationId',
+      'targetSessionId',
+      'outcome',
+    ],
+    ['targetTurnId'],
+  );
+const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
+  ['title', 'workspace'],
+  ['defaults'],
+);
+const WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE = defineObjectShape<
+  Extract<WorkHubDelegationWorkspace, { kind: 'project' }>
+>()(['kind', 'projectId'], []);
+const WORKHUB_DELEGATION_HOST_PATH_WORKSPACE_SHAPE = defineObjectShape<
+  Extract<WorkHubDelegationWorkspace, { kind: 'host_path' }>
+>()(['kind', 'path'], []);
 const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['type', 'id', 'ts', 'kind'],
   ['turnId', 'data'],
@@ -947,29 +1483,46 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set([
-  'session_start',
-  'session_resume',
-  'mode_change',
-  'model_change',
-  'context_compacted',
-  'context_compaction_failed_open',
-  'step_limit',
-  'error',
-  'abort',
+const SYSTEM_NOTE_KINDS = new Set<string>([
+  ...RUNTIME_SYSTEM_NOTE_KINDS,
+  ...RETIRED_SYSTEM_NOTE_KINDS,
 ]);
 
-export function decodeStoredMessage(value: unknown): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
+export function decodeCanonicalMessage(value: unknown): StoredMessage {
+  return decodeMessage(value, decodeCanonicalToolResultContent);
+}
+
+export function decodeStoredMessage(persisted: PersistedValue<StoredMessage>): StoredMessage {
+  return decodeMessage(persisted as unknown, (content) =>
+    decodePersistedToolResultContent(markPersisted<ToolResultContent>(content)),
+  );
+}
+
+function decodeMessage(
+  value: unknown,
+  decodeToolResultContent: (content: unknown) => ToolResultContent,
+): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined)
+        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined) &&
+        (message.coordinationActionId === undefined ||
+          (typeof message.coordinationActionId === 'string' &&
+            message.coordinationActionId.length > 0))
       ) {
-        const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
+        const {
+          displayText,
+          attachments,
+          directoryReferences,
+          quotes,
+          inlineReferences,
+          origin,
+          ...envelope
+        } = message;
         const decodedOrigin = origin === undefined ? undefined : decodeTurnOrigin(origin);
         try {
           return {
@@ -978,6 +1531,7 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
               text: message.text,
               displayText,
               attachments,
+              directoryReferences,
               quotes,
               inlineReferences,
             }),
@@ -1057,7 +1611,6 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
         hasExactShape(message, TURN_STATE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
         isTurnStatus(message.status) &&
-        typeof message.partialOutputRetained === 'boolean' &&
         isOptionalString(message.parentTurnId) &&
         isOptionalString(message.retriedFromTurnId) &&
         isOptionalString(message.regeneratedFromTurnId) &&
@@ -1065,9 +1618,19 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
         isOptionalString(message.parentSessionId) &&
         (message.abortedAt === undefined || isFiniteNumber(message.abortedAt)) &&
         isOptionalString(message.abortSource) &&
-        isOptionalString(message.errorClass)
+        isOptionalString(message.errorClass) &&
+        (message.failureMessage === undefined ||
+          (typeof message.failureMessage === 'string' &&
+            new TextEncoder().encode(message.failureMessage).byteLength <=
+              MODEL_FAILURE_MESSAGE_MAX_BYTES)) &&
+        (message.retry === undefined || isModelRetryDecision(message.retry))
       )
-        return message as unknown as TurnStateMessage;
+        return pickShape(message as unknown as TurnStateMessage, TURN_STATE_MESSAGE_SHAPE);
+      break;
+    case 'workhub_coordination':
+      if (isWorkHubCoordinationMessage(message)) {
+        return message as unknown as WorkHubCoordinationMessage;
+      }
       break;
     case 'system_note':
       if (
@@ -1080,6 +1643,193 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
       break;
   }
   throw new Error('Invalid stored message schema');
+}
+
+function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  if (message.kind === 'action_receipt')
+    return (
+      hasMessageEnvelope(message, true) &&
+      message.schemaVersion === 1 &&
+      Object.keys(message).every((k) =>
+        ['type', 'kind', 'schemaVersion', 'id', 'turnId', 'ts', 'receipt'].includes(k),
+      ) &&
+      isWorkHubActionReceipt(message.receipt)
+    );
+
+  if (message.kind === 'delegation_stop_requested') {
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_STOP_REQUESTED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_STOP_SCHEMA_VERSION &&
+      isWorkHubActionIdentity(message) &&
+      typeof message.stopsActionId === 'string' &&
+      message.stopsActionId.length > 0 &&
+      typeof message.stopsDelegationId === 'string' &&
+      message.stopsDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      typeof message.targetMessageId === 'string' &&
+      message.targetMessageId.length > 0 &&
+      typeof message.targetSessionName === 'string' &&
+      message.targetSessionName.trim().length > 0 &&
+      typeof message.userText === 'string' &&
+      message.userText.trim().length > 0
+    );
+  }
+  if (message.kind === 'delegation_stop_resolved') {
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_STOP_SCHEMA_VERSION &&
+      isWorkHubActionIdentity(message) &&
+      typeof message.stopsActionId === 'string' &&
+      message.stopsActionId.length > 0 &&
+      typeof message.stopsDelegationId === 'string' &&
+      message.stopsDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      isWorkHubDelegationStopResolution(message.outcome, message.targetTurnId)
+    );
+  }
+  if (message.kind === 'delegation_replacement_aborted') {
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_REPLACEMENT_ABORTED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION &&
+      typeof message.actionId === 'string' &&
+      typeof message.actionFingerprint === 'string' &&
+      /^sha256:[a-f0-9]{64}$/u.test(message.actionFingerprint) &&
+      typeof message.coordinationTurnId === 'string' &&
+      message.turnId === message.coordinationTurnId &&
+      typeof message.abortedActionId === 'string' &&
+      message.abortedActionId.length > 0 &&
+      typeof message.abortedDelegationId === 'string' &&
+      message.abortedDelegationId.length > 0 &&
+      typeof message.targetSessionId === 'string' &&
+      message.targetSessionId.length > 0 &&
+      (message.reason === 'target_unavailable' || message.reason === 'target_waiting_for_user')
+    );
+  }
+  if (message.kind === 'delegation_superseded') {
+    return (
+      hasMessageEnvelope(message, true) &&
+      hasExactShape(message, WORKHUB_DELEGATION_SUPERSEDED_MESSAGE_SHAPE) &&
+      message.schemaVersion === WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION &&
+      typeof message.actionId === 'string' &&
+      typeof message.actionFingerprint === 'string' &&
+      /^sha256:[a-f0-9]{64}$/u.test(message.actionFingerprint) &&
+      typeof message.coordinationTurnId === 'string' &&
+      message.turnId === message.coordinationTurnId &&
+      typeof message.supersededActionId === 'string' &&
+      message.supersededActionId.length > 0 &&
+      typeof message.supersededDelegationId === 'string' &&
+      message.supersededDelegationId.length > 0 &&
+      typeof message.replacementDelegationId === 'string' &&
+      message.replacementDelegationId.length > 0
+    );
+  }
+  const common =
+    hasMessageEnvelope(message, true) &&
+    (message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION ||
+      message.schemaVersion === WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION) &&
+    typeof message.actionId === 'string' &&
+    typeof message.actionFingerprint === 'string' &&
+    /^sha256:[a-f0-9]{64}$/u.test(message.actionFingerprint) &&
+    typeof message.coordinationTurnId === 'string' &&
+    message.turnId === message.coordinationTurnId &&
+    typeof message.targetSessionId === 'string' &&
+    typeof message.userText === 'string' &&
+    message.userText.trim().length > 0 &&
+    isWorkHubMessageAttachments(message.attachments) &&
+    (message.delegationText === undefined ||
+      (typeof message.delegationText === 'string' && message.delegationText.trim().length > 0)) &&
+    ((message.disposition === 'delegate_existing' && message.create === undefined) ||
+      (message.disposition === 'create_new' && isWorkHubDelegationCreateSpec(message.create))) &&
+    (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
+  if (!common) return false;
+  if (message.kind === 'delegation_replacement_requested') {
+    return (
+      message.schemaVersion === WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION &&
+      hasExactShape(message, WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE) &&
+      typeof message.replacesActionId === 'string' &&
+      message.replacesActionId.length > 0 &&
+      typeof message.replacesDelegationId === 'string' &&
+      message.replacesDelegationId.length > 0 &&
+      typeof message.replacedTargetSessionId === 'string' &&
+      message.replacedTargetSessionId.length > 0 &&
+      typeof message.replacedTargetMessageId === 'string' &&
+      message.replacedTargetMessageId.length > 0 &&
+      typeof message.targetSessionName === 'string' &&
+      message.targetSessionName.trim().length > 0
+    );
+  }
+  return (
+    message.kind === 'delegation_assigned' &&
+    hasExactShape(message, WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE) &&
+    isWorkHubMessageAttachments(message.targetAttachments) &&
+    typeof message.delegationId === 'string' &&
+    typeof message.targetTurnId === 'string' &&
+    typeof message.targetMessageId === 'string' &&
+    typeof message.targetSessionName === 'string' &&
+    message.targetSessionName.trim().length > 0 &&
+    (message.steered === undefined || message.steered === true) &&
+    ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
+      message.replacesActionId === undefined &&
+      message.replacesDelegationId === undefined) ||
+      (message.schemaVersion === WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION &&
+        typeof message.replacesActionId === 'string' &&
+        message.replacesActionId.length > 0 &&
+        typeof message.replacesDelegationId === 'string' &&
+        message.replacesDelegationId.length > 0))
+  );
+}
+
+function isWorkHubActionIdentity(message: Record<string, unknown>): boolean {
+  return (
+    typeof message.actionId === 'string' &&
+    message.actionId.length > 0 &&
+    typeof message.actionFingerprint === 'string' &&
+    /^sha256:[a-f0-9]{64}$/u.test(message.actionFingerprint) &&
+    typeof message.coordinationTurnId === 'string' &&
+    message.coordinationTurnId.length > 0 &&
+    message.turnId === message.coordinationTurnId
+  );
+}
+
+function isWorkHubMessageAttachments(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeMessageContent({ text: '', attachments: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isWorkHubDelegationCreateSpec(value: unknown): value is WorkHubDelegationCreateSpec {
+  if (
+    !isRecord(value) ||
+    !hasExactShape(value, WORKHUB_DELEGATION_CREATE_SHAPE) ||
+    (value.defaults !== undefined && !isWorkHubCreateDefaults(value.defaults)) ||
+    typeof value.title !== 'string' ||
+    value.title.trim().length === 0 ||
+    !isRecord(value.workspace)
+  ) {
+    return false;
+  }
+  if (value.workspace.kind === 'project') {
+    return (
+      hasExactShape(value.workspace, WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE) &&
+      typeof value.workspace.projectId === 'string' &&
+      value.workspace.projectId.length > 0
+    );
+  }
+  return (
+    value.workspace.kind === 'host_path' &&
+    hasExactShape(value.workspace, WORKHUB_DELEGATION_HOST_PATH_WORKSPACE_SHAPE) &&
+    typeof value.workspace.path === 'string' &&
+    value.workspace.path.length > 0
+  );
 }
 
 function decodeStoredMessageContent(
@@ -1143,27 +1893,13 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
 export const STEP_LIMIT_NOTICE_TEXT =
   'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
 
-/**
- * View-boundary facts for explaining a model selection without adding a
- * second persisted model authority. Assistant rows already record the actual
- * model used by each completed step, so the latest such row is the only
- * durable model fact the switcher needs.
- */
-export function deriveModelSwitchTranscript(messages: readonly StoredMessage[]): {
-  hasConversation: boolean;
-  lastUsedModel?: string;
-} {
-  let lastUsedModel: string | undefined;
+/** Latest actual model recorded by a completed assistant step. */
+export function latestAssistantModelId(messages: readonly StoredMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.type !== 'assistant') continue;
-    lastUsedModel = message.modelId;
-    break;
+    if (message?.type === 'assistant') return message.modelId;
   }
-  return {
-    hasConversation: messages.length > 0,
-    ...(lastUsedModel ? { lastUsedModel } : {}),
-  };
+  return undefined;
 }
 
 export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecord[] {
@@ -1184,11 +1920,6 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
     const latestState = bucket
       .filter((message): message is TurnStateMessage => message.type === 'turn_state')
       .at(-1);
-    const partialOutputRetained = bucket.some(
-      (message) =>
-        (message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result',
-    );
     if (latestState) {
       return {
         turnId,
@@ -1206,14 +1937,14 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortedAt !== undefined ? { abortedAt: latestState.abortedAt } : {}),
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
-        partialOutputRetained: latestState.partialOutputRetained || partialOutputRetained,
+        ...(latestState.failureMessage ? { failureMessage: latestState.failureMessage } : {}),
+        ...(latestState.retry ? { retry: latestState.retry } : {}),
       };
     }
     return {
       turnId,
       status: inferLegacyTurnStatus(bucket),
       statusSource: 'inferred',
-      partialOutputRetained,
     };
   });
 }

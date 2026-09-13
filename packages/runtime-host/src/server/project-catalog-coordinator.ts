@@ -1,3 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import type { ProjectRecord } from '@maka/core/project';
 import {
@@ -7,7 +28,7 @@ import {
   ProjectPathConflictError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
-} from '@maka/storage';
+} from '@maka/storage/project-catalog';
 import {
   decodeProjectCatalogProject,
   PROJECT_CATALOG_PAGE_MAX_BYTES,
@@ -27,9 +48,7 @@ import {
   HostProjectDirectoryAuthority,
   type ResolvedProjectDirectoryRegistration,
 } from './project-directory-authority.js';
-import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
-import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
@@ -39,8 +58,8 @@ export class HostProjectCatalogCoordinator {
 
   constructor(
     private readonly catalog: ProjectCatalog,
-    private readonly projectChanges: HostProjectCatalogChangeService,
-    private readonly sessionChanges: HostSessionCatalogChangeService,
+    private readonly projectChanges: { publish(): void },
+    private readonly sessionChanges: { publish(sessionId: string): void },
     private readonly membership: HostProjectMembershipGate,
     private readonly requestDrain: () => void,
     private readonly directories = new HostProjectDirectoryAuthority(),
@@ -140,7 +159,9 @@ export class HostProjectCatalogCoordinator {
   ): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult(await this.catalog.register(input.path));
+        return projectResult(
+          await this.catalog.register(input.path, { prefer: input.prefer ?? true }),
+        );
       case 'register_directory': {
         if (!directoryRegistration) throw new TypeError('Project directory was not resolved');
         return projectResult(
@@ -233,20 +254,20 @@ function createPage(
   offset: number,
 ): ProjectCatalogQueryResult {
   const pageItems: ProjectCatalogPageItem[] = [];
+  const budget = new JsonArrayPageBudget(PROJECT_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    view,
+    revision,
+    projectCount,
+    items: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < items.length; index += 1) {
     if (pageItems.length >= PROJECT_CATALOG_PAGE_MAX_ITEMS) break;
     const item = items[index];
     if (!item) throw new Error('Project catalog projection index was out of bounds');
     const nextOffset = index + 1;
-    const candidate: ProjectCatalogQueryResult = {
-      kind: 'page',
-      view,
-      revision,
-      projectCount,
-      items: [...pageItems, item],
-      nextCursor: nextOffset < items.length ? encodeCursor(nextOffset) : null,
-    };
-    if (encodedBytes(candidate) > PROJECT_CATALOG_PAGE_MAX_BYTES) break;
+    if (!budget.tryAppend(item, nextOffset < items.length ? encodeCursor(nextOffset) : null)) break;
     pageItems.push(item);
   }
   if (pageItems.length === 0 && offset < items.length) {
@@ -271,10 +292,6 @@ function decodeCursor(cursor: string): number | undefined {
   if (!/^(?:0|[1-9]\d*)$/.test(cursor)) return undefined;
   const offset = Number(cursor);
   return Number.isSafeInteger(offset) ? offset : undefined;
-}
-
-function encodedBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
 function isInvalidPathError(error: unknown): boolean {

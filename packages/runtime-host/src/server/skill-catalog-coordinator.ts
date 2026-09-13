@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   OperationOutcome,
   SkillCatalogInvocableQueryInput,
@@ -33,6 +52,17 @@ type CatalogOperation =
 export interface SkillCatalogInvocableContext {
   readonly projectRoot: string;
   readonly host: HostCapabilities;
+}
+
+export class SkillCatalogInvocableContextError extends Error {
+  readonly name = 'SkillCatalogInvocableContextError';
+
+  constructor(
+    readonly code: 'not_found' | 'session_archived',
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export type SkillCatalogInvocableContextResolver = (
@@ -96,14 +126,26 @@ export class HostSkillCatalogCoordinator {
         },
       });
     }
-    return this.#admitProtocolOperation('skill.catalog.invocable.query', async () => {
-      const resolved = await this.#resolveInvocableContext!(input, context);
-      return this.#repository.queryInvocable(
-        repositoryInvocableQueryInput(input),
-        { projectRoot: resolved.projectRoot },
-        resolved.host,
-      );
-    });
+    return this.#admitProtocolOperation(
+      'skill.catalog.invocable.query',
+      async () => {
+        const resolved = await this.#resolveInvocableContext!(input, context);
+        return this.#repository.queryInvocable(
+          repositoryInvocableQueryInput(input),
+          { projectRoot: resolved.projectRoot },
+          resolved.host,
+        );
+      },
+      (error) => {
+        if (error instanceof SkillCatalogInvocableContextError) {
+          return {
+            ok: false,
+            error: { code: error.code, message: error.message },
+          };
+        }
+        return repositoryFailure('skill.catalog.invocable.query', error);
+      },
+    );
   }
 
   mutate(input: SkillCatalogMutateInput): Promise<OperationOutcome<'skill.catalog.mutate'>> {
@@ -156,6 +198,8 @@ export class HostSkillCatalogCoordinator {
   #admitProtocolOperation<K extends CatalogOperation>(
     operation: K,
     run: () => Promise<Extract<OperationOutcome<K>, { ok: true }>['result']>,
+    onFailure: (error: unknown) => OperationOutcome<K> = (error) =>
+      repositoryFailure(operation, error),
   ): Promise<OperationOutcome<K>> {
     if (!this.#accepting) {
       return Promise.resolve({
@@ -167,7 +211,7 @@ export class HostSkillCatalogCoordinator {
       try {
         return { ok: true, result: await run() } as OperationOutcome<K>;
       } catch (error) {
-        return repositoryFailure<K>(operation, error);
+        return onFailure(error);
       }
     });
   }

@@ -1,11 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
-import type {
-  SessionCatalogProjection,
-  SessionContinuitySnapshot,
-  SubscriptionFrame,
-  TurnSnapshot,
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionCatalogProjection,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
+  type TurnSnapshot,
 } from '@maka/runtime-host/protocol';
 import { BotSessionUnavailableError } from '../bot-session-adapter.js';
 import {
@@ -16,7 +36,7 @@ import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.j
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
-test('creates an explore Session through the Host-owned default model route', async () => {
+test('creates a bot-mode Session through the Host-owned default model route', async () => {
   const creates: unknown[] = [];
   const changes: unknown[] = [];
   const client = botClient({
@@ -48,7 +68,7 @@ test('creates an explore Session through the Host-owned default model route', as
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'explore',
+      mode: 'bot',
     },
   ]);
   assert.deepEqual(changes, [
@@ -83,6 +103,39 @@ test('prepares a bound Session without exposing Host configuration revisions to 
   });
   await assert.rejects(
     unavailable.prepareSession('removed-session'),
+    BotSessionUnavailableError,
+  );
+});
+
+test('rejects archived Sessions before and after a permission transition', async () => {
+  const initiallyArchived = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      getSession: async () =>
+        session('bot-session-1', { isArchived: true, status: 'active' }),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+  await assert.rejects(
+    initiallyArchived.prepareSession('bot-session-1'),
+    BotSessionUnavailableError,
+  );
+
+  const archivedDuringUpdate = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
+      updateSessionConfiguration: async (sessionId) =>
+        session(sessionId, {
+          permissionMode: 'explore',
+          isArchived: true,
+          status: 'active',
+        }),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+  await assert.rejects(
+    archivedDuringUpdate.prepareSession('bot-session-1'),
     BotSessionUnavailableError,
   );
 });
@@ -364,7 +417,7 @@ function session(
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,
@@ -373,6 +426,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: false,
     model: 'test-model',
@@ -401,13 +455,12 @@ function startedTurn(turn: TurnSnapshot) {
 
 function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'bot-session-1',
       metadataRevision: 1,
       status: rootTurn ? 'running' : 'active',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,

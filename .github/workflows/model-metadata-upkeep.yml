@@ -1,0 +1,163 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Model metadata upkeep
+
+on:
+  schedule:
+    # Weekly, offset from the hour to reduce peak-time scheduling delays. The
+    # snapshot is a build input a human reviews, so a nightly cadence would
+    # only stack five near-identical pull requests against one week of upstream
+    # movement, on runners the whole foundation shares.
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-metadata-upkeep
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # A fork inherits the schedule but owns neither the branch this pushes nor
+    # the pull request it opens.
+    if: github.repository == 'apache/maka'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Report snapshot drift against models.dev
+        # Exit 2 is "upstream moved", which is the expected outcome and the
+        # reason this step exists. Any other non-zero status is the command
+        # itself failing, and the job stops on it.
+        run: |
+          npm run --silent check:model-metadata-drift > "$RUNNER_TEMP/drift.txt" || {
+            status=$?
+            cat "$RUNNER_TEMP/drift.txt"
+            [ "$status" -eq 2 ] || exit "$status"
+          }
+
+      - name: Publish the drift report
+        run: |
+          {
+            echo '### models.dev drift'
+            echo ''
+            echo '```text'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --accept-upstream-removals, because the review seat this job is built
+      # around is the draft pull request below. A person still inspects every
+      # removal and still decides, in the diff, with the drift report in the
+      # body; refusing here would only make the job red every week, since it
+      # cannot rerun itself the way the acknowledgement asks a human to.
+      - name: Refresh the snapshot from models.dev
+        run: npm run refresh:model-metadata -- --accept-upstream-removals
+
+      - name: Verify the regenerated outputs
+        run: npm run check:model-metadata
+
+      - name: Detect a snapshot change
+        id: change
+        run: |
+          if git diff --quiet -- scripts/model-metadata/models-dev-api.snapshot.json; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the review pull request
+        if: steps.change.outputs.changed == 'true'
+        env:
+          BRANCH: automation/model-metadata-refresh
+          GH_TOKEN: ${{ github.token }}
+          TITLE: 'chore(model-metadata): refresh the models.dev snapshot'
+        run: |
+          {
+            echo '## Summary'
+            echo ''
+            echo 'Scheduled `refresh:model-metadata` run. The snapshot is the build'
+            echo 'input for the bundled model catalog; this only moves it to what'
+            echo 'models.dev serves today.'
+            echo ''
+            echo 'Refs #4398'
+            echo ''
+            echo '## Verification'
+            echo ''
+            echo 'The workflow ran `refresh:model-metadata` and `check:model-metadata`'
+            echo 'before opening this. Drift against upstream at refresh time:'
+            echo ''
+            echo '```text'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/pr-body.md"
+          git config user.name 'Apache Maka'
+          git config user.email 'commits@maka.apache.org'
+          git switch -c "$BRANCH"
+          git add scripts/model-metadata/models-dev-api.snapshot.json
+          git commit -m "$TITLE"
+          # The token travels in a header rather than the remote URL, which git
+          # echoes back in its own error messages.
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          REMOTE="https://github.com/${GITHUB_REPOSITORY}"
+          TIP="$(git -c "http.extraheader=Authorization: Basic $AUTH" \
+            ls-remote "$REMOTE" "refs/heads/$BRANCH" | cut -f1)"
+          if [ -n "$TIP" ]; then
+            # This branch only ever carries commits this job wrote. Anything
+            # else is a person working on the open pull request, and a force
+            # push would erase it.
+            git -c "http.extraheader=Authorization: Basic $AUTH" \
+              fetch --depth=1 "$REMOTE" "refs/heads/$BRANCH"
+            if [ "$(git log -1 --format=%s FETCH_HEAD)" != "$TITLE" ]; then
+              echo "::error::$BRANCH carries a commit this workflow did not write; refusing to overwrite it."
+              exit 1
+            fi
+            git -c "http.extraheader=Authorization: Basic $AUTH" push \
+              "--force-with-lease=refs/heads/$BRANCH:$TIP" "$REMOTE" "HEAD:refs/heads/$BRANCH"
+          else
+            git -c "http.extraheader=Authorization: Basic $AUTH" push \
+              "$REMOTE" "HEAD:refs/heads/$BRANCH"
+          fi
+          # A plain existence lookup also succeeds for a closed pull request,
+          # which would leave a maintainer's decision to close one silently
+          # disabling this job forever. Only an open one is one to update.
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" -gt 0 ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/pr-body.md"
+            echo "Updated the open pull request on $BRANCH."
+          else
+            gh pr create --draft --base main --head "$BRANCH" \
+              --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi

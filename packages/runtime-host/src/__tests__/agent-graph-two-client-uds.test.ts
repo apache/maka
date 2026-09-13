@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -60,7 +80,8 @@ test('two Clients query and control one Agent graph through Session invalidation
       const graph = new HostAgentGraphCoordinator({
         authority,
         continuity,
-        stopExecution: (rootSessionId) => authority.stopExecution(rootSessionId),
+        stopExecution: (rootSessionId, expectedGraphId) =>
+          authority.stopExecution(rootSessionId, expectedGraphId),
       });
       return {
         handlers: {
@@ -96,8 +117,8 @@ test('two Clients query and control one Agent graph through Session invalidation
   let tui: RuntimeHostConnection | undefined;
   let subscription: RuntimeHostSessionSubscription | undefined;
   try {
-    desktop = await connect(root, 'desktop');
-    tui = await connect(root, 'tui');
+    desktop = await connect(root);
+    tui = await connect(root);
     subscription = await desktop.openSessionSubscription({
       sessionId: ROOT_SESSION_ID,
       transcript: { kind: 'none' },
@@ -124,8 +145,11 @@ test('two Clients query and control one Agent graph through Session invalidation
       'active',
     );
 
-    tui = await connect(root, 'tui', onLivenessProbe);
-    const stopped = await tui.request('agent.graph.stop', { rootSessionId: ROOT_SESSION_ID });
+    tui = await connect(root, onLivenessProbe);
+    const stopped = await tui.request('agent.graph.stop', {
+      rootSessionId: ROOT_SESSION_ID,
+      expectedGraphId: GRAPH_ID,
+    });
     assert.deepEqual(stopped, { rootSessionId: ROOT_SESSION_ID, graphId: GRAPH_ID });
     assert.equal(authority.stopCount, 1);
 
@@ -157,7 +181,13 @@ test('two Clients query and control one Agent graph through Session invalidation
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
+  | 'currentGraphId'
+  | 'getGraphSnapshot'
+  | 'getSnapshot'
+  | 'inspectGraphOperator'
+  | 'inspectOperator'
+  | 'listGraphEpochPage'
+  | 'subscribeAll'
 >;
 
 class FakeAgentGraphAuthority implements GraphAuthority {
@@ -169,11 +199,35 @@ class FakeAgentGraphAuthority implements GraphAuthority {
     return this.#snapshot.graphId;
   }
 
+  async listGraphEpochPage() {
+    return {
+      epochs: [
+        {
+          schemaVersion: 1 as const,
+          rootSessionId: ROOT_SESSION_ID,
+          epoch: 1,
+          graphId: this.#snapshot.graphId,
+          createdAt: 0,
+        },
+      ],
+      nextBeforeEpoch: null,
+      currentEpoch: 1,
+    };
+  }
+
   async getSnapshot(): Promise<AgentGraphClientSnapshot> {
     return structuredClone(this.#snapshot);
   }
 
+  async getGraphSnapshot(): Promise<AgentGraphClientSnapshot> {
+    return structuredClone(this.#snapshot);
+  }
+
   async inspectOperator(): Promise<AgentGraphOperatorInspection> {
+    return inspection(this.#snapshot);
+  }
+
+  async inspectGraphOperator(): Promise<AgentGraphOperatorInspection> {
     return inspection(this.#snapshot);
   }
 
@@ -182,8 +236,9 @@ class FakeAgentGraphAuthority implements GraphAuthority {
    *  probe cycles — causal ordering, no fixed timing at all. */
   stopGate: Promise<void> = Promise.resolve();
 
-  async stopExecution(rootSessionId: string): Promise<void> {
+  async stopExecution(rootSessionId: string, expectedGraphId?: string): Promise<void> {
     assert.equal(rootSessionId, ROOT_SESSION_ID);
+    assert.equal(expectedGraphId, GRAPH_ID);
     await this.stopGate;
     this.stopCount += 1;
     this.#snapshot.status = 'stopped';
@@ -205,12 +260,10 @@ class FakeAgentGraphAuthority implements GraphAuthority {
 
 async function connect(
   rootPath: string,
-  surface: 'desktop' | 'tui',
   onLivenessProbe?: () => void,
 ): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     livenessIntervalMs: LIVENESS_INTERVAL_MS,
     onLivenessProbe,
@@ -307,7 +360,6 @@ function canonical(hostEpoch: string): CanonicalSessionProjection {
       metadataRevision: 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     rootTurn: null,
@@ -315,18 +367,4 @@ function canonical(hostEpoch: string): CanonicalSessionProjection {
     queue: { hostEpoch, queueRevision: 0, steering: [], followup: [] },
     interactions: { pending: [] },
   };
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }

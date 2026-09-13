@@ -1,4 +1,23 @@
-import { sessionRevisionFamilyId } from '@maka/core/session';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { isWorkHubCoordinationSessionTarget, sessionRevisionFamilyId } from '@maka/core/session';
 import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
@@ -12,12 +31,15 @@ import {
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
 import { type SessionManager } from '@maka/runtime/session-manager';
-import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
+import type { AgentGraphRetirementDisposition } from '@maka/runtime/stream-graph-coordinator';
+import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import {
   type OperationOutcome,
   type SessionCatalogItem,
   type SessionLifecycleSetInput,
   type SessionRemoveInput,
+  type SessionRemovePreviewInput,
   type SessionRemoveResult,
 } from '../protocol/index.js';
 import {
@@ -49,7 +71,7 @@ type RetirementStores = Pick<
   | 'listPendingSessionRetirementCleanupIds'
   | 'completeSessionRetirementCleanup'
   | 'removeSessionsVersioned'
-  | 'setSessionsLifecycleVersioned'
+  | 'setSessionsArchivedVersioned'
 >;
 
 type RetirementRoot = Pick<RootTurnCoordinator, 'readRootState'>;
@@ -64,7 +86,7 @@ type RetirementSessionEffects = {
   hasLiveSessionState(sessionId: string): boolean;
 };
 type RetirementGraph = {
-  hasLiveSessionState(sessionId: string): Promise<boolean>;
+  readRetirementDisposition(sessionId: string): Promise<AgentGraphRetirementDisposition>;
   listGraphIds(sessionId: string): Promise<readonly string[]>;
 };
 type RetirementGraphWake = {
@@ -101,7 +123,8 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
-  readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
+  readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
+  readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
@@ -113,6 +136,11 @@ interface StableFamily {
   readonly sessionIds: readonly string[];
   readonly records: ReadonlyMap<string, SessionHeaderSnapshot>;
   readonly admission: SessionAdmissionLease;
+}
+
+interface StableRemovalPlan {
+  readonly remove: StableFamily;
+  readonly archive: StableFamily;
 }
 
 interface RetirementHandles {
@@ -128,6 +156,18 @@ class RetryFamilyResolution extends Error {
   }
 }
 
+class RetryRemovalPlanResolution extends Error {
+  readonly name = 'RetryRemovalPlanResolution';
+
+  constructor(
+    readonly removeSessionIds: readonly string[],
+    readonly archiveSessionIds: readonly string[],
+    readonly archiveGuardSessionIds: readonly string[],
+  ) {
+    super('Session removal plan changed before retirement admission');
+  }
+}
+
 class SessionRetirementBusyError extends Error {
   readonly name = 'SessionRetirementBusyError';
 }
@@ -137,6 +177,7 @@ export class HostSessionRetirementCoordinator {
   readonly handlers: SessionRetirementOperationHandlerMap = {
     'session.lifecycle.set': (input) => this.#setLifecycle(input),
     'session.remove': (input) => this.#remove(input),
+    'session.remove.preview': (input) => this.#previewRemoval(input),
   };
 
   readonly #stores: RetirementStores;
@@ -154,7 +195,8 @@ export class HostSessionRetirementCoordinator {
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
-  readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
+  readonly #sessionTodo: HostSessionRetirementCoordinatorOptions['sessionTodo'];
+  readonly #contextOffload: HostSessionRetirementCoordinatorOptions['contextOffload'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
@@ -181,7 +223,8 @@ export class HostSessionRetirementCoordinator {
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
-    this.#taskLedger = options.taskLedger;
+    this.#sessionTodo = options.sessionTodo;
+    this.#contextOffload = options.contextOffload;
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
@@ -191,6 +234,7 @@ export class HostSessionRetirementCoordinator {
 
   async recover(): Promise<void> {
     await this.#stores.reconcileOrphanedAgentGraphRetirements();
+    await this.#reconcileOrphanedSubagentArchives();
     this.#scheduleCleanup(await this.#stores.listPendingSessionRetirementCleanupIds());
   }
 
@@ -206,12 +250,7 @@ export class HostSessionRetirementCoordinator {
       return await this.#withStableFamily(input.sessionId, async (family) => {
         const target = requireFamilyRecord(family, input.sessionId);
         const archived = input.state === 'archived';
-        if (
-          [...family.records.values()].every(
-            ({ header }) =>
-              header.isArchived === archived && (header.status === 'archived') === archived,
-          )
-        ) {
+        if ([...family.records.values()].every(({ header }) => header.isArchived === archived)) {
           return lifecycleSuccess(
             projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );
@@ -220,7 +259,7 @@ export class HostSessionRetirementCoordinator {
         if (!archived) {
           let committed = false;
           try {
-            await this.#stores.setSessionsLifecycleVersioned(versionedFamily(family), 'active');
+            await this.#stores.setSessionsArchivedVersioned(versionedFamily(family), false);
             committed = true;
             this.#goals.unarchiveSessions(family.sessionIds);
             await this.#refreshFamily(family);
@@ -240,10 +279,7 @@ export class HostSessionRetirementCoordinator {
           await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
           const committable = await this.#refreshFamilyRecords(family);
-          await this.#stores.setSessionsLifecycleVersioned(
-            versionedFamily(committable),
-            'archived',
-          );
+          await this.#stores.setSessionsArchivedVersioned(versionedFamily(committable), true);
           committed = true;
           handles.goal.commit();
           handles.scheduledTasks.commit();
@@ -286,8 +322,8 @@ export class HostSessionRetirementCoordinator {
     if (probe.kind === 'absent') return removeFailure('not_found', 'Session does not exist');
 
     try {
-      return await this.#withStableFamily(input.sessionId, async (family) => {
-        const target = requireFamilyRecord(family, input.sessionId);
+      return await this.#withStableRemovalPlan(input.sessionId, async (plan) => {
+        const target = requireFamilyRecord(plan.remove, input.sessionId);
         if (target.revision !== input.expectedRevision) {
           return removeOutcome({
             kind: 'revision_conflict',
@@ -296,36 +332,147 @@ export class HostSessionRetirementCoordinator {
           });
         }
 
-        let handles: RetirementHandles | undefined;
+        let removeHandles: RetirementHandles | undefined;
+        let archiveHandles: RetirementHandles | undefined;
         let committed = false;
         try {
-          handles = await this.#prepareRetirement(family, 'remove');
-          await this.#finalizeWorkspacePatches(family.sessionIds);
-          await this.#disposeBackends(family.sessionIds);
-          const committable = await this.#refreshFamilyRecords(family);
+          removeHandles = await this.#prepareRetirement(plan.remove, 'remove');
+          if (plan.archive.sessionIds.length > 0) {
+            archiveHandles = await this.#prepareRetirement(plan.archive, 'archive');
+          }
+          const allSessionIds = [...plan.remove.sessionIds, ...plan.archive.sessionIds];
+          await this.#finalizeWorkspacePatches(allSessionIds);
+          await this.#disposeBackends(allSessionIds);
+          const committableRemove = await this.#refreshFamilyRecords(plan.remove);
+          const committableArchive = await this.#refreshFamilyRecords(plan.archive);
           const removedSessionIds = await this.#stores.removeSessionsVersioned(
-            versionedFamily(committable),
+            versionedFamily(committableRemove),
+            versionedFamily(committableArchive),
           );
           committed = true;
-          handles.goal.commit();
-          handles.scheduledTasks.commit();
-          await this.#graphWake.retireSessions(family.sessionIds);
-          this.#rememberRetiredWorktrees(committable, removedSessionIds);
+          removeHandles.goal.commit();
+          removeHandles.scheduledTasks.commit();
+          archiveHandles?.goal.commit();
+          archiveHandles?.scheduledTasks.commit();
+          await this.#graphWake.retireSessions(allSessionIds);
+          this.#rememberRetiredWorktrees(committableRemove, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
-          this.#capabilities.retireSessions(family.sessionIds);
-          this.#messages.retireSessions(family.sessionIds);
-          await this.#continuity.retireSessions(family.sessionIds, family.admission);
-          return removeSuccess(input.sessionId);
+          this.#capabilities.retireSessions(allSessionIds);
+          this.#messages.retireSessions(allSessionIds);
+          await this.#continuity.retireSessions(plan.remove.sessionIds, plan.remove.admission);
+          await this.#refreshFamily(plan.archive);
+          // What the confirm warned about, now executed: the distinct subtasks
+          // (deduplicated by revision family) this removal moved to the archive.
+          // The renderer reports this verbatim rather than re-deriving the plan.
+          const archivedSubtaskCount = new Set(
+            plan.archive.sessionIds.map((id) =>
+              sessionRevisionFamilyId(requireFamilyRecord(plan.archive, id).header),
+            ),
+          ).size;
+          return removeSuccess(input.sessionId, archivedSubtaskCount);
         } catch (error) {
           if (committed) return this.#uncertainRemove();
-          handles?.goal.rollback();
-          handles?.scheduledTasks.rollback();
+          archiveHandles?.goal.rollback();
+          archiveHandles?.scheduledTasks.rollback();
+          removeHandles?.goal.rollback();
+          removeHandles?.scheduledTasks.rollback();
           throw error;
         }
       });
     } catch (error) {
       return this.#removeFailure(error, input);
     }
+  }
+
+  /**
+   * Read-only preview of how many subtasks a delete of this parent would move
+   * to the archive — the confirm warns off this so the renderer never has to
+   * re-derive the plan from a catalog projection that lacks the operator marker
+   * and the copy state. Absent or already-removed targets, and Agent Graph
+   * operators (which retire with their root rather than archive), preview zero.
+   */
+  async #previewRemoval(
+    input: SessionRemovePreviewInput,
+  ): Promise<OperationOutcome<'session.remove.preview'>> {
+    let probe;
+    try {
+      probe = await this.#stores.probeSessionRemoval(input.sessionId);
+    } catch {
+      return previewFailure('persistence_failed', 'Session removal state is unavailable');
+    }
+    if (probe.kind !== 'present') return previewSuccess(0);
+    try {
+      const plan = await this.#readRemovalPlanSessionIds(input.sessionId);
+      return previewSuccess(plan.archivableSubtaskCount);
+    } catch (error) {
+      // A graph operator has no independent delete and archives nothing; a
+      // target that vanished mid-read has nothing left to archive either.
+      if (
+        error instanceof SessionMetadataConflictError ||
+        error instanceof SessionRetirementMissingSessionError
+      ) {
+        return previewSuccess(0);
+      }
+      return previewFailure('persistence_failed', 'Session removal plan is unavailable');
+    }
+  }
+
+  async #withStableRemovalPlan<T>(
+    sessionId: string,
+    operation: (plan: StableRemovalPlan) => Promise<T>,
+  ): Promise<T> {
+    // Only the id sets stabilize here; the archivable-subtask count is a
+    // preview-only read, so it is intentionally not threaded through the retry.
+    let planIds: {
+      removeSessionIds: readonly string[];
+      archiveSessionIds: readonly string[];
+      archiveGuardSessionIds: readonly string[];
+    } = await this.#readRemovalPlanSessionIds(sessionId);
+    for (let attempt = 0; attempt < FAMILY_STABILIZATION_ATTEMPTS; attempt += 1) {
+      const allSessionIds = [
+        ...planIds.removeSessionIds,
+        ...planIds.archiveSessionIds,
+        ...planIds.archiveGuardSessionIds,
+      ].sort();
+      try {
+        return await this.#memoryExtractionLane.runMany(allSessionIds, () =>
+          this.#admission.runMany(allSessionIds, async (admission) => {
+            const stableIds = await this.#readRemovalPlanSessionIds(sessionId);
+            if (
+              !sameIds(planIds.removeSessionIds, stableIds.removeSessionIds) ||
+              !sameIds(planIds.archiveSessionIds, stableIds.archiveSessionIds) ||
+              !sameIds(planIds.archiveGuardSessionIds, stableIds.archiveGuardSessionIds)
+            ) {
+              throw new RetryRemovalPlanResolution(
+                stableIds.removeSessionIds,
+                stableIds.archiveSessionIds,
+                stableIds.archiveGuardSessionIds,
+              );
+            }
+            const snapshots = await Promise.all(
+              allSessionIds.map((id) => this.#stores.readHeaderRecordSnapshot(id)),
+            );
+            const records = new Map(
+              allSessionIds.map((id, index) => [id, snapshots[index]!] as const),
+            );
+            return operation({
+              remove: stableFamily(planIds.removeSessionIds, records, admission),
+              archive: stableFamily(planIds.archiveSessionIds, records, admission),
+            });
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof RetryRemovalPlanResolution)) throw error;
+        planIds = {
+          removeSessionIds: [...error.removeSessionIds],
+          archiveSessionIds: [...error.archiveSessionIds],
+          archiveGuardSessionIds: [...error.archiveGuardSessionIds],
+        };
+      }
+    }
+    throw new SessionMetadataConflictError(
+      'Session removal plan kept changing during retirement admission',
+    );
   }
 
   async #withStableFamily<T>(
@@ -364,6 +511,11 @@ export class HostSessionRetirementCoordinator {
     if (target.kind !== 'present') {
       throw new SessionRetirementMissingSessionError(target.kind);
     }
+    if (isWorkHubCoordinationSessionTarget(target.record.header)) {
+      throw new SessionMetadataConflictError(
+        'WorkHub Coordination Session lifecycle is owned by WorkHub',
+      );
+    }
     if (target.record.header.subagentParent?.graph) {
       throw new SessionMetadataConflictError(
         'Agent Graph operator Sessions retire with their root Session',
@@ -399,35 +551,128 @@ export class HostSessionRetirementCoordinator {
     return [...new Set(members)].sort();
   }
 
+  async #readRemovalPlanSessionIds(sessionId: string): Promise<{
+    removeSessionIds: readonly string[];
+    archiveSessionIds: readonly string[];
+    archiveGuardSessionIds: readonly string[];
+    archivableSubtaskCount: number;
+  }> {
+    const removeSessionIds = await this.#readFamilySessionIds(sessionId);
+    const removeIds = new Set(removeSessionIds);
+    const headers = await this.#stores.listHeaders();
+    const ordinaryParentIds = new Set(
+      headers
+        .filter((header) => removeIds.has(header.id) && !header.subagentParent?.graph)
+        .map((header) => header.id),
+    );
+    const childFamilyIds = new Set(
+      headers
+        .filter(
+          (header) =>
+            header.conversationCopy?.state !== 'preparing' &&
+            header.subagentParent !== undefined &&
+            header.subagentParent.graph === undefined &&
+            ordinaryParentIds.has(header.subagentParent.parentSessionId),
+        )
+        .map(sessionRevisionFamilyId),
+    );
+    const childSessionHeaders = headers.filter(
+      (header) =>
+        header.conversationCopy?.state !== 'preparing' &&
+        !removeIds.has(header.id) &&
+        childFamilyIds.has(sessionRevisionFamilyId(header)),
+    );
+    const archiveHeaders = childSessionHeaders.filter((header) => !header.isArchived);
+    const archiveSessionIds = archiveHeaders.map((header) => header.id);
+    const archiveGuardSessionIds = childSessionHeaders
+      .filter((header) => header.isArchived)
+      .map((header) => header.id);
+    return {
+      removeSessionIds: [...removeIds].sort(),
+      archiveSessionIds: [...new Set(archiveSessionIds)].sort(),
+      archiveGuardSessionIds: [...new Set(archiveGuardSessionIds)].sort(),
+      // Distinct subtasks (by revision family) that a delete would move to the
+      // archive — the count the confirm warns off, matching what `#remove`
+      // reports afterwards.
+      archivableSubtaskCount: new Set(archiveHeaders.map(sessionRevisionFamilyId)).size,
+    };
+  }
+
+  async #reconcileOrphanedSubagentArchives(): Promise<void> {
+    const headers = await this.#stores.listHeaders();
+    const liveSessionIds = new Set(headers.map((header) => header.id));
+    const orphanFamilyIds = new Set(
+      headers
+        .filter(
+          (header) =>
+            !header.isArchived &&
+            header.subagentParent !== undefined &&
+            header.subagentParent.graph === undefined &&
+            !liveSessionIds.has(header.subagentParent.parentSessionId),
+        )
+        .map(sessionRevisionFamilyId),
+    );
+    const orphanSessionIds = headers
+      .filter(
+        (header) =>
+          header.conversationCopy?.state !== 'preparing' &&
+          orphanFamilyIds.has(sessionRevisionFamilyId(header)),
+      )
+      .map((header) => header.id)
+      .sort();
+    if (orphanSessionIds.length === 0) return;
+    const records = await Promise.all(
+      orphanSessionIds.map((sessionId) => this.#stores.readHeaderRecordSnapshot(sessionId)),
+    );
+    await this.#stores.setSessionsArchivedVersioned(
+      records.map((record) => ({
+        sessionId: record.header.id,
+        expectedVersion: record.revision,
+      })),
+      true,
+    );
+  }
+
   async #prepareRetirement(
     family: StableFamily,
     kind: 'archive' | 'remove',
   ): Promise<RetirementHandles> {
     for (const sessionId of family.sessionIds) {
       if (this.#root.readRootState(sessionId).kind !== 'idle') {
-        throw new SessionRetirementBusyError('Session has an active or reserved root Turn');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has an active or reserved root Turn`,
+        );
       }
       if (this.#messages.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has queued or in-flight Messages');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has queued or in-flight Messages`,
+        );
       }
       if (await this.#interactions.hasPendingSession(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a pending Interaction');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a pending Interaction`);
       }
       if (this.#goals.hasLiveGoal(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live Goal');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Goal`);
       }
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live Runtime Resource');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Runtime Resource`);
       }
       if (this.#sessionEffects.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live derived effect');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live derived effect`);
       }
       const header = requireFamilyRecord(family, sessionId).header;
-      if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
-        throw new SessionRetirementBusyError('Session has a live Agent Graph');
+      if (!header.subagentParent) {
+        const graph = await this.#graph.readRetirementDisposition(sessionId);
+        if (graph.kind === 'busy') {
+          throw new SessionRetirementBusyError(
+            `Session ${sessionId} has an Agent Graph that is ${graph.status}`,
+          );
+        }
       }
       if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has an active Agent Graph supervisor wake');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has an active Agent Graph supervisor wake`,
+        );
       }
     }
 
@@ -485,7 +730,8 @@ export class HostSessionRetirementCoordinator {
       purgeSessionSidecars(
         {
           artifacts: this.#artifacts,
-          taskLedger: this.#taskLedger,
+          sessionTodo: this.#sessionTodo,
+          ...(this.#contextOffload ? { contextOffload: this.#contextOffload } : {}),
           purgeOperationalState: this.#purgeOperationalState,
         },
         sessionId,
@@ -617,6 +863,18 @@ function requireFamilyRecord(family: StableFamily, sessionId: string): SessionHe
   return record;
 }
 
+function stableFamily(
+  sessionIds: readonly string[],
+  records: ReadonlyMap<string, SessionHeaderSnapshot>,
+  admission: SessionAdmissionLease,
+): StableFamily {
+  return {
+    sessionIds,
+    records: new Map(sessionIds.map((sessionId) => [sessionId, records.get(sessionId)!] as const)),
+    admission,
+  };
+}
+
 function versionedFamily(family: StableFamily) {
   return family.sessionIds.map((sessionId) => ({
     sessionId,
@@ -635,8 +893,15 @@ function lifecycleFailure(
   return { ok: false, error: { code, message } };
 }
 
-function removeSuccess(sessionId: string): OperationOutcome<'session.remove'> {
-  return removeOutcome({ kind: 'removed', sessionId });
+function removeSuccess(
+  sessionId: string,
+  archivedSubtaskCount = 0,
+): OperationOutcome<'session.remove'> {
+  return removeOutcome(
+    archivedSubtaskCount > 0
+      ? { kind: 'removed', sessionId, archivedSubtaskCount }
+      : { kind: 'removed', sessionId },
+  );
 }
 
 function removeOutcome(result: SessionRemoveResult): OperationOutcome<'session.remove'> {
@@ -647,5 +912,18 @@ function removeFailure(
   code: Extract<OperationOutcome<'session.remove'>, { ok: false }>['error']['code'],
   message: string,
 ): Extract<OperationOutcome<'session.remove'>, { ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function previewSuccess(
+  archivableSubtaskCount: number,
+): OperationOutcome<'session.remove.preview'> {
+  return { ok: true, result: { archivableSubtaskCount } };
+}
+
+function previewFailure(
+  code: Extract<OperationOutcome<'session.remove.preview'>, { ok: false }>['error']['code'],
+  message: string,
+): Extract<OperationOutcome<'session.remove.preview'>, { ok: false }> {
   return { ok: false, error: { code, message } };
 }

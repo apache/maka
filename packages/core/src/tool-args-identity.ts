@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import * as nodeCrypto from 'node:crypto';
 
 /**
@@ -144,7 +163,7 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * The cost of not doing this was total. The refused write marked the runtime
  * event store unavailable, the turn's terminal write then threw, and every turn
  * that called any tool died a tenth of a second after the tool returned —
- * `load_tools` succeeded, reported the group loaded, and the turn ended there.
+ * `tool_search` succeeded, reported activated tools, and the turn ended there.
  *
  * Dropping the key is lossless in the only sense that matters: JSON cannot tell
  * an absent property from one set to `undefined`, so this writes down what

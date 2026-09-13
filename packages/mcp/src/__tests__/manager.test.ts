@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -5,8 +24,14 @@ import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { Server as McpServer } from '@modelcontextprotocol/server';
 import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
-import type { McpConfigFile, McpToolBinding } from '@maka/core/mcp';
+import {
+  MCP_CONFIG_VERSION,
+  type McpConfigFile,
+  type McpProtocolPreference,
+  type McpToolBinding,
+} from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
 const managers: McpClientManager[] = [];
@@ -25,6 +50,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await manager.sync(remoteConfig(fixture.url));
 
       assert.equal(manager.status('remote')?.transport, 'streamable-http');
+      assert.deepEqual(manager.status('remote')?.negotiatedProtocol, {
+        era: 'legacy',
+        revision: '2025-11-25',
+      });
       assert.doesNotMatch(JSON.stringify(manager.status('remote')), /mcpb1\./u);
       assert.deepEqual(
         await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
@@ -43,6 +72,172 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assertLegacyHandshake(fixture);
     });
 
+    test('auto probes before negotiating a legacy Streamable HTTP server', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url, 'streamable-http', 'auto'));
+
+      assert.equal(manager.status('remote')?.state, 'connected');
+      assert.deepEqual(manager.status('remote')?.negotiatedProtocol, {
+        era: 'legacy',
+        revision: '2025-11-25',
+      });
+      const methods = fixture.requests.flatMap((request) => request.protocolMethods);
+      assert.equal(methods[0], 'server/discover');
+      assert.ok(methods.indexOf('initialize') > 0);
+      assert.ok(methods.indexOf('tools/list') > methods.indexOf('initialize'));
+    });
+
+    test('does not downgrade an exact modern pin to a legacy Streamable HTTP server', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url, 'streamable-http', '2026-07-28'));
+
+      assert.equal(manager.status('remote')?.state, 'error');
+      assert.equal(manager.status('remote')?.negotiatedProtocol, undefined);
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+      const methods = fixture.requests.flatMap((request) => request.protocolMethods);
+      assert.equal(methods[0], 'server/discover');
+      assert.equal(methods.includes('initialize'), false);
+    });
+
+    test('strips configured headers when a redirect leaves the endpoint origin', async () => {
+      // Undici forwards custom headers (X-API-Key) across cross-origin
+      // redirects; the manager's scoped fetch must not.
+      const crossOriginSeen: Array<{ authorization?: string; apiKey?: string }> = [];
+      const target = createServer((req, res) => {
+        crossOriginSeen.push({
+          ...(typeof req.headers.authorization === 'string'
+            ? { authorization: req.headers.authorization }
+            : {}),
+          ...(typeof req.headers['x-api-key'] === 'string'
+            ? { apiKey: req.headers['x-api-key'] as string }
+            : {}),
+        });
+        res.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+      });
+      await new Promise<void>((resolve, reject) => {
+        target.once('error', reject);
+        target.listen(0, '127.0.0.1', resolve);
+      });
+      const targetAddress = target.address();
+      if (!targetAddress || typeof targetAddress === 'string') throw new Error('no target port');
+      const redirector = createServer((req, res) => {
+        res
+          .writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}` })
+          .end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        redirector.once('error', reject);
+        redirector.listen(0, '127.0.0.1', resolve);
+      });
+      const redirectorAddress = redirector.address();
+      if (!redirectorAddress || typeof redirectorAddress === 'string')
+        throw new Error('no redirector port');
+
+      try {
+        const manager = createManager();
+        await manager.sync({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: `http://127.0.0.1:${redirectorAddress.port}/mcp`,
+              transport: 'streamable-http',
+              headers: { Authorization: 'Bearer remote-test', 'X-API-Key': 'key-123456' },
+            },
+          },
+        });
+        assert.equal(manager.status('remote')?.state, 'error');
+        assert.ok(crossOriginSeen.length > 0);
+        for (const seen of crossOriginSeen) {
+          assert.equal(seen.authorization, undefined);
+          assert.equal(seen.apiKey, undefined);
+        }
+      } finally {
+        target.closeAllConnections();
+        redirector.closeAllConnections();
+        await Promise.all([
+          new Promise<void>((resolve) => target.close(() => resolve())),
+          new Promise<void>((resolve) => redirector.close(() => resolve())),
+        ]);
+      }
+    });
+
+    test('refuses a redirect that downgrades to cleartext http off the machine', async () => {
+      const redirector = createServer((_req, res) => {
+        res.writeHead(307, { location: 'http://203.0.113.5/mcp' }).end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        redirector.once('error', reject);
+        redirector.listen(0, '127.0.0.1', resolve);
+      });
+      const address = redirector.address();
+      if (!address || typeof address === 'string') throw new Error('no redirector port');
+      try {
+        const manager = createManager();
+        await manager.sync({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: `http://127.0.0.1:${address.port}/mcp`,
+              transport: 'streamable-http',
+              headers: { 'X-API-Key': 'key-123456' },
+            },
+          },
+        });
+        assert.equal(manager.status('remote')?.state, 'error');
+        assert.match(manager.status('remote')?.error ?? '', /cleartext|https/iu);
+      } finally {
+        redirector.closeAllConnections();
+        await new Promise<void>((resolve) => redirector.close(() => resolve()));
+      }
+    });
+
+    test('auto falls back to legacy SSE without replacing protocol headers', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      assert.equal(manager.status('remote')?.transport, 'sse');
+      const result = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {
+        value: 'legacy',
+      });
+      assert.deepEqual(result.content, [{ type: 'text', text: 'legacy' }]);
+      const get = fixture.requests.find(
+        (request) => request.method === 'GET' && request.path === '/sse',
+      );
+      assert.equal(get?.authorization, 'Bearer remote-test');
+      assert.match(get?.accept ?? '', /text\/event-stream/u);
+      assert.ok(
+        fixture.requests.some(
+          (request) =>
+            request.method === 'POST' &&
+            request.path === '/messages' &&
+            request.authorization === 'Bearer remote-test',
+        ),
+      );
+      assertLegacyHandshake(fixture);
+    });
+
+    test('still sends low-level discovery when a legacy server omits tools capability', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+      });
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(fixture.url));
+
+      assert.ok(
+        fixture.requests.some((request) => request.protocolMethods.includes('tools/list')),
+        JSON.stringify({
+          status: manager.status('remote'),
+          methods: fixture.requests.flatMap((request) => request.protocolMethods),
+        }),
+      );
+    });
+
     test('bounds and sanitizes connection errors before publishing status', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       fixture.setToolListMode('duplicate');
@@ -50,7 +245,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const manager = createManager();
 
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           [serverId]: { url: fixture.url, transport: 'streamable-http' },
         },
@@ -131,6 +326,115 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
           structuredContent: undefined,
         },
       );
+    });
+
+    test('refreshes for legacy list-changed notifications without an advertised flag', async () => {
+      const fixture = await createRemoteFixture('sse', { advertiseToolListChanges: false });
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto', 'legacy'));
+
+      fixture.setToolListMode('replacement');
+      await fixture.notifyToolListChanged();
+      await waitFor(() => manager.toolSnapshot().tools[0]?.descriptor.name === 'replacement');
+
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
+    });
+
+    test('routes initial discovery through the refresh owner when list-changed precedes the first response', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const gate = fixture.holdNextToolList();
+      const manager = createManager();
+      const publications: Array<{
+        state: string;
+        statusToolCount: number;
+        snapshotToolCount: number;
+      }> = [];
+      manager.onChange((status) => {
+        publications.push({
+          state: status.state,
+          statusToolCount: status.toolCount,
+          snapshotToolCount: manager.toolSnapshot().tools.length,
+        });
+      });
+      const syncPromise = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      await gate.started;
+
+      // The tool list changes while the first tools/list response is still in
+      // flight, and the server answers with the list it captured before the
+      // change. Dropping this notification would settle the connection on a
+      // snapshot the server already declared stale.
+      fixture.setToolListMode('replacement');
+      await fixture.notifyToolListChanged();
+      gate.release();
+
+      await syncPromise;
+      await waitFor(() => manager.toolSnapshot().tools[0]?.descriptor.name === 'replacement');
+      assert.deepEqual(
+        manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
+        ['replacement'],
+      );
+      // Exactly one follow-up pass through the same single-flight owner: the
+      // initial request plus the coalesced re-list the notification joined.
+      assert.equal(
+        fixture.requests.reduce(
+          (count, request) =>
+            count + request.protocolMethods.filter((method) => method === 'tools/list').length,
+          0,
+        ),
+        2,
+      );
+      assert.equal(
+        publications.some(
+          ({ state, statusToolCount, snapshotToolCount }) =>
+            state !== 'connected' && (statusToolCount > 0 || snapshotToolCount > 0),
+        ),
+        false,
+      );
+      assert.equal(
+        publications.some(
+          ({ state, statusToolCount, snapshotToolCount }) =>
+            state === 'connected' && statusToolCount === 1 && snapshotToolCount === 1,
+        ),
+        true,
+      );
+    });
+
+    test('joins an explicit refresh to initial discovery without queuing another list', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const gate = fixture.holdNextToolList();
+      const manager = createManager();
+      const syncPromise = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      await gate.started;
+
+      const refreshPromise = manager.refreshTools('remote');
+      gate.release();
+
+      const [, descriptors] = await Promise.all([syncPromise, refreshPromise]);
+      assert.deepEqual(
+        descriptors.map(({ name }) => name),
+        manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
+      );
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 1);
+    });
+
+    test('keeps the connection and latest initial snapshot when notifications exhaust the refresh budget', async () => {
+      const fixture = await createRemoteFixture('sse');
+      fixture.setNotifyBeforeEveryToolListResponse(true);
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      assert.equal(manager.status('remote')?.state, 'connected');
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 4);
+      assert.match(manager.status('remote')?.error ?? '', /changed too frequently/u);
+      const binding = bindingFor(manager, 'remote', 'echo');
+      assert.deepEqual(await manager.callTool(binding, { value: 'still-callable' }), {
+        content: [{ type: 'text', text: 'still-callable' }],
+        structuredContent: undefined,
+      });
     });
 
     test('bounds raw Tool definitions without replacing the callable snapshot', async () => {
@@ -257,7 +561,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           first: { url: fixture.url, transport: 'streamable-http' },
           second: { url: fixture.url, transport: 'streamable-http' },
@@ -267,33 +571,96 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.notEqual(bindingFor(manager, 'first', 'echo'), bindingFor(manager, 'second', 'echo'));
     });
 
-    test('coalesces a refresh signal and keeps the latest valid snapshot', async () => {
+    test('keeps a stale candidate private when list-changed arrives before publication', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      const listsBefore = countProtocolMethod(fixture, 'tools/list');
+      const retained = manager.toolSnapshot();
+      const publishedToolNames: string[][] = [];
+      manager.onChange((status) => {
+        publishedToolNames.push(status.tools.map((tool) => tool.name));
+      });
+
+      fixture.setToolListMode('replacement');
+      const gate = fixture.holdNextToolList();
+      const refresh = manager.refreshTools('remote');
+      await gate.started;
+      fixture.setToolListMode('duplicate');
+      await fixture.notifyToolListChanged();
+      gate.release();
+
+      await assert.rejects(refresh, /duplicate tool/u);
+      assert.equal(manager.toolSnapshot(), retained);
+      assert.equal(
+        publishedToolNames.some((names) => names.includes('replacement')),
+        false,
+      );
+      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+    });
+
+    test('starts a fresh list for a refresh queued during snapshot publication', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
       await manager.sync(remoteConfig(fixture.url));
       const listsBefore = countProtocolMethod(fixture, 'tools/list');
 
       fixture.setToolListMode('replacement');
-      const gate = fixture.holdNextToolList();
-      const first = manager.refreshTools('remote');
-      await gate.started;
-      fixture.setToolListMode('duplicate');
-      const second = manager.refreshTools('remote');
-      gate.release();
+      let queued: Promise<unknown> | undefined;
+      manager.onChange((status) => {
+        if (
+          status.serverId === 'remote' &&
+          status.tools[0]?.name === 'replacement' &&
+          queued === undefined
+        ) {
+          queued = manager.refreshTools('remote');
+        }
+      });
 
-      const settled = await Promise.allSettled([first, second]);
-      assert.equal(
-        settled.every((result) => result.status === 'rejected'),
-        true,
-      );
-      for (const result of settled) {
-        if (result.status === 'rejected') assert.match(String(result.reason), /duplicate tool/u);
-      }
+      await manager.refreshTools('remote');
+      await queued;
+
+      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
       assert.deepEqual(
         manager.status('remote')?.tools.map((tool) => tool.name),
         ['replacement'],
       );
-      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+    });
+
+    test('rejects descriptors retired synchronously during snapshot publication', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      fixture.setToolListMode('replacement');
+      let disconnect: Promise<void> | undefined;
+      manager.onChange((status) => {
+        if (status.serverId === 'remote' && status.tools[0]?.name === 'replacement') {
+          disconnect ??= manager.disconnect('remote');
+        }
+      });
+
+      await assert.rejects(manager.refreshTools('remote'), /connection changed/u);
+      await disconnect;
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
+    test('releases a failed refresh so the next one can publish a replacement', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      fixture.setToolListMode('duplicate');
+      await assert.rejects(manager.refreshTools('remote'), /duplicate tool/u);
+
+      fixture.setToolListMode('replacement');
+      await manager.refreshTools('remote');
+      assert.equal(manager.status('remote')?.error, undefined);
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
     });
 
     test('bounds response-followed-by-notification rediscovery during initial sync', async () => {
@@ -383,6 +750,39 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('gives spaced list-changed notifications independent refresh budgets', {
+      timeout: 30_000,
+    }, async () => {
+      const fixture = await createRemoteFixture('sse');
+      let now = 0;
+      const manager = createManager({ now: () => now });
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      for (let change = 1; change <= 4; change += 1) {
+        now += 1_000;
+        const refreshCompleted = new Promise<void>((resolve) => {
+          const unsubscribe = manager.onChange((status) => {
+            if (
+              status.serverId !== 'remote' ||
+              status.state !== 'connected' ||
+              status.updatedAt !== now ||
+              status.error !== undefined
+            ) {
+              return;
+            }
+            unsubscribe();
+            resolve();
+          });
+        });
+        await fixture.notifyToolListChanged();
+        await refreshCompleted;
+        assert.equal(countProtocolMethod(fixture, 'tools/list'), change + 1);
+      }
+
+      assert.equal(manager.status('remote')?.error, undefined);
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 5);
+    });
+
     test('lets configuration removal preempt active notification rediscovery', async () => {
       const fixture = await createRemoteFixture('sse');
       const manager = createManager();
@@ -392,7 +792,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await fixture.notifyToolListChanged();
       await gate.started;
 
-      const removal = manager.sync({ version: 1, mcpServers: {} });
+      const removal = manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       let removedBeforeRelease: boolean;
       try {
         removedBeforeRelease = await settlesWithin(removal, 1_000);
@@ -403,6 +803,55 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       assert.equal(removedBeforeRelease, true);
       assert.equal(manager.status('remote'), undefined);
+    });
+
+    test('retries when a synchronous diagnostic listener requests another refresh', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+      const snapshotBefore = manager.toolSnapshot();
+      const listsBefore = countProtocolMethod(fixture, 'tools/list');
+      let retry: Promise<unknown> | undefined;
+      let failureDiagnostics = 0;
+      const unsubscribe = manager.onChange((status) => {
+        if (status.serverId !== 'remote' || status.state !== 'connected' || !status.error) return;
+        failureDiagnostics += 1;
+        retry ??= manager.refreshTools('remote');
+      });
+
+      fixture.failNextHttpRequest('tools/list', 'temporary list failure');
+      const first = manager.refreshTools('remote');
+      await first;
+      assert.ok(retry);
+      await retry;
+      unsubscribe();
+
+      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+      assert.equal(failureDiagnostics, 1);
+      assert.strictEqual(manager.toolSnapshot(), snapshotBefore);
+      assert.equal(manager.status('remote')?.error, undefined);
+    });
+
+    test('does not leave a connected status after a synchronous listener retires the generation', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      const states: string[] = [];
+      let retiring: Promise<void> | undefined;
+      const unsubscribe = manager.onChange((status) => {
+        if (status.serverId !== 'remote') return;
+        states.push(status.state);
+        if (status.state === 'connected' && retiring === undefined) {
+          retiring = manager.disconnect('remote');
+        }
+      });
+
+      await manager.sync(remoteConfig(fixture.url));
+      unsubscribe();
+      await retiring;
+
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+      assert.deepEqual(states, ['connecting', 'connected', 'disconnected']);
     });
 
     test('does not let an old client refresh overwrite a replacement connection', async () => {
@@ -522,6 +971,133 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('accepts the content block limit and rejects the next block', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: {
+          content: Array.from({ length: 256 }, () => ({ type: 'text', text: 'x' })),
+        },
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal(accepted.content.length, 256);
+
+      await assert.rejects(
+        callToolResultFixture({
+          content: Array.from({ length: 257 }, () => ({ type: 'text', text: 'x' })),
+        }),
+        /exceeds the content block limit/u,
+      );
+    });
+
+    test('accepts JSON depth 32 and rejects depth 33', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: {
+          content: [{ type: 'text', text: 'deep' }],
+          structuredContent: nestedStructuredContent(30),
+        },
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.deepEqual(accepted.structuredContent, nestedStructuredContent(30));
+
+      await assert.rejects(
+        callToolResultFixture({
+          content: [{ type: 'text', text: 'deep' }],
+          structuredContent: nestedStructuredContent(31),
+        }),
+        /exceeds the JSON depth limit/u,
+      );
+    });
+
+    test('accepts 8192 JSON nodes and rejects node 8193', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: nodeBoundaryToolResult(8_192),
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal((accepted.structuredContent as { items: unknown[] }).items.length, 8_185);
+
+      await assert.rejects(
+        callToolResultFixture(nodeBoundaryToolResult(8_193)),
+        /exceeds the JSON node limit/u,
+      );
+    });
+
+    test('counts exact serialized UTF-8 bytes and rejects the next byte', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: exactByteToolResult(24 * 1024 * 1024, '😀'),
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal(accepted.content[0]?.type, 'text');
+
+      const oversized = exactByteToolResult(24 * 1024 * 1024 + 1, '\0');
+      assert.equal(Buffer.byteLength(JSON.stringify(oversized), 'utf8'), 24 * 1024 * 1024 + 1);
+      await assert.rejects(callToolResultFixture(oversized), /exceeds the byte limit/u);
+    });
+
+    test('applies the JSON budget to metadata on known content blocks', async () => {
+      const result = {
+        content: [
+          {
+            type: 'text',
+            text: 'safe',
+            _meta: nestedStructuredContent(31),
+          },
+        ],
+      };
+
+      await assert.rejects(callToolResultFixture(result), /exceeds the JSON depth limit/u);
+    });
+
+    test('rechecks the budget after credential scrubbing expands a result', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: exactByteToolResult(24 * 1024 * 1024, 'abcd'),
+      });
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          remote: {
+            url: fixture.url,
+            transport: 'streamable-http',
+            headers: { Authorization: 'abcd' },
+          },
+        },
+      });
+
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'remote', 'echo'), {}),
+        /exceeds the byte limit/u,
+      );
+    });
+
+    test('checks the success budget before output-schema validation', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'remote', 'invalid-output'), {
+          mode: 'oversized-success',
+        }),
+        /exceeds the byte limit/u,
+      );
+    });
+
     test('rejects an invalid binding before the wire', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -536,9 +1112,73 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
     });
+
+    test('a failed tool call rejects with a sanitized cause, never the raw chain', async () => {
+      // The scrubbed message is only half the boundary: the normalized
+      // error's cause retains the RAW transport error, and an endpoint that
+      // reflects the Authorization header into an HTTP failure would leak
+      // it to any cause-aware logger or serializer past the manager. The
+      // retained cause keeps its typed identity but loses the raw text and
+      // the deeper chain.
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+      const aborted = new AbortController();
+      const reflected = new Error('carrier: Bearer remote-test', {
+        cause: new Error('deeper: Bearer remote-test'),
+      });
+      aborted.abort(reflected);
+
+      let rejection: unknown;
+      try {
+        await manager.callTool(
+          bindingFor(manager, 'remote', 'echo'),
+          { value: 'x' },
+          {
+            signal: aborted.signal,
+          },
+        );
+      } catch (error) {
+        rejection = error;
+      }
+
+      assert.ok(rejection instanceof McpToolCallError);
+      assert.doesNotMatch(String((rejection as Error).message), /remote-test/u);
+      const cause = (rejection as Error & { cause?: unknown }).cause;
+      assert.ok(cause instanceof Error);
+      assert.notEqual(cause, reflected);
+      assert.doesNotMatch(cause.message, /remote-test/u);
+      assert.equal((cause as Error & { cause?: unknown }).cause, undefined);
+    });
   });
 
   describe('McpClientManager stdio E2E', () => {
+    test('drops non-semantic JSON Schema annotations from discovered tools', async () => {
+      const manager = createManager();
+      await manager.sync(fixtureConfig(['--schema-annotations']));
+
+      assert.deepEqual(manager.status('fixture')?.tools[0]?.inputSchema, {
+        $id: 'https://example.com/annotated.schema.json',
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        patternProperties: { '^tag:': { type: 'string' } },
+        dependentSchemas: { value: { required: ['dependent'] } },
+        dependencies: {
+          value: { required: ['detail'] },
+          detail: ['value'],
+        },
+        prefixItems: [{ type: 'string' }],
+        additionalItems: { type: 'integer' },
+        unevaluatedItems: { type: 'boolean' },
+        contains: { type: 'number' },
+        not: { required: ['forbidden'] },
+        if: { required: ['value'] },
+        then: { required: ['detail'] },
+        else: { required: ['fallback'] },
+        unevaluatedProperties: { type: 'boolean' },
+      });
+    });
+
     test('discovers paginated tools and calls structured content', async () => {
       const manager = createManager();
       await manager.sync(fixtureConfig());
@@ -572,6 +1212,54 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
         (error: unknown) =>
           error instanceof McpToolCallError && /deliberate failure/u.test(error.message),
+      );
+    });
+
+    test('a tool error echoing a configured env secret is scrubbed', async () => {
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath],
+            env: { FIXTURE_LEAK_TOKEN: 'env-secret-value' },
+          },
+        },
+      });
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
+        (error: unknown) => {
+          assert.ok(error instanceof McpToolCallError);
+          assert.doesNotMatch(error.message, /env-secret-value/u);
+          assert.match(error.message, /\[redacted\]/u);
+          return true;
+        },
+      );
+    });
+
+    test('a short sensitive env value is withheld wholesale from tool errors', async () => {
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath],
+            // A 3-character credential cannot be spliced out; the key names
+            // it as a secret, so the whole echoing message must be withheld.
+            env: { FIXTURE_LEAK_TOKEN: 'k7#' },
+          },
+        },
+      });
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'fixture', 'fail'), {}),
+        (error: unknown) => {
+          assert.ok(error instanceof McpToolCallError);
+          assert.doesNotMatch(error.message, /k7#/u);
+          assert.match(error.message, /withheld/u);
+          return true;
+        },
       );
     });
 
@@ -641,7 +1329,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await waitFor(() => manager.status('fixture')?.state === 'connecting');
       assert.equal(manager.cancelConnect('fixture'), true);
       await sync;
-      await manager.sync({ version: 1, mcpServers: {} });
+      await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       assert.equal(manager.status('fixture'), undefined);
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
@@ -747,7 +1435,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const manager = createManager();
       await manager.sync(fixtureConfig());
       await manager.sync({
-        version: 1,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           fixture: { ...fixtureConfig().mcpServers.fixture, enabled: false },
         },
@@ -755,7 +1443,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.equal(manager.status('fixture')?.state, 'disabled');
       assert.deepEqual(manager.toolSnapshot().tools, []);
       assert.equal((await manager.test('fixture')).ok, false);
-      await manager.sync({ version: 1, mcpServers: {} });
+      await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
       assert.equal(manager.status('fixture'), undefined);
     });
   });
@@ -806,7 +1494,7 @@ function bindingFor(manager: McpClientManager, serverId: string, toolName: strin
 
 function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
   return {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       fixture: {
         command: process.execPath,
@@ -819,13 +1507,15 @@ function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
 function remoteConfig(
   url: string,
   transport: 'auto' | 'streamable-http' = 'streamable-http',
+  protocol?: McpProtocolPreference,
 ): McpConfigFile {
   return {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       remote: {
         url,
         transport,
+        ...(protocol === undefined ? {} : { protocol }),
         headers: { Authorization: 'Bearer remote-test' },
       },
     },
@@ -833,11 +1523,7 @@ function remoteConfig(
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition was not reached');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -867,7 +1553,9 @@ interface RemoteFixture {
   requests: RemoteRequest[];
   setToolListMode(mode: ToolListMode): void;
   setHttpFailure(method: string, body: string): void;
+  failNextHttpRequest(method: string, body: string): void;
   holdNextToolList(): { started: Promise<void>; release(): void };
+  setNotifyBeforeEveryToolListResponse(enabled: boolean): void;
   setNotifyOnEveryToolList(enabled: boolean): void;
   setToolListClockAdvance(advance: () => void): void;
   setToolListResponseClockAdvance(advance: () => void): void;
@@ -886,12 +1574,18 @@ type ToolListMode =
 
 async function createRemoteFixture(
   kind: 'streamable-http' | 'sse',
-  options: { advertiseTools?: boolean; legacyToolCallResult?: unknown } = {},
+  options: {
+    advertiseTools?: boolean;
+    advertiseToolListChanges?: boolean;
+    legacyToolCallResult?: unknown;
+  } = {},
 ): Promise<RemoteFixture> {
   const requests: RemoteRequest[] = [];
   let toolListMode: ToolListMode = 'valid';
   let httpFailure: { method: string; body: string } | undefined;
+  let nextHttpFailure: { method: string; body: string } | undefined;
   let nextToolListGate: InternalToolListGate | undefined;
+  let notifyBeforeEveryToolListResponse = false;
   let notifyOnEveryToolList = false;
   let toolListClockAdvance = () => {};
   let toolListResponseClockAdvance = () => {};
@@ -920,6 +1614,17 @@ async function createRemoteFixture(
       if (kind === 'streamable-http' && url.pathname === '/mcp' && req.method === 'POST') {
         const body = await readJsonBody(req);
         request.protocolMethods.push(...readProtocolMethods(body));
+        const oneShotFailure = nextHttpFailure;
+        if (
+          oneShotFailure &&
+          request.protocolMethods.some((method) => method === oneShotFailure.method)
+        ) {
+          nextHttpFailure = undefined;
+          res
+            .writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            .end(oneShotFailure.body);
+          return;
+        }
         if (
           httpFailure &&
           request.protocolMethods.some((method) => method === httpFailure?.method)
@@ -945,6 +1650,7 @@ async function createRemoteFixture(
           toolListMode: () => toolListMode,
           beforeToolList,
           afterToolList: () => toolListResponseClockAdvance(),
+          notifyBeforeEveryToolListResponse: () => notifyBeforeEveryToolListResponse,
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         await server.connect(transport);
@@ -959,9 +1665,11 @@ async function createRemoteFixture(
         const transport = new SSEServerTransport('/messages', res);
         const server = createProtocolServer({
           advertiseTools: options.advertiseTools !== false,
+          advertiseToolListChanges: options.advertiseToolListChanges !== false,
           toolListMode: () => toolListMode,
           beforeToolList,
           afterToolList: () => toolListResponseClockAdvance(),
+          notifyBeforeEveryToolListResponse: () => notifyBeforeEveryToolListResponse,
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         sseTransports.set(transport.sessionId, { transport, server });
@@ -1003,6 +1711,9 @@ async function createRemoteFixture(
     setHttpFailure: (method, body) => {
       httpFailure = { method, body };
     },
+    failNextHttpRequest: (method, body) => {
+      nextHttpFailure = { method, body };
+    },
     holdNextToolList: () => {
       if (nextToolListGate) throw new Error('a tools/list gate is already pending');
       let markStarted = () => {};
@@ -1015,6 +1726,9 @@ async function createRemoteFixture(
       });
       nextToolListGate = { markStarted, waitForRelease };
       return { started, release };
+    },
+    setNotifyBeforeEveryToolListResponse: (enabled) => {
+      notifyBeforeEveryToolListResponse = enabled;
     },
     setNotifyOnEveryToolList: (enabled) => {
       notifyOnEveryToolList = enabled;
@@ -1048,14 +1762,20 @@ async function createRemoteFixture(
 
 function createProtocolServer(options: {
   advertiseTools: boolean;
+  advertiseToolListChanges?: boolean;
   toolListMode: () => ToolListMode;
   beforeToolList: () => Promise<void>;
   afterToolList: () => void;
+  notifyBeforeEveryToolListResponse: () => boolean;
   notifyOnEveryToolList: () => boolean;
 }): McpServer {
   const server = new McpServer(
     { name: 'maka-remote-fixture', version: '1.0.0' },
-    { capabilities: options.advertiseTools ? { tools: { listChanged: true } } : {} },
+    {
+      capabilities: options.advertiseTools
+        ? { tools: options.advertiseToolListChanges === false ? {} : { listChanged: true } }
+        : {},
+    },
   );
   server.setRequestHandler('tools/list', async () => {
     const mode = options.toolListMode();
@@ -1095,6 +1815,9 @@ function createProtocolServer(options: {
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
     };
     options.afterToolList();
+    if (options.notifyBeforeEveryToolListResponse()) {
+      await server.sendToolListChanged();
+    }
     if (options.notifyOnEveryToolList()) {
       setTimeout(() => {
         void server.sendToolListChanged().catch(() => {});
@@ -1124,6 +1847,12 @@ function createProtocolServer(options: {
         return {
           isError: true,
           content: Array.from({ length: 101 }, () => ({ type: 'text' as const, text: 'x' })),
+        };
+      }
+      if (args.mode === 'oversized-success') {
+        return {
+          content: [{ type: 'text', text: 'x'.repeat(24 * 1024 * 1024) }],
+          structuredContent: { wrong: true },
         };
       }
       return {
@@ -1176,6 +1905,40 @@ function remoteToolDefinition(
           }
         : {}),
   };
+}
+
+function nestedStructuredContent(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = { value: 'done' };
+  for (let index = 0; index < depth; index += 1) value = { child: value };
+  return value;
+}
+
+function nodeBoundaryToolResult(nodes: number): Record<string, unknown> {
+  // result + content + block + block.type + block.text + structuredContent + items = 7 nodes.
+  return {
+    content: [{ type: 'text', text: 'many' }],
+    structuredContent: { items: Array.from({ length: nodes - 7 }, (_, index) => index) },
+  };
+}
+
+function exactByteToolResult(bytes: number, suffix: string): Record<string, unknown> {
+  const result = { content: [{ type: 'text', text: suffix }] };
+  const overhead = Buffer.byteLength(JSON.stringify(result), 'utf8') - Buffer.byteLength(suffix);
+  const fillBytes = bytes - overhead - Buffer.byteLength(suffix);
+  assert.ok(fillBytes >= 0);
+  result.content[0]!.text = `${'x'.repeat(fillBytes)}${suffix}`;
+  assert.equal(Buffer.byteLength(JSON.stringify(result), 'utf8'), bytes);
+  return result;
+}
+
+async function callToolResultFixture(result: unknown) {
+  const fixture = await createRemoteFixture('streamable-http', {
+    advertiseTools: false,
+    legacyToolCallResult: result,
+  });
+  const manager = createManager();
+  await manager.sync(remoteConfig(fixture.url));
+  return manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
 }
 
 function reorderedRemoteEchoDefinition() {

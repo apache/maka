@@ -1,3 +1,34 @@
+---
+doc_id: frontend-architecture-astryx-review-2026-08-09
+title: "Frontend architecture & Astryx coverage review"
+language: en
+source_language: en
+implementation_status: historical
+document_status: historical
+translation_status: source-only
+last_verified: 2026-09-05
+owners:
+  - maka-backend
+---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Frontend architecture & Astryx coverage review
 
 **Date:** 2026-08-09 (UTC)  
@@ -5,6 +36,13 @@
 **Scope:** `apps/desktop/src/renderer/**`, `packages/ui/src/**`  
 **Method:** file-level inventory regen + pattern scan + deep reads of shell/settings/modules/ui; prior art `docs/astryx-full-surface-audit.md`, `DESIGN.md`, `docs/astryx-surface-file-inventory.md`  
 **Evidence log:** goal scratch `frontend-review-scan.log` (inventory totals, greps, spot-checks, inventory unit tests)
+
+> **Status (verified 2026-09-05):** this is a review record pinned to the HEAD above; its
+> citations describe that tree. Since then the workbar moved under
+> `apps/desktop/src/renderer/features/workbar/` (so `session-workbar.tsx` /
+> `session-workbar-tabs.ts` / `use-shell-layout.ts` no longer sit at their cited paths)
+> and the Astryx core patch is now `patches/@astryxdesign+core+0.5.2.patch`. The findings
+> tables below are kept as written.
 
 ---
 

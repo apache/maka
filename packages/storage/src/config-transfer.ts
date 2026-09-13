@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 
 /**
  * Config import / export — Alma-style selective bundle.
@@ -134,7 +154,7 @@ export type ConnectionConflictStrategy = 'skip' | 'overwrite';
 export interface ConnectionMergePlan {
   create: LlmConnection[];
   overwrite: LlmConnection[];
-  skipped: Array<{ slug: string; reason: 'exists' }>;
+  skipped: Array<{ slug: string; reason: 'exists' | 'provider_retired' }>;
 }
 
 export function planConnectionMerge(
@@ -148,6 +168,16 @@ export function planConnectionMerge(
   for (const conn of incoming) {
     if (seen.has(conn.slug)) continue; // de-dupe within the imported set
     seen.add(conn.slug);
+    // A backup taken before a provider was retired still carries its
+    // connection, and the catalog refuses to create one — rightly, since it
+    // could never execute. Planning it as skipped is what keeps that refusal
+    // from aborting the restore partway and leaving the rest of the bundle
+    // (settings, credentials, memory) unapplied. Its credential is skipped
+    // with it: only a created or overwritten slug gets its secret written.
+    if (isRetiredProvider(conn.providerType)) {
+      plan.skipped.push({ slug: conn.slug, reason: 'provider_retired' });
+      continue;
+    }
     if (existingSlugs.has(conn.slug)) {
       if (strategy === 'overwrite') plan.overwrite.push(cloneJson(conn));
       else plan.skipped.push({ slug: conn.slug, reason: 'exists' });

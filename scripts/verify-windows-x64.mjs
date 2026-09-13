@@ -1,10 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readProductManifestIdentity } from './product-release-identity.mjs';
+import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
+import {
+  resolveDesktopBuildVersion,
+  resolveDesktopReleaseTarget,
+  resolveRuntimeHostSetupPackage,
+} from './desktop-nightly.mjs';
 import {
   assertMissing,
+  assertPackagedDependencyClosure,
   assertPackagedResources,
   isolatedUserEnv,
   makePtyProbe,
@@ -14,14 +41,12 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const executableName = 'Maka.exe';
 const amd64Machine = 0x8664;
 const temporaryCleanupRetries = 20;
 const temporaryCleanupRetryDelayMs = 250;
 // conpty echoes the command and terminates lines with CRLF, so the probe keeps
 // matching on a substring rather than the whole output.
-const ptyProbe = makePtyProbe(process.env.ComSpec || 'cmd.exe', ['/c', 'echo', 'maka-node-pty-ok']);
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
@@ -57,6 +82,21 @@ export function assertWindowsProductVersion(productVersion, expectedVersion) {
   }
 }
 
+export async function verifyPackagedWindowsSandboxLifecycle(
+  sandboxExecutable,
+  { run = runCommandFromRepo } = {},
+) {
+  for (const script of ['appcontainer-smoke.ps1', 'acl-recovery-smoke.ps1']) {
+    await run('pwsh', [
+      '-NoProfile',
+      '-File',
+      join(repoRoot, 'experiments', 'windows-sandbox', script),
+      '-LauncherPath',
+      sandboxExecutable,
+    ]);
+  }
+}
+
 // The Windows build is unsigned, so the only architecture evidence in the
 // artifact is the PE header of the executable itself.
 export async function readPeMachine(path) {
@@ -89,19 +129,43 @@ export async function verifyPackagedWindowsApp(
     smokeRenderer = smokePackagedRenderer,
     workingDirectory = appDirectory,
     expectedVersion,
+    artifactContract = 'current',
+    environment = process.env,
+    // Which channel the packaged client points at is the descriptor's to decide,
+    // so the caller that resolved the target passes it. The installer-lifecycle
+    // and autoupdate verifications run on the formal release lanes alone, which
+    // have no nightly descriptor to resolve.
+    channel = 'release',
   } = {},
 ) {
-  const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  if (artifactContract !== 'current' && artifactContract !== 'upgrade-baseline') {
+    throw new Error(`Unknown packaged Windows artifact contract: ${artifactContract}`);
+  }
+  const requiresCurrentContract = artifactContract === 'current';
+  const product = await readProductManifestIdentity();
   const resources = join(appDirectory, 'resources');
   const executable = join(appDirectory, executableName);
   const appAsar = join(resources, 'app.asar');
   const sandboxExecutable = join(resources, 'windows-sandbox', 'maka-windows-sandbox.exe');
-  const requireWindowsSandbox = expectedVersion === undefined;
 
   step('checking packaged resources');
   await requirePath(executable);
-  await assertPackagedResources(resources, { requirePath, forbidPath, requireWindowsSandbox });
-  await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
+  await assertPackagedResources(resources, {
+    requirePath,
+    forbidPath,
+    requireWindowsSandbox: requiresCurrentContract,
+    requireDisclaimer: requiresCurrentContract,
+    requireCanonicalIcon: requiresCurrentContract,
+    requireAppIconCatalog: requiresCurrentContract,
+    requireDirectPeerArtifact: requiresCurrentContract,
+  });
+  // The upgrade baseline is a build that shipped on its own channel, from its
+  // own commit: its update feed and dependency closure are the ones that were
+  // right for it, not the ones this checkout expects.
+  if (requiresCurrentContract) {
+    await assertPackagedUpdateConfiguration(resources, { channel });
+    await assertPackagedDependencyClosure(resources);
+  }
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);
@@ -109,7 +173,7 @@ export async function verifyPackagedWindowsApp(
     throw new Error(`${executableName} must be x64, found PE machine 0x${machine.toString(16)}.`);
   }
 
-  if (requireWindowsSandbox) {
+  if (requiresCurrentContract) {
     step('smoking the packaged Windows sandbox');
     const sandboxMachine = await readMachine(sandboxExecutable);
     if (sandboxMachine !== amd64Machine) {
@@ -172,6 +236,9 @@ export async function verifyPackagedWindowsApp(
       sandboxExecutable,
     ]);
 
+    step('verifying packaged sandbox lifecycle recovery');
+    await verifyPackagedWindowsSandboxLifecycle(sandboxExecutable, { run });
+
     step('running real filesystem-worker operations through the packaged app');
     // The evidence executes the packaged artifacts themselves: the packaged
     // broker, the packaged Electron executable as the worker runtime and the
@@ -186,9 +253,19 @@ export async function verifyPackagedWindowsApp(
     run,
     `(Get-Item -LiteralPath ${powerShellLiteral(executable)}).VersionInfo.ProductVersion`,
   );
-  assertWindowsProductVersion(stdout, expectedVersion ?? desktopManifest.version);
+  assertWindowsProductVersion(
+    stdout,
+    expectedVersion ?? resolveDesktopBuildVersion(product.version, environment),
+  );
 
   step('smoking node-pty through conpty');
+  const ptyProbe = makePtyProbe(
+    process.env.ComSpec || 'cmd.exe',
+    ['/c', 'echo', 'maka-node-pty-ok'],
+    requiresCurrentContract
+      ? resolveRuntimeHostSetupPackage(product.version, environment)
+      : undefined,
+  );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',
@@ -198,7 +275,10 @@ export async function verifyPackagedWindowsApp(
   });
 
   step('smoking the packaged renderer');
-  await smokeRenderer(executable, { workingDirectory });
+  await smokeRenderer(executable, {
+    workingDirectory,
+    verifyMaximizeRestore: requiresCurrentContract,
+  });
 
   step('packaged app verified');
 }
@@ -211,21 +291,26 @@ export async function verifyPackagedWindowsApp(
 // checklist step. (macOS mounts its DMG instead because notarizing and stapling
 // rewrite the DMG after packaging, so only the final artifact can be trusted.)
 export async function verifyWindowsX64Release(
-  inputPath,
-  { platform = process.platform, verifyApp = verifyPackagedWindowsApp, checksum = sha256File } = {},
+  arch,
+  {
+    platform = process.platform,
+    verifyApp = verifyPackagedWindowsApp,
+    checksum = sha256File,
+    environment = process.env,
+  } = {},
 ) {
   if (platform !== 'win32') {
     throw new Error('Windows release verification requires Windows.');
   }
-  if (!inputPath) {
-    throw new Error('Usage: npm run verify:windows-x64 -- <path-to-exe>');
-  }
 
-  const exePath = resolve(inputPath);
-  if (!exePath.endsWith('.exe')) {
-    throw new Error(`Expected the NSIS installer .exe, found ${basename(exePath)}.`);
-  }
-  const zipPath = `${exePath.slice(0, -'.exe'.length)}.zip`;
+  // Named from the descriptor rather than handed in as a path, the way
+  // `verify:linux` and `verify:macos` already resolve their own payloads. The
+  // workflows used to spell the installer name out in YAML, which put a second
+  // authority on the artifact name beside the descriptor — and, unlike it, that
+  // copy was checked by nothing.
+  const target = await resolveDesktopReleaseTarget(`windows-${arch}`, { environment });
+  const exePath = resolve(target.payloadPath('.exe'));
+  const zipPath = resolve(target.payloadPath('.zip'));
   const unpackedDirectory = join(dirname(exePath), 'win-unpacked');
   await access(exePath);
   await access(zipPath);
@@ -236,11 +321,16 @@ export async function verifyWindowsX64Release(
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
 
   try {
-    await verifyApp(unpackedDirectory, { workingDirectory: temporaryDirectory });
+    await verifyApp(unpackedDirectory, {
+      workingDirectory: temporaryDirectory,
+      channel: target.nightly ? 'nightly' : 'release',
+    });
 
     step('checksumming the release artifacts');
+    // Which payloads a formal release publishes a `.sha256` beside is the
+    // descriptor's to decide, the way `verify:linux` already reads it.
     const checksums = [];
-    for (const path of [exePath, zipPath]) {
+    for (const path of target.checksumPaths()) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
@@ -263,7 +353,7 @@ export async function verifyWindowsX64Release(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyWindowsX64Release(process.argv[2]);
+  const result = await verifyWindowsX64Release(process.argv[2] ?? process.arch);
   console.log(`Verified ${result.exePath}`);
   for (const { path, sha256 } of result.checksums) {
     console.log(`SHA-256 ${sha256}  ${basename(path)}`);

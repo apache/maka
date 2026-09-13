@@ -1,7 +1,27 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka Computer History helper
 
 This directory vendors the macOS event-stream collector from
-`hqhq1025/open-codex-computer-history` version 0.2.0.
+`hqhq1025/open-codex-computer-history` version 0.2.0, pinned to revision
+`30c99f904d9375a01e17a05516f896ebda24a544` under its `collector/` directory.
 
 The collector is a clean-room implementation based on public product behavior
 and locally observable interfaces. It records Accessibility and Core Graphics
@@ -10,3 +30,155 @@ interaction events without screenshots, video, or audio.
 Maka owns the Electron integration, process lifecycle, privacy defaults,
 timeline projection, and user controls. The vendored collector remains under
 the MIT license copied to `apps/desktop/resources/licenses/open-computer-history`.
+
+## Source attribution
+
+The following 16 files contain upstream material and retain MIT attribution,
+the pinned source path/revision and a Maka modification notice. They must not
+receive a whole-file ASF header or be covered by a blanket directory exemption.
+Paths below are relative to this directory; the upstream path is `collector/`
+followed by the same relative path.
+
+```text
+Package.swift
+Sources/HistoryCore/AXTreeRevision.swift
+Sources/HistoryCore/HistoryMaintenance.swift
+Sources/HistoryCore/Models.swift
+Sources/HistoryCore/Policy.swift
+Sources/HistoryCore/RuntimeControl.swift
+Sources/HistoryCore/Store.swift
+Sources/OpenHistory/AXTreeCapture.swift
+Sources/OpenHistory/AccessibilitySnapshot.swift
+Sources/OpenHistory/HistoryRecorder.swift
+Sources/OpenHistory/main.swift
+Tests/HistoryCoreTests/AXTreeRevisionTests.swift
+Tests/HistoryCoreTests/EventSchemaTests.swift
+Tests/HistoryCoreTests/HistoryMaintenanceTests.swift
+Tests/HistoryCoreTests/PolicyTests.swift
+Tests/HistoryCoreTests/SegmentStoreTests.swift
+```
+
+Other source/test files, including `EventPersistence.swift`, `RecorderLifecycle.swift`,
+`RecorderOwnership.swift`, `TextInputBuffer.swift`, `ApplicationIcons.swift` and
+their tests, are Maka-authored additions with the repository's standard ASF
+header, not part of the vendored source exemption. This README is also Maka-authored.
+
+## Recorder lifecycle
+
+Desktop launches `open-history record --no-prompt --parent-pid <desktop-pid>`.
+The parent must be the actual launching process, not PID 1. Standalone callers
+may omit the flag to bind to their launching parent. Parent validation and an
+exclusive nonblocking `flock` on `recorder.lock` precede permission checks and
+segment creation. Duplicate admission exits 75; invalid parent arguments exit 2.
+The lock descriptor remains open for the entire recorder lifetime, across
+pauses and segment rotation, and closes on process exit. Never unlink this lock
+or replace the history home while a recorder is active.
+
+`open-history status` reports `recorderActive` from the lock, independently of
+possibly stale `runtime.json`. False means no current lock holder. It never
+creates a directory or lock; probe failures exit nonzero instead of reporting
+idle. Desktop must not signal a PID read from the status file. Native code uses
+a kernel process-exit notification plus direct parent-identity checks before
+and after snapshot collection and before persistence. Reparenting prevents new
+observations/writes even before the main-queue exit callback executes.
+
+Desktop uses `open-history maintenance --parent-pid <desktop-pid>` before
+replacing raw files or collector settings. It first stops its own recorder,
+opens `recorder.lock` without following symlinks, and inherits that descriptor
+as fd 3. The helper validates the writable descriptor against the exact home
+lock inode and acquires the same nonblocking `flock`, without permission checks,
+capture, or segment creation. A competing recorder refuses admission with exit
+75. Success prints exactly `maintenance-admitted`; Desktop waits for successful
+exit before any mutation. The lock belongs to the shared open-file description,
+so helper exit/crash does not release Desktop's descriptor. Desktop closes its
+descriptor in `finally` after maintenance; process death also releases it.
+Failed admission preserves raw files and settings. Never explicitly unlock the
+child's duplicate, unlink the lock, or infer admission from an earlier status.
+
+Saved pause is applied before observers start reading. Pause disables the event
+tap, removes the AX observer, and discards pending typing, terminal, mouse,
+selection and retry work. Stop does the same before finishing storage. Session
+boundaries contain only ID, timestamp and kind, including paused startup/stop.
+Every observation and persistence entry checks current control state; delayed
+callbacks carry a generation that becomes invalid on pause, resume, source
+transition or stop. Control requests include an optional unique revision so
+pause/resume within one timestamp second cannot revive old work. Older control
+files without the revision remain readable.
+Desktop summary admission separately reads saved control, honors unexpired
+pauses even with collection disabled, and fails closed on malformed control or
+failed native status checks. A stopped runtime is not proof of a resumed pause.
+
+Typing admission checks app/domain/private-window/secure-field policy before
+reading event characters. Bursts bind to their original process, window, URL
+and focused element; source changes cannot relabel old text. Focus notifications
+and rejected/unavailable snapshots discard pending content. A missing URL never
+reuses a previous tab's URL. AX metadata acquisition can still read into memory;
+the persistence contract below determines what is stored.
+
+Run `swift test --quiet` here and
+`npm --workspace @maka/desktop run build:computer-history` from the repository
+root. Synthetic tests cover policy transitions, pause/start/stop persistence,
+stale callbacks, lifetime lock admission/release, rejected CLI starts and kernel
+process-exit notifications using a non-collector child. They do not enable
+capture or request permissions. After building, `resources/bin/open-history
+permissions --no-prompt` (relative to `apps/desktop`) and `status` are read-only
+probes. Real capture and its permission grant remain a separate user action;
+Desktop must write `captureText: false` before a metadata-only trial.
+Verify the grant through the actual signed Desktop app before starting that
+trial. A helper launched from a terminal can report different permissions
+because macOS attributes them to its responsible application.
+
+## Application metadata
+
+`open-history applications <bundle-id>...` resolves at most 32 requested local
+bundle identifiers, without enumerating or launching applications, starting
+capture, reading history, or requesting permissions. It returns only the exact
+requested identifier, the installed localized name, and a freshly rasterized
+48x48 PNG data URL. An unavailable application uses its exact identifier as its
+name and a null icon. Application paths never cross the Desktop bridge.
+
+Desktop bounds each icon to 48 KiB and the complete helper response to 2 MiB,
+with a five-second helper timeout. Lookup batches and overlapping IDs coalesce;
+the memory-only cache holds at most 256 entries for five minutes on success and
+30 seconds for null icons. Renderer callers must filter non-bundle historical
+labels before batching. Main rejects malformed requests/responses; it validates
+the bounded PNG signature and raster header while the renderer owns image
+decoding and the initial fallback for decode failures.
+
+## Text persistence contract
+
+Every `SegmentStore.append` requires the current `ObservationPolicy`. The store
+projects the complete `HistoryEvent` before encoding it, including session
+boundaries, drag endpoints, selection items, terminal updates and diagnostics.
+Producer-side text buffering limits are not the persistence boundary.
+
+With `captureText: false`, persisted events retain IDs, timestamps, interaction
+kinds, application metadata, window titles, HTTP(S) URL scheme and domain,
+mouse button/count/modifiers, keyboard modifiers, AX role/subrole and numeric
+selection ranges. URL credentials, port, path, query and fragment are removed;
+invalid and non-web URLs are omitted.
+
+Typed and selected text, key equivalents (which can contain typed characters),
+control values, element titles/descriptions/placeholders/identifiers, AX full
+trees/diffs and diagnostic messages are omitted. Document UI labels and selected
+item names can contain document content, so they are treated as text too.
+Application names, window titles and domains remain potentially sensitive
+metadata by explicit contract. This setting is not anonymization or a promise
+that no text is read into memory. It affects new writes, not existing history.
+
+With `captureText: true`, ordinary event content is retained. Application/domain
+blocks, detected private browsing, secure-input flags and secure element
+roles/subroles still suppress events, including either endpoint of a drag and
+selected items. Session boundaries in suppressed contexts retain only ID, time
+and kind. Suppressed events are counted; even when the optional debug
+`suppressed.jsonl` is enabled it contains only those three fields.
+
+AX trees are opaque text at the store boundary. With text enabled their producer
+must omit secure nodes and descendants before rendering; `AXTreeCapture` does
+so using `ObservationPolicy.isSecureRole`. Private-window detection depends on
+the supported browser bundle IDs and title markers, and secure detection depends
+on the AX flags/roles supplied by the application. Unmarked secrets in ordinary
+document content cannot be identified by this policy.
+
+Run `swift test` here for synthetic persistence tests. The tests do not start the
+collector or request Accessibility/Input Monitoring permissions.

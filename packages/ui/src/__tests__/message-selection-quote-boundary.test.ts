@@ -1,6 +1,49 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSelectionQuoteGestureBoundary } from '../use-message-selection-quote.js';
+import { parseHTML } from 'linkedom';
+import {
+  createSelectionQuoteGestureBoundary,
+  preservesNativeSelectionScroll,
+} from '../use-message-selection-quote.js';
+
+test('Markdown code keeps its native selection and scrollbar pointer gesture', () => {
+  const { document } = parseHTML(`
+    <article data-turn-id="turn-1">
+      <div class="maka-markdown-code">
+        <div role="group"><code><span id="code-text">long code</span></code></div>
+      </div>
+      <p id="prose">ordinary prose</p>
+    </article>
+  `);
+  const turn = document.querySelector('[data-turn-id]');
+  const codeText = document.querySelector('#code-text');
+  const prose = document.querySelector('#prose');
+
+  assert.ok(turn);
+  assert.ok(codeText);
+  assert.ok(prose);
+  assert.equal(preservesNativeSelectionScroll(codeText, turn), true);
+  assert.equal(preservesNativeSelectionScroll(prose, turn), false);
+});
 
 test('drag selection settles only after its owning pointer is released', () => {
   const effects: string[] = [];

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
@@ -29,6 +48,7 @@ import {
   type SubjectExecutionContext,
 } from './runner.js';
 import type { EvalResult } from './result.js';
+import { terminateProcess } from './process-termination.js';
 
 export type HarnessFramework = 'harbor' | 'pier';
 type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
@@ -1176,7 +1196,7 @@ async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<Trial
     };
   }
 
-  child.kill('SIGTERM');
+  await terminateProcess(child, 'SIGTERM');
   const terminated = await within(exit, wait.deadlineMs);
   if (terminated) {
     return {
@@ -1186,7 +1206,7 @@ async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<Trial
       outcome: terminated.code === 0 && terminated.signal === null ? 'confirmed' : 'terminated',
     };
   }
-  child.kill('SIGKILL');
+  await terminateProcess(child, 'SIGKILL');
   const killed = await within(exit, KILL_SETTLEMENT_DEADLINE_MS);
   if (killed) {
     return {

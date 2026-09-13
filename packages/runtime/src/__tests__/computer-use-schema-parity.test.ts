@@ -1,11 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import {
-  computerUseApprovalSummary,
-  COMPUTER_USE_SEMANTIC_ACTIONS,
-  CU_ACTION_TYPES,
-} from '@maka/core/computer-use';
+import { computerUseApprovalSummary, CU_TOOL_ACTION_TYPES } from '@maka/core/computer-use';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 
@@ -150,7 +165,7 @@ describe('the two argument schemas describe the same tool', () => {
     // reads an approval for an action that did not happen, and the model reads
     // its own history as proof that the name works.
     const wire = new Set(wireActions());
-    const catalog = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
+    const catalog = new Set<string>(CU_TOOL_ACTION_TYPES);
 
     assert.deepEqual(
       catalogNotOnWire(catalog, wire),
@@ -162,5 +177,29 @@ describe('the two argument schemas describe the same tool', () => {
       [],
       'the wire carries actions the approval catalog records as "unknown"',
     );
+  });
+
+  test('coordinate mutation names are absent from every action catalog', () => {
+    const removed = [
+      'cursor_position',
+      'mouse_move',
+      'left_click',
+      'right_click',
+      'middle_click',
+      'double_click',
+      'triple_click',
+      'left_mouse_down',
+      'left_mouse_up',
+      'left_click_drag',
+      'scroll',
+      'zoom',
+    ];
+    const wire = new Set(wireActions());
+    const union = new Set(unionArms().map(({ action }) => action));
+    for (const action of removed) {
+      assert.equal(wire.has(action), false, `${action} remains on the wire`);
+      assert.equal(union.has(action), false, `${action} remains in the strict union`);
+      assert.equal(computerUseApprovalSummary({ action }).action, 'unknown');
+    }
   });
 });

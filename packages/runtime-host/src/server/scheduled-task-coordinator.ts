@@ -1,8 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { messageContentsEqual } from '@maka/core/events';
-import { type ScheduledTask, type ScheduledTaskExecutionTemplate } from '@maka/core/scheduled-task';
+import { authorizeConnectionModel } from '@maka/core/llm-connections';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
+import {
+  type CreateScheduledTaskInput,
+  type ScheduledTask,
+  type ScheduledTaskExecutionTemplate,
+} from '@maka/core/scheduled-task';
 import type { SessionHeader } from '@maka/core/session';
 import {
   buildAgentScheduledTaskCreatePayload,
@@ -12,6 +39,7 @@ import {
   type ScheduledTaskToolAuthority,
 } from '@maka/runtime/scheduled-task-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { stableHash } from '@maka/runtime/request-shape';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveScheduledTaskStoreWriter,
@@ -37,16 +65,20 @@ import {
 } from '../protocol/index.js';
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
-import type { HostScheduledTaskChangeService } from './scheduled-task-change-service.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
+import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NATIVE_PROVIDER_RETRY_MS = 5_000;
+const SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED =
+  'ScheduledTask Agent runs require an immutable model connection identity';
 
 type ScheduledTaskSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type ScheduledTaskRuntime = Pick<SessionManager, 'sendMessage'>;
 type ScheduledTaskRoot = Pick<HostedExecutionAuthority, 'admit'>;
+type HostScheduledTaskChangeServiceLike = HostScheduledTaskCoordinatorInput['changes'];
 
 interface ScheduledTaskNativeEffects {
   hasWorkspaceService(serviceId: string, version: string): boolean;
@@ -65,9 +97,11 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly root: ScheduledTaskRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly nativeEffects: ScheduledTaskNativeEffects;
-  readonly createSession: (input: SessionCreateInput) => Promise<void>;
-  readonly changes: HostScheduledTaskChangeService;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly createSession: (input: SessionCreateInput, toolMode: ToolMode) => Promise<void>;
+  readonly changes: {
+    publish(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void;
+  };
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -77,6 +111,19 @@ export interface HostScheduledTaskCoordinatorInput {
 
 export class HostScheduledTaskSessionBusyError extends Error {
   readonly name = 'HostScheduledTaskSessionBusyError';
+}
+
+/** Stable Agent ScheduledTask target identity used by root-admission retries. */
+export function scheduledTaskExecutionFingerprint(
+  execution: ScheduledTaskExecutionTemplate,
+): `sha256:${string}` | undefined {
+  if (!execution.llmConnectionId) return undefined;
+  return stableHash([
+    'scheduled-task-agent-run.v1',
+    execution.llmConnectionId,
+    execution.llmConnectionSlug,
+    execution.model,
+  ]);
 }
 
 export interface HostScheduledTaskSessionRetirement {
@@ -99,8 +146,8 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
   readonly #nativeEffects: ScheduledTaskNativeEffects;
   readonly #createSession: HostScheduledTaskCoordinatorInput['createSession'];
-  readonly #changes: HostScheduledTaskChangeService;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #changes: HostScheduledTaskChangeServiceLike;
+  readonly #acquireResidency: HostScheduledTaskCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #newId: () => string;
@@ -114,6 +161,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   #prepared = false;
   #started = false;
   #draining = false;
+  #handoffHeld = false;
   #closed = false;
   readonly #retiringSessions = new Set<string>();
 
@@ -142,15 +190,28 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#refreshResidency();
   }
 
-  async assertRecoveryAdmission(admission: RootTurnAdmission): Promise<void> {
+  async assertRecoveryAdmission(
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ): Promise<void> {
     if (!this.#prepared) {
       throw new Error('ScheduledTask recovery admission was inspected before Store recovery');
     }
     if (admission.execution.kind !== 'scheduled_task') return;
     const scheduledTaskId = admission.execution.scheduledTaskId;
     const claims = await this.#store.listPendingFires();
-    const claim = claims.find((candidate) => candidate.task.id === scheduledTaskId);
+    const claim = claims.find(
+      (candidate) =>
+        candidate.task.id === scheduledTaskId &&
+        candidate.execution?.sessionId === admission.sessionId &&
+        candidate.execution.turnId === admission.turnId,
+    );
     const execution = claim?.execution;
+    const fingerprintMatches =
+      claim?.task.effect.kind !== 'agent_run' ||
+      admission.execution.executionFingerprint ===
+        scheduledTaskExecutionFingerprint(claim.task.effect.execution);
+    if (!claim && state === 'run_recorded') return;
     if (
       !claim ||
       !execution ||
@@ -158,6 +219,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       execution.turnId !== admission.turnId ||
       execution.runId !== admission.runId ||
       execution.userMessageId !== admission.userMessageId ||
+      !fingerprintMatches ||
       admission.normalizedInput === null ||
       !messageContentsEqual({ text: claim.task.intent.body }, admission.normalizedInput)
     ) {
@@ -198,6 +260,37 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     void this.#refresh().catch((error: unknown) => this.#fatal(error));
   }
 
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(): readonly RuntimeHostResidency[];
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      settled: async () => {
+        // An admitted native effect or Agent fire finishes normally. No new
+        // fire may start while the handoff waits for this lane.
+        for (;;) {
+          const lane = this.#lane;
+          await lane;
+          if (lane === this.#lane) return;
+        }
+      },
+      residencies: () => (this.#residency ? [this.#residency] : []),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        if (!this.#draining) void this.#refresh().catch((error: unknown) => this.#fatal(error));
+      },
+    };
+  }
+
   beginDrain(): void {
     if (this.#draining) return;
     this.#draining = true;
@@ -210,7 +303,6 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     this.beginDrain();
     await this.#lane;
     this.#closed = true;
-    this.#store.close();
   }
 
   async create(input: {
@@ -422,7 +514,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     }
   }
 
-  async #commitCreate(input: unknown): Promise<ScheduledTask> {
+  async #commitCreate(input: CreateScheduledTaskInput): Promise<ScheduledTask> {
     return this.#exclusive(async () => {
       const incognito = (await this.#runtimePolicy.runtimePolicy.getSnapshot()).policy.privacy
         .incognitoActive;
@@ -473,22 +565,32 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   }
 
   async #refresh(): Promise<void> {
-    await this.#exclusive(async () => {
-      for (const claim of await this.#store.listPendingFires()) {
-        if (claim.nativeState === 'waiting_for_provider') {
-          await this.#fulfill(claim, true);
+    if (this.#handoffHeld || this.#draining) return;
+    // Cover claim admission, native delivery, and persistence, while an idle
+    // schedule or a read-only catalog query does not claim active work.
+    const residency = this.#acquireResidency();
+    try {
+      await this.#exclusive(async () => {
+        if (this.#handoffHeld || this.#draining) return;
+        for (const claim of await this.#store.listPendingFires()) {
+          if (this.#handoffHeld || this.#draining) break;
+          if (claim.nativeState === 'waiting_for_provider') {
+            await this.#fulfill(claim, true);
+          }
         }
-      }
-      while (!this.#draining) {
-        const scan = await this.#store.claimNextDue(this.#now());
-        for (const expired of scan.expired) this.#publish('updated', expired.id);
-        const claim = scan.claim;
-        if (!claim) break;
-        await this.#refreshResidency();
-        await this.#fulfill(claim, false);
-      }
-      await this.#refreshSchedule();
-    });
+        while (!this.#draining && !this.#handoffHeld) {
+          const scan = await this.#store.claimNextDue(this.#now());
+          for (const expired of scan.expired) this.#publish('updated', expired.id);
+          const claim = scan.claim;
+          if (!claim) break;
+          await this.#refreshResidency();
+          await this.#fulfill(claim, false);
+        }
+        await this.#refreshSchedule();
+      });
+    } finally {
+      residency.release();
+    }
   }
 
   async #fulfill(
@@ -562,6 +664,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       );
     }
 
+    // Legacy persisted Agent-run templates may still identify their model
+    // connection by reusable slug only. Never resolve that slug to a
+    // potentially different Connection entity.
+    if (task.effect.kind === 'agent_run' && !task.effect.execution.llmConnectionId) {
+      return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+    }
+
     let execution = claim.execution;
     if (!execution) {
       execution = {
@@ -601,38 +710,95 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       await this.#readResumableSession(identity.sessionId);
       return;
     }
+    const execution = task.effect.execution;
+    const connection = await this.#resolveAgentRunConnection(execution);
     try {
-      await this.#sessions.readHeaderSnapshot(identity.sessionId);
+      const existing = await this.#sessions.readHeaderSnapshot(identity.sessionId);
+      if (
+        existing.llmConnectionId !== execution.llmConnectionId ||
+        existing.llmConnectionSlug !== execution.llmConnectionSlug ||
+        existing.model !== execution.model
+      ) {
+        throw new Error('ScheduledTask Session model identity changed');
+      }
       return;
     } catch (error) {
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
     }
-    const execution = task.effect.execution;
-    await this.#createSession({
-      sessionId: identity.sessionId,
-      workspace:
-        execution.projectId != null && execution.projectId !== ''
-          ? { kind: 'project', projectId: execution.projectId }
-          : { kind: 'host_path', path: execution.cwd },
-      name: task.title,
-      labels: ['scheduled-task'],
-      modelTarget: {
-        kind: 'explicit',
-        connectionSlug: execution.llmConnectionSlug,
-        model: execution.model,
+    await this.#createSession(
+      {
+        sessionId: identity.sessionId,
+        workspace:
+          execution.projectId != null && execution.projectId !== ''
+            ? { kind: 'project', projectId: execution.projectId }
+            : { kind: 'host_path', path: execution.cwd },
+        name: task.title,
+        labels: ['scheduled-task'],
+        modelTarget: {
+          kind: 'explicit',
+          connectionId: connection.connectionId,
+          connectionSlug: execution.llmConnectionSlug,
+          model: execution.model,
+        },
+        ...(execution.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: execution.thinkingLevel }),
+        permissionMode: execution.permissionMode,
+        collaborationMode: execution.collaborationMode,
+        orchestrationMode: execution.orchestrationMode,
       },
-      ...(execution.thinkingLevel === undefined ? {} : { thinkingLevel: execution.thinkingLevel }),
-      permissionMode: execution.permissionMode,
-      collaborationMode: execution.collaborationMode,
-      orchestrationMode: execution.orchestrationMode,
+      execution.toolMode ?? DEFAULT_TOOL_MODE,
+    );
+  }
+
+  async #resolveAgentRunConnection(
+    execution: ScheduledTaskExecutionTemplate,
+  ): Promise<ConnectionCatalogEntry> {
+    if (!execution.llmConnectionId) {
+      throw new Error(SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+    }
+    const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: execution.llmConnectionId,
+      connectionSlug: execution.llmConnectionSlug,
     });
+    if (resolved.kind !== 'ready') {
+      throw new Error(
+        resolved.kind === 'identity_mismatch' || resolved.kind === 'not_found'
+          ? 'ScheduledTask model connection identity changed'
+          : resolved.kind === 'disabled'
+            ? 'ScheduledTask model connection is disabled'
+            : resolved.kind === 'credential_not_configured'
+              ? 'ScheduledTask model connection is not ready'
+              : resolved.kind === 'provider_retired'
+                ? 'ScheduledTask model connection uses a retired provider'
+                : 'ScheduledTask model connection is unavailable',
+      );
+    }
+    if (!authorizeConnectionModel(resolved.connection, execution.model)) {
+      throw new Error('ScheduledTask model is no longer enabled');
+    }
+    return resolved.connection;
   }
 
   async #admitAgentRun(task: ScheduledTask, identity: ScheduledTaskFireExecution): Promise<void> {
+    if (task.effect.kind === 'agent_run') {
+      // Re-read the bound Connection immediately before admission. The
+      // Session/Connection stores have independent write lanes, so this
+      // second check closes the delete-and-recreate-same-slug window between
+      // Session creation and AgentRun admission.
+      await this.#resolveAgentRunConnection(task.effect.execution);
+    }
     const content = { text: task.intent.body };
     await this.#root.admit({
       ...identity,
-      execution: { kind: 'scheduled_task', scheduledTaskId: task.id },
+      execution: {
+        kind: 'scheduled_task',
+        scheduledTaskId: task.id,
+        ...(task.effect.kind === 'agent_run'
+          ? { executionFingerprint: scheduledTaskExecutionFingerprint(task.effect.execution) }
+          : {}),
+      },
       content,
       start: ({ runId, userMessageId, onRunStarted }) => {
         if (runId !== identity.runId || userMessageId !== identity.userMessageId) {
@@ -666,7 +832,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       throw new Error('Session lifecycle is changing');
     }
     const header = await this.#sessions.readHeaderSnapshot(sessionId);
-    if (header.isArchived || header.status === 'archived') {
+    if (header.isArchived) {
       throw new Error('Archived Sessions cannot own session-bound ScheduledTasks');
     }
     return header;
@@ -697,7 +863,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   async #refreshSchedule(): Promise<void> {
     this.#stopTimer();
     await this.#refreshResidency();
-    if (!this.#started || this.#draining) return;
+    if (!this.#started || this.#draining || this.#handoffHeld) return;
     const [tasks, claims] = await Promise.all([this.#store.list(), this.#store.listPendingFires()]);
     const next = tasks
       .filter((task) => task.status === 'active' && task.nextFireAt !== null)
@@ -706,6 +872,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         return earliest === null || deadline < earliest ? deadline : earliest;
       }, null);
     const waitingForProvider = claims.some((claim) => claim.nativeState === 'waiting_for_provider');
+    if (this.#draining || this.#handoffHeld) return;
     if (next === null && !waitingForProvider) return;
     const nextTaskDelay =
       next === null
@@ -726,7 +893,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       !this.#draining &&
       (claims.length > 0 ||
         tasks.some((task) => task.status === 'active' && task.nextFireAt !== null));
-    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency();
+    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency('idle');
     if (!shouldHold) this.#releaseResidency();
   }
 
@@ -777,16 +944,20 @@ class ScheduledTaskMutationError extends Error {
 }
 
 function executionTemplateFromHeader(header: SessionHeader): ScheduledTaskExecutionTemplate {
+  if (!header.llmConnectionId) {
+    throw new Error(SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+  }
   return {
     cwd: header.cwd,
     ...(header.projectId === undefined ? {} : { projectId: header.projectId }),
-    backend: header.backend,
+    llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
     permissionMode: header.permissionMode,
     collaborationMode: header.collaborationMode ?? 'agent',
     orchestrationMode: header.orchestrationMode ?? 'default',
+    toolMode: header.toolMode ?? DEFAULT_TOOL_MODE,
   };
 }
 
@@ -796,19 +967,18 @@ function createScheduledTaskPage(
   offset: number,
 ) {
   const page: ScheduledTask[] = [];
+  const budget = new JsonArrayPageBudget(SCHEDULED_TASK_RESULT_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    tasks: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < tasks.length; index += 1) {
     if (page.length >= SCHEDULED_TASK_PAGE_MAX_ITEMS) break;
     const task = tasks[index];
     if (!task) throw new Error('ScheduledTask page index is invalid');
-    const candidate = [...page, task];
-    const nextOffset = offset + candidate.length;
-    const result = {
-      kind: 'page' as const,
-      revision,
-      tasks: candidate,
-      nextCursor: nextOffset < tasks.length ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > SCHEDULED_TASK_RESULT_MAX_BYTES) {
+    const nextOffset = offset + page.length + 1;
+    if (!budget.tryAppend(task, nextOffset < tasks.length ? String(nextOffset) : null)) {
       break;
     }
     page.push(task);

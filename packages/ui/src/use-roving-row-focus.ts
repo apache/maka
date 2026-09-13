@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/ui/src/use-roving-row-focus.ts
 //
 // Roving tabindex over a selectable list, so the whole list is ONE tab stop.
@@ -55,7 +74,15 @@ export function useRovingRowFocus(containerRef: RefObject<HTMLElement | null>): 
     // Clamp rather than reset: when the active row is deleted, the row that
     // took its place is the one that should still hold the list's tab stop.
     const active = Math.min(activeIndex, rows.length - 1);
-    for (const [index, row] of rows.entries()) row.tabIndex = index === active ? 0 : -1;
+    // Assign only on a change. Writing `tabIndex` invalidates style even when
+    // the value is identical, and this effect runs on every render of a list
+    // that is usually untouched — the unconditional write was charged 224ms of
+    // forced reflow. A fresh row still gets its tabindex: it arrives at the
+    // default 0, which differs from -1 for every row but the active one.
+    for (const [index, row] of rows.entries()) {
+      const desired = index === active ? 0 : -1;
+      if (row.tabIndex !== desired) row.tabIndex = desired;
+    }
   });
 
   const focusRow = useCallback(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Notification, systemPreferences } from 'electron';
 import { BOT_PROVIDERS, type BotProvider } from '@maka/core/bot-chat-settings';
 import {
@@ -8,6 +27,7 @@ import {
   type CapabilityFeatureSignal,
   type CapabilityMemoryAcceptanceSignal,
   type CapabilityPermissionRequirement,
+  type CapabilityReasonCode,
   type CapabilityRuntimeProbeSignal,
   type CapabilitySnapshot,
   type CapabilitySnapshotCollection,
@@ -64,7 +84,7 @@ export function buildCapabilitySnapshotCollection(input: {
       feature: {
         state: 'partial',
         source: 'runtime',
-        reason: '本地 MEMORY.md 已可见；自动抽取/写入仍需用户确认',
+        reason: 'memory_partial',
       },
       requiredPermissions: [],
       actionApproval: { state: 'not_required', source: 'not_applicable' },
@@ -72,7 +92,7 @@ export function buildCapabilitySnapshotCollection(input: {
       runtimeProbe: {
         state: 'not_run',
         source: 'runtime_probe',
-        reason: '透明本地记忆为文件读写能力，不做后台探测',
+        reason: 'memory_no_probe',
       },
     }),
     ...BOT_PROVIDERS.map((provider) =>
@@ -97,11 +117,7 @@ function activityRecorderCapability(
     feature: {
       state: !supported ? 'not_available' : enabled ? 'enabled' : 'disabled',
       source: enabled ? 'settings' : 'runtime',
-      reason: !supported
-        ? 'Computer History 当前仅支持包含本地采集器的 macOS 版本。'
-        : enabled
-          ? '本机交互事件采集已启用，不使用屏幕录制。'
-          : 'Computer History 已安装但尚未启用。',
+      reason: supported && !enabled ? 'disabled' : undefined,
     },
     requiredPermissions: [
       {
@@ -124,9 +140,6 @@ function activityRecorderCapability(
               : 'not_run',
       source: 'runtime_probe',
       lastCheckedAt: now,
-      reason: history
-        ? `状态：${history.state}；${history.eventCount} 条本地事件。`
-        : '尚未读取 Computer History 状态。',
     },
     canPause: enabled,
   });
@@ -151,7 +164,7 @@ function computerUseCapability(
     feature: {
       state: artifactAvailable ? 'enabled' : 'not_available',
       source: 'runtime',
-      reason: computerUseCapabilityReason(input, permissions),
+      reason: input === undefined || input.backendId === 'none' ? 'cu_artifact_missing' : 'cu_backend_status',
     },
     requiredPermissions: [
       { id: 'accessibility', required: true, status: permissions.accessibility.status },
@@ -166,45 +179,9 @@ function computerUseCapability(
       state: input?.health.state ?? 'not_available',
       source: 'runtime_probe',
       lastCheckedAt: now,
-      reason: input?.health.reason ?? 'Computer Use 后端当前不可用。',
+      reason: input?.health.reason ?? 'cu_backend_unavailable',
     },
   });
-}
-
-function computerUseCapabilityReason(
-  input: {
-    backendId: CuBackendId | 'none';
-    health: ReturnType<typeof computerUseServiceHealth>;
-  } | undefined,
-  permissions: PermissionSnapshot['permissions'],
-): string {
-  if (input === undefined || input.backendId === 'none') {
-    return '未找到通过完整性检查的 Computer Use 执行器 artifact。';
-  }
-
-  const reasons = [`${input.backendId} artifact 已通过本地完整性检查。`];
-  const missingPermissions = [
-    ['辅助功能', permissions.accessibility.status],
-    ['屏幕录制', permissions.screen_recording.status],
-  ].filter((entry) => entry[1] !== 'granted').map((entry) => entry[0]);
-  if (missingPermissions.length > 0) {
-    reasons.push(`等待${missingPermissions.join('、')}权限。`);
-  }
-  switch (input.health.state) {
-    case 'not_available':
-      reasons.push(`${input.backendId} service 启动失败、已退出或已停止。`);
-      break;
-    case 'degraded':
-      reasons.push(`${input.backendId} service 正在启动或恢复。`);
-      break;
-    case 'healthy':
-      reasons.push('操作与截图 service 已就绪；按目标与动作类别授权后可操作本机应用。');
-      break;
-    case 'not_run':
-      reasons.push('service 将在首次调用时启动；按目标与动作类别授权后可操作本机应用。');
-      break;
-  }
-  return reasons.join('');
 }
 
 function staticCapability(input: {
@@ -216,7 +193,6 @@ function staticCapability(input: {
   actionApproval: CapabilityActionApprovalSignal;
   memoryAcceptance: CapabilityMemoryAcceptanceSignal;
   runtimeProbe: CapabilityRuntimeProbeSignal;
-  guidance?: string[];
   canPause?: boolean;
 }): CapabilitySnapshot {
   const configuration: CapabilityConfigurationSignal = { state: 'not_required', source: 'not_applicable' };
@@ -237,7 +213,6 @@ function staticCapability(input: {
     runtimeProbe: input.runtimeProbe,
     canRevoke: false,
     canPause: input.canPause ?? input.feature.state === 'enabled',
-    guidance: input.guidance ?? [],
     auditEvents: [],
     updatedAt: input.now,
   };
@@ -257,7 +232,7 @@ function botCapability(
   };
   const configuration: CapabilityConfigurationSignal = hasConfig
     ? { state: 'present', source: 'settings' }
-    : { state: 'missing', source: 'settings', reason: '未配置平台凭据' };
+    : { state: 'missing', source: 'settings', reason: 'platform_credentials_missing' };
   const runtimeProbe = runtimeProbeFromBotReadiness(
     status.readiness,
     channel.readinessUpdatedAt,
@@ -281,14 +256,13 @@ function botCapability(
     runtimeProbe,
     canRevoke: channel.enabled || hasConfig,
     canPause: channel.enabled,
-    guidance: [],
     auditEvents: [],
     updatedAt: now,
   };
 }
 
 function accessibilitySnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
-  if (platform !== 'darwin') return unsupportedPermission('accessibility', now, '仅 macOS TCC 权限适用');
+  if (platform !== 'darwin') return unsupportedPermission('accessibility', now, 'macos_tcc_only');
   try {
     const granted = systemPreferences.isTrustedAccessibilityClient(false);
     return {
@@ -296,12 +270,15 @@ function accessibilitySnapshot(now: number, platform: NodeJS.Platform): OsPermis
       status: granted ? 'granted' : 'not_determined',
       source: 'electron',
       checkedAt: now,
-      reason: granted ? undefined : 'macOS 不区分辅助功能权限是未授权还是未申请',
+      reason: granted ? undefined : 'accessibility_status_ambiguous',
       canOpenSettings: true,
       canRequest: false,
     };
   } catch (error) {
-    return unknownPermission('accessibility', now, generalizedReason(error), true);
+    // `permission_probe_failed` stays a closed code for the page; the raw
+    // cause is diagnostic-only, so the probe error is not silently swallowed.
+    console.warn('[capability] accessibility probe failed:', error instanceof Error ? error.message : error);
+    return unknownPermission('accessibility', now, true);
   }
 }
 
@@ -312,11 +289,7 @@ function mediaPermissionSnapshot(
   platform: NodeJS.Platform,
 ): OsPermissionSnapshot {
   if (!supportsMediaPermissionProbe(id, platform)) {
-    return unsupportedPermission(
-      id,
-      now,
-      '屏幕录制权限状态仅能在 macOS 上读取',
-    );
+    return unsupportedPermission(id, now, 'screen_recording_status_mac_only');
   }
   try {
     const status = mapMediaAccessStatus(systemPreferences.getMediaAccessStatus(mediaType));
@@ -329,7 +302,8 @@ function mediaPermissionSnapshot(
       ...actions,
     };
   } catch (error) {
-    return unknownPermission(id, now, generalizedReason(error), platform === 'darwin');
+    console.warn('[capability] media probe failed:', error instanceof Error ? error.message : error);
+    return unknownPermission(id, now, platform === 'darwin');
   }
 }
 
@@ -342,9 +316,9 @@ function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermiss
     checkedAt: now,
     reason: supported
       ? platform === 'darwin'
-        ? 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认'
-        : 'Electron 无法可靠读取当前系统的通知授权状态'
-      : 'Electron 通知能力不可用',
+        ? 'notifications_status_unreadable_macos'
+        : 'notifications_status_unreadable'
+      : 'notifications_unsupported',
     canOpenSettings: platform === 'darwin',
     // Showing a Notification is not an authorization API and does not report
     // whether macOS delivered or suppressed it. Never present that probe as a
@@ -354,19 +328,23 @@ function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermiss
 }
 
 function automationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
-  if (platform !== 'darwin') return unsupportedPermission('automation', now, '仅 macOS TCC 权限适用');
+  if (platform !== 'darwin') return unsupportedPermission('automation', now, 'macos_tcc_only');
   return {
     id: 'automation',
     status: 'unknown',
     source: 'static',
     checkedAt: now,
-    reason: 'Electron 暂不支持读取逐 App 的 Apple Events 授权状态',
+    reason: 'apple_events_tcc_status_unavailable',
     canOpenSettings: true,
     canRequest: false,
   };
 }
 
-function unsupportedPermission(id: OsPermissionId, now: number, reason: string): OsPermissionSnapshot {
+function unsupportedPermission(
+  id: OsPermissionId,
+  now: number,
+  reason: CapabilityReasonCode,
+): OsPermissionSnapshot {
   return {
     id,
     status: 'unsupported',
@@ -381,7 +359,6 @@ function unsupportedPermission(id: OsPermissionId, now: number, reason: string):
 function unknownPermission(
   id: OsPermissionId,
   now: number,
-  reason: string,
   canOpenSettings: boolean,
 ): OsPermissionSnapshot {
   return {
@@ -389,12 +366,8 @@ function unknownPermission(
     status: 'unknown',
     source: 'electron',
     checkedAt: now,
-    reason,
+    reason: 'permission_probe_failed',
     canOpenSettings,
     canRequest: false,
   };
-}
-
-function generalizedReason(error: unknown): string {
-  return error instanceof Error ? error.message : 'permission probe failed';
 }

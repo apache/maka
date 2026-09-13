@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -6,6 +25,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { meteringCheckpointMacMatches } from '../metering-checkpoint.js';
 
@@ -57,7 +77,7 @@ test('provider metering checkpoint records admission before the request settles'
   const wrapperProcess = spawn(
     process.execPath,
     [
-      wrapper.pathname,
+      fileURLToPath(wrapper),
       'opencode',
       `http://127.0.0.1:${address.port}`,
       root,
@@ -144,7 +164,7 @@ test('provider failures remain infrastructure failures until inference admission
       const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
       const { stdout, exitCode } = await runWrapper(
         [
-          wrapper.pathname,
+          fileURLToPath(wrapper),
           'opencode',
           `http://127.0.0.1:${address.port}`,
           root,
@@ -273,7 +293,14 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
   try {
     const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
     const { stdout } = await runWrapper(
-      [wrapper.pathname, 'pi', `http://127.0.0.1:${address.port}`, root, process.execPath, child],
+      [
+        fileURLToPath(wrapper),
+        'pi',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
       { OPENAI_API_KEY: 'upstream-test-key', MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN },
     );
     return decodeResultFrame(stdout) as Awaited<ReturnType<typeof executePiWithTerminalRecord>>;
@@ -314,14 +341,32 @@ test('a request arriving while the proxy drains is refused, not counted', async 
   assert.ok(address && typeof address !== 'string');
   const child = join(root, 'child.mjs');
   const straggler = join(root, 'straggler.mjs');
-  // Outlives its parent, holds one request open across the subject's exit, then
-  // starts another -- the shape of a background service the agent left running.
+  const childExited = join(root, 'logs/agent/opencode.wrapper-state.json');
+  // Outlives its parent and holds the child's stdout pipe open, keeping the
+  // wrapper inside runChild until the exit callback publishes its barrier.
+  // The second request therefore cannot race ahead of that callback, while a
+  // report-time-only admission cut deadlocks instead of satisfying the test.
   await writeFile(
     straggler,
-    `import { writeFileSync } from 'node:fs';
-const [, , baseUrl, outcomePath] = process.argv;
+    `import { readFileSync, writeFileSync } from 'node:fs';
+const [, , baseUrl, outcomePath, childExitedPath] = process.argv;
 const held = fetch(\`\${baseUrl}/responses\`, { method: 'POST', body: '{}' }).catch(() => undefined);
-await new Promise((resolve) => setTimeout(resolve, 300));
+const deadline = Date.now() + 5_000;
+let sawChildExit = false;
+while (Date.now() < deadline) {
+  try {
+    if (JSON.parse(readFileSync(childExitedPath, 'utf8')).phase === 'child_exited') {
+      sawChildExit = true;
+      break;
+    }
+  } catch {}
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (!sawChildExit) {
+  await held;
+  writeFileSync(outcomePath, JSON.stringify({ status: -2 }));
+  process.exit(2);
+}
 let status = 0;
 try {
   status = (await fetch(\`\${baseUrl}/responses\`, { method: 'POST', body: '{}' })).status;
@@ -336,9 +381,9 @@ await held;
     child,
     `import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-spawn(process.execPath, [${JSON.stringify(straggler)}, process.env.DEEPSEEK_BASE_URL, ${JSON.stringify(outcome)}], {
+spawn(process.execPath, [${JSON.stringify(straggler)}, process.env.DEEPSEEK_BASE_URL, ${JSON.stringify(outcome)}, ${JSON.stringify(childExited)}], {
   detached: true,
-  stdio: 'ignore',
+  stdio: ['ignore', 'inherit', 'ignore'],
 }).unref();
 // Exits only once the proxy has a request to drain, so what follows is the
 // drain window rather than a race against it.
@@ -351,7 +396,7 @@ process.exit(1);
     const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
     const { stdout } = await runWrapper(
       [
-        wrapper.pathname,
+        fileURLToPath(wrapper),
         'opencode',
         `http://127.0.0.1:${address.port}`,
         root,

@@ -1,4 +1,23 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Dev launcher with PARALLEL + INCREMENTAL builds.
  *
@@ -23,11 +42,16 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
-import { monitorDevelopmentApp, startDevelopmentApp } from './dev-app-runtime.mjs';
+import {
+  createDevelopmentLaunchSession,
+  handleDevelopmentLaunchOutcome,
+  waitForDevelopmentLaunchVerdict,
+} from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+const MODEL_METADATA_SYNC = join(REPO_ROOT, 'scripts', 'sync-model-metadata.mjs');
 const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -54,6 +78,12 @@ function runNodeTool(dir, script, args) {
 // ── build phases ─────────────────────────────────────────────────────────────
 
 const TIMER_START = Date.now();
+
+// A clean or ignore-scripts install has no generated model modules yet, and
+// `tsc --build` bypasses workspace prebuild hooks. Generate from the committed
+// snapshot before starting the incremental library graph.
+log('build', 'model metadata — generating from committed snapshot');
+await runNodeTool(REPO_ROOT, MODEL_METADATA_SYNC, []);
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
 // .tsbuildinfo, sub-project incremental detection). The preload bundle imports
@@ -130,49 +160,58 @@ if (!devUrl) {
   process.exit(1);
 }
 
+// Let Vite finish the initial dependency crawl + optimizer commit before the
+// window loads (issue #4775). `warmupRequest` on the renderer entry kicks the
+// recursive pre-transform of the static import graph (which registers every
+// reachable dep with the optimizer), and `waitForRequestsIdle` resolves at
+// crawl end — the same signal the dep optimizer waits on before committing
+// node_modules/.vite/deps. Loading Electron before that commit let the page
+// execute chunks from a previous optimizer generation alongside fresh ones —
+// two React instances, a null hook dispatcher, and a renderer crash on the
+// first lazy component. warmupRequest swallows transform errors itself, so
+// this can never abort the launch; it only reorders the startup race away.
+log('vite', 'warming renderer entry and waiting for the dep crawl to settle...');
+await server.environments.client.warmupRequest('/main.tsx');
+await server.environments.client.waitForRequestsIdle();
+
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 
+// Created before launch so signals during codesign/preparation are durable.
+// Closing the terminal still stops only launcher resources, not the
+// independently owned TCC app.
+const launchSession = createDevelopmentLaunchSession({
+  close: () => server.close(),
+});
 let app = null;
-let shuttingDown = false;
-async function shutdown(code) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  await app?.stop();
-  await server.close().catch(() => {});
-  process.exit(code);
+try {
+  app = await launchSession.start({ argv: process.argv.slice(2), viteUrl: devUrl });
+} catch (error) {
+  console.error(`[dev] failed to start Electron: ${String(error)}`);
+  await launchSession.stop(1);
 }
 
-// Registered before the launch await: preparing the bundle can take a codesign
-// rebuild, and a signal arriving with no handler installed takes the default
-// action, leaving the dev server and any app behind.
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
-// Closing the terminal window sends SIGHUP; without this the detached bundle
-// survives as an orphan holding the single-instance lock.
-process.on('SIGHUP', () => shutdown(0));
+if (app) {
+  if (app.isMacosBundle) log('electron', 'launched Maka Dev.app through LaunchServices');
 
-app = await startDevelopmentApp({ argv: process.argv.slice(2), viteUrl: devUrl });
-if (app.isMacosBundle) log('electron', 'launched Maka Dev.app through LaunchServices');
-
-app.child.on('error', (err) => {
-  console.error(`[dev] failed to start Electron: ${err.message}`);
-  shutdown(1);
-});
-if (app.isMacosBundle) {
-  // `open` exits 0 at the handoff, so only a failure to hand off is news here;
-  // the app's own lifetime is what the monitor reports.
-  app.child.on('exit', (code) => {
-    if (code) shutdown(code);
+  app.child.on('error', (err) => {
+    console.error(`[dev] failed to start Electron: ${err.message}`);
+    launchSession.stop(1);
   });
-  monitorDevelopmentApp({ stopped: () => shuttingDown }).then((outcome) => {
-    if (outcome === 'never-started') {
-      console.error('[dev] Maka Dev.app did not start (see the output above)');
-      shutdown(1);
-    } else if (outcome === 'exited') {
-      log('electron', 'Maka Dev.app quit');
-      shutdown(0);
-    }
-  });
-} else {
-  app.child.on('exit', (code) => shutdown(code ?? 0));
+  if (app.isMacosBundle) {
+    // `open` exits 0 at the handoff, so only a failure to hand off is news here.
+    // The app's later lifetime is deliberately independent from this dev server.
+    app.child.on('exit', (code) => {
+      if (code) launchSession.stop(code);
+    });
+    // All branching lives in handleDevelopmentLaunchOutcome; this line is the only
+    // un-automated surface here (launcher scripts are non-exported, darwin-only).
+    waitForDevelopmentLaunchVerdict({ stopped: launchSession.isStopping, resultFile: app.resultFile }).then((outcome) =>
+      handleDevelopmentLaunchOutcome(outcome, {
+        log: (m) => console.error('[dev]', m),
+        exit: (code) => launchSession.stop(code),
+      }),
+    );
+  } else {
+    app.child.on('exit', (code) => launchSession.stop(code ?? 0));
+  }
 }

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export const AGENT_GRAPH_EPOCH_SCHEMA_VERSION = 1 as const;
 
 /** Durable identity of one Agent Graph lifetime within a root Session. */
@@ -22,6 +41,24 @@ export interface AdvanceAgentGraphEpochRequest {
   readonly nextGraphId: string;
 }
 
+export interface AgentGraphEpochPageRequest {
+  readonly rootSessionId: string;
+  readonly beforeEpoch?: number;
+  readonly limit: number;
+}
+
+export interface AgentGraphEpochPage {
+  readonly epochs: readonly AgentGraphEpochBinding[];
+  readonly nextBeforeEpoch: number | null;
+  /**
+   * Current epoch observed by the same read as the page rows, or null when the
+   * store holds no durable rows for the root Session. Keeping this on the page
+   * prevents a rollover between two reads from splitting the current marker
+   * from the directory it annotates.
+   */
+  readonly currentEpoch: number | null;
+}
+
 /**
  * Root-to-graph identity authority.
  *
@@ -34,6 +71,8 @@ export interface AgentGraphEpochStore {
     request: ResolveAgentGraphEpochRequest,
   ): Promise<AgentGraphEpochBinding>;
   advanceAgentGraphEpoch(request: AdvanceAgentGraphEpochRequest): Promise<AgentGraphEpochBinding>;
+  readAgentGraphEpochByGraphId(graphId: string): Promise<AgentGraphEpochBinding | undefined>;
+  listAgentGraphEpochPage(request: AgentGraphEpochPageRequest): Promise<AgentGraphEpochPage>;
   listAgentGraphEpochs(rootSessionId: string): Promise<AgentGraphEpochBinding[]>;
 }
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -125,9 +144,9 @@ describe('FileCredentialStore', () => {
       await chmod(dir, 0o777); // a loose dir that predates the hardening
       const store = createFileCredentialStore(dir);
       await store.setSecret('a', 'api_key', 'k');
-      // ensureSecretDir re-chmods an existing dir (mkdir's mode only applies on
-      // creation); the writer and the lock share it, so the lock can't leave
-      // the dir loose either.
+      // hardenDirectory re-chmods an existing dir (mkdir's mode only applies
+      // on creation); the writer and the lock share it, so the lock can't
+      // leave the dir loose either.
       assert.equal((await stat(dir)).mode & 0o777, 0o700);
     });
   });

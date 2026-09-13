@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { chmod, copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,7 +24,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core/session';
-import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OperationalStateMigrationBlockedError,
+} from '../operational-state-store.js';
+import { SQLITE_ARTIFACT_SCHEMA_VERSION } from '../sqlite-artifact-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
@@ -77,6 +100,678 @@ test('atomically reapplies current owner schema without republishing its registr
       registry,
     );
     reopened.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a non-owner rejects an older schema without migrating it behind the Runtime Host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-non-owner-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const older = new DatabaseSync(databasePath);
+    older.exec(`
+      ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT;
+      UPDATE operational_schema_migrations
+      SET version = 6
+      WHERE scope = 'core_execution';
+    `);
+    older.close();
+
+    assert.throws(
+      () =>
+        acquireOperationalStateDatabase(root, {
+          schemaMigration: 'require_current',
+        }),
+      (error: unknown) =>
+        error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'requires_host_migration' &&
+        /requires migration by its Runtime Host/u.test(error.message),
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const columns = preserved.prepare('PRAGMA table_info(core_agent_runs)').all() as Array<{
+        name: string;
+      }>;
+      assert.ok(columns.some(({ name }) => name === 'record_json'));
+      assert.equal(
+        (
+          preserved
+            .prepare(
+              "SELECT version FROM operational_schema_migrations WHERE scope = 'core_execution'",
+            )
+            .get() as { version: number }
+        ).version,
+        6,
+      );
+    } finally {
+      preserved.close();
+    }
+
+    const hostOwned = acquireOperationalStateDatabase(root);
+    try {
+      const columns = hostOwned.database
+        .prepare('PRAGMA table_info(core_agent_runs)')
+        .all() as Array<{ name: string }>;
+      assert.equal(
+        columns.some(({ name }) => name === 'record_json'),
+        false,
+      );
+    } finally {
+      hostOwned.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves live supported v1 Artifacts when opening existing Sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-artifact-v1-retirement-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: lease });
+    await metadata.create(sessionHeader());
+    metadata.close();
+    lease.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE artifact_records;
+      CREATE TABLE artifact_records (
+        storage_key TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        status TEXT NOT NULL CHECK (status IN ('live', 'deleted')),
+        relative_path TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX artifact_records_session_order
+        ON artifact_records(session_id, created_at, storage_key);
+      CREATE UNIQUE INDEX artifact_records_relative_path
+        ON artifact_records(relative_path);
+      INSERT INTO artifact_records VALUES (
+        'legacy-key',
+        'legacy-artifact',
+        'session-1',
+        1,
+        'live',
+        'session-1/legacy-artifact-result.txt',
+        '{"id":"legacy-artifact","sessionId":"session-1","turnId":"turn-1","createdAt":1,"name":"result.txt","kind":"file","sizeBytes":4,"relativePath":"session-1/legacy-artifact-result.txt","source":"tool_result_archive","status":"live"}'
+      );
+      UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+    `);
+    legacy.close();
+
+    const reopened = acquireOperationalStateDatabase(root);
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = 'session-1'")
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database.prepare('SELECT COUNT(*) AS count FROM artifact_records').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'artifact'")
+          .get() as { version: number }
+      ).version,
+      SQLITE_ARTIFACT_SCHEMA_VERSION,
+    );
+    reopened.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('retires completed released migration metadata during schema convergence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-retirement-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const metadata = createSqliteSessionMetadataStore(databasePath, {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    await metadata.create(sessionHeader());
+    metadata.close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    createLegacyImportSourceTables(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify(releasedSessionMetadataValidation()),
+      );
+    legacy
+      .prepare(`
+        INSERT INTO runtime_import_sources(source_path, fingerprint, imported_at)
+        VALUES (?, ?, ?)
+      `)
+      .run(join(root, 'runtime-events.jsonl'), 'sha256:released-events', 20);
+    legacy
+      .prepare(`
+        INSERT INTO session_metadata_import_sources(
+          source_path,
+          fingerprint,
+          session_id,
+          imported_at
+        ) VALUES (?, ?, ?, ?)
+      `)
+      .run(join(root, 'sessions.json'), 'sha256:released-session', 'session-1', 20);
+    legacy.close();
+
+    const migrated = acquireOperationalStateDatabase(root);
+    assert.equal(
+      migrated.database
+        .prepare(`
+          SELECT 1
+          FROM sqlite_schema
+          WHERE type = 'table'
+            AND name IN (
+              'cutover_journal',
+              'runtime_import_sources',
+              'session_metadata_import_sources'
+            )
+          LIMIT 1
+        `)
+        .get(),
+      undefined,
+    );
+    // Retirement must not touch legitimate data or half-apply schema convergence.
+    assert.equal(
+      (
+        migrated.database
+          .prepare("SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = 'session-1'")
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        migrated.database
+          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'runtime'")
+          .get() as { version?: number } | undefined
+      )?.version,
+      SQLITE_RUNTIME_SCHEMA_VERSION,
+    );
+    assert.equal(
+      (
+        migrated.database
+          .prepare(
+            "SELECT version FROM operational_schema_migrations WHERE scope = 'session_metadata'",
+          )
+          .get() as { version?: number } | undefined
+      )?.version,
+      SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+    );
+    migrated.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves an interrupted released cutover journal and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-interrupted-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at
+        ) VALUES (?, ?, ?, 'started', ?)
+      `)
+      .run('session_metadata', join(root, 'sessions.sqlite'), 'sha256:released-source', 10);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /cutover journal is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.deepEqual(
+      {
+        ...(preserved.prepare('SELECT store_name, state FROM cutover_journal').get() as Record<
+          string,
+          unknown
+        >),
+      },
+      { store_name: 'session_metadata', state: 'started' },
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal with an unfamiliar column shape and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-shape-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      CREATE TABLE cutover_journal (
+        store_name TEXT PRIMARY KEY,
+        source_path TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+        started_at INTEGER NOT NULL CHECK (started_at >= 0),
+        completed_at INTEGER,
+        validation_json TEXT,
+        unexpected_column TEXT
+      )
+    `);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ session_metadata: 4 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /unfamiliar released shape/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal with an altered constraint and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-constraint-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    // Released columns/types verbatim, but a loosened CHECK bound. A column-only
+    // gate would accept and DROP this; the full-signature gate must not.
+    legacy.exec(`
+      CREATE TABLE cutover_journal (
+        store_name TEXT PRIMARY KEY,
+        source_path TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+        started_at INTEGER NOT NULL CHECK (started_at >= -1),
+        completed_at INTEGER,
+        validation_json TEXT
+      )
+    `);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ session_metadata: 4 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /unfamiliar released shape/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal carrying an extra trigger and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-trigger-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // An extra schema object grafted onto the released table: retirement must
+    // refuse to DROP a table whose full object set it cannot recognize.
+    legacy.exec(`
+      CREATE TRIGGER cutover_journal_guard
+      AFTER INSERT ON cutover_journal
+      BEGIN
+        DELETE FROM cutover_journal WHERE store_name = NEW.store_name;
+      END;
+    `);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /carries an unexpected object/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.ok(
+      preserved
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'cutover_journal'")
+        .get(),
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal naming an unknown store and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-unknown-store-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // Released shape and internally well-formed, but names a store no released
+    // writer ever emitted — unrecognized evidence must fail closed, not drop.
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'future_store',
+        join(root, 'future.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ future_store: 1 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /cutover journal is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (preserved.prepare('SELECT store_name FROM cutover_journal').get() as { store_name: string })
+        .store_name,
+      'future_store',
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a completed row carrying an unfamiliar validation key and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-extra-key-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // A known store, released shape, well-formed counts — but one key beyond the
+    // set the released writer emitted. No released writer produced this contract,
+    // so the journal must be preserved rather than retired.
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ ...releasedSessionMetadataValidation(), unexpected_evidence: 0 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /invalid validation evidence/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (preserved.prepare('SELECT store_name FROM cutover_journal').get() as { store_name: string })
+        .store_name,
+      'session_metadata',
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a completed row missing a released validation key and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-missing-key-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    const incomplete = releasedSessionMetadataValidation();
+    delete incomplete.sandbox_boundary_log;
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify(incomplete),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /invalid validation evidence/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a malformed released import source and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-import-malformed-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyImportSourceTables(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO runtime_import_sources(source_path, fingerprint, imported_at)
+        VALUES (?, ?, ?)
+      `)
+      .run(join(root, 'runtime-events.jsonl'), '', 20);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /import source is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM runtime_import_sources').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a session import source with a missing session and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-import-missing-session-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyImportSourceTables(legacy);
+    // node:sqlite enforces foreign keys by default; disable them only to plant
+    // the orphaned import row this defensive branch must reject.
+    legacy.exec('PRAGMA foreign_keys = OFF');
+    legacy
+      .prepare(`
+        INSERT INTO session_metadata_import_sources(
+          source_path,
+          fingerprint,
+          session_id,
+          imported_at
+        ) VALUES (?, ?, ?, ?)
+      `)
+      .run(join(root, 'sessions.json'), 'sha256:released-session', 'missing-session', 20);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /session import source is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved
+          .prepare('SELECT COUNT(*) AS count FROM session_metadata_import_sources')
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    preserved.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -354,7 +1049,7 @@ for (const { name, mutation } of [
         DROP INDEX artifact_records_relative_path;
         CREATE UNIQUE INDEX artifact_records_relative_path
           ON artifact_records(relative_path)
-          WHERE status = 'live';
+          WHERE relative_path <> '';
       `),
   },
   {
@@ -363,12 +1058,10 @@ for (const { name, mutation } of [
       database.exec(`
         DROP TABLE artifact_records;
         CREATE TABLE artifact_records (
-          storage_key TEXT PRIMARY KEY,
-          artifact_id TEXT NOT NULL,
+          artifact_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
           created_at INTEGER NOT NULL CHECK (created_at >= 0),
-          status TEXT NOT NULL CHECK (status IN ('LIVE', 'DELETED')),
-          relative_path TEXT NOT NULL,
+          relative_path TEXT NOT NULL CHECK (relative_path <> ''),
           record_json TEXT NOT NULL
         );
       `),
@@ -437,13 +1130,13 @@ test('rejects a nonempty database with no operational registry', async () => {
     'missing-registry',
     (database) =>
       database.exec(
-        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_task_ledger_events',
+        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_session_todo_documents',
       ),
     /registry is missing from a nonempty database/,
     (database) =>
       assert.equal(
         database
-          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_task_ledger_events'")
+          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_session_todo_documents'")
           .get(),
         undefined,
       ),
@@ -602,6 +1295,13 @@ test('rejects a newer scope before migrating an older scope', async () => {
     assert.throws(
       () => acquireOperationalStateDatabase(root),
       /Operational schema usage is newer than supported/,
+    );
+    assert.throws(
+      () => acquireOperationalStateDatabase(root, { schemaMigration: 'require_current' }),
+      (error: unknown) =>
+        error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'blocked' &&
+        /Operational schema usage is newer than supported/u.test(error.message),
     );
 
     const preserved = new DatabaseSync(databasePath, { readOnly: true });
@@ -767,6 +1467,63 @@ function rewindRuntimeSchema(database: DatabaseSync): void {
   database.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
 }
 
+function createLegacyCutoverJournal(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE cutover_journal (
+      store_name TEXT PRIMARY KEY,
+      source_path TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      validation_json TEXT
+    )
+  `);
+}
+
+// The exact validation-evidence key set the released session_metadata cutover
+// writer emitted (commit 1caea265c^): one row count per copied session-metadata
+// table. Kept as an explicit fixture so a drift from the source contract in
+// operational-state-store.ts turns this suite red rather than silently
+// accepting a narrower shape.
+function releasedSessionMetadataValidation(): Record<string, number> {
+  return {
+    session_metadata: 4,
+    session_metadata_labels: 0,
+    session_metadata_import_sources: 1,
+    session_metadata_tombstones: 0,
+    subagent_spawns: 0,
+    agent_graph_intent_claims: 0,
+    agent_graph_schedule_updates: 0,
+    agent_graph_operator_provisions: 0,
+    agent_graph_client_projections: 0,
+    agent_graph_client_operator_projections: 0,
+    agent_graph_client_terminal_activity: 0,
+    agent_graph_client_applied_records: 0,
+    agent_graph_supervisor_wakes: 0,
+    agent_graph_supervisor_wake_attempts: 0,
+    sandbox_boundary_log: 0,
+  };
+}
+
+function createLegacyImportSourceTables(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE runtime_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      imported_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE session_metadata_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      imported_at INTEGER NOT NULL,
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    )
+  `);
+}
+
 async function copyV016Database(databasePath: string): Promise<void> {
   await copyFile(
     new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
@@ -851,7 +1608,6 @@ function sessionHeader(): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 2,
     name: 'Session',
     titleIsManual: true,
     isFlagged: false,

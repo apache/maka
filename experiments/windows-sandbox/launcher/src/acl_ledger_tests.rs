@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -519,5 +538,29 @@ mod tests {
         assert_eq!(root["write"], true);
         assert_eq!(root["readRecursive"], false);
         assert_eq!(root["writeRecursive"], true);
+    }
+
+    #[test]
+    fn lock_sddl_pins_an_elevation_independent_owner() {
+        // Without an explicit `O:` clause the object owner comes from the
+        // creating token's *default* owner — the user SID for a standard token
+        // but BUILTIN\Administrators for an elevated one — so the same user's
+        // elevated and non-elevated processes would create locks with different
+        // owners and each reject the other's legitimate lock. Pinning the owner
+        // keeps the lock identity stable across elevation states.
+        let sid = "S-1-5-21-11111111-22222222-33333333-1001";
+        let sddl = crate::acl_ledger::lock_sddl(sid).expect("lock SDDL");
+        assert!(
+            sddl.starts_with(&format!("O:{sid}D:P")),
+            "owner must be pinned before the protected DACL: {sddl}"
+        );
+        assert!(
+            sddl.contains("(A;;GA;;;SY)"),
+            "SYSTEM retains access: {sddl}"
+        );
+        assert!(
+            sddl.contains(&format!("(A;;GA;;;{sid})")),
+            "the owning user retains access: {sddl}"
+        );
     }
 }

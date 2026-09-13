@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   isNonEmptyUnicodeString,
   isSha256Digest,
@@ -14,6 +33,7 @@ import {
   SessionBundleFileError,
   type SessionBundleManifestV1,
 } from './session-bundle-contract.js';
+import { stableJsonStringify } from '@maka/core/canonical-json';
 
 const MANIFEST_KEYS = ['codec', 'envelope', 'payload', 'schemaVersion', 'stateIdentity'] as const;
 const CODEC_KEYS = [
@@ -186,19 +206,11 @@ function decodePayload(value: unknown): SessionBundleManifestV1['payload'] {
 }
 
 function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw invalidManifest();
-    return JSON.stringify(value);
+  try {
+    return stableJsonStringify(value);
+  } catch {
+    throw invalidManifest();
   }
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (!isRecord(value)) throw invalidManifest();
-  return `{${Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-    .join(',')}}`;
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {

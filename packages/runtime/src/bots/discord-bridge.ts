@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * PR-BOT-DISCORD-OPERATIONAL-0 (external bot research: Discord Gateway):
  * full Discord bot lifecycle — gateway WebSocket, identify, heartbeat,
@@ -199,8 +218,8 @@ function sleep(ms: number): Promise<void> {
 export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
   protected resumeGatewayUrl: string | null = null;
 
-  protected override checkCredentials(): string | null {
-    return this.settings.token.trim() ? null : 'no-token';
+  protected override checkCredentials(): 'token_missing' | null {
+    return this.settings.token.trim() ? null : 'token_missing';
   }
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
@@ -226,7 +245,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       const json = await response.json().catch(() => null);
       if (!response.ok || !json || typeof json.url !== 'string') {
         const message = (json as { message?: unknown } | null)?.message;
-        this.reason = typeof message === 'string' ? message : `gateway-bot-${response.status}`;
+        this.recordFailure(message, `gateway-bot-${response.status}`);
         this.readiness = 'configured';
         this.emitStatusChange();
         // Usually a transient outage — openConnection schedules the retry.
@@ -235,7 +254,7 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       const gatewayUrl = this.resumeGatewayUrl ?? json.url;
       return `${gatewayUrl}/?v=${DISCORD_GATEWAY_VERSION}&encoding=json`;
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       return null;
@@ -311,7 +330,10 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
       }
       if (classification.kind !== 'ok') {
         this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-        this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+        this.recordFailure(
+          classification.kind === 'retry' ? 'rate-limited' : classification.description,
+          classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+        );
         this.emitStatusChange();
         return null;
       }

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -5,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { createSqliteArtifactStore } from '../artifact-store.js';
+import { createSqliteArtifactStoreWriteAuthority } from '../artifact-store.js';
 import { createProjectCatalog } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
 import {
@@ -36,7 +55,6 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     const session = await sessions.create({
       projectId: project.id,
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -52,7 +70,8 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     } as const;
     await sessions.appendMessage(session.id, message);
     await sessions.close?.();
-    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
+    const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
       sessionId: session.id,
@@ -60,10 +79,10 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       name: 'note.txt',
       kind: 'file',
       content: 'artifact',
-      source: 'fixture',
+      source: 'tool_result',
       now: 2,
     });
-    artifacts.close?.();
+    artifactAuthority.close();
 
     await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
     assert.equal((await validateOperationalStateBackup(backupRoot)).createdAt, 10);
@@ -105,7 +124,8 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
   const base = await mkdtemp(join(tmpdir(), 'maka-operational-backup-artifact-'));
   const stateRoot = join(base, 'state');
   try {
-    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifactAuthority = createSqliteArtifactStoreWriteAuthority(stateRoot);
+    const artifacts = artifactAuthority.store;
     const artifact = await artifacts.create({
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -113,10 +133,10 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
       name: 'note.txt',
       kind: 'file',
       content: 'artifact',
-      source: 'fixture',
+      source: 'tool_result',
       now: 2,
     });
-    artifacts.close?.();
+    artifactAuthority.close();
     await rm(join(stateRoot, 'artifacts', artifact.relativePath));
 
     await assert.rejects(
@@ -160,6 +180,29 @@ test('rejects a backup whose native Runtime version contradicts its registry', a
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
 
     await assert.rejects(validateOperationalStateBackup(backupRoot), /newer than supported/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('continues to validate and restore version 3 backups without context refs', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-backup-v3-'));
+  try {
+    const stateRoot = join(base, 'state');
+    const sessions = createSessionStore(stateRoot);
+    await sessions.close?.();
+    const backupRoot = join(base, 'backup');
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot });
+    const path = join(backupRoot, 'operational-backup.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.schemaVersion = 3;
+    await writeFile(path, JSON.stringify(manifest));
+    assert.equal((await validateOperationalStateBackup(backupRoot)).schemaVersion, 3);
+    assert.equal(
+      (await restoreOperationalStateBackup({ backupRoot, destinationRoot: join(base, 'restored') }))
+        .schemaVersion,
+      3,
+    );
   } finally {
     await rm(base, { recursive: true, force: true });
   }

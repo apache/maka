@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RuntimeHostConnection } from '../client/connection.js';
@@ -40,13 +59,13 @@ test('explicit hosted target preserves the default target and proves the request
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    true,
+    { changed: true, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
 
   assert.deepEqual(
@@ -104,13 +123,13 @@ test('explicit hosted target reports an already admitted target as unchanged', a
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    false,
+    { changed: false, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
 });
 
@@ -152,13 +171,13 @@ test('explicit hosted target replaces a missing effective endpoint', async () =>
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    true,
+    { changed: true, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
   assert.deepEqual(operations, [
     'connection.catalog.query',
@@ -194,6 +213,9 @@ function catalogPage(
         enabled: true,
         enabledModelIdCount: enabledModelIds.length,
         modelCount: models.length,
+        // These tests are about which endpoint a target resolves to, not about
+        // what the models are, so the page carries no resolved entries.
+        catalogEntryCount: 0,
       },
       ...enabledModelIds.map((modelId, itemIndex) => ({
         kind: 'enabled_model_id' as const,

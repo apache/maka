@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* ============================================================================
    Error surface — full-screen error boundary
    ----------------------------------------------------------------------------
@@ -35,7 +54,7 @@
     place-items: center;
     /* Square icon plate — ratio-governed, see --radius-plate. */
     border-radius: var(--radius-plate);
-    background: oklch(from var(--destructive) l c h / 0.10);
+    background: var(--color-error-muted);
     color: var(--destructive-text);
   }
 
@@ -53,22 +72,8 @@
 .maka-error-copy p {
     font: var(--maka-text-body);
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     max-width: 56ch;
-  }
-
-.maka-error-stack {
-    font: var(--maka-text-supporting);
-    margin: var(--space-1) 0 0;
-    max-height: 220px;
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
-    color: var(--foreground-secondary);
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
 .maka-error-actions {
@@ -84,9 +89,10 @@
     cursor: progress;
   }
 
+/* Ink only: the label already states the failure, and a second tinted edge
+   beside it is the One Means Rule (DESIGN.md §8). */
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
-    border-color: oklch(from var(--destructive) l c h / 0.35);
   }
 
 .maka-error-copy-status {

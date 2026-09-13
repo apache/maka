@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
@@ -19,21 +38,12 @@ import {
   type ClientCapabilityHostFrame,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
-  type ClientSurface,
+  type ClientHello,
   type ConfigurationChangedFrame,
-  type ContextCompactInput,
-  type ContextCompactResult,
-  type ContextDiagnosticsQueryInput,
-  type ContextDiagnosticsResult,
-  type DeepResearchQueryInput,
-  type DeepResearchQueryResult,
-  type DailyReviewMutateInput,
-  type DailyReviewMutateResult,
-  type DailyReviewQueryInput,
-  type DailyReviewQueryResult,
-  type HostDiagnosticsResult,
+  type ConnectionCatalogChangedFrame,
   type HostOperationErrorCode,
   type HostIncompatible,
+  isHostActivityIdle,
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
@@ -44,12 +54,6 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
-  type PlanControlInput,
-  type PlanControlResult,
-  type PlanQueryInput,
-  type PlanQueryResult,
-  type PlanTurnStartInput,
-  type PlanTurnStartResult,
   type ProjectCatalogChangedFrame,
   type ProtocolRange,
   type RequestFrame,
@@ -58,20 +62,6 @@ import {
   type ScheduledTaskChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
-  type SessionWorkspaceRelocateInput,
-  type SessionRecapGenerateInput,
-  type SessionRecapGenerateResult,
-  type SessionUpdateResult,
-  type TurnQueryInput,
-  type TurnRegenerateInput,
-  type TurnResumePlan,
-  type TurnResumeQueryInput,
-  type TurnResumeStartInput,
-  type TurnResumeStartResult,
-  type TurnSnapshot,
-  type TurnStartInput,
-  type TurnStartResult,
-  type TurnStopInput,
   requireClientInstanceId,
   requireHostCompositionId,
   requireHostGeneration,
@@ -80,6 +70,8 @@ import {
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+import type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
+export type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
 import type { OperationMode, OperationSpec } from '../protocol/operation-spec.js';
 import {
@@ -89,17 +81,25 @@ import {
 } from './session-subscription.js';
 import { ClientCapabilityChannel } from './client-capability-channel.js';
 import type { ClientCapabilityProvider } from './client-capability.js';
+import {
+  readRuntimeHostProcessIdentity,
+  type RuntimeHostProcessIdentity,
+} from './process-identity.js';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
 const DEFAULT_LIVENESS_INTERVAL_MS = 2_000;
-const DEFAULT_LIVENESS_TIMEOUT_MS = 2_000;
+// A bounded round trip tolerates short transport/Host stalls. Unrelated inbound
+// traffic must never extend it: receiving events does not prove requests work.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 8_000;
+// Peer byte-stream recovery owns a bounded 30-second reattachment budget.
+// Its independent path probes detect failures; Host probes still bound a hung Host.
+const PEER_LIVENESS_TIMEOUT_MS = 45_000;
 const MAX_WEBSOCKET_FRAGMENTS = 256;
 const MAX_WEBSOCKET_BUFFERED_CHUNKS = 256;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
-  surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId?: string;
   generation?: string;
@@ -108,9 +108,9 @@ export interface ConnectRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   /**
-   * Interval between liveness probes while a domain request is outstanding.
-   * Injectable so tests exercise requests that outlive a probe cycle without
-   * waiting the real cadence; defaults to DEFAULT_LIVENESS_INTERVAL_MS (2s).
+   * Interval between end-to-end Host liveness probes. Probes continue while
+   * inbound traffic is active; only a matching response proves a round trip.
+   * Injectable so tests can exercise the cadence without waiting 2 seconds.
    */
   livenessIntervalMs?: number;
   /**
@@ -121,6 +121,8 @@ export interface ConnectRuntimeHostInput {
    * connection health.
    */
   onLivenessProbe?: () => void;
+  /** Receives each identity-validated Host status observation. */
+  onHostStatus?: (status: HostStatusResult) => void;
 }
 
 export type RuntimeHostUnavailableReason =
@@ -142,18 +144,21 @@ export type ConnectRuntimeHostResult =
       kind: 'incompatible';
       handshake: HostIncompatible;
       registration: HostRegistration;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | {
       kind: 'upgrade_required';
       registration: HostRegistration;
       restartable: true;
       handshake: HostIncompatible;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | {
       kind: 'upgrade_required';
       registration: HostRegistration;
       restartable: false;
       handshake?: HostIncompatible;
+      processIdentity?: RuntimeHostProcessIdentity;
     }
   | { kind: 'draining'; registration: HostRegistration }
   | {
@@ -168,14 +173,29 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly credential: string;
   readonly expectedRootId: string;
   readonly compositionId: string;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly clientInstanceId?: string;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+}
+
+export interface ConnectRuntimeHostMessageTransportInput {
+  readonly transport: RuntimeHostMessageTransport;
+  readonly expectedRootId: string;
+  readonly compositionId: string;
+  readonly protocol: ProtocolRange;
+  readonly clientInstanceId?: string;
+  readonly handshakeTimeoutMs?: number;
+  readonly livenessIntervalMs?: number;
+  readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
+  readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
+  readonly getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
 }
 
 export interface RuntimeHostConnectionResource {
@@ -195,15 +215,20 @@ export type ConnectRemoteRuntimeHostResult =
         | 'unreachable'
         | 'connect_failed'
         | 'handshake_failed'
+        | 'handshake_timed_out'
         | 'root_mismatch'
         | 'composition_mismatch';
     };
 
 type ConnectResolvedRuntimeHostResult =
-  | ConnectRuntimeHostResult
+  | Exclude<ConnectRuntimeHostResult, { kind: 'unavailable' }>
+  | (Extract<ConnectRuntimeHostResult, { kind: 'unavailable' }> & {
+      endpointConnected: boolean;
+    })
   | {
       kind: 'election_deadline_elapsed';
       endpointConnected: boolean;
+      registration?: HostRegistration;
     };
 
 class ElectionDeadlineElapsedError extends Error {
@@ -219,57 +244,30 @@ interface ConnectResolvedRuntimeHostInput
   clientInstanceId: string;
   controlDirectory: string;
   electionDeadline?: number;
+  readProcessIdentity?: typeof readRuntimeHostProcessIdentity;
 }
 
 export interface RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly closed: Promise<void>;
+  /**
+   * Signals require an explicitly cancellable operation. Queued aborts never
+   * dispatch; dispatched aborts await terminal response, timeout, or disconnect.
+   */
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult>;
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult>;
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult>;
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult>;
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult>;
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult>;
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult>;
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult>;
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -281,6 +279,7 @@ export interface RuntimeHostConnection {
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
   subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void;
@@ -288,6 +287,7 @@ export interface RuntimeHostConnection {
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
+  | 'host.status'
   | 'subscription.open'
   | 'subscription.close'
   | 'client.capability.replace'
@@ -339,6 +339,8 @@ interface PendingRequest {
   reject(error: Error): void;
   domainState?: 'queued' | 'in_flight';
   timer?: NodeJS.Timeout;
+  removeAbortListener?: () => void;
+  cancellationError?: Error;
 }
 
 interface RetiredRequest {
@@ -353,13 +355,25 @@ interface QueuedDomainFrame {
 
 type RequestTimeoutScope = 'request' | 'connection';
 
+// A Host response can reach the Client before the Host's transport write
+// promise resumes and retires that request. Leave one slot free so replacing
+// the observed response cannot transiently cross the Host's hard limit. The
+// Host serializes outbound writes, so at most one response occupies this
+// acknowledgement window.
+const CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
+
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly #getPeerPath: () => RuntimeHostPeerConnectionPath | undefined;
+  get peerPath(): RuntimeHostPeerConnectionPath | undefined {
+    return this.#getPeerPath();
+  }
   readonly closed: Promise<void>;
   readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
@@ -369,15 +383,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #connectionCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #projectCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   readonly #scheduledTaskChangeListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
+  #livenessProbeDeadline: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #inFlightDomainRequests = 0;
   #terminalError: Error | undefined;
   readonly #livenessIntervalMs: number;
   readonly #onLivenessProbe: (() => void) | undefined;
+  readonly #onHostStatus: ((status: HostStatusResult) => void) | undefined;
 
   constructor(
     transport: RuntimeHostMessageTransport,
@@ -388,24 +405,31 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       selectedProtocol: number;
       compositionId: string;
       compositionRevision: string;
+      cooperativeHandoff?: true;
     },
     // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
     // the other connect timeouts, before any transport work happens.
     options?: {
       livenessIntervalMs?: number;
       onLivenessProbe?: () => void;
+      onHostStatus?: (status: HostStatusResult) => void;
       connectionResource?: RuntimeHostConnectionResource;
+      peerPath?: RuntimeHostPeerConnectionPath;
+      getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
     this.#onLivenessProbe = options?.onLivenessProbe;
+    this.#onHostStatus = options?.onHostStatus;
     this.#transport = transport;
     this.rootId = accepted.rootId;
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
+    this.cooperativeHandoff = accepted.cooperativeHandoff;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
+    this.#getPeerPath = options?.getPeerPath ?? (() => options?.peerPath);
     const connectionResource = options?.connectionResource;
     if (connectionResource) {
       const abortForResourceClosure = (cause: Error) =>
@@ -443,13 +467,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       onFailure: (error) => this.#fail(error),
     });
     void this.#readResponses();
+    this.#scheduleLivenessCheck();
   }
 
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<OperationOutput<K>> {
+    if (isHostStatusOperation(operation)) {
+      return Promise.reject(new Error('Runtime Host status requires the validated status() API'));
+    }
     if (isClientCapabilityMutation(operation)) {
       return Promise.reject(
         new Error('Client Capability mutations require the dedicated capability channel'),
@@ -458,9 +487,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.#requestOperation(
       operation,
       input,
-      timeoutMs ?? (operation === 'host.status' ? DEFAULT_LIVENESS_TIMEOUT_MS : undefined),
+      timeoutMs,
       (result) => result,
-      operation === 'host.status' ? 'connection' : 'request',
+      'request',
+      signal,
     );
   }
 
@@ -470,6 +500,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     timeoutMs: number | undefined,
     accept: (result: OperationOutput<K>) => Result,
     timeoutScope: RequestTimeoutScope,
+    signal?: AbortSignal,
   ): Promise<Result> {
     const boundedTimeoutMs =
       timeoutMs === undefined ? undefined : requireTimeout(timeoutMs, 'timeoutMs');
@@ -478,6 +509,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       OperationOutput<K>,
       HostOperationErrorCode
     >;
+    if (signal && !spec.cancellable) {
+      return Promise.reject(
+        new Error(`Runtime Host ${operation} does not support request cancellation`),
+      );
+    }
+    if (signal?.aborted) return Promise.reject(signal.reason);
     let canonicalInput: OperationInput<K>;
     try {
       canonicalInput = spec.decodeInput(input);
@@ -519,8 +556,17 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         ...(isDomainRequest ? { domainState: 'queued' as const } : {}),
         timer,
       });
-      this.#scheduleLivenessCheck();
     });
+    if (signal) {
+      const cancel = () => this.#cancelRequest(requestId, asError(signal.reason));
+      signal.addEventListener('abort', cancel, { once: true });
+      this.#pendingRequests.get(requestId)!.removeAbortListener = () =>
+        signal.removeEventListener('abort', cancel);
+      if (signal.aborted) {
+        cancel();
+        return result;
+      }
+    }
     const frame = {
       requestId,
       operation,
@@ -540,7 +586,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #drainDomainRequests(): void {
     while (
       !this.#terminalError &&
-      this.#inFlightDomainRequests < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS
+      this.#inFlightDomainRequests < CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS
     ) {
       const queued = this.#queuedDomainFrames.shift();
       if (!queued) return;
@@ -555,7 +601,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async status(timeoutMs?: number): Promise<HostStatusResult> {
-    const status = await this.request('host.status', {}, timeoutMs);
+    return this.#requestOperation(
+      'host.status',
+      {},
+      timeoutMs ?? (this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS),
+      (status) => this.#validateHostStatusIdentity(status),
+      'connection',
+    );
+  }
+
+  #validateHostStatusIdentity(status: HostStatusResult): HostStatusResult {
     if (
       status.hostEpoch !== this.hostEpoch ||
       status.compositionId !== this.compositionId ||
@@ -565,104 +620,53 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       this.#fail(error);
       throw error;
     }
+    try {
+      this.#onHostStatus?.(status);
+    } catch {
+      // Observation cannot control the authenticated connection it watches.
+    }
     return status;
   }
 
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult> {
-    return this.request('host.diagnostics.query', {}, timeoutMs);
-  }
-
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
-    return this.request('turn.start', input, timeoutMs);
-  }
-
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.query', input, timeoutMs);
-  }
-
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.stop', input, timeoutMs);
-  }
-
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.regenerate', input, timeoutMs);
-  }
-
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult> {
-    return this.request('context.diagnostics.query', input, timeoutMs);
-  }
-
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
-    return this.request('context.compact', input, timeoutMs);
-  }
-
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult> {
-    return this.request('session.workspace.relocate', input, timeoutMs);
-  }
-
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult> {
-    return this.request('session.recap.generate', input, timeoutMs);
-  }
-
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
-    return this.request('plan.query', input, timeoutMs);
-  }
-
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
-    return this.request('plan.control', input, timeoutMs);
-  }
-
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult> {
-    return this.request('plan.turn.start', input, timeoutMs);
-  }
-
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult> {
-    return this.request('deep-research.query', input, timeoutMs);
-  }
-
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult> {
-    return this.request('daily-review.query', input, timeoutMs);
-  }
-
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult> {
-    return this.request('daily-review.mutate', input, timeoutMs);
-  }
-
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
-    return this.request('turn.resume.query', input, timeoutMs);
-  }
-
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
-    return this.request('turn.resume.start', input, timeoutMs);
-  }
-
-  openSessionSubscription(
+  async openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription> {
+    const deadline =
+      Date.now() + (timeoutMs === undefined ? 30_000 : requireTimeout(timeoutMs, 'timeoutMs'));
+    for (;;) {
+      try {
+        return await this.#openSessionSubscription(
+          input,
+          Math.max(1, deadline - Date.now()),
+          timeoutMs,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== 'transcript_preparing' ||
+          input.transcript.kind !== 'tail' ||
+          this.#terminalError ||
+          Date.now() >= deadline
+        )
+          throw error;
+        // Each refusal committed a bounded, resumable index batch. Keep the
+        // caller in its loading state and yield before requesting more work.
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
+  #openSessionSubscription(
+    input: SubscriptionOpenInput,
+    openTimeoutMs: number,
+    requestTimeoutMs?: number,
   ): Promise<RuntimeHostSessionSubscription> {
     const expectedSessionId = input.sessionId;
     return this.#requestOperation(
       'subscription.open',
       input,
-      timeoutMs,
+      openTimeoutMs,
       (result) => {
         if (result.hostEpoch !== this.hostEpoch) {
           throw new RuntimeHostSubscriptionError(
@@ -685,13 +689,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         const subscription = new ClientSessionSubscription(
           result,
           () => this.#closeSessionSubscription(result.subscriptionId),
-          (query) => this.request('session.transcript.page', query, timeoutMs),
+          (query) => this.request('session.transcript.page', query, requestTimeoutMs),
           async () => {
             try {
               await this.request(
                 'session.transcript.overlay.release',
                 { subscriptionId: result.subscriptionId },
-                timeoutMs,
+                requestTimeoutMs,
               );
             } catch (error) {
               this.#fail(asError(error));
@@ -707,8 +711,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async close(): Promise<void> {
-    this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
-    this.#transport.abort();
+    if (!this.peerPath) {
+      this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
+      this.#transport.abort();
+      await this.closed;
+      return;
+    }
+    // An intentional peer close must send logical FIN. Aborting its raw path
+    // instead leaves the Host retaining a recoverable session and its quota.
+    this.#fail(
+      new RuntimeHostTransportError('closed', 'Runtime Host connection closed by Client'),
+      true,
+    );
     await this.closed;
   }
 
@@ -728,6 +742,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#configurationChangeListeners.add(listener);
     return () => this.#configurationChangeListeners.delete(listener);
+  }
+
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#connectionCatalogChangeListeners.add(listener);
+    return () => this.#connectionCatalogChangeListeners.delete(listener);
   }
 
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
@@ -751,7 +770,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     try {
       while (true) {
         const frame = decodeHostFrame(await this.#transport.read(0));
-        this.#resetLivenessCheck();
+        this.#scheduleLivenessCheck();
         if ('kind' in frame) {
           if (isClientCapabilityHostFrameKind(frame.kind)) {
             this.#clientCapabilities.accept(frame as ClientCapabilityHostFrame);
@@ -760,6 +779,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           switch (frame.kind) {
             case 'configuration.changed':
               this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'connection.catalog.changed':
+              this.#acceptConnectionCatalogChanged(frame);
               continue;
             case 'project.catalog.changed':
               this.#acceptProjectCatalogChanged(frame);
@@ -798,7 +820,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       if (retired?.operation === frame.operation) {
         this.#retiredRequests.delete(frame.requestId);
         this.#releaseDomainSlot(retired);
-        this.#scheduleLivenessCheck();
         return;
       }
       this.#fail(new Error('Runtime Host returned an unmatched operation response'));
@@ -810,7 +831,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }
     this.#pendingRequests.delete(frame.requestId);
     if (pending.timer) clearTimeout(pending.timer);
-    this.#scheduleLivenessCheck();
+    pending.removeAbortListener?.();
+    if (pending.cancellationError) {
+      this.#releaseDomainSlot(pending);
+      pending.reject(pending.cancellationError);
+      return;
+    }
     if (frame.ok) {
       try {
         const accepted = pending.accept(frame.result);
@@ -831,6 +857,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
     for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptConnectionCatalogChanged(frame: ConnectionCatalogChangedFrame): void {
+    for (const listener of this.#connectionCatalogChangeListeners) {
       try {
         listener(frame.revision);
       } catch {
@@ -869,17 +905,44 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }
   }
 
+  #cancelRequest(requestId: string, error: Error): void {
+    const pending = this.#pendingRequests.get(requestId);
+    if (!pending || pending.cancellationError) return;
+    pending.removeAbortListener?.();
+    pending.cancellationError = error;
+    if (pending.domainState === 'queued') {
+      this.#pendingRequests.delete(requestId);
+      if (pending.timer) clearTimeout(pending.timer);
+      const index = this.#queuedDomainFrames.findIndex((queued) => queued.requestId === requestId);
+      if (index !== -1) this.#queuedDomainFrames.splice(index, 1);
+      pending.reject(error);
+      return;
+    }
+    // A normal RPC could expire behind saturated domain work while the summary
+    // still dispatches. Control frames bypass that queue and target its wire ID.
+    void writeClientFrame(this.#transport, { kind: 'request.cancel', requestId }).catch(
+      (failure: unknown) => this.#fail(asError(failure)),
+    );
+    // Keep the request and slot until the Host acknowledges terminal completion.
+  }
+
   #retireRequest(requestId: string, error: Error): void {
     const pending = this.#pendingRequests.get(requestId);
     if (!pending) return;
+    if (
+      pending.domainState === 'in_flight' &&
+      HOST_OPERATION_SPECS[pending.operation].cancellable
+    ) {
+      this.#cancelRequest(requestId, error);
+    }
     this.#pendingRequests.delete(requestId);
+    pending.removeAbortListener?.();
     if (pending.domainState === 'queued') {
       const index = this.#queuedDomainFrames.findIndex((queued) => queued.requestId === requestId);
       if (index !== -1) this.#queuedDomainFrames.splice(index, 1);
       pending.reject(
         interruptedRequestError(pending.operation, 'not_dispatched', 'timeout', error),
       );
-      this.#scheduleLivenessCheck();
       return;
     }
     this.#retiredRequests.set(requestId, {
@@ -887,7 +950,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       ...(pending.domainState === 'in_flight' ? { domainState: pending.domainState } : {}),
     });
     pending.reject(interruptedRequestError(pending.operation, 'dispatched', 'timeout', error));
-    this.#scheduleLivenessCheck();
   }
 
   #releaseDomainSlot(request: PendingRequest | RetiredRequest): void {
@@ -897,23 +959,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#drainDomainRequests();
   }
 
-  #resetLivenessCheck(): void {
-    if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
-    this.#livenessTimer = undefined;
-    this.#scheduleLivenessCheck();
-  }
-
   #scheduleLivenessCheck(): void {
-    if (
-      this.#terminalError ||
-      this.#livenessTimer ||
-      this.#livenessProbePending ||
-      !this.#hasOutstandingDomainRequest()
-    ) {
-      if (!this.#hasOutstandingDomainRequest() && this.#livenessTimer) {
-        clearTimeout(this.#livenessTimer);
-        this.#livenessTimer = undefined;
-      }
+    // Inbound events do not postpone the next bidirectional probe.
+    if (this.#terminalError || this.#livenessTimer || this.#livenessProbePending) {
       return;
     }
     this.#livenessTimer = setTimeout(() => {
@@ -922,27 +970,22 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }, this.#livenessIntervalMs);
   }
 
-  #hasOutstandingDomainRequest(): boolean {
-    if (this.#retiredRequests.size > 0) return true;
-    for (const pending of this.#pendingRequests.values()) {
-      if (pending.operation !== 'host.status') return true;
-    }
-    return false;
-  }
-
   #startLivenessProbe(): void {
-    if (this.#terminalError || this.#livenessProbePending || !this.#hasOutstandingDomainRequest()) {
-      return;
-    }
+    if (this.#terminalError || this.#livenessProbePending) return;
     this.#livenessProbePending = true;
+    this.#livenessProbeDeadline = setTimeout(
+      () => {
+        this.#livenessProbeDeadline = undefined;
+        this.#fail(requestTimeoutError('host.status'));
+      },
+      this.peerPath ? PEER_LIVENESS_TIMEOUT_MS : DEFAULT_LIVENESS_TIMEOUT_MS,
+    );
     void this.#requestOperation(
       'host.status',
       {},
-      DEFAULT_LIVENESS_TIMEOUT_MS,
+      undefined,
       (status) => {
-        if (status.hostEpoch !== this.hostEpoch) {
-          throw new Error('Runtime Host returned status for a different Host Epoch');
-        }
+        this.#validateHostStatusIdentity(status);
         try {
           this.#onLivenessProbe?.();
         } catch {
@@ -950,10 +993,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           // connection it is watching.
         }
       },
-      'connection',
+      'request',
     )
       .catch((error: unknown) => this.#fail(asError(error)))
       .finally(() => {
+        if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
+        this.#livenessProbeDeadline = undefined;
         this.#livenessProbePending = false;
         this.#scheduleLivenessCheck();
       });
@@ -1018,15 +1063,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     ).catch((failure: unknown) => this.#fail(asError(failure)));
   }
 
-  #fail(error: Error): void {
+  #fail(error: Error, gracefulPeerClose = false): void {
     if (this.#terminalError) return;
     this.#terminalError = error;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
     this.#livenessTimer = undefined;
+    if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
+    this.#livenessProbeDeadline = undefined;
     this.#queuedDomainFrames.length = 0;
     this.#inFlightDomainRequests = 0;
     for (const pending of this.#pendingRequests.values()) {
       if (pending.timer) clearTimeout(pending.timer);
+      pending.removeAbortListener?.();
       pending.reject(
         error instanceof RuntimeHostTransportError
           ? interruptedRequestError(
@@ -1053,12 +1101,17 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#configurationChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
     this.#scheduledTaskChangeListeners.clear();
-    this.#transport.abort();
+    if (gracefulPeerClose) this.#transport.closeAfterFlush();
+    else this.#transport.abort();
   }
 }
 
 function isClientCapabilityMutation(operation: unknown): boolean {
   return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
+}
+
+function isHostStatusOperation(operation: unknown): boolean {
+  return operation === 'host.status';
 }
 
 export async function connectRuntimeHost(
@@ -1104,12 +1157,8 @@ export async function connectExistingRuntimeHost(
 export async function connectRemoteRuntimeHost(
   input: ConnectRemoteRuntimeHostInput,
 ): Promise<ConnectRemoteRuntimeHostResult> {
-  const connectionResource = input.connectionResource;
-  let resourceTransferred = false;
   try {
     const normalized = normalizeConnectRuntimeHostInput(input);
-    const compositionId = requireHostCompositionId(input.compositionId);
-    const expectedRootId = requireHostRootId(input.expectedRootId);
     const url = normalizeRemoteRuntimeHostUrl(input.url, {
       allowInsecureRemote: input.allowInsecureRemote === true,
     });
@@ -1117,43 +1166,75 @@ export async function connectRemoteRuntimeHost(
     try {
       transport = await openWebSocketTransport(url, input.credential, normalized.connectTimeoutMs);
     } catch (error) {
+      await input.connectionResource?.close().catch(() => undefined);
       return { kind: 'unavailable', reason: classifyRemoteRuntimeHostConnectFailure(error) };
     }
-    const timer = setTimeout(() => {
-      transport.abort(new Error('Timed out handshaking with Runtime Host'));
+    return connectRuntimeHostMessageTransport({
+      transport,
+      expectedRootId: input.expectedRootId,
+      compositionId: input.compositionId,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      handshakeTimeoutMs: normalized.handshakeTimeoutMs,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
+      connectionResource: input.connectionResource,
+    });
+  } catch (error) {
+    await input.connectionResource?.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function connectRuntimeHostMessageTransport(
+  input: ConnectRuntimeHostMessageTransportInput,
+): Promise<ConnectRemoteRuntimeHostResult> {
+  let resourceTransferred = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let handshakeTimedOut = false;
+  try {
+    const normalized = normalizeConnectRuntimeHostInput(input);
+    const compositionId = requireHostCompositionId(input.compositionId);
+    const expectedRootId = requireHostRootId(input.expectedRootId);
+    timer = setTimeout(() => {
+      handshakeTimedOut = true;
+      input.transport.abort(new Error('Timed out handshaking with Runtime Host'));
     }, normalized.handshakeTimeoutMs);
-    try {
-      const result = await exchangeRuntimeHostHandshake({
-        transport,
-        surface: input.surface,
-        protocol: input.protocol,
-        clientInstanceId: normalized.clientInstanceId,
-        compositionId,
-        expectedRootId,
-        livenessIntervalMs: normalized.livenessIntervalMs,
-        onLivenessProbe: input.onLivenessProbe,
-        connectionResource,
-      });
-      if (result.kind === 'connected') {
-        resourceTransferred = true;
-        return result;
-      }
-      transport.abort();
-      return result.kind === 'incompatible' ? result : { kind: 'draining' };
-    } catch (error) {
-      transport.abort();
-      if (error instanceof RuntimeHostRootMismatchError) {
-        return { kind: 'unavailable', reason: 'root_mismatch' };
-      }
-      if (error instanceof RuntimeHostCompositionMismatchError) {
-        return { kind: 'unavailable', reason: 'composition_mismatch' };
-      }
-      return { kind: 'unavailable', reason: 'handshake_failed' };
-    } finally {
-      clearTimeout(timer);
+    const result = await exchangeRuntimeHostHandshake({
+      transport: input.transport,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      compositionId,
+      expectedRootId,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
+      connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
+      ...(input.getPeerPath ? { getPeerPath: input.getPeerPath } : {}),
+    });
+    if (result.kind === 'connected') {
+      resourceTransferred = true;
+      return result;
     }
+    input.transport.abort();
+    return result.kind === 'incompatible' ? result : { kind: 'draining' };
+  } catch (error) {
+    input.transport.abort();
+    if (error instanceof RuntimeHostRootMismatchError) {
+      return { kind: 'unavailable', reason: 'root_mismatch' };
+    }
+    if (error instanceof RuntimeHostCompositionMismatchError) {
+      return { kind: 'unavailable', reason: 'composition_mismatch' };
+    }
+    return {
+      kind: 'unavailable',
+      reason: handshakeTimedOut ? 'handshake_timed_out' : 'handshake_failed',
+    };
   } finally {
-    if (!resourceTransferred) await connectionResource?.close().catch(() => undefined);
+    if (timer) clearTimeout(timer);
+    if (!resourceTransferred) await input.connectionResource?.close().catch(() => undefined);
   }
 }
 
@@ -1199,6 +1280,13 @@ function finalizeConnectRuntimeHostResult(
       reason: result.endpointConnected ? 'handshake_failed' : 'connect_failed',
     };
   }
+  if (result.kind === 'unavailable') {
+    return {
+      kind: 'unavailable',
+      reason: result.reason,
+      ...(result.registration ? { registration: result.registration } : {}),
+    };
+  }
   return result;
 }
 
@@ -1238,24 +1326,46 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
-      return { kind: 'unavailable', reason: 'invalid_registration' };
+      return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed' };
+    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
   }
-  if (!registration) return { kind: 'unavailable', reason: 'not_registered' };
+  if (!registration) {
+    return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
+  }
   if (registration.rootId !== input.capability.rootId) {
-    return { kind: 'unavailable', reason: 'root_mismatch', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'root_mismatch',
+      endpointConnected: false,
+      registration,
+    };
   }
+  // Observe the candidate before opening its endpoint. Besides keeping this
+  // potentially slow OS query outside the Host's handshake window, the later
+  // root/epoch-validated handshake binds this evidence to the registration we
+  // actually reached. Query failure deliberately leaves recovery unavailable.
+  const processIdentity = shouldObserveProcessIdentity(registration, generation, input.protocol)
+    ? await (input.readProcessIdentity ?? readRuntimeHostProcessIdentity)(registration.pid).catch(
+        () => undefined,
+      )
+    : undefined;
+  const processEvidence = processIdentity === undefined ? {} : { processIdentity };
   const connectDeadline = phaseDeadline(connectTimeoutMs, input.electionDeadline);
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
     if (connectDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   let transport: FramedTransport;
   try {
@@ -1266,18 +1376,28 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
   const handshakeBudget = remainingTimeout(handshakeDeadline.at);
   if (handshakeBudget === undefined) {
     transport.abort();
     if (handshakeDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   }
   let handshakeTimeoutError: Error | undefined;
   const handshakeTimer = setTimeout(() => {
@@ -1296,7 +1416,6 @@ export async function connectResolvedRuntimeHost(
       : input.protocol;
     const result = await exchangeRuntimeHostHandshake({
       transport,
-      surface: input.surface,
       protocol: input.protocol,
       helloProtocol,
       clientInstanceId: input.clientInstanceId,
@@ -1313,6 +1432,7 @@ export async function connectResolvedRuntimeHost(
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
     });
     if (result.kind === 'connected') {
       if (
@@ -1321,7 +1441,12 @@ export async function connectResolvedRuntimeHost(
         registration.generation !== generation
       ) {
         await result.connection.close().catch(() => undefined);
-        return { kind: 'upgrade_required', registration, restartable: false };
+        return {
+          kind: 'upgrade_required',
+          registration,
+          restartable: false,
+          ...processEvidence,
+        };
       }
       return { ...result, registration };
     }
@@ -1334,48 +1459,84 @@ export async function connectResolvedRuntimeHost(
       result.handshake.generation !== generation
     ) {
       return registration.lifecycleMode === 'ephemeral' &&
+        result.handshake.state === 'ready' &&
         result.handshake.activity !== undefined &&
-        result.handshake.activity.connections === 0
+        isHostActivityIdle(result.handshake.activity)
         ? {
             kind: 'upgrade_required',
             registration,
             restartable: true,
             handshake: result.handshake,
+            ...processEvidence,
           }
         : {
             kind: 'upgrade_required',
             registration,
             restartable: false,
             handshake: result.handshake,
+            ...processEvidence,
           };
     }
     return result.kind === 'incompatible'
-      ? { ...result, registration }
+      ? { ...result, registration, ...processEvidence }
       : { kind: 'draining', registration };
   } catch (error) {
     transport.abort();
     const failure = handshakeTimeoutError ?? error;
     if (failure instanceof RuntimeHostEpochMismatchError) {
-      return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'epoch_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostRootMismatchError) {
-      return { kind: 'unavailable', reason: 'root_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'root_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostCompositionMismatchError) {
-      return { kind: 'unavailable', reason: 'composition_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'composition_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   } finally {
     clearTimeout(handshakeTimer);
   }
 }
 
+function shouldObserveProcessIdentity(
+  registration: HostRegistration,
+  generation: string | undefined,
+  protocol: ProtocolRange,
+): boolean {
+  return (
+    registration.lifecycleMode === 'ephemeral' &&
+    (registration.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH ||
+      registration.protocolMax < protocol.min ||
+      registration.protocolMin > protocol.max ||
+      (generation !== undefined && registration.generation !== generation))
+  );
+}
+
 interface ExchangeRuntimeHostHandshakeInput {
   readonly transport: RuntimeHostMessageTransport;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly helloProtocol?: ProtocolRange;
   readonly hostProtocol?: ProtocolRange;
@@ -1388,7 +1549,21 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
+  readonly getPeerPath?: () => RuntimeHostPeerConnectionPath | undefined;
+}
+
+interface LegacySurfaceClientHello extends ClientHello {
+  /**
+   * Released Hosts through v0.1.11 require this field while decoding the
+   * bootstrap hello, before compatibility negotiation can run. Keep the
+   * sentinel private until the minimum supported Host release has a tolerant
+   * decoder. Tracked by #3297. This is not part of the Client identity seen by
+   * current Hosts.
+   */
+  readonly surface: 'desktop';
 }
 
 async function exchangeRuntimeHostHandshake(
@@ -1399,10 +1574,11 @@ async function exchangeRuntimeHostHandshake(
   | { kind: 'draining' }
 > {
   const helloProtocol = input.helloProtocol ?? input.protocol;
-  await writeClientFrame(input.transport, {
+  const hello: LegacySurfaceClientHello = {
     kind: 'hello',
+    activitySnapshotVersion: 2,
     clientInstanceId: input.clientInstanceId,
-    surface: input.surface,
+    surface: 'desktop',
     protocolMin: helloProtocol.min,
     protocolMax: helloProtocol.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1411,7 +1587,8 @@ async function exchangeRuntimeHostHandshake(
     ...(input.takeoverHostEpoch === undefined
       ? {}
       : { takeover: { expectedHostEpoch: input.takeoverHostEpoch } }),
-  });
+  };
+  await writeClientFrame(input.transport, hello);
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {
     throw new Error('Runtime Host returned an operation response before handshake');
@@ -1455,7 +1632,10 @@ async function exchangeRuntimeHostHandshake(
     connection: new RuntimeHostConnectionImpl(input.transport, handshake, {
       livenessIntervalMs: input.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
+      ...(input.getPeerPath ? { getPeerPath: input.getPeerPath } : {}),
     }),
   };
 }

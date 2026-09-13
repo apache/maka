@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 param(
   [string]$LauncherPath
 )
@@ -79,7 +96,9 @@ try {
       $rendered -notmatch '"fileDenied":true' -or
       $rendered -notmatch '"allowedRead":true' -or
       $rendered -notmatch '"allowedWrite":true' -or
-      $rendered -notmatch '"networkDenied":true') {
+      $rendered -notmatch '"networkDenied":true' -or
+      $rendered -notmatch '"desktopPrivatePlacement":true' -or
+      $rendered -notmatch '"desktop":"maka-sandbox-desktop\.') {
     throw "AppContainer boundary was not established: exit=$exitCode output=$rendered"
   }
   $readAcl = (& icacls.exe $allowedReadPath 2>&1) -join "`n"

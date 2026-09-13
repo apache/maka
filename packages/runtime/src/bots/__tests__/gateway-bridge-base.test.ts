@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { WebSocket } from 'undici';
@@ -60,7 +79,7 @@ class TestGatewayBridge extends GatewayBridgeBase {
     return this.gatewayUrl;
   }
 
-  protected override checkCredentials(): string | null {
+  protected override checkCredentials(): 'token_missing' | null {
     return null;
   }
 
@@ -165,8 +184,8 @@ describe('GatewayBridgeBase start gate', () => {
 
   it('does not open a connection when credentials are missing', async () => {
     class NoCredentialsBridge extends TestGatewayBridge {
-      protected override checkCredentials(): string | null {
-        return 'no-credentials';
+      protected override checkCredentials(): 'token_missing' | null {
+        return 'token_missing';
       }
     }
     const bridge = new NoCredentialsBridge('qq', {
@@ -175,7 +194,7 @@ describe('GatewayBridgeBase start gate', () => {
       token: 'token',
     });
     await bridge.start();
-    assert.equal(bridge.getStatus().reason, 'no-credentials');
+    assert.equal(bridge.getStatus().reason, 'token_missing');
     assert.equal(bridge.getStatus().readiness, 'scaffolded');
     assert.equal(bridge.fetchCalls, 0);
   });
@@ -280,7 +299,8 @@ describe('GatewayBridgeBase reconnect triggers', () => {
     await bridge.stop();
   });
 
-  it('schedules a reconnect when constructing the socket throws', async () => {
+  it('schedules a reconnect with a stable failure code when constructing the socket throws', async (t) => {
+    const log = t.mock.method(console, 'warn', () => {});
     class ThrowingSocketBridge extends TestGatewayBridge {
       protected override createWebSocket(): WebSocket {
         throw new Error('bad-url');
@@ -292,7 +312,8 @@ describe('GatewayBridgeBase reconnect triggers', () => {
       token: 'token',
     });
     await bridge.start();
-    assert.equal(bridge.getStatus().reason, 'bad-url');
+    assert.equal(bridge.getStatus().reason, 'connection_failed');
+    assert.equal(log.mock.calls[0].arguments[0], '[bots:qq] connection_failed: bad-url');
     assert.equal(bridge.getStatus().readiness, 'configured');
     assert.equal(bridge.hasReconnectTimer(), true);
     await bridge.stop();
@@ -311,11 +332,16 @@ describe('GatewayBridgeBase close policy', () => {
     assert.equal(bridge.hasReconnectTimer(), false);
   });
 
-  it('reconnects resumably after an abnormal close, keeping the session', async () => {
+  it('reconnects resumably with a stable close code and redacted diagnostics', async (t) => {
+    const log = t.mock.method(console, 'warn', () => {});
     const { bridge, fake } = await startBridge();
     receiveReady(fake);
-    fake.emit('close', { code: 4000, reason: 'please reconnect' });
-    assert.equal(bridge.getStatus().reason, 'please reconnect');
+    fake.emit('close', { code: 4000, reason: 'please reconnect app-secret' });
+    assert.equal(bridge.getStatus().reason, 'gateway-closed-4000');
+    assert.equal(
+      log.mock.calls[0].arguments[0],
+      '[bots:qq] gateway-closed-4000: please reconnect [redacted]',
+    );
     assert.equal(bridge.getStatus().readiness, 'degraded');
     assert.deepEqual(bridge.getSessionState(), { sessionId: 'sess-1', seq: 12 });
     assert.equal(bridge.hasReconnectTimer(), true);

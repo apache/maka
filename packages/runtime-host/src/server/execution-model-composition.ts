@@ -1,20 +1,42 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
-import { relayModelProfile } from '@maka/core/model-thinking';
+import { modelOverride } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
+import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
 } from '@maka/runtime/context-budget-policy';
 import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summarizer';
-import { buildOpenAiCodexHistoryCompactor } from '@maka/runtime/openai-codex-history-compactor';
+import {
+  buildOpenAiCodexHistoryCompactor,
+  withOpenAiCodexHistoryCompactionFallback,
+} from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
-import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -22,13 +44,20 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
-import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
+import {
+  type BackendFactoryContext,
+  type BackendPreparationContext,
+  type PreparedBackendActivation,
+} from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
 import {
   createAttachmentByteReader,
-  persistProviderRequestCaptureArtifact,
+  createReadImageSnapshotPlanner,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
+import type { InteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
+import { createReadImageSnapshotReader } from '@maka/storage/read-image-snapshot-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {
@@ -38,7 +67,11 @@ import {
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
-import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
+import {
+  readDuringBackendCreation,
+  resolveExecutionTarget,
+  type ResolvedExecutionTarget,
+} from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
 
@@ -46,10 +79,11 @@ export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly createRunComposer: HostRunComposerFactory;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
+  readonly contextOffload?: InteractiveContextOffloadReader;
+  readonly contextOffloadUnavailable?: boolean;
   readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
@@ -57,6 +91,10 @@ export interface HostAiSdkBackendInput {
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
+
+export type HostAiSdkBackendPreparationInput = Omit<HostAiSdkBackendInput, 'context'> & {
+  readonly context: BackendPreparationContext;
+};
 
 type HostExecutionRuntimePolicyAuthority = {
   readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
@@ -72,7 +110,7 @@ type HostExecutionUsageAuthority = {
   readonly telemetry: Pick<InteractiveUsageStoresWriter['telemetry'], 'recordToolInvocation'>;
   readonly modelCalls: Pick<
     InteractiveUsageStoresWriter['modelCalls'],
-    'markRunPendingReprojection' | 'recordModelCallAttempt' | 'clearPendingReprojection'
+    'catchUpModelCallProjection'
   >;
   readonly pricing: Pick<InteractiveUsageStoresWriter['pricing'], 'snapshot'>;
 };
@@ -90,6 +128,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ),
     input.context.abortSignal,
   );
+  return await buildHostAiSdkBackend(input, target);
+}
+
+async function buildHostAiSdkBackend(
+  input: HostAiSdkBackendInput,
+  target: ResolvedExecutionTarget,
+): Promise<AiSdkBackend> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
@@ -118,7 +164,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         connection: target.connection,
         sessionId: input.context.sessionId,
         modelId: target.model,
-        claudeDeviceId: input.claudeDeviceId,
         fetchFn: transport.fetch,
       });
     } catch (error) {
@@ -159,26 +204,34 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     });
   const resolveHistoryCompactModel = () =>
     getAIModel({
+      sessionId: input.context.sessionId,
       connection: target.connection,
       apiKey,
       modelId: target.model,
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
     });
+  const textHistorySummarizer = buildLlmHistorySummarizer({
+    resolveModel: resolveHistoryCompactModel,
+    providerOptions,
+  });
   const summarizeHistoryCompact =
-    target.connection.providerType === 'openai-codex'
-      ? buildOpenAiCodexHistoryCompactor({
-          resolveModel: resolveHistoryCompactModel,
-          connectionSlug: target.connection.slug,
-          modelId: target.model,
-          providerOptions,
-        })
-      : buildLlmHistorySummarizer({
-          resolveModel: resolveHistoryCompactModel,
-          providerOptions,
-        });
+    target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
+      ? withOpenAiCodexHistoryCompactionFallback(
+          buildOpenAiCodexHistoryCompactor({
+            resolveModel: resolveHistoryCompactModel,
+            connectionId: input.context.header.llmConnectionId,
+            providerStateIdentity: target.providerStateIdentity,
+            modelId: target.model,
+            providerOptions,
+          }),
+          textHistorySummarizer,
+        )
+      : textHistorySummarizer;
   const historyCompactRoute =
-    target.connection.providerType === 'openai-codex' ? 'provider_native' : 'text_summary';
+    target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
+      ? 'provider_native'
+      : 'text_summary';
   let telemetryDrainRequested = false;
   const persistTelemetry = async (operation: () => Promise<void>): Promise<void> => {
     try {
@@ -204,10 +257,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
    * writing both in parallel would make the ledger a second source of truth,
    * free to diverge with no way back.
    *
-   * A failed projection is recoverable, not lost: the run is marked so the
-   * Usage authority re-derives it from the stream, and even a lost marker is
-   * recovered by a full re-projection. Neither step may fail the turn — the
-   * provider call has already completed and billed.
+   * A failed projection is recoverable, not lost: its checkpoint remains
+   * behind the AgentRun sequence until a later catch-up consumes it. The
+   * projection may not fail the turn — the provider call has already completed
+   * and billed.
    */
   let accountingAuthorityFailed = false;
   const recordModelCallAttempt = async (
@@ -222,17 +275,8 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       accountingAuthorityFailed = true;
       throw error;
     }
-    // Mark before projecting, not after failing. A marker written only on a
-    // caught error cannot cover the case the error path never runs — the
-    // process exiting between the two writes — which would leave the record in
-    // the authority and invisible to Usage. Marking first makes this an intent
-    // record: a crash anywhere after it still leaves a run the repair finds.
     await input.usage.modelCalls
-      .markRunPendingReprojection(attempt.sessionId, attempt.runId)
-      .catch(() => undefined);
-    await input.usage.modelCalls.recordModelCallAttempt(attempt);
-    await input.usage.modelCalls
-      .clearPendingReprojection(attempt.sessionId, attempt.runId)
+      .catchUpModelCallProjection({ sessionId: attempt.sessionId, runId: attempt.runId })
       .catch(() => undefined);
   };
   /**
@@ -249,68 +293,67 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       throw new Error('Canonical model-call accounting authority is unavailable');
     }
   };
-  let artifactDrainRequested = false;
-  const providerRequestCapture = input.context.recordProviderRequestCapture
-    ? createProviderRequestCaptureRecorder({
-        persistArtifact: async (capture) => {
-          try {
-            const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
-              sessionId: input.context.sessionId,
-              turnId: capture.turnId,
-              captureId: capture.captureId,
-              step: capture.step,
-              serializedRequest: capture.serializedRequest,
-              now: Date.now(),
-            });
-            return { artifactId: artifact.id };
-          } catch (error) {
-            if (!artifactDrainRequested) {
-              artifactDrainRequested = true;
-              input.requestDrain();
-            }
-            throw error;
-          }
-        },
-        recordLedger: input.context.recordProviderRequestCapture,
-      })
-    : undefined;
-  const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
-    readonly runId?: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
   }) => {
-    return await modelComposition.resolveSystemPrompt({
+    const resolved = await modelComposition.resolveSystemPrompt({
       sessionId: input.context.sessionId,
       turnId: context.turnId,
-      ...(context.runId ? { runId: context.runId } : {}),
       cwd: input.context.header.cwd,
-      workspaceRoot: input.context.workspaceRoot,
       ...(context.emitSkillCatalogTrace
         ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
         : {}),
     });
+    const model = target.model.replace(/[\r\n\t]+/g, ' ').trim();
+    return Object.freeze({
+      ...resolved,
+      text: [`Active model: ${model}`, resolved.text].filter(Boolean).join('\n\n'),
+    });
   };
   const recordRunComposition = input.context.recordRunComposition;
+  const recordRequestComposition = input.context.recordRequestComposition;
+  const resolveModelTools = (): readonly MakaTool[] =>
+    modelComposition.resolveTools?.() ?? modelComposition.tools;
+  // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
+  // belong exclusively to RequestComposition epochs, so never re-sample them
+  // while committing the baseline immediately before provider dispatch.
+  const initialModelTools = Object.freeze([...modelComposition.tools]);
+  const runCompositionCommits = new Map<string, Promise<void>>();
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
-        const resolved = await resolveRunPrompt(context);
-        await recordRunComposition(
-          context.runId,
-          createRunCompositionSnapshot({
-            composerId: modelComposition.composerId,
-            composerRevision: modelComposition.composerRevision,
-            sourceRevisions: resolved.sourceRevisions,
-            baseSystemPromptHash: stableHash(resolved.text ?? ''),
-            toolCatalogHash: toolCatalogHash(modelComposition.tools),
-            toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
-            baseProviderOptionsHash: stableHash(providerOptions),
-            toolNames: modelComposition.tools.map(({ name }) => name),
-            contextWindow: contextWindow ?? null,
-          }),
-        );
+        let commit = runCompositionCommits.get(context.runId);
+        if (!commit) {
+          commit = (async (): Promise<void> => {
+            const resolved = await resolveRunPrompt(context);
+            await recordRunComposition(
+              context.runId,
+              createRunCompositionSnapshot({
+                composerId: modelComposition.composerId,
+                composerRevision: modelComposition.composerRevision,
+                sourceRevisions: resolved.sourceRevisions,
+                baseSystemPromptHash: stableHash(resolved.text ?? ''),
+                toolCatalogHash: toolCatalogHash(initialModelTools),
+                toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
+                baseProviderOptionsHash: stableHash(providerOptions),
+                toolNames: initialModelTools.map(({ name }) => name),
+                contextWindow: contextWindow ?? null,
+              }),
+            );
+          })();
+          runCompositionCommits.set(context.runId, commit);
+        }
+        try {
+          await commit;
+        } catch (error) {
+          if (runCompositionCommits.get(context.runId) === commit) {
+            runCompositionCommits.delete(context.runId);
+          }
+          throw error;
+        }
       }
     : undefined;
+  const planProjectionImage = createReadImageSnapshotPlanner(input.artifacts);
 
   try {
     return new HostAiSdkBackend(
@@ -324,11 +367,13 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             permissionMode: input.context.header.permissionMode,
           }),
         },
-        appendMessage:
-          input.context.appendMessage ??
-          ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
+        ...(input.context.recordSystemNote
+          ? { recordSystemNote: input.context.recordSystemNote }
+          : {}),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
+        readPermissionMode: async () =>
+          (await input.context.store.readHeader(input.context.sessionId)).permissionMode,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>
@@ -342,17 +387,19 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             }
           : {}),
         connection: target.connection,
+        providerStateIdentity: target.providerStateIdentity,
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...modelComposition.tools],
+        tools: [...resolveModelTools()],
+        resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
-        contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
+        contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
         }),
@@ -360,12 +407,31 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           target.connection.providerType,
           target.connection.models,
           target.model,
-          relayModelProfile(target.connection, target.model)?.vision,
+          modelOverride(target.connection, target.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
+          ...(input.contextOffload
+            ? {
+                readImageSnapshots: createReadImageSnapshotReader(
+                  input.contextOffload,
+                  input.context.sessionId,
+                ),
+              }
+            : {}),
+          ...(!input.contextOffload && input.contextOffloadUnavailable
+            ? { readImageSnapshotsUnavailable: true }
+            : {}),
         }),
+        prepareDurableProjectionArtifact: ({ turnId, bytes, mediaType }) =>
+          planProjectionImage({
+            sessionId: input.context.sessionId,
+            turnId,
+            name: 'Tool Result image',
+            bytes,
+            mimeType: mediaType,
+          }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
         toolResultArchive: input.executionArtifacts.toolResultArchive,
         ...(!input.context.tools &&
@@ -386,42 +452,36 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         summarizeHistoryCompact,
         historyCompactRoute,
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
+        loadModelProjectionTransitions: input.context.loadModelProjectionTransitions,
+        recordModelProjectionTransition: input.context.recordModelProjectionTransition,
         loadTurnRuntimeEvents: input.context.loadTurnRuntimeEvents,
         allowMidTurnHistoryCompaction: input.context.allowMidTurnHistoryCompaction,
-        recordSemanticCompactBlock: input.context.recordSemanticCompactBlock,
         recordRunTrace: input.context.recordRunTrace,
         ...(commitRunComposition
           ? {
               beforeRunProviderDispatch: commitRunComposition,
             }
           : {}),
+        ...(recordRequestComposition
+          ? {
+              recordRequestComposition: (runId, snapshot) =>
+                recordRequestComposition(runId, snapshot),
+            }
+          : {}),
         systemPrompt: async (context) => {
           const resolved = await resolveRunPrompt({
             turnId: context.turnId,
-            ...(context.runId ? { runId: context.runId } : {}),
             ...(context.emitSkillCatalogTrace
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
-          return resolved.text;
+          return { text: resolved.text, sourceRevisions: resolved.sourceRevisions };
         },
-        turnTailPrompt: modelComposition.turnTailPrompt,
-        shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
-        ...(providerRequestCapture
-          ? {
-              recordProviderRequestCapture: providerRequestCapture,
-              ...(input.context.recordProviderRequestAttempt
-                ? {
-                    recordProviderRequestAttempt,
-                  }
-                : {}),
-            }
-          : {}),
         newId: randomUUID,
         now: Date.now,
       },
@@ -436,6 +496,33 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     }
     throw error;
   }
+}
+
+export async function prepareHostAiSdkBackend(
+  input: HostAiSdkBackendPreparationInput,
+): Promise<PreparedBackendActivation> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
+  const preparedTarget = await readDuringBackendCreation(
+    () =>
+      resolveExecutionTarget(
+        input.context.header,
+        input.runtimePolicy,
+        input.oauthCredentials,
+        createFetchTransport,
+      ),
+    input.context.abortSignal,
+  );
+  return {
+    providerStateIdentity: preparedTarget.providerStateIdentity,
+    build: (context) =>
+      buildHostAiSdkBackend(
+        {
+          ...input,
+          context,
+        },
+        preparedTarget,
+      ),
+  };
 }
 
 class HostAiSdkBackend extends AiSdkBackend {
@@ -458,13 +545,4 @@ class HostAiSdkBackend extends AiSdkBackend {
       }
     }
   }
-}
-
-export function resolveCollaborationPermissionMode(input: {
-  readonly collaborationMode: 'agent' | 'plan';
-  readonly permissionMode: PermissionMode;
-}): PermissionMode {
-  return input.collaborationMode === 'plan' && input.permissionMode !== 'bypass'
-    ? 'explore'
-    : input.permissionMode;
 }

@@ -1,4 +1,23 @@
-import type { ArtifactRecord } from '@maka/core/artifacts';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import {
   createSqliteArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
@@ -22,10 +41,11 @@ import {
 export {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
   type ArtifactAttachmentResourceReader,
+  type ReadImageSnapshotPlan,
 } from './artifact-attachments.js';
-export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
 const writers = new WeakSet<object>();
@@ -36,13 +56,23 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
-  recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  deleteOwnedDeepResearchArtifactInSession(sessionId: string, artifactId: string): Promise<void>;
+  /**
+   * Narrow system delete for one Session-owned artifact of a declared source.
+   *
+   * The caller must name the source it believes it owns, and a mismatch throws,
+   * so a caller that is wrong about what it is reclaiming reclaims nothing.
+   */
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void>;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  reclaimUpgradeResidue: ArtifactAuthorityStore['reclaimUpgradeResidue'];
   listPage: ArtifactAuthorityStore['listPage'];
   listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
   getInSession: ArtifactAuthorityStore['getInSession'];
@@ -116,27 +146,39 @@ function createWriterFacade(
     readChunkInSession: (sessionId, artifactId, options) =>
       run(() => store.readChunkInSession(sessionId, artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
-    recover: () => run(() => authority.recover()),
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
-    deleteOwnedDeepResearchArtifactInSession: (sessionId, artifactId) =>
-      run(async () => {
-        const entry = await store.getInSession(sessionId, artifactId);
-        if (!entry.record || entry.record.source !== 'deep_research') {
-          throw new Error('Artifact does not belong to the expected Session authority');
-        }
-        await store.delete(artifactId);
-      }),
+    deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
+      run(() => store.deleteOwnedArtifactInSession(sessionId, artifactId, source)),
     copyConversationArtifacts: (input) => {
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
+        ...(input.excludeArtifactIds
+          ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
+          : {}),
+        ...(input.includeArtifactIds
+          ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
+          : {}),
+        ...(input.linkedArtifacts
+          ? {
+              linkedArtifacts: Object.freeze(
+                input.linkedArtifacts.map((linked) =>
+                  Object.freeze({
+                    sessionId: linked.sessionId,
+                    artifactIds: Object.freeze([...linked.artifactIds]),
+                  }),
+                ),
+              ),
+            }
+          : {}),
       });
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },
     purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
+    reclaimUpgradeResidue: (input) => run(() => store.reclaimUpgradeResidue(input)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
     close: () => {

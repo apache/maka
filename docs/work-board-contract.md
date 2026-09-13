@@ -1,6 +1,27 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Work Board Phase 0 Contract
 
-Status: Phase 0. Scope: `packages/core` (contract) + `packages/storage` (store and migration).
+Status: Phase 0 contract shipped; Phase 1 capture/list MVP shipped in [#3135](https://github.com/apache/maka/pull/3135). Scope: `packages/core` (contract) + `packages/storage` (store and migration).
+
+Tracking: [Work Board delivery #2560](https://github.com/apache/maka/issues/2560)
 
 ## Boundary
 
@@ -8,7 +29,7 @@ The Work Board is a user-owned, local-first surface for deferred work. It is not
 execution authority:
 
 - no `task_*` tools, no `task.ledger.query`, and no `workflow_task_ledger_*` reads/writes;
-- no model-visible tools and no turn-tail injection;
+- no model-visible tools or automatic prompt injection;
 - no Goal, AgentRun, RuntimeEvent, or Agent Graph writes;
 - execution state is projected at read time, never copied into board storage.
 

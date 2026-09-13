@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import { Button } from '@astryxdesign/core/Button';
@@ -7,13 +26,14 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
+import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
   DesktopProjectDirectoryEntry,
   DesktopProjectDirectoryRoot,
   DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import { getShellCopy } from './locales/shell-copy.js';
 
 type DirectoryHost = DesktopRuntimeHostRef & { readonly name?: string };
 type DirectoryLoad =
@@ -24,13 +44,11 @@ type DirectoryLoad =
       readonly root: DesktopProjectDirectoryRoot;
       readonly segments: readonly string[];
     };
-type DirectoryError = {
-  readonly message: string;
-  readonly retryable: boolean;
-};
+type DirectoryError = 'read_failed' | 'registration_failed';
 
 export function RemoteProjectDirectoryDialog(props: {
   host?: DirectoryHost;
+  returnFocusTo?: HTMLElement | null;
   onClose(): void;
   onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
 }) {
@@ -46,6 +64,25 @@ export function RemoteProjectDirectoryDialog(props: {
   const [error, setError] = useState<DirectoryError>();
   const request = useRef(0);
   const lastLoad = useRef<DirectoryLoad | undefined>(undefined);
+  const previousHostRef = useRef<DirectoryHost | undefined>(undefined);
+  const returnFocusFrameRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const previousHost = previousHostRef.current;
+    previousHostRef.current = props.host;
+    if (props.host || !previousHost || !props.returnFocusTo) return;
+    const target = props.returnFocusTo;
+    returnFocusFrameRef.current = window.requestAnimationFrame(() => {
+      returnFocusFrameRef.current = undefined;
+      if (!previousHostRef.current && target.isConnected) target.focus();
+    });
+    return () => {
+      if (returnFocusFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(returnFocusFrameRef.current);
+        returnFocusFrameRef.current = undefined;
+      }
+    };
+  }, [props.host, props.returnFocusTo]);
 
   useEffect(() => {
     const host = props.host;
@@ -94,10 +131,8 @@ export function RemoteProjectDirectoryDialog(props: {
       setEntries(next);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError({
-        message: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-        retryable: true,
-      });
+      reportUnexpectedError('project-directory:list', cause);
+      setError('read_failed');
     } finally {
       if (request.current === sequence) setLoading(false);
     }
@@ -135,10 +170,8 @@ export function RemoteProjectDirectoryDialog(props: {
       props.onRegistered(project, host);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError({
-        message: localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale),
-        retryable: false,
-      });
+      reportUnexpectedError('project-directory:register', cause);
+      setError('registration_failed');
     } finally {
       if (request.current === sequence) setRegistering(false);
     }
@@ -168,6 +201,7 @@ export function RemoteProjectDirectoryDialog(props: {
       onOpenChange={(open) => {
         if (!open) dismiss();
       }}
+      aria-label={copy.remoteDirectoryTitle(host?.name ?? 'Runtime Host')}
       purpose="form"
       width={560}
       maxHeight="calc(100dvh - 64px)"
@@ -236,8 +270,12 @@ export function RemoteProjectDirectoryDialog(props: {
               </nav>
               {error ? (
                 <div className="remoteProjectDirectoryError" role="alert">
-                  <Text type="body" color="secondary">{error.message}</Text>
-                  {error.retryable ? (
+                  <Text type="body" color="secondary">
+                    {error === 'read_failed'
+                      ? copy.readPathFailedFallback
+                      : copy.projectUpdateFailedFallback}
+                  </Text>
+                  {error === 'read_failed' ? (
                     <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={retry} />
                   ) : null}
                 </div>

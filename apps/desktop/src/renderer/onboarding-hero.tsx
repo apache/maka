@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // apps/desktop/src/renderer/onboarding-hero.tsx
 //
 // First-run recovery rendered in place of the empty chat while setup is
@@ -293,7 +312,7 @@ function OnboardingCard(props: {
   return (
     <Center width="100%" className="maka-onboarding-center">
       <VStack gap={4} hAlign="center" width="min(460px, 100%)" className="maka-onboarding">
-        <MakaWordmark width={112} className="maka-onboarding-wordmark" />
+        <MakaWordmark width={112} />
         <Card
           width="100%"
           padding={6}
@@ -333,6 +352,11 @@ function assertNever(value: never): never {
   throw new Error('OnboardingHero: unexhausted state');
 }
 
-function acknowledgeBlockedReason(reason: 'all_connections_unhealthy') {
+// Listed as literals rather than the reason type: a future reason still has to
+// be added here, which is the point — it forces a look at whether this card
+// needs to react to it.
+function acknowledgeBlockedReason(
+  reason: 'all_connections_unhealthy' | 'all_connections_retired',
+) {
   void reason;
 }

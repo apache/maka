@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Scroll motion policy helper (PR109f).
  *
@@ -28,22 +47,6 @@ export interface ScrollMotionPolicyInputs {
   e2eFixtureAttr: boolean;
   /** `window.matchMedia('(prefers-reduced-motion: reduce)').matches` */
   prefersReducedMotion: boolean;
-  /**
-   * `document.documentElement.dataset.makaScrollMotion`, set by a fixture that
-   * asks for a specific behavior.
-   *
-   * Collapsing motion for every capture is right for a screenshot and wrong
-   * for a test about scrolling: a scroll that finishes in one frame cannot
-   * collide with anything, so the fixture suite had no way to exercise the
-   * production smooth path at all (`prompt-rail.spec.ts` needs it — Astryx's
-   * auto-follow lock only contends with a scroll still in flight). This lets
-   * one fixture opt back in without loosening the default for the rest.
-   *
-   * Deliberately below the reduced-motion triggers: a fixture may ask for
-   * motion the capture would otherwise skip, but nothing may override a
-   * stated preference for less of it.
-   */
-  scrollMotionAttr?: ScrollMotionBehavior | undefined;
 }
 
 /**
@@ -56,9 +59,6 @@ export interface ScrollMotionPolicyInputs {
 export function resolveScrollMotionBehavior(inputs: ScrollMotionPolicyInputs): ScrollMotionBehavior {
   if (inputs.reducedMotionAttr || inputs.prefersReducedMotion) {
     return 'auto';
-  }
-  if (inputs.scrollMotionAttr) {
-    return inputs.scrollMotionAttr;
   }
   if (inputs.e2eFixtureAttr) {
     return 'auto';
@@ -76,11 +76,9 @@ export function readScrollMotionBehavior(): ScrollMotionBehavior {
   const prefersReducedMotion =
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const requested = root.dataset.makaScrollMotion;
   return resolveScrollMotionBehavior({
     reducedMotionAttr: root.dataset.makaReducedMotion === 'true',
     e2eFixtureAttr: root.dataset.makaE2eFixture === 'true',
     prefersReducedMotion,
-    scrollMotionAttr: requested === 'smooth' || requested === 'auto' ? requested : undefined,
   });
 }

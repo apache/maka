@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Turn-scoped interactions take over the composer's in-flow slot so the
    conversation and any live browser remain visible while Maka waits. */
 .maka-composer-interaction-slot {
@@ -69,7 +88,7 @@
 }
 
 .maka-composer-interaction-inner {
-  width: min(var(--maka-chat-measure), 100%);
+  width: min(var(--maka-reading-measure), 100%);
   box-sizing: border-box;
   display: grid;
   gap: var(--space-2);
@@ -108,6 +127,71 @@
 
 .maka-question-submit {
   grid-column: 4;
+}
+
+.maka-form-interaction-header p,
+.maka-form-interaction-field p {
+  margin: 0;
+}
+
+.maka-form-interaction-header p {
+  font: var(--maka-text-supporting);
+  color: var(--text-secondary);
+}
+
+.maka-form-interaction-fields {
+  display: grid;
+  gap: var(--space-2);
+  max-height: min(420px, 50vh);
+  padding-right: var(--space-1);
+  overflow-y: auto;
+}
+
+.maka-form-interaction-field {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.maka-form-interaction-field-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-primary);
+}
+
+.maka-form-interaction-field-heading > :first-child {
+  font: var(--maka-text-body-medium);
+}
+
+.maka-form-interaction-field-heading > :last-child,
+.maka-form-interaction-field-description {
+  font: var(--maka-text-supporting);
+  color: var(--text-secondary);
+}
+
+.maka-form-interaction-checkboxes {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.maka-form-interaction-error {
+  font: var(--maka-text-supporting);
+  color: var(--destructive-text);
+}
+
+.maka-form-interaction-actions,
+.maka-form-interaction-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.maka-form-interaction-actions {
+  justify-content: space-between;
 }
 
 .maka-interaction-header {
@@ -155,5 +239,14 @@
 
   .maka-question-submit {
     grid-column: auto;
+  }
+
+  .maka-form-interaction-actions,
+  .maka-form-interaction-primary-actions {
+    width: 100%;
+  }
+
+  .maka-form-interaction-primary-actions {
+    justify-content: flex-end;
   }
 }

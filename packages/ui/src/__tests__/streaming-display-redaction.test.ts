@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { redactSecrets } from '../redact.js';
 import { applyAssistantComplete, applyAssistantDelta } from '../assistant-stream.js';
 import { applyThinkingComplete, applyThinkingDelta } from '../thinking-stream.js';
-import { applyLiveTurnEvent } from '../live-turn-projection.js';
+import { applyLiveTurnEvent } from './live-turn-zh.js';
 import {
   appendStreamingDisplayRedaction,
   createStreamingDisplayRedactionState,
@@ -72,6 +91,7 @@ describe('streaming display redaction', () => {
       `Authorization:${' '.repeat(2_048)}Bearer arbitrary-secret-value tail`,
       'Authorization:\n\nBearer newline-secret-value tail',
       'x-api-key\n:\nnewline-api-key-value tail',
+      'https://alice:hunter2@internal.example.com/repo.git tail',
     ];
     for (const input of cases) {
       for (const sizes of [[1], [3], [7], [20], [64], [1, 31, 2, 127, 5]]) {
@@ -145,12 +165,14 @@ describe('streaming display redaction', () => {
     for (const apply of [applyAssistantDelta, applyThinkingDelta]) {
       const initialState = createStreamingDisplayRedactionState();
       const opener = apply('', 'Authorization:', {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: initialState,
       });
       const secret = `Bearer ${'s'.repeat(5_000)}`;
       const truncated = apply(opener.text, secret, {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: opener.redactionState,
@@ -164,6 +186,7 @@ describe('streaming display redaction', () => {
       );
 
       const total = apply('', 'safe '.repeat(200), {
+        locale: 'zh-CN' as const,
         maxDeltaChars: 2_000,
         maxTotalChars: 128,
         redactionState: createStreamingDisplayRedactionState(),

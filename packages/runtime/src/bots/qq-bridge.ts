@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * PR-BOT-QQ-OPERATIONAL-0 (external bot research: QQ 官方机器人 Gateway):
  * full QQ Channel Bot lifecycle — access_token cache, Gateway WebSocket
@@ -282,8 +301,10 @@ interface CachedToken {
 export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
   private token: CachedToken | null = null;
 
-  protected override checkCredentials(): string | null {
-    return this.settings.appId?.trim() && this.settings.appSecret?.trim() ? null : 'no-credentials';
+  protected override checkCredentials(): 'qq_credentials_missing' | null {
+    return this.settings.appId?.trim() && this.settings.appSecret?.trim()
+      ? null
+      : 'qq_credentials_missing';
   }
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
@@ -312,7 +333,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
       }
       return json.url;
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       return null;
@@ -395,7 +416,10 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     }
     if (classification.kind !== 'ok') {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+      this.recordFailure(
+        classification.kind === 'retry' ? 'rate-limited' : classification.description,
+        classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+      );
       this.emitStatusChange();
       return null;
     }
@@ -487,7 +511,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
       this.token = { value: json.access_token, expiresAt: now + expiresInSec * 1_000 };
       return this.token.value;
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       return null;
     }
   }

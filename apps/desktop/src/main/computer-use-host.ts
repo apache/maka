@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import {
   accessSync,
@@ -15,6 +34,7 @@ import {
   selectComputerUseBackend,
   type SelectedComputerUseBackend,
 } from '@maka/computer-use';
+import type { CapabilityReasonCode } from '@maka/core/capabilities';
 import type { CuOverlayHook } from '@maka/runtime/computer-use-types';
 
 export interface ComputerUseHostState {
@@ -128,25 +148,22 @@ export function computerUseServiceHealth(
   state: MakaCuServiceSnapshot | undefined,
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
-  reason: string;
+  reason: CapabilityReasonCode;
 } {
   if (backendId === 'none' || !state) {
-    return {
-      state: 'not_available',
-      reason: '未找到通过完整性检查且可分发的 maka-cu executor。',
-    };
+    return { state: 'not_available', reason: 'cu_executor_undistributable' };
   }
   switch (state.state) {
     case 'disposed':
-      return { state: 'not_available', reason: 'maka-cu executor 已停止。' };
+      return { state: 'not_available', reason: 'cu_executor_stopped' };
     case 'unavailable':
-      return { state: 'not_available', reason: 'maka-cu executor 启动失败或已退出。' };
+      return { state: 'not_available', reason: 'cu_executor_start_failed' };
     case 'starting':
     case 'backing_off':
-      return { state: 'degraded', reason: 'maka-cu executor 正在启动或恢复。' };
+      return { state: 'degraded', reason: 'cu_executor_recovering' };
     case 'ready':
-      return { state: 'healthy', reason: 'maka-cu executor 已就绪。' };
+      return { state: 'healthy', reason: 'cu_executor_ready' };
     default:
-      return { state: 'not_run', reason: 'maka-cu 已可用，将在首次调用时启动。' };
+      return { state: 'not_run', reason: 'cu_executor_lazy_start' };
   }
 }

@@ -1,3 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { encodeArtifactProjection } from '../protocol/artifact.js';
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  ARTIFACT_PAGE_MAX_ITEMS,
+  ARTIFACT_RESULT_MAX_BYTES,
+  type ArtifactQueryInput,
+  type ArtifactQueryResult,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,7 +42,6 @@ import { ARTIFACT_READ_CHUNK_MAX_BYTES } from '../protocol/index.js';
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
   connectionId: 'connection-1',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -26,7 +53,6 @@ test('Artifact ingest is connection-bound, replay-safe, and commits one durable 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     let now = 0;
     const coordinator = new HostArtifactCoordinator(
       store,
@@ -253,7 +279,6 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     await store.create({
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -261,6 +286,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       name: 'artifact.txt',
       kind: 'file',
       content: 'durable',
+      source: 'tool_result',
       now: 1,
     });
 
@@ -327,7 +353,6 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const content = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES + 17, 7);
     await store.create({
       id: 'artifact-large',
@@ -336,6 +361,7 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
       name: 'large.bin',
       kind: 'file',
       content,
+      source: 'tool_result',
       now: 1,
     });
     const coordinator = new HostArtifactCoordinator(
@@ -383,6 +409,184 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
   }
 });
 
+test('Session Guests can read only shared attachment Artifacts from their granted Session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-shared-read-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await store.create({
+      id: 'shared-image',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'shared.png',
+      kind: 'image',
+      mimeType: 'image/png',
+      source: 'user_upload',
+      content: Buffer.from('image'),
+      now: 1,
+    });
+    await store.create({
+      id: 'private-artifact',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'private.txt',
+      kind: 'file',
+      source: 'session_effect',
+      content: Buffer.from('private'),
+      now: 2,
+    });
+    let active = true;
+    let revokeAfterAuthorization = false;
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('successful read must not request Host drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      {
+        activeSessionGrant: () => {
+          if (!active) return;
+          if (revokeAfterAuthorization) {
+            revokeAfterAuthorization = false;
+            queueMicrotask(() => {
+              active = false;
+            });
+          }
+          return {
+            kind: 'session_observation',
+            grantId: 'grant-1',
+            principalId: 'guest-1',
+            sessionId: 'session-1',
+            createdAt: '2026-08-30T00:00:00.000Z',
+          };
+        },
+      },
+    );
+    const guest = {
+      ...connectionContext,
+      principal: 'guest-1',
+      principalKind: 'session_guest' as const,
+    };
+
+    const visible = await coordinator.handlers['artifact.query'](
+      { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+      guest,
+    );
+    assert.equal(visible.ok && visible.result.kind === 'artifact', true);
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'private-artifact' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'list_start', sessionId: 'session-1' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+
+    revokeAfterAuthorization = true;
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+    store.close();
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function digest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
+
+test('Artifact listing preserves the maximal byte-limited prefix across continuations', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-list-pages-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      await store.create({
+        id: `artifact-${index}`,
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: `附件-${index}.txt`,
+        kind: 'file',
+        content: Buffer.from('content'),
+        summary: '文"\\🙂'.repeat(600),
+        source: 'tool_result',
+        now: index,
+      });
+    }
+    const expected = (await store.listPage('session-1', { offset: 0, limit: 128 })).records.map(
+      encodeArtifactProjection,
+    );
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('query must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+    );
+    const pages: Extract<ArtifactQueryResult, { kind: 'page' }>[] = [];
+    let input: ArtifactQueryInput = { kind: 'list_start', sessionId: 'session-1' };
+    let end = 0;
+    do {
+      const outcome = await coordinator.handlers['artifact.query'](input, connectionContext);
+      assert.ok(outcome.ok && outcome.result.kind === 'page');
+      const page = outcome.result;
+      assert.ok(page.artifacts.length > 0);
+      pages.push(page);
+      end += page.artifacts.length;
+      assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+      if (page.nextCursor === null) break;
+      input = {
+        kind: 'list_continue',
+        sessionId: 'session-1',
+        revision: page.revision,
+        cursor: page.nextCursor,
+      };
+    } while (end < expected.length);
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.artifacts.length < ARTIFACT_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, expected, {
+      maxBytes: ARTIFACT_RESULT_MAX_BYTES,
+      maxItems: ARTIFACT_PAGE_MAX_ITEMS,
+      items: (page) => page.artifacts,
+      candidate: (page, artifacts, end) => ({
+        ...page,
+        artifacts,
+        nextCursor: end < expected.length ? String(end) : null,
+      }),
+    });
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

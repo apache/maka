@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // 设置 · 子 Agent — the approved model routes the main agent may delegate to.
 //
 // Two levels, one container, one back affordance, and nothing modal:
@@ -23,20 +42,23 @@ import {
   type SubagentProfile,
 } from '@maka/core/subagent-settings';
 import { type AppSettings, type UpdateAppSettingsResult } from '@maka/core/settings';
-import { type LlmConnection } from '@maka/core/llm-connections';
+import {
+  offerableCatalogEntries,
+  type HostResolvedConnectionCatalog,
+  type LlmConnection,
+} from '@maka/core/llm-connections';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
-import { connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   Badge,
   Button,
   EmptyState,
   IconButton,
+  ModelWheelPicker,
   Selector,
   Switch,
   TextArea,
   TextInput,
-  type SelectorOptionData,
+  type ModelWheelOption,
   useToast,
   useUiLocale,
 } from '@maka/ui';
@@ -54,12 +76,14 @@ import {
 } from './settings-section.js';
 import { SettingRow } from './settings-rows.js';
 import {
+  isSelectableSubagentConnection,
   nextSubagentDraftForName,
   resolveSubagentRoute,
   subagentPresetAvailability,
   type SubagentPageRoute,
 } from './subagent-preset-presentation.js';
 import { statusBadgeVariant } from './settings-status-badge.js';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 /** How many characters a value spends on leading whitespace the store trims. */
 function leadingSpace(value: string): number {
@@ -73,11 +97,12 @@ type SubagentEditorDraft = Omit<SubagentPreset, 'thinkingLevel'> & {
 
 export function SubagentSettingsPage(props: {
   settings: AppSettings;
-  connections: readonly LlmConnection[];
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const toast = useToast();
@@ -139,12 +164,15 @@ export function SubagentSettingsPage(props: {
         expectPresent !== undefined &&
         !result.settings.subagents.presets.some((candidate) => candidate.id === expectPresent)
       ) {
-        toast.error(copy.toast.saveFailed, copy.toast.rejected);
+        reportHostError(copy.toast.saveFailed, copy.toast.rejected);
         return false;
       }
       return true;
     } catch (error) {
-      toast.error(copy.toast.saveFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(
+        copy.toast.saveFailed,
+        settingsActionErrorMessage(error, locale),
+      );
       return false;
     } finally {
       setSaving(false);
@@ -251,6 +279,7 @@ export function SubagentSettingsPage(props: {
             available: null,
             disabled: null,
             missing_connection: copy.status.missingConnection,
+            provider_retired: copy.status.providerRetired,
             connection_disabled: copy.status.connectionDisabled,
             model_disabled: copy.status.modelDisabled,
           }[availability.kind];
@@ -306,7 +335,7 @@ export function SubagentSettingsPage(props: {
 function SubagentPresetEditor(props: {
   preset: SubagentPreset | null;
   presets: readonly SubagentPreset[];
-  connections: readonly LlmConnection[];
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
   isSaving: boolean;
   onCancel(): void;
   onDelete?(): void;
@@ -315,7 +344,7 @@ function SubagentPresetEditor(props: {
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const usableConnections = useMemo(
-    () => props.connections.filter((connection) => connection.enabled),
+    () => props.connections.filter(isSelectableSubagentConnection),
     [props.connections],
   );
   const existingIds = useMemo(
@@ -325,9 +354,10 @@ function SubagentPresetEditor(props: {
   const initialConnection = props.preset
     ? props.connections.find((connection) => connection.slug === props.preset?.connectionSlug)
     : usableConnections[0];
-  const initialModels = initialConnection && initialConnection.enabled
-    ? connectionEnabledModelIds(initialConnection)
-    : [];
+  // The Host's offerable entries, not the raw enabled ids: those still list a
+  // model the Host quarantined or ruled out of chat, which every other picker
+  // already drops.
+  const initialModels = initialConnection ? offerableCatalogEntries(initialConnection) : [];
   const [draft, setDraft] = useState<SubagentEditorDraft>(() => ({
     // Empty, not a pre-derived `subagent`: an id the user has not been asked
     // for yet reads as a value the page already decided.
@@ -336,7 +366,7 @@ function SubagentPresetEditor(props: {
     description: props.preset?.description ?? '',
     profile: props.preset?.profile ?? 'local_read',
     connectionSlug: props.preset?.connectionSlug ?? usableConnections[0]?.slug ?? '',
-    model: props.preset?.model ?? initialModels[0] ?? '',
+    model: props.preset?.model ?? initialModels[0]?.id ?? '',
     thinkingLevel: props.preset?.thinkingLevel ?? '',
     enabled: props.preset?.enabled ?? true,
   }));
@@ -345,28 +375,35 @@ function SubagentPresetEditor(props: {
   const selectedConnection = props.connections.find(
     (connection) => connection.slug === draft.connectionSlug,
   );
-  const enabledModels = selectedConnection?.enabled
-    ? connectionEnabledModelIds(selectedConnection)
-    : [];
-  const thinkingLevels = selectedConnection
-    ? thinkingVariantsForConnection(selectedConnection, draft.model)
-    : [];
+  const offerableModels = selectedConnection ? offerableCatalogEntries(selectedConnection) : [];
+  const thinkingLevels =
+    selectedConnection?.catalogEntries.find((entry) => entry.id === draft.model)?.thinkingLevels ??
+    [];
   const profileCopy = copy.profiles[draft.profile];
   const validId = isSafeSubagentPresetId(draft.id.trim());
   const duplicateId = existingIds.has(draft.id.trim());
-  const validConnection = Boolean(selectedConnection?.enabled);
-  const validModel = enabledModels.includes(draft.model);
+  const validConnection = Boolean(
+    selectedConnection && isSelectableSubagentConnection(selectedConnection),
+  );
+  const validModel = offerableModels.some((entry) => entry.id === draft.model);
   const canSave = Boolean(
     draft.name.trim() &&
     (props.preset !== null || (validId && !duplicateId)) &&
     validConnection &&
     validModel,
   );
-  const connectionOptions = props.connections.map((connection) => ({
-    value: connection.slug,
-    label: connection.name,
-    disabled: !connection.enabled,
-  }));
+  const connectionOptions = props.connections.map((connection) => {
+    // Enabled yet unselectable means retired. Its option says why it cannot
+    // be picked, the way a vanished connection's placeholder below does — a
+    // silently disabled row would be exactly the unexplained state this
+    // retirement is meant to avoid.
+    const retired = connection.enabled && !isSelectableSubagentConnection(connection);
+    return {
+      value: connection.slug,
+      label: retired ? `${connection.name} · ${copy.status.providerRetired}` : connection.name,
+      disabled: !isSelectableSubagentConnection(connection),
+    };
+  });
   if (
     draft.connectionSlug &&
     !props.connections.some((connection) => connection.slug === draft.connectionSlug)
@@ -377,11 +414,11 @@ function SubagentPresetEditor(props: {
       disabled: true,
     });
   }
-  const modelOptions: SelectorOptionData[] = enabledModels.map((model) => ({
-    value: model,
-    label: model,
+  const modelOptions: ModelWheelOption[] = offerableModels.map((entry) => ({
+    value: entry.id,
+    label: entry.displayName?.trim() || entry.id,
   }));
-  if (draft.model && !enabledModels.includes(draft.model)) {
+  if (draft.model && !validModel) {
     modelOptions.unshift({
       value: draft.model,
       label: `${draft.model} · ${copy.status.modelDisabled}`,
@@ -407,11 +444,11 @@ function SubagentPresetEditor(props: {
 
   function selectConnection(connectionSlug: string): void {
     const connection = usableConnections.find((candidate) => candidate.slug === connectionSlug);
-    const models = connection ? connectionEnabledModelIds(connection) : [];
+    const models = connection ? offerableCatalogEntries(connection) : [];
     setDraft((current) => ({
       ...current,
       connectionSlug,
-      model: models[0] ?? '',
+      model: models[0]?.id ?? '',
       thinkingLevel: '',
     }));
   }
@@ -561,21 +598,21 @@ function SubagentPresetEditor(props: {
         <SettingsRow
           label={copy.editor.model}
           end={(
-            <Selector
-              label={copy.editor.model}
-              isLabelHidden
-              value={draft.model}
-              options={modelOptions}
-              width="100%"
-              isDisabled={props.isSaving || enabledModels.length === 0}
-              disabledMessage={enabledModels.length === 0 ? copy.editor.noModel : undefined}
-              // The route is two choices, so it gets two errors: an enabled
-              // connection with no model selected is the model's problem.
-              status={submitted && validConnection && !validModel
-                ? { type: 'error', message: copy.editor.invalidModel }
-                : undefined}
-              onChange={(model) => setDraft((current) => ({ ...current, model, thinkingLevel: '' }))}
-            />
+            <VStack gap={1}>
+              <ModelWheelPicker
+                ariaLabel={copy.editor.model}
+                label={modelOptions.find((option) => option.value === draft.model)?.label ?? copy.editor.noModel}
+                value={draft.model}
+                options={modelOptions}
+                size="md"
+                triggerClassName="settingsModelPickerTrigger"
+                disabled={props.isSaving || offerableModels.length === 0}
+                tooltip={offerableModels.length === 0 ? copy.editor.noModel : undefined}
+                onValueChange={(model) => setDraft((current) => ({ ...current, model, thinkingLevel: '' }))}
+              />
+              {submitted && validConnection && !validModel
+                ? <Banner status="error" title={copy.editor.invalidModel} /> : null}
+            </VStack>
           )}
         />
         {thinkingLevels.length > 0 ? (

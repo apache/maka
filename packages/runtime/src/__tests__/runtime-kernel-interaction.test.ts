@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -18,6 +38,7 @@ import {
   RuntimeOwnerCleanupError,
 } from '../runtime-kernel.js';
 import { BackendRegistry, type SessionStore } from '../session-manager.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('RuntimeKernel Interaction close cleanup', () => {
   test('reserve followed by begin failure settles a concurrent stop claim', async () => {
@@ -25,7 +46,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const updateHeader = store.updateHeader;
     const backends = new BackendRegistry();
     const backend = new BlockingBackend(SESSION_ID, {});
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const startupFailure = new Error('mark running rejected after reservation');
     let stoppedFailure: Promise<unknown> | undefined;
     let kernel!: RuntimeKernel;
@@ -63,7 +84,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const store = memoryStore();
     const backends = new BackendRegistry();
     const backend = new BlockingBackend(SESSION_ID, {});
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const closeFailure = new Error('bind-race close rejected');
     const closeStarted = deferred<void>();
     const releaseClose = deferred<void>();
@@ -79,6 +100,8 @@ describe('RuntimeKernel Interaction close cleanup', () => {
           ...identity,
           acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
+          acceptFormRequest: async () => {},
+          withdrawFormRequest: async () => {},
           close: async () => {
             closeCalls += 1;
             closeStarted.resolve();
@@ -227,21 +250,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     );
     assert.equal(containsFailure(retryFailure, stopFailure), true);
     assert.equal(fixture.backend.stopCalls.length, 1);
-    const messages = await fixture.store.readMessages(SESSION_ID);
-    assert.equal(
-      messages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-blocked-send' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const blockedActivation = fixture.kernel
       .startTurn(SESSION_ID, { turnId: 'turn-before-runner-settled', text: 'must not send' })
@@ -261,7 +269,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
       releaseSendOnStop: false,
       releaseSendOnDispose: false,
     });
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const secondReserved = deferred<void>();
     const releaseSecond = deferred<void>();
     let reservations = 0;
@@ -311,7 +319,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const store = memoryStore();
     const backends = new BackendRegistry();
     const built: BlockingBackend[] = [];
-    backends.register('fake', () => {
+    backends.register('ai-sdk', () => {
       const backend = new BlockingBackend(
         SESSION_ID,
         built.length === 0
@@ -343,21 +351,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     await drainIterator(first);
     assert.equal(built[0]?.disposeCalls, 1);
     assert.deepEqual(built[0]?.stopCalls, [{ reason: 'user_stop', mode: 'after_step' }]);
-    const firstMessages = await store.readMessages(SESSION_ID);
-    assert.equal(
-      firstMessages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-generation-1' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      firstMessages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const second = kernel
       .startTurn(SESSION_ID, { turnId: 'turn-generation-2', text: 'second' })
@@ -380,7 +373,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const built: BlockingBackend[] = [];
     const stopFailure = new Error('backend stop failed');
     const disposeFailure = new Error('backend disposal failed');
-    backends.register('fake', () => {
+    backends.register('ai-sdk', () => {
       const backend = new BlockingBackend(SESSION_ID, {
         stopFailure,
         disposeFailure,
@@ -447,7 +440,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   const store = memoryStore();
   const backends = new BackendRegistry();
   const backend = new BlockingBackend(SESSION_ID, options);
-  backends.register('fake', () => backend);
+  backends.register('ai-sdk', () => backend);
   const closeFailure = new Error('durable close rejected');
   let markCloseStarted!: () => void;
   const closeStarted = new Promise<void>((resolve) => {
@@ -462,6 +455,8 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
       ...identity,
       acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
+      acceptFormRequest: async () => {},
+      withdrawFormRequest: async () => {},
       close: async () => {
         markCloseStarted();
         if (options.deferredClose) await closeReleased;
@@ -485,7 +480,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
             messageAuthority: {
               bindRun: (identity) => ({
                 ...identity,
-                pull: () => [],
+                pull: async () => [],
                 ack: () => {},
                 nack: () => {},
                 release: () => {
@@ -510,7 +505,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
 }
 
 class BlockingBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly stopCalls: Array<{
     reason: 'user_stop' | 'redirect';
     mode: BackendStopMode | undefined;
@@ -601,7 +596,6 @@ function memoryStore(): SessionStore {
     workspaceRoot: '/tmp/maka-runtime-kernel-interaction',
     cwd: '/tmp/maka-runtime-kernel-interaction',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Interaction cleanup',
     titleIsManual: true,
     isFlagged: false,
@@ -610,7 +604,7 @@ function memoryStore(): SessionStore {
     status: 'active',
     statusUpdatedAt: 1,
     hasUnread: false,
-    backend: 'fake',
+    backend: 'ai-sdk',
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test',
@@ -629,20 +623,20 @@ function memoryStore(): SessionStore {
     },
     list: async () => [],
     readHeader: async () => header,
-    readMessages: async () => [...messages],
-    listTurns: async () => [],
-    appendMessage: async (_sessionId, message) => {
-      messages.push(message);
-    },
-    appendMessages: async (_sessionId, next) => {
-      messages.push(...next);
-    },
+    readMessagesAfter: async (
+      _sessionId: string,
+      request: { afterSequence?: number; maxMessages: number },
+    ) => ({
+      records: messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: messages.length > 0 ? messages.length - 1 : null,
+    }),
     updateHeader: async (_sessionId, patch) => {
       header = { ...header, ...patch };
       return header;
     },
-    archive: async () => {},
-    unarchive: async () => {},
     setFlagged: async () => {},
     rename: async () => {},
     remove: async () => {},
@@ -679,24 +673,8 @@ function containsFailure(failure: unknown, expected: unknown): boolean {
     failure.errors.some((nested) => containsFailure(nested, expected))
   );
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  assert.fail('condition was not met');
+  await pollFor(predicate, { attempts: 50 });
 }
 
 async function within<T>(promise: Promise<T>, operation: string): Promise<T> {

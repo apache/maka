@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/OpenHistory/main.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -10,8 +17,26 @@ let command = arguments.first ?? "help"
 let homeURL = historyHome()
 
 switch command {
+case "applications":
+    printApplications(bundleIdentifiers: Array(arguments.dropFirst()))
 case "record":
     runRecorder(arguments: Array(arguments.dropFirst()), homeURL: homeURL)
+case "maintenance":
+    do {
+        guard let expected = optionValue("--parent-pid", in: arguments).flatMap(Int32.init) else {
+            throw RecorderOwnershipError.invalidParent
+        }
+        let parent = try RecorderParent(expected: expected)
+        try RecorderOwnership.admitMaintenance(homeURL: homeURL, descriptor: 3)
+        guard parent.isAlive() else { throw RecorderOwnershipError.invalidParent }
+        print("maintenance-admitted")
+    } catch RecorderOwnershipError.alreadyActive {
+        fputs("Another Computer History recorder is active.\n", stderr)
+        exit(75)
+    } catch {
+        fputs("Maintenance admission failed: \(error)\n", stderr)
+        exit(1)
+    }
 case "sample":
     writeSample(homeURL: homeURL)
 case "permissions":
@@ -37,6 +62,30 @@ func historyHome() -> URL {
 }
 
 func runRecorder(arguments: [String], homeURL: URL) {
+    do {
+        let parentValue = optionValue("--parent-pid", in: arguments)
+        if arguments.contains("--parent-pid"), parentValue.flatMap(Int32.init) == nil {
+            throw RecorderOwnershipError.invalidParent
+        }
+        let parent = try RecorderParent(expected: parentValue.flatMap(Int32.init) ?? getppid())
+        let ownership = try RecorderOwnership(homeURL: homeURL)
+        try withExtendedLifetime(ownership) {
+            try runAdmittedRecorder(arguments: arguments, homeURL: homeURL, parent: parent)
+        }
+    } catch RecorderOwnershipError.alreadyActive {
+        fputs("Recorder already active for this history home.\n", stderr)
+        exit(75)
+    } catch RecorderOwnershipError.invalidParent {
+        fputs("Recorder parent must be its live launching process (--parent-pid).\n", stderr)
+        exit(2)
+    } catch {
+        fputs("Recorder failed: \(error)\n", stderr)
+        exit(1)
+    }
+}
+
+func runAdmittedRecorder(arguments: [String], homeURL: URL, parent: RecorderParent) throws {
+    guard parent.isAlive() else { throw RecorderOwnershipError.invalidParent }
     let requestPermissions = !arguments.contains("--no-prompt")
     if requestPermissions {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -53,44 +102,47 @@ func runRecorder(arguments: [String], homeURL: URL) {
         exit(2)
     }
 
-    do {
-        var policy = loadPolicy(homeURL: homeURL)
-        if arguments.contains("--capture-text") {
-            policy.captureText = true
-        }
-        let store = try SegmentStore(homeURL: homeURL)
-        let recorder = HistoryRecorder(store: store, policy: policy)
-        try recorder.start()
-        print("Recording interaction events to \(store.eventsURL.path)")
-        print("Press Control-C to stop.")
-
-        signal(SIGINT, SIG_IGN)
-        signal(SIGTERM, SIG_IGN)
-        let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        let terminateSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        interruptSource.setEventHandler {
-            recorder.stop(reason: "user_interrupt")
-            CFRunLoopStop(CFRunLoopGetMain())
-        }
-        terminateSource.setEventHandler {
-            recorder.stop(reason: "terminated")
-            CFRunLoopStop(CFRunLoopGetMain())
-        }
-        interruptSource.resume()
-        terminateSource.resume()
-
-        if let duration = optionValue("--duration", in: arguments).flatMap(Double.init) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                recorder.stop(reason: "duration_elapsed")
-                CFRunLoopStop(CFRunLoopGetMain())
-            }
-        }
-        CFRunLoopRun()
-        recorder.stop(reason: "run_loop_ended")
-    } catch {
-        fputs("Recorder failed: \(error)\n", stderr)
-        exit(1)
+    guard parent.isAlive() else { throw RecorderOwnershipError.invalidParent }
+    var policy = loadPolicy(homeURL: homeURL)
+    if arguments.contains("--capture-text") {
+        policy.captureText = true
     }
+    let store = try SegmentStore(homeURL: homeURL)
+    let recorder = HistoryRecorder(store: store, policy: policy, parent: parent)
+    let parentMonitor = ProcessExitMonitor(processIdentifier: parent.processIdentifier) {
+        recorder.stop(reason: "parent_exited")
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
+
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+    let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    let terminateSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    interruptSource.setEventHandler {
+        recorder.stop(reason: "user_interrupt")
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
+    terminateSource.setEventHandler {
+        recorder.stop(reason: "terminated")
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
+    interruptSource.resume()
+    terminateSource.resume()
+
+    try recorder.start()
+    print("Recording interaction events to \(store.eventsURL.path)")
+    print("Press Control-C to stop.")
+
+    if let duration = optionValue("--duration", in: arguments).flatMap(Double.init) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            recorder.stop(reason: "duration_elapsed")
+            CFRunLoopStop(CFRunLoopGetMain())
+        }
+    }
+    withExtendedLifetime((parentMonitor, interruptSource, terminateSource)) {
+        CFRunLoopRun()
+    }
+    recorder.stop(reason: "run_loop_ended")
 }
 
 func loadPolicy(homeURL: URL) -> ObservationPolicy {
@@ -106,6 +158,7 @@ func loadPolicy(homeURL: URL) -> ObservationPolicy {
 func writeSample(homeURL: URL) {
     do {
         let store = try SegmentStore(homeURL: homeURL)
+        let policy = loadPolicy(homeURL: homeURL)
         let timestamp = Date()
         let app = EventStreamApp(
             name: "Open History Sample",
@@ -133,7 +186,7 @@ func writeSample(homeURL: URL) {
             kind: .sessionStarted,
             app: app,
             window: window
-        ))
+        ), policy: policy)
         try store.append(HistoryEvent(
             id: 2,
             timestamp: timestamp,
@@ -144,7 +197,7 @@ func writeSample(homeURL: URL) {
                 mode: .fullTree,
                 text: "AXWindow[Sample workflow] > AXTextArea[Research notes]"
             )
-        ))
+        ), policy: policy)
         try store.append(HistoryEvent(
             id: 3,
             timestamp: timestamp,
@@ -157,7 +210,7 @@ func writeSample(homeURL: URL) {
                 modifiers: [],
                 target: element
             )
-        ))
+        ), policy: policy)
         try store.finish(reason: "sample")
         print(store.eventsURL.path)
     } catch {
@@ -184,6 +237,13 @@ func printPermissions(request: Bool) {
 }
 
 func printStatus(homeURL: URL) {
+    let recorderActive: Bool
+    do {
+        recorderActive = try RecorderOwnership.isActive(homeURL: homeURL)
+    } catch {
+        fputs("Cannot determine recorder ownership: \(error)\n", stderr)
+        exit(1)
+    }
     let segmentsURL = homeURL.appendingPathComponent("segments", isDirectory: true)
     let segments = (try? FileManager.default.contentsOfDirectory(
         at: segmentsURL,
@@ -197,6 +257,7 @@ func printStatus(homeURL: URL) {
         "accessibility": AXIsProcessTrusted(),
         "inputMonitoring": CGPreflightListenEventAccess(),
         "state": runtime?.state.rawValue ?? RecorderState.stopped.rawValue,
+        "recorderActive": recorderActive,
         "processIdentifier": runtime?.processIdentifier as Any,
         "currentSegmentEventsPath": runtime?.currentSegmentEventsPath as Any,
     ]
@@ -260,12 +321,14 @@ func printUsage() {
     Open Codex Computer History
 
     Usage:
-      open-history record [--duration SECONDS] [--capture-text] [--no-prompt]
+      open-history record [--duration SECONDS] [--capture-text] [--no-prompt] [--parent-pid PID]
+      open-history maintenance --parent-pid PID  (internal; recorder.lock inherited as fd 3)
       open-history sample
       open-history permissions [--no-prompt]
       open-history status
       open-history pause [--for 30m|1h|tomorrow]
       open-history resume
+      open-history applications <bundle-id>...
 
     Environment:
       OPEN_COMPUTER_HISTORY_HOME  Override ~/.open-codex-computer-history

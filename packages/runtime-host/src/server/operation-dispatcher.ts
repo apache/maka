@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
-  type ClientSurface,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -12,13 +31,65 @@ import {
   type ResponseFrameFor,
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
+import { HOST_RESOURCE_OPERATION_SPECS } from '../protocol/host-resources.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
+import { SESSION_COLLABORATION_OPERATION_SPECS } from '../protocol/session-collaboration.js';
+import { PEER_MESH_OPERATION_SPECS } from '../protocol/peer-mesh.js';
+import { AGENT_GRAPH_OPERATION_SPECS } from '../protocol/agent-graph.js';
+import { ARTIFACT_OPERATION_SPECS } from '../protocol/artifact.js';
+import { CLIENT_CAPABILITY_OPERATION_SPECS } from '../protocol/client-capability.js';
+import { CONFIGURATION_OPERATION_SPECS } from '../protocol/configuration.js';
+import { CONNECTION_EFFECT_OPERATION_SPECS } from '../protocol/connection-effects.js';
+import { CONTEXT_OPERATION_SPECS } from '../protocol/context.js';
+import { DAILY_REVIEW_OPERATION_SPECS } from '../protocol/daily-review.js';
+import { COMPUTER_HISTORY_OPERATION_SPECS } from '../protocol/computer-history.js';
+import { DEEP_RESEARCH_OPERATION_SPECS } from '../protocol/deep-research.js';
+import { EXECUTION_INSPECT_OPERATION_SPECS } from '../protocol/execution-inspect.js';
+import { EXTERNAL_SESSION_OPERATION_SPECS } from '../protocol/external-session.js';
+import { SESSION_BUNDLE_OPERATION_SPECS } from '../protocol/session-bundle.js';
+import { GOAL_OPERATION_SPECS } from '../protocol/goal.js';
+import { HOSTED_EXECUTION_OPERATION_SPECS } from '../protocol/hosted-execution.js';
+import { INTERACTION_OPERATION_SPECS } from '../protocol/interaction.js';
+import { MEMORY_OPERATION_SPECS } from '../protocol/memory.js';
+import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
+import { NETWORK_PROXY_OPERATION_SPECS } from '../protocol/network-proxy.js';
+import { OAUTH_OPERATION_SPECS } from '../protocol/oauth.js';
+import { PLAN_OPERATION_SPECS } from '../protocol/plan.js';
+import { PROJECT_CATALOG_OPERATION_SPECS } from '../protocol/project-catalog.js';
+import { RUNTIME_POLICY_OPERATION_SPECS } from '../protocol/runtime-policy.js';
+import { RUNTIME_RESOURCE_OPERATION_SPECS } from '../protocol/runtime-resource.js';
+import { SCHEDULED_TASK_OPERATION_SPECS } from '../protocol/scheduled-task.js';
+import { SESSION_CATALOG_OPERATION_SPECS } from '../protocol/session-catalog.js';
+import { SESSION_CONTINUITY_OPERATION_SPECS } from '../protocol/session-continuity.js';
+import { SESSION_EFFECT_OPERATION_SPECS } from '../protocol/session-effects.js';
+import { SESSION_RETIREMENT_OPERATION_SPECS } from '../protocol/session-retirement.js';
+import { SESSION_REVISION_OPERATION_SPECS } from '../protocol/session-revision.js';
+import { SESSION_TODO_OPERATION_SPECS } from '../protocol/session-todo.js';
+import { SESSION_TRANSCRIPT_OPERATION_SPECS } from '../protocol/session-transcript.js';
+import { SESSION_TURNS_OPERATION_SPECS } from '../protocol/session-turns.js';
+import { SKILL_CATALOG_OPERATION_SPECS } from '../protocol/skill-catalog.js';
+import { TURN_OPERATION_SPECS } from '../protocol/turn.js';
+import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
+import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
+import { WORKHUB_COORDINATION_OPERATION_SPECS } from '../protocol/workhub-coordination.js';
+import { PLUGIN_PLATFORM_OPERATION_SPECS } from '../protocol/plugin-platform.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
+import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
-  surface: ClientSurface;
   principal: string;
+  principalKind?: RuntimeHostConnectionAuthority['principalKind'];
+  credentialId?: string;
+  credentialClientInstanceId?: string;
+  clientInstanceId?: string;
+  /** EOF/teardown latch; dispatched operations opt in to cancellation. */
+  inputClosedSignal?: AbortSignal;
+  /** Exact transport request lifetime, present only for cancellable operations. */
+  requestAbortSignal?: AbortSignal;
+  turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
 }
 
@@ -35,83 +106,64 @@ export type OperationHandlerMap = {
   [K in OperationKey]: OperationHandler<K>;
 };
 
-export type HostCoreOperationKey =
-  | keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS
-  | keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS;
+/**
+ * The spec objects a Runtime Host serves from its own core — operations that
+ * never route to a domain coordinator. Declared once here so both the type
+ * (`HostCoreOperationKey`) and the runtime partition in
+ * `createUnavailableDomainOperationHandlers` stay in agreement; adding a fifth
+ * host-core spec object is a single edit.
+ */
+const HOST_CORE_SPEC_OBJECTS = [
+  HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOST_RESOURCE_OPERATION_SPECS,
+  ACCESS_AUTHORITY_OPERATION_SPECS,
+  SESSION_COLLABORATION_OPERATION_SPECS,
+  PEER_MESH_OPERATION_SPECS,
+] as const;
+
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+export type HostCoreOperationKey = KeysOfUnion<(typeof HOST_CORE_SPEC_OBJECTS)[number]>;
 export type DomainOperationKey = Exclude<OperationKey, HostCoreOperationKey>;
-export type TurnOperationKey = Extract<
-  OperationKey,
-  | 'turn.start'
-  | 'turn.query'
-  | 'turn.stop'
-  | 'turn.regenerate'
-  | 'turn.resume.query'
-  | 'turn.resume.start'
->;
-export type ContextOperationKey = Extract<OperationKey, `context.${string}`>;
-export type RuntimePolicyOperationKey = Extract<
-  OperationKey,
-  | `runtime.policy.${string}`
-  | `connection.catalog.${string}`
-  | `connection.request-headers.${string}`
-  | `credential.vault.${string}`
->;
-export type ConnectionEffectOperationKey = Extract<
-  OperationKey,
-  | 'connection.models.fetch'
-  | 'connection.test.run'
-  | 'connection.onboarding.verify'
-  | 'connection.onboarding.save'
->;
-export type MessageOperationKey = Extract<
-  OperationKey,
-  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
->;
-export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
-export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
-export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
-export type HostedExecutionOperationKey = Extract<OperationKey, `hosted.execution.${string}`>;
-export type ExternalSessionOperationKey = Extract<OperationKey, `external-session.${string}`>;
-export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
-export type SessionContinuityOperationKey = Extract<
-  OperationKey,
-  | 'subscription.open'
-  | 'subscription.close'
-  | 'session.transcript.page'
-  | 'session.transcript.overlay.release'
->;
-export type SessionRevisionOperationKey = Extract<
-  OperationKey,
-  'session.branch.create' | 'session.revision.create' | 'session.revision.abandon'
->;
-export type SessionRetirementOperationKey = Extract<
-  OperationKey,
-  'session.lifecycle.set' | 'session.remove'
->;
-export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
-export type SessionCatalogOperationKey = Exclude<
-  Extract<OperationKey, `session.${string}`>,
-  | SessionContinuityOperationKey
-  | SessionRevisionOperationKey
-  | SessionRetirementOperationKey
-  | SessionEffectOperationKey
->;
-export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
-export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
-export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
-export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
-export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
-export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
-export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
-export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
-export type ScheduledTaskOperationKey = Extract<OperationKey, `scheduled-task.${string}`>;
-export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
-export type ProjectCatalogOperationKey = Extract<OperationKey, `project.catalog.${string}`>;
-export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
-export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
-export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
-export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
-export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
+export type TurnOperationKey = keyof typeof TURN_OPERATION_SPECS;
+export type ContextOperationKey = keyof typeof CONTEXT_OPERATION_SPECS;
+export type RuntimePolicyOperationKey = keyof typeof RUNTIME_POLICY_OPERATION_SPECS;
+export type ConnectionEffectOperationKey = keyof typeof CONNECTION_EFFECT_OPERATION_SPECS;
+export type MessageOperationKey = keyof typeof MESSAGE_OPERATION_SPECS;
+export type InteractionOperationKey = keyof typeof INTERACTION_OPERATION_SPECS;
+export type GoalOperationKey = keyof typeof GOAL_OPERATION_SPECS;
+export type ExecutionInspectOperationKey = keyof typeof EXECUTION_INSPECT_OPERATION_SPECS;
+export type HostedExecutionOperationKey = keyof typeof HOSTED_EXECUTION_OPERATION_SPECS;
+export type ExternalSessionOperationKey = keyof typeof EXTERNAL_SESSION_OPERATION_SPECS;
+export type SessionBundleOperationKey = keyof typeof SESSION_BUNDLE_OPERATION_SPECS;
+export type AgentGraphOperationKey = keyof typeof AGENT_GRAPH_OPERATION_SPECS;
+export type SessionContinuityOperationKey =
+  | keyof typeof SESSION_CONTINUITY_OPERATION_SPECS
+  | keyof typeof SESSION_TRANSCRIPT_OPERATION_SPECS;
+export type SessionRevisionOperationKey = keyof typeof SESSION_REVISION_OPERATION_SPECS;
+export type SessionRetirementOperationKey = keyof typeof SESSION_RETIREMENT_OPERATION_SPECS;
+export type SessionEffectOperationKey = keyof typeof SESSION_EFFECT_OPERATION_SPECS;
+export type SessionTodoOperationKey = keyof typeof SESSION_TODO_OPERATION_SPECS;
+export type SessionCatalogOperationKey =
+  | keyof typeof SESSION_CATALOG_OPERATION_SPECS
+  | keyof typeof SESSION_TURNS_OPERATION_SPECS;
+export type ArtifactOperationKey = keyof typeof ARTIFACT_OPERATION_SPECS;
+export type SkillCatalogOperationKey = keyof typeof SKILL_CATALOG_OPERATION_SPECS;
+export type UsagePricingOperationKey = keyof typeof USAGE_PRICING_OPERATION_SPECS;
+export type MemoryOperationKey = keyof typeof MEMORY_OPERATION_SPECS;
+export type OAuthOperationKey = keyof typeof OAUTH_OPERATION_SPECS;
+export type RuntimeResourceOperationKey = keyof typeof RUNTIME_RESOURCE_OPERATION_SPECS;
+export type ClientCapabilityOperationKey = keyof typeof CLIENT_CAPABILITY_OPERATION_SPECS;
+export type ScheduledTaskOperationKey = keyof typeof SCHEDULED_TASK_OPERATION_SPECS;
+export type PlanOperationKey = keyof typeof PLAN_OPERATION_SPECS;
+export type ProjectCatalogOperationKey = keyof typeof PROJECT_CATALOG_OPERATION_SPECS;
+export type DeepResearchOperationKey = keyof typeof DEEP_RESEARCH_OPERATION_SPECS;
+export type DailyReviewOperationKey = keyof typeof DAILY_REVIEW_OPERATION_SPECS;
+export type ComputerHistoryOperationKey = keyof typeof COMPUTER_HISTORY_OPERATION_SPECS;
+export type WebSearchOperationKey = keyof typeof WEB_SEARCH_OPERATION_SPECS;
+export type NetworkProxyOperationKey = keyof typeof NETWORK_PROXY_OPERATION_SPECS;
+export type ConfigurationOperationKey = keyof typeof CONFIGURATION_OPERATION_SPECS;
+export type WorkHubCoordinationOperationKey = keyof typeof WORKHUB_COORDINATION_OPERATION_SPECS;
+export type PluginPlatformOperationKey = keyof typeof PLUGIN_PLATFORM_OPERATION_SPECS;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -135,6 +187,7 @@ export type ExternalSessionOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExternalSessionOperationKey
 >;
+export type SessionBundleOperationHandlerMap = Pick<OperationHandlerMap, SessionBundleOperationKey>;
 export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
@@ -153,7 +206,7 @@ export type SessionRetirementOperationHandlerMap = Pick<
   SessionRetirementOperationKey
 >;
 export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
-export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
+export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTodoOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
@@ -175,13 +228,27 @@ export type ProjectCatalogOperationHandlerMap = Pick<
 >;
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
+export type ComputerHistoryOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ComputerHistoryOperationKey
+>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
+export type WorkHubCoordinationOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  WorkHubCoordinationOperationKey
+>;
+export type PluginPlatformOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  PluginPlatformOperationKey
+>;
 export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,
-  keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
+  keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS | keyof typeof SESSION_COLLABORATION_OPERATION_SPECS
 >;
+export type HostCoreUnavailableOperationHandlerMap = AccessAuthorityOperationHandlerMap &
+  Pick<OperationHandlerMap, keyof typeof PEER_MESH_OPERATION_SPECS>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]
@@ -212,10 +279,7 @@ export function composeOperationHandlers(
 export function createUnavailableDomainOperationHandlers(): DomainOperationHandlerMap {
   const handlers: Partial<DomainOperationHandlerMap> = {};
   for (const operation of Object.keys(HOST_OPERATION_SPECS) as OperationKey[]) {
-    if (
-      Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation) ||
-      Object.hasOwn(ACCESS_AUTHORITY_OPERATION_SPECS, operation)
-    ) {
+    if (HOST_CORE_SPEC_OBJECTS.some((specs) => Object.hasOwn(specs, operation))) {
       continue;
     }
     const errors = HOST_OPERATION_SPECS[operation].errors as readonly HostOperationErrorCode[];
@@ -236,21 +300,41 @@ export function createUnavailableDomainOperationHandlers(): DomainOperationHandl
 }
 
 export function createUnavailableAccessAuthorityOperationHandlers(): AccessAuthorityOperationHandlerMap {
+  const handlers: Partial<AccessAuthorityOperationHandlerMap> = {};
+  const groups = [
+    {
+      specs: ACCESS_AUTHORITY_OPERATION_SPECS,
+      message: 'Runtime Host access credentials are unavailable',
+    },
+    {
+      specs: SESSION_COLLABORATION_OPERATION_SPECS,
+      message: 'Runtime Host collaboration authority is unavailable',
+    },
+  ] as const;
+  for (const { specs, message } of groups) {
+    for (const operation of Object.keys(specs) as OperationKey[]) {
+      const errors = HOST_OPERATION_SPECS[operation].errors as readonly HostOperationErrorCode[];
+      if (!errors.includes('operation_unavailable')) {
+        throw new Error(`${operation} does not declare operation_unavailable`);
+      }
+      Object.assign(handlers, {
+        [operation]: async () => ({
+          ok: false,
+          error: {
+            code: 'operation_unavailable',
+            message,
+          },
+        }),
+      });
+    }
+  }
+  return handlers as AccessAuthorityOperationHandlerMap;
+}
+
+export function createUnavailableHostCoreOperationHandlers(): HostCoreUnavailableOperationHandlerMap {
   return {
-    'access.credential.issue': async () => ({
-      ok: false,
-      error: {
-        code: 'operation_unavailable',
-        message: 'Runtime Host access credentials are unavailable',
-      },
-    }),
-    'access.credential.revoke': async () => ({
-      ok: false,
-      error: {
-        code: 'operation_unavailable',
-        message: 'Runtime Host access credentials are unavailable',
-      },
-    }),
+    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createPeerMeshOperationHandlers(undefined),
   };
 }
 
@@ -293,7 +377,10 @@ async function dispatchTypedOperation<K extends OperationKey>(
   let outcome: OperationOutcome<K>;
   try {
     outcome = decodeOperationOutcome(request.operation, await handler(request.input, context));
-  } catch {
+  } catch (error) {
+    console.error(
+      `[runtime-host] unexpected ${request.operation} failure: ${boundedFailureDiagnostic(error)}`,
+    );
     return operationFailureResponse(
       request as RequestFrame,
       'internal_failure',

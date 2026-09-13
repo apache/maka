@@ -1,3 +1,10 @@
+// Adapted from https://github.com/hqhq1025/open-codex-computer-history
+// Source: collector/Sources/OpenHistory/AXTreeCapture.swift
+// Revision: 30c99f904d9375a01e17a05516f896ebda24a544
+// Copyright (c) 2026 Open Codex Computer History contributors
+// Licensed under MIT; see apps/desktop/resources/licenses/open-computer-history/LICENSE.
+// Modified by Maka for its vendored Computer History helper.
+
 import ApplicationServices
 import Foundation
 import HistoryCore
@@ -9,7 +16,7 @@ enum AXTreeCapture {
         maximumNodes: Int = 500,
         maximumDepth: Int = 14
     ) -> AXTreeRevisionSnapshot? {
-        guard let root else {
+        guard let root, !secureInput else {
             return nil
         }
         var lines: [Int: String] = [:]
@@ -24,9 +31,15 @@ enum AXTreeCapture {
             guard visited.insert(hash).inserted else {
                 return
             }
+            let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown"
+            let subrole = stringAttribute(element, kAXSubroleAttribute as CFString)
+            // Omit the entire secure subtree before it becomes opaque AX text.
+            guard !ObservationPolicy.isSecureRole(role, subrole: subrole) else {
+                return
+            }
             let id = nextID
             nextID += 1
-            lines[id] = render(element, depth: depth, secureInput: secureInput)
+            lines[id] = render(element, depth: depth, role: role, subrole: subrole)
             for child in children(element) {
                 visit(child, depth: depth + 1)
             }
@@ -38,20 +51,18 @@ enum AXTreeCapture {
     private static func render(
         _ element: AXUIElement,
         depth: Int,
-        secureInput: Bool
+        role: String,
+        subrole: String?
     ) -> String {
-        let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown"
         var attributes: [String] = []
-        append("subrole", stringAttribute(element, kAXSubroleAttribute as CFString), to: &attributes)
+        append("subrole", subrole, to: &attributes)
         append("title", stringAttribute(element, kAXTitleAttribute as CFString), to: &attributes)
         append(
             "description",
             stringAttribute(element, kAXDescriptionAttribute as CFString),
             to: &attributes
         )
-        if !secureInput && role != "AXSecureTextField" {
-            append("value", stringAttribute(element, kAXValueAttribute as CFString), to: &attributes)
-        }
+        append("value", stringAttribute(element, kAXValueAttribute as CFString), to: &attributes)
         append(
             "placeholder",
             stringAttribute(element, kAXPlaceholderValueAttribute as CFString),

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -17,16 +36,19 @@ import {
   type SessionCopyAttemptPhase,
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
-import { readSettledMessages } from './session-message-settlement.js';
+import { readSettledMessages } from './platform/desktop/session-message-settlement.js';
+import type { MessageListUpdater } from './session-workspace-actions.js';
 
 type RefBox<T> = { current: T };
-type MessageListUpdater = (
-  next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[]),
-) => void;
 
 type ToastApi = {
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 /** Active edit-and-resend draft owned by the desktop shell. */
@@ -59,38 +81,38 @@ export interface AppShellRevisionActions {
  *
  * If normal send fails after a revision was prepared, that version remains
  * active with the edited text and a second send retries there instead of
- * creating another version. Attachment-bearing source or retained context is
- * rejected until the revision copier can preserve those references losslessly.
+ * creating another version. Attachment-bearing source messages are rejected
+ * until the revision draft can carry their target-owned references (#5109);
+ * retained historical attachments are fine — the Host revision copier
+ * rewrites their Session refs losslessly.
  */
 export function createAppShellRevisionActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
+  captureSelection(): () => boolean;
   composerRef: RefBox<ComposerHandle | null>;
   messages: readonly StoredMessage[];
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellRevisionActions {
   const {
     uiLocale,
     activeIdRef,
+    captureSelection,
     composerRef,
     messages,
     hasPendingAttachments,
     openSessionInChat,
-    refreshMessages,
     refreshSessions,
     setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
   let revisionPreparationAbort: AbortController | undefined;
@@ -124,31 +146,19 @@ export function createAppShellRevisionActions(deps: {
         message.type === 'user' && message.turnId === turnId,
     );
     if (!userMessage) {
-      toastApi.error(copy.operationFailedTitle, copy.operationFailedFallback);
+      toastApi.error(
+        copy.operationFailedTitle,
+        copy.operationFailedFallback,
+        undefined,
+        { sessionId },
+      );
       return;
     }
 
-    const turnOrder: string[] = [];
-    const seenTurns = new Set<string>();
-    const turnHasAttachments = new Set<string>();
-    for (const message of messages) {
-      const messageTurnId = (message as { turnId?: string }).turnId;
-      if (messageTurnId && !seenTurns.has(messageTurnId)) {
-        seenTurns.add(messageTurnId);
-        turnOrder.push(messageTurnId);
-      }
-      if (message.type === 'user' && message.attachments && message.attachments.length > 0) {
-        turnHasAttachments.add(message.turnId);
-      }
-    }
-    const sourceIndex = turnOrder.indexOf(turnId);
-    const retainedAttachmentTurn = turnOrder
-      .slice(0, Math.max(0, sourceIndex))
-      .find((candidate) => turnHasAttachments.has(candidate));
-    if (
-      (userMessage.attachments && userMessage.attachments.length > 0) ||
-      retainedAttachmentTurn
-    ) {
+    if (userMessage.attachments && userMessage.attachments.length > 0) {
+      // Attachment references are session-owned and their rewritten targets
+      // are not exposed to clients yet, so those stay explicitly rejected.
+      // Quotes never reach this point: chat-turn's editDisabled gate excludes them.
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
       return;
     }
@@ -180,13 +190,13 @@ export function createAppShellRevisionActions(deps: {
     draft: TurnRevisionDraft,
     revisionSessionId: string,
     text: string,
+    selectionIsCurrent: () => boolean,
   ): Promise<void> {
     composerRef.current?.clearDraft(revisionSessionId);
     const current = revisionDraftRef.current;
-    if (activeIdRef.current === revisionSessionId) {
+    if (selectionIsCurrent() && activeIdRef.current === revisionSessionId) {
       openSessionInChat(draft.sourceSessionId);
-      setMessages([]);
-      await refreshMessages(draft.sourceSessionId).catch(() => false);
+      selectionIsCurrent = captureSelection();
     }
     const abandonment = await abandonRevisionCopy(draft);
     const abandoningDraft = abandonment.draft;
@@ -210,15 +220,11 @@ export function createAppShellRevisionActions(deps: {
       composerRef.current?.setDraft(draft.sourceSessionId, text);
       commitRevisionDraft(restored);
     }
-    if (activeIdRef.current === draft.sourceSessionId && revisionDraftRef.current === restored) {
+    if (selectionIsCurrent() && activeIdRef.current === draft.sourceSessionId && revisionDraftRef.current === restored) {
       composerRef.current?.setText(text);
       composerRef.current?.focus();
     }
     await refreshSessions().catch(() => []);
-  }
-
-  function completeRevisionCopyAttempt(draft: TurnRevisionDraft): void {
-    completeTurnRevisionCopyAttempt(draft);
   }
 
   async function abandonRevisionCopy(
@@ -241,7 +247,7 @@ export function createAppShellRevisionActions(deps: {
       // Main acknowledges only after the cleanup intent is durable; physical
       // removal may finish after this renderer has closed the draft.
       await window.maka.sessions.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
-      completeRevisionCopyAttempt(draft);
+      completeTurnRevisionCopyAttempt(draft);
       return { acknowledged: true, draft: abandoningDraft };
     } catch {
       // An ambiguous cleanup acknowledgement stays in `abandoning`; this
@@ -251,6 +257,7 @@ export function createAppShellRevisionActions(deps: {
   }
 
   async function prepareRevisionSend(text: string): Promise<boolean> {
+    let selectionIsCurrent = captureSelection();
     let draft = revisionDraftRef.current;
     if (!draft || activeIdRef.current !== draft.draftSessionId) return false;
     // A previous attempt already prepared the version; retry normal send there.
@@ -259,7 +266,7 @@ export function createAppShellRevisionActions(deps: {
     if (draft.copyPhase === 'abandoning') {
       const abandonment = await abandonRevisionCopy(draft);
       if (
-        !abandonment.acknowledged ||
+        !selectionIsCurrent() || !abandonment.acknowledged ||
         revisionDraftRef.current !== abandonment.draft ||
         activeIdRef.current !== draft.sourceSessionId
       ) {
@@ -301,26 +308,25 @@ export function createAppShellRevisionActions(deps: {
         copyId: startedDraft.copyId,
       });
       preparedSessionId = newSession.id;
-      if (activeIdRef.current !== sourceSessionId || revisionDraftRef.current !== startedDraft) {
-        await rollbackPreparedRevision(startedDraft, newSession.id, text);
+      if (!selectionIsCurrent() || revisionDraftRef.current !== startedDraft) {
+        await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
 
       const prepared = { ...startedDraft, draftSessionId: newSession.id };
       composerRef.current?.setDraft(newSession.id, text);
       commitRevisionDraft(prepared);
-      upsertSessionSummary(newSession);
       openSessionInChat(newSession.id);
-      setMessages([]);
+      selectionIsCurrent = captureSelection();
       const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
         signal: preparationAbort.signal,
       });
       if (!settled) throw new Error('Revised Session transcript did not become ready');
       if (
-        activeIdRef.current !== newSession.id ||
+        !selectionIsCurrent() || activeIdRef.current !== newSession.id ||
         revisionDraftRef.current !== prepared
       ) {
-        await rollbackPreparedRevision(startedDraft, newSession.id, text);
+        await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
       setMessages(preparedMessages);
@@ -331,15 +337,19 @@ export function createAppShellRevisionActions(deps: {
     } catch (error) {
       if (preparationAbort.signal.aborted) return false;
       if (preparedSessionId) {
-        await rollbackPreparedRevision(startedDraft, preparedSessionId, text);
+        await rollbackPreparedRevision(startedDraft, preparedSessionId, text, selectionIsCurrent);
       }
-      if (activeIdRef.current !== sourceSessionId) return false;
+      if (!selectionIsCurrent()) return false;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+          sessionId: sourceSessionId,
+        });
       } else {
         toastApi.error(
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+          undefined,
+          { sessionId: sourceSessionId },
         );
       }
       return false;
@@ -349,6 +359,7 @@ export function createAppShellRevisionActions(deps: {
   }
 
   async function cancelRevisionDraft(): Promise<void> {
+    let selectionIsCurrent = captureSelection();
     revisionPreparationAbort?.abort();
     const draft = revisionDraftRef.current;
     if (!draft) return;
@@ -358,21 +369,20 @@ export function createAppShellRevisionActions(deps: {
         : draft.copyId
       : undefined;
     if (cleanupSessionId) await abandonRevisionCopy(draft);
-    else completeRevisionCopyAttempt(draft);
+    else completeTurnRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
       composerRef.current?.clearDraft(draft.draftSessionId);
     }
-    if (activeIdRef.current !== draft.sourceSessionId) {
+    if (selectionIsCurrent() && activeIdRef.current !== draft.sourceSessionId) {
       openSessionInChat(draft.sourceSessionId);
-      setMessages([]);
-      await refreshMessages(draft.sourceSessionId).catch(() => false);
+      selectionIsCurrent = captureSelection();
     }
     if (cleanupSessionId) {
       await refreshSessions().catch(() => []);
     }
-    if (activeIdRef.current === draft.sourceSessionId) {
+    if (selectionIsCurrent() && activeIdRef.current === draft.sourceSessionId) {
       composerRef.current?.setText(draft.previousComposerText);
       composerRef.current?.focus();
     }

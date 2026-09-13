@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type {
@@ -74,6 +93,23 @@ describe('Runtime Host profile CLI', () => {
         'profile',
         'set',
         '--id',
+        'peer-lab',
+        '--name',
+        'Peer Lab',
+        '--peer-id',
+        '12D3KooWPeer',
+        '--peer-route',
+        '/ip4/192.0.2.10/udp/4001/quic-v1',
+        '--expected-root',
+        ROOT_ID,
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'profile',
+        'set',
+        '--id',
         'lab',
         '--name',
         'Lab',
@@ -118,6 +154,33 @@ describe('Runtime Host profile CLI', () => {
     assert.equal(
       parseRuntimeHostCommand(['profile', 'set', '--credential', 'secret']).kind,
       'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'profile',
+        'set',
+        '--id',
+        'wsl',
+        '--name',
+        'Ubuntu',
+        '--wsl-distribution',
+        'Ubuntu',
+        '--operator-path',
+        '/home/operator/.local/share/maka/operator',
+        '--expected-root',
+        ROOT_ID,
+      ]),
+      {
+        kind: 'runtime-host-profile-set-environment',
+        id: 'wsl',
+        name: 'Ubuntu',
+        distribution: 'Ubuntu',
+        operator: {
+          kind: 'legacy_posix_executable',
+          executablePath: '/home/operator/.local/share/maka/operator',
+        },
+        expectedRootId: ROOT_ID,
+      },
     );
   });
 
@@ -167,8 +230,8 @@ function createProfileCatalogCapture(): {
   catalog: RuntimeHostProfileCatalog;
   saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }>;
 } {
-  const state = {
-    document: { schemaVersion: 1, profiles: [] } as RuntimeHostProfileDocument,
+  const state: { document: RuntimeHostProfileDocument } = {
+    document: { schemaVersion: 5, profiles: [] },
   };
   const saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }> = [];
   const catalog: RuntimeHostProfileCatalog = {
@@ -178,7 +241,7 @@ function createProfileCatalogCapture(): {
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
       saved.push({ profile, credential });
       state.document = {
-        schemaVersion: 1,
+        schemaVersion: 5,
         profiles: [
           ...state.document.profiles.filter((candidate) => candidate.id !== profile.id),
           profile,
@@ -188,6 +251,10 @@ function createProfileCatalogCapture(): {
     },
     remove: async () => assert.fail('unexpected profile removal'),
     removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
+    rebindIfCurrent: async () => assert.fail('unexpected conditional profile rebind'),
+    updateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional update'),
+    mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional mutation'),
+    readRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional read'),
   };
   return {
     get document() {

@@ -1,17 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import {
+  connectionNameDraftChanged,
+  connectionNameDraftReseed,
+  connectionNameToSave,
+  shouldRefreshModelsAfterSave,
+} from './connection-name-draft.js';
 import {
   type ConnectionTestResult,
-  type LlmConnection,
-  type ModelInfo,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
-  normalizeRelayModelProfiles,
-  pruneRelayModelProfiles,
-  type RelayModelProfile,
-  type ThinkingLevel,
+  normalizeModelOverrides,
+  type ModelOverride,
 } from '@maka/core/model-thinking';
 import {
   providerAuthRequiresSecret,
@@ -19,54 +41,99 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
-import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { useKeyedActionGuard } from './use-action-guard';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow';
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  type ConnectionOAuthBridge,
+  type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
-import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
+} from '../features/connection-settings';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
 // the browser-assisted services (Codex and xAI) are one-button-drivable
-// here; Claude's paste-code flow and plain API-key providers return null so the
-// notice falls back to prose instead of rendering a dead button.
+// here; plain API-key providers return null so the notice falls back to
+// prose instead of rendering a dead button.
 export interface OAuthLoginService {
-  bridge: OAuthLoginFlowBridge;
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
   display: { name: string; shortName: string };
+  // OAuth device pages that require manual code entry expose it as stateHint.
+  showsDeviceCode: boolean;
 }
 
 export function oauthLoginServiceFor(
   providerType: ProviderType,
-  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+  oauth: ConnectionOAuthBridge,
+  connectionId: string,
+  connectionLabel?: string,
 ): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
-      return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
-        display: { name: 'OpenAI Codex', shortName: 'Codex' },
-      };
+      return oauthLoginService(
+        oauth.openAiCodex,
+        connectionId,
+        { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
+        true,
+      );
     case 'xai-oauth':
-      return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
-        display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-      };
+      return oauthLoginService(
+        oauth.xaiOAuth,
+        connectionId,
+        { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        false,
+      );
+    // Copilot re-login is the same Host-owned device grant the catalog drives;
+    // importing a local `gh` credential stays a catalog action, so an expired
+    // connection is re-authorized here exactly like every other OAuth account.
+    case 'github-copilot':
+      return oauthLoginService(
+        oauth.githubCopilotSubscription,
+        connectionId,
+        { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        true,
+      );
     default:
       return null;
   }
 }
 
+function oauthLoginService(
+  provider: ConnectionOAuthProviderBridge,
+  connectionId: string,
+  display: OAuthLoginService['display'],
+  showsDeviceCode: boolean,
+): OAuthLoginService {
+  return {
+    authorizationBridge: {
+      getAuthUrl: () => provider.getAuthUrl({ kind: 'existing', connectionId }),
+      openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
+      completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
+      cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),
+      getEnrollmentState: () => provider.getEnrollmentState(),
+    },
+    accountBridge: {
+      getAccountState: () => provider.getAccountState(connectionId),
+      logout: () => provider.logout(connectionId),
+    },
+    display,
+    showsDeviceCode,
+  };
+}
+
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
-  connection: LlmConnection;
+  connection: ProjectedLlmConnection;
   isDefault: boolean;
   onChanged(): Promise<void>;
   onDeleted(): Promise<void>;
@@ -81,47 +148,59 @@ export interface ConnectionDetailProps {
 // the guard, lifecycle gate, and cross-calls (save auto-fetches models) stay in
 // one place with zero behavior change.
 export function useConnectionDetail(props: ConnectionDetailProps) {
-  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const connectionIdentity = {
+    connectionId: connection.connectionId,
+    slug: connection.slug,
+  } as const;
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const [apiKey, setApiKey] = useState('');
   const [hasSecret, setHasSecret] = useState<CredentialPresenceStatus>(
     defaults.authKind === 'none' ? true : 'loading',
   );
+  const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl ?? defaults.baseUrl ?? '');
-  const [models, setModels] = useState<ModelInfo[]>(connection.models ?? []);
+  const models = connection.models ?? [];
   const [enabledModelIds, setEnabledModelIds] = useState(() => connectionEnabledModelIds(connection));
-  // Backend persists the model-list source alongside the model cache, so a
-  // Settings restart no longer has to infer "fetched" from a non-empty array.
-  // Discovery rejects empty catalogs before persistence, while source remains
-  // explicit for compatibility with already-persisted connection records.
-  const [modelSource, setModelSource] = useState<'fetched' | 'fallback'>(
-    connection.modelSource ?? 'fallback',
-  );
-  const syncedConnectionSnapshotRef = useRef(connectionDetailSnapshot(connection, defaults.baseUrl));
+  const endpointOwnerRef = useRef({ connectionId: connection.connectionId, saved: baseUrl });
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-relay-profiles' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-model-parameters' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth
-    ? oauthLoginServiceFor(connection.providerType, host)
+  // A retired provider still has its credential on disk, so `hasSecret` is true
+  // and the generic notice told these users to "reauthorize under account
+  // connections" — an instruction whose only destination is the retirement
+  // notice itself.
+  const retired = isRetiredProvider(connection.providerType);
+  const oauthLoginService = needsOAuth && !retired && connection.connectionId
+    ? oauthLoginServiceFor(
+        connection.providerType,
+        props.bridge.oauth,
+        connection.connectionId,
+        `${connection.name} · ${connection.slug}`,
+      )
     : null;
-  const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
-  const credentialProbePending = requiresCredential && (hasSecret === 'loading' || hasSecret === 'error');
+  // `loading` is the normal first-frame state while the local credential
+  // vault answers. Rendering it as a full-width warning made every successful
+  // detail open flash the banner for one paint. Keep the durable warning for
+  // a read failure; the key row already carries the quiet loading hint and the
+  // action buttons remain gated by `hasUsableCredential` until the read lands.
+  const credentialProbeFailed = requiresCredential && hasSecret === 'error';
   const hasUsableCredential = !requiresCredential || hasSecret === true;
   const credentialTroubleshootingCopy = needsOAuth
     ? copy.oauthTroubleshooting
@@ -135,6 +214,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const draftBaseUrl = baseUrl;
   const hasApiKeyChange = apiKey.length > 0;
   const hasBaseUrlChange = draftBaseUrl !== savedBaseUrl;
+  const savedName = connection.name;
+  const draftName = connectionNameToSave(name);
+  const hasNameChange = connectionNameDraftChanged(name, savedName);
   // Persistent single-line credential hint. Rendered in every hasSecret state
   // (including `false`) so the description row never adds or drops a line as the
   // async secret probe resolves — the dialog height stays constant.
@@ -162,7 +244,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       connectionDetailLifecycleRef.current += 1;
       connectionDetailActionGuard.reset();
     };
-  }, [connection.slug]);
+  }, [connection.connectionId]);
 
   function isConnectionDetailCurrent(lifecycle: number): boolean {
     return connectionDetailMountedRef.current && connectionDetailLifecycleRef.current === lifecycle;
@@ -176,73 +258,33 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     setHasSecret('loading');
     void props.bridge
-      .hasSecret(connection.slug)
+      .hasSecret(connectionIdentity)
       .then((next) => {
         if (isConnectionDetailCurrent(lifecycle)) setHasSecret(next);
       })
       .catch((error) => {
         if (!isConnectionDetailCurrent(lifecycle)) return;
         setHasSecret('error');
-        toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.credentialReadFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       });
-  }, [props.bridge, connection.slug, probesCredential, toast]);
+  }, [props.bridge, connection.connectionId, connection.slug, probesCredential, reportHostError]);
 
   useEffect(() => {
-    const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
-    const previousSnapshot = syncedConnectionSnapshotRef.current;
-    const localStillSynced = connectionDetailDraftMatchesSnapshot(
-      { baseUrl, models, modelSource },
-      previousSnapshot,
-    );
-    const localAlreadyMatchesNext = connectionDetailDraftMatchesSnapshot(
-      { baseUrl, models, modelSource },
-      nextSnapshot,
-    );
-
-    if (connection.slug !== previousSnapshot.slug || (apiKey.length === 0 && localStillSynced)) {
-      // Only when the draft actually differs. `connectionDetailSnapshot` builds
-      // `connection.models ?? []` fresh every call, so for a connection with no
-      // models array this wrote a new-but-equal array on every pass — a new
-      // identity for the `models` dep, which re-ran the effect, which wrote
-      // another one. The page never settled; React cut it off at the update
-      // depth limit and the whole panel unmounted.
-      if (!localAlreadyMatchesNext) {
-        setBaseUrl(nextSnapshot.baseUrl);
-        setModels(nextSnapshot.models);
-        setModelSource(nextSnapshot.modelSource);
-      }
-      syncedConnectionSnapshotRef.current = nextSnapshot;
-      return;
+    const previous = endpointOwnerRef.current;
+    if (previous.connectionId !== connection.connectionId || baseUrl === previous.saved) {
+      setBaseUrl(savedBaseUrl);
     }
-
-    if (localAlreadyMatchesNext) {
-      syncedConnectionSnapshotRef.current = nextSnapshot;
-    }
-  }, [
-    apiKey.length,
-    baseUrl,
-    connection,
-    defaults.baseUrl,
-    modelSource,
-    models,
-  ]);
+    endpointOwnerRef.current = { connectionId: connection.connectionId, saved: savedBaseUrl };
+  }, [connection.connectionId, savedBaseUrl]);
 
   useEffect(() => {
     setEnabledModelIds(connectionEnabledModelIds(connection));
-  }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
+  }, [connection.defaultModel, connection.enabledModelIds, connection.connectionId]);
 
-  // Picker entries come from the same catalog merge path as Chat and Daily
-  // Review, but use the local unsaved editor draft for model/default changes.
-  const modelChoices = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: connection.slug,
-      providerType: connection.providerType,
-      defaultModel: connection.defaultModel,
-      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-      modelSource,
-      modelsFetchedAt: connection.modelsFetchedAt,
-    },
-  });
+  const modelChoices = connection.catalogEntries;
 
   /**
    * Save ONE row. The patch used to carry both fields whichever row asked for
@@ -254,7 +296,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
    * Returns whether the write landed, so a failed save keeps the row open with
    * the draft intact instead of collapsing as if it had succeeded.
    */
-  async function save(field: 'key' | 'endpoint'): Promise<boolean> {
+  async function save(field: 'key' | 'endpoint' | 'name'): Promise<boolean> {
     const releaseSave = connectionDetailActionGuard.beginExclusive('save');
     if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
@@ -262,14 +304,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(
-        connection.slug,
-        field === 'key' ? { apiKey } : { baseUrl },
+        connectionIdentity,
+        field === 'key' ? { apiKey } : field === 'name' ? { name: draftName } : { baseUrl },
       );
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       const wroteNewKey = field === 'key' && apiKey.length > 0;
       if (wroteNewKey) setApiKey('');
-      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connection.slug) : true;
+      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connectionIdentity) : true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setHasSecret(nextHasSecret);
       await props.onChanged();
@@ -282,7 +324,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (
         supportsRemoteDiscovery &&
         (!requiresCredential || nextHasSecret) &&
-        (wroteNewKey || field === 'endpoint' || models.length === 0)
+        shouldRefreshModelsAfterSave({
+          field,
+          wroteNewKey,
+          hasCachedModels: models.length > 0,
+        })
       ) {
         void refreshModels({ silent: true });
       }
@@ -292,7 +338,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (saved && probesCredential) {
         setHasSecret('error');
       }
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -319,14 +365,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, { enabledModelIds: next });
+      await props.bridge.update(connectionIdentity, { enabledModelIds: next });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onChanged();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (!saved) setEnabledModelIds(previous);
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -336,135 +382,121 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for openai-compatible relays, edited as a
-  // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
-  // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
-  // saved table; entries a user empties fully drop out of the map, and the
-  // ≥1-enabled-model invariant is honored live: the draft is pruned against
-  // `enabledModelIds` on every read, so disabling a model in the section above
-  // removes its unsaved declaration too (the store prunes the SAVED table the
-  // same way on write).
-  const [relayProfileDrafts, setRelayProfileDrafts] = useState<Record<string, RelayModelProfile>>(
-    () => relayProfileDraftSeed(connection.relayModelProfiles),
-  );
-  const [relayProfilesDirty, setRelayProfilesDirty] = useState(false);
-  // The dirty flag names a slug: the same instance continues across the
-  // connection switcher, and draft state is owned by one connection at a
-  // time (see relayProfileDraftReseedPlan).
-  const relayProfileDraftOwnerRef = useRef(connection.slug);
+  const [modelDraft, setModelDraft] = useState<{
+    connectionId: string;
+    modelId: string;
+    expected: ModelOverride | null;
+    value: ModelOverride;
+  } | null>(null);
+  const activeDraft = modelDraft?.connectionId === connection.connectionId ? modelDraft : null;
+  const modelParameters = {
+    ...connection.modelOverrides,
+    ...(activeDraft ? { [activeDraft.modelId]: activeDraft.value } : {}),
+  };
 
-  function updateRelayProfileDraft(
+  function updateModelDraft(
     modelId: string,
-    next: (current: RelayModelProfile | undefined) => RelayModelProfile | undefined,
+    next: (current: ModelOverride | undefined) => ModelOverride | undefined,
   ): void {
-    setRelayProfilesDirty(true);
-    setRelayProfileDrafts((current) => {
-      const updated = next(current[modelId]);
-      if (updated === undefined) {
-        if (!(modelId in current)) return current;
-        const { [modelId]: _dropped, ...rest } = current;
-        return rest;
-      }
-      return { ...current, [modelId]: updated };
+    setModelDraft((current) => {
+      const previous = current?.connectionId === connection.connectionId && current.modelId === modelId ? current : null;
+      return {
+      connectionId: connection.connectionId,
+      modelId,
+      expected: previous ? previous.expected : connection.modelOverrides?.[modelId] ?? null,
+      value: next(previous ? previous.value : connection.modelOverrides?.[modelId]) ?? {},
+      };
     });
   }
 
-  // One shape for all three fields: the field setter pins or removes its key,
-  // and an entry with no keys left IS the undeclared state — storing it would
-  // keep the row looking edited after the user emptied every field.
-  function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (levels === undefined || levels.length === 0) {
-        if (!current) return current;
-        const { thinkingLevels: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), thinkingLevels: levels };
-    });
+  function resetDraftProfile(_modelId: string): void {
+    setModelDraft(null);
   }
 
-  // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
-  // pin the declaration. The Selector's three options map straight onto this.
-  function setDraftVision(modelId: string, vision: boolean | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (vision === undefined) {
-        if (!current) return current;
-        const { vision: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), vision };
-    });
+  function setDraftParameters(modelId: string, patch: Partial<ModelOverride>): void {
+    updateModelDraft(modelId, (current) => ({ ...current, ...patch }));
   }
 
-  function setDraftContextWindow(modelId: string, contextWindow: number | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (contextWindow === undefined) {
-        if (!current) return current;
-        const { contextWindow: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), contextWindow };
-    });
-  }
+  const savedModelOverrides = normalizeModelOverrides(connection.modelOverrides ?? {});
+  const hasModelChanges = activeDraft !== null && JSON.stringify(normalizeModelOverrides({ model: activeDraft.value })?.model) !==
+    JSON.stringify(savedModelOverrides?.[activeDraft.modelId] ?? {});
 
-  // Compare against what persistence would store: drafts pruned to the
-  // current selection and order-normalized by the same sanitizer the write
-  // path applies, so a reordered-but-equal draft doesn't keep 保存 lit.
-  const savedRelayProfiles = normalizeRelayModelProfiles(
-    pruneRelayModelProfiles(connection.relayModelProfiles, enabledModelIds) ?? {},
-  );
-  const draftedRelayProfiles = normalizeRelayModelProfiles(
-    pruneRelayModelProfiles(relayProfileDrafts, enabledModelIds) ?? {},
-  );
-  const hasRelayProfileChanges = !relayProfilesEqual(draftedRelayProfiles, savedRelayProfiles);
-
+  const nameDraftOwnerRef = useRef<{ slug: string; savedName: string }>({
+    slug: connection.slug,
+    savedName: connection.name,
+  });
   useEffect(() => {
-    // Slug switch always reseeds AND clears dirty — carrying A's unsaved
-    // declarations onto B would let one save write them into B's document.
-    // A same-slug reload reseeds only while the draft is clean: mid-edit
-    // reloads (another action's props.onChanged) keep the user's typed work.
-    const plan = relayProfileDraftReseedPlan(
-      { slug: relayProfileDraftOwnerRef.current, dirty: relayProfilesDirty },
-      connection.slug,
-    );
-    relayProfileDraftOwnerRef.current = connection.slug;
-    if (plan.reseed) {
-      setRelayProfileDrafts(relayProfileDraftSeed(connection.relayModelProfiles));
-    }
-    if (plan.clearDirty) {
-      setRelayProfilesDirty(false);
-    }
+    const previous = nameDraftOwnerRef.current;
+    const reseed = connectionNameDraftReseed(previous, connection, name);
+    nameDraftOwnerRef.current = { slug: connection.slug, savedName: connection.name };
+    if (reseed) setName(connection.name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection.slug, connection.relayModelProfiles, relayProfilesDirty]);
+  }, [connection.slug, connection.name]);
 
-  async function saveRelayProfiles(): Promise<boolean> {
-    // Refuse while the draft still belongs to the previous connection: in the
-    // window between the slug switch rendering and the reseed effect
-    // flushing, 保存 must not hand B this draft.
-    if (relayProfileDraftOwnerRef.current !== connection.slug) return false;
-    const releaseSave = connectionDetailActionGuard.beginExclusive('save-relay-profiles');
+  async function saveModelParameters(): Promise<boolean> {
+    if (!activeDraft) return false;
+    const releaseSave = connectionDetailActionGuard.beginExclusive('save-model-parameters');
     if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
     setBusy(true);
+    let saved = false;
     try {
-      // Send the whole table — the update contract is whole-table replace —
-      // after the write-path sanitizer so a hand-assembled draft degrades the
-      // same way a saved document would.
-      await props.bridge.update(connection.slug, {
-        relayModelProfiles: draftedRelayProfiles ?? null,
+      await props.bridge.update(connectionIdentity, {
+        modelOverride: { modelId: activeDraft.modelId, expected: activeDraft.expected, value: activeDraft.value },
       });
+      saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
-      setRelayProfilesDirty(false);
+      setModelDraft(null);
       await props.onChanged();
       return true;
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return false;
-      toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
-      return false;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      reportHostError(
+        saved ? copy.refreshFailed : copy.saveFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+      return saved;
     } finally {
       releaseSave();
       if (isConnectionDetailCurrent(lifecycle)) setBusy(false);
     }
+  }
+
+  // Add the selection and parameters together, without saving another row's draft.
+  async function addDeclaredModel(id: string, profile: ModelOverride): Promise<boolean> {
+    const modelId = id.trim();
+    if (!modelId || enabledModelIds.includes(modelId)) return false;
+    if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return false;
+    const next = [...enabledModelIds, modelId];
+    const previous = enabledModelIds;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
+    if (!releaseSaveModels) return false;
+    setSavingEnabledModels(true);
+    setEnabledModelIds(next);
+    let saved = false;
+    try {
+      await props.bridge.update(connectionIdentity, {
+        modelOverride: { modelId, expected: null, value: profile, enable: true },
+      });
+      saved = true;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      await props.onChanged();
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      if (!saved) setEnabledModelIds(previous);
+      reportHostError(
+        saved ? copy.refreshFailed : copy.saveModelsFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+    } finally {
+      releaseSaveModels();
+      if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
+    }
+    // Whether the write landed. The dialog holds the typed id and context
+    // window until it did: a rejected write leaves nothing to retype from, and
+    // an exact model id is not something a user can reproduce from memory.
+    return saved;
   }
 
   async function runTest() {
@@ -480,15 +512,40 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // to a field this page no longer owns, which is '' once the user enables
       // no models. Left unset, a zero-model connection still verifies its
       // credential against a fallback instead of failing with 'No model to test'.
-      const result: ConnectionTestResult = await props.bridge.test(connection.slug);
+      const result: ConnectionTestResult = await props.bridge.test(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
-        toast.success(
-          copy.connectionSuccess(connection.name),
-          `${result.modelTested} · ${result.latencyMs} ms`,
-        );
+        // The backend probes the enabled models first, then the provider
+        // fallbacks (opencode-free tries each in turn until one answers). When
+        // the model that actually answered isn't one the user enabled, a plain
+        // "connection succeeded · <model>" reads as if their selection never
+        // took — and hides that their chosen model is currently down. Name both
+        // facts instead.
+        const testedId = result.modelTested;
+        // The resolved entries, not the draft rows: a provider with no
+        // model-list endpoint stores bare ids, so naming the tested model from
+        // `models` printed a raw id next to the picker's resolved name.
+        const modelLabel = (id: string): string =>
+          modelChoices.find((entry) => entry.id === id)?.displayName?.trim() || id;
+        // Inline the `testedId !== undefined` check so it narrows `testedId` to
+        // string for `modelLabel(testedId)` below.
+        if (
+          testedId !== undefined &&
+          enabledModelIds.length > 0 &&
+          !enabledModelIds.includes(testedId)
+        ) {
+          toast.warning(
+            copy.connectionFallbackTitle(connection.name),
+            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+          );
+        } else {
+          toast.success(
+            copy.connectionSuccess(connection.name),
+            `${result.modelTested} · ${result.latencyMs} ms`,
+          );
+        }
       } else {
-        toast.error(
+        reportHostError(
           copy.connectionFailed(connection.name),
           connectionTestFailureMessage(result, {
             auth: copy.authTroubleshooting(credentialTroubleshootingCopy),
@@ -499,7 +556,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      toast.error(copy.connectionTestError(connection.name), message);
+      reportHostError(
+        copy.connectionTestError(connection.name),
+        message,
+      );
     } finally {
       releaseTest();
       if (isConnectionDetailCurrent(lifecycle)) setTesting(false);
@@ -520,11 +580,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // Backend returns a `ModelDiscoveryResult` envelope and rejects empty or
       // malformed catalogs before persistence. Trust its explicit source
       // instead of reconstructing cache provenance in the renderer.
-      const result = await props.bridge.fetchModels(connection.slug);
+      const result = await props.bridge.fetchModels(connectionIdentity);
       fetched = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
-      setModels(result.models);
-      setModelSource(result.source);
       await props.onChanged();
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (!opts.silent) {
@@ -533,15 +591,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      // Leave the previously-known source / models intact (so the dropdown
-      // doesn't suddenly empty out), but downgrade the source label back to
-      // 'fallback' if we have nothing fresh to show — the failed fetch
-      // means whatever's on screen is not from the latest probe.
-      if (!fetched && models.length === 0) setModelSource('fallback');
       if (fetched) {
-        toast.error(copy.refreshFailed, message);
+        reportHostError(
+          copy.refreshFailed,
+          message,
+        );
       } else {
-        toast.error(
+        reportHostError(
           copy.modelsFetchFailed(connection.name),
           copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
         );
@@ -557,7 +613,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
-    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
+    const usesOAuth = PROVIDER_REGISTRY[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
       description: copy.deleteDescription(props.isDefault, usesOAuth),
@@ -573,13 +629,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     let deleted = false;
     try {
-      await props.bridge.delete(connection.slug);
+      await props.bridge.delete(connectionIdentity);
       deleted = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onDeleted();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(
+      reportHostError(
         deleted ? copy.refreshFailed : copy.deleteFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -595,13 +651,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   async function refreshAfterRelogin() {
     const lifecycle = connectionDetailLifecycleRef.current;
     try {
-      const nextHasSecret = await props.bridge.hasSecret(connection.slug);
+      const nextHasSecret = await props.bridge.hasSecret(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret(nextHasSecret);
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret('error');
-      toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.credentialReadFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     }
     await props.onChanged();
   }
@@ -610,6 +669,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     apiKey,
     setApiKey,
     hasSecret,
+    name,
+    setName,
     baseUrl,
     setBaseUrl,
     enabledModelIds,
@@ -621,27 +682,28 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
-    usesGitHubCopilotLogin,
+    retired,
     oauthLoginService,
     supportsRemoteDiscovery,
-    credentialProbePending,
+    credentialProbeFailed,
     hasUsableCredential,
     apiKeyStatusHint,
     hasApiKeyChange,
     hasBaseUrlChange,
     savedBaseUrl,
+    hasNameChange,
+    savedName,
     issue,
     lastTestMessage,
     lastTestAtMs,
     save,
     updateEnabledModels,
-    relayProfileDraft: relayProfileDrafts,
-    relayProfilesDirty,
-    hasRelayProfileChanges,
-    setDraftThinkingLevels,
-    setDraftVision,
-    setDraftContextWindow,
-    saveRelayProfiles,
+    addDeclaredModel,
+    modelParameters,
+    hasModelChanges,
+    resetDraftProfile,
+    setDraftParameters,
+    saveModelParameters,
     runTest,
     refreshModels,
     remove,
@@ -649,75 +711,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   };
 }
 
-type ConnectionDetailSnapshot = {
-  slug: string;
-  baseUrl: string;
-  models: ModelInfo[];
-  modelSource: 'fetched' | 'fallback';
-};
-
-function connectionDetailSnapshot(
-  connection: LlmConnection,
-  defaultBaseUrl: string | undefined,
-): ConnectionDetailSnapshot {
-  return {
-    slug: connection.slug,
-    baseUrl: connection.baseUrl ?? defaultBaseUrl ?? '',
-    models: connection.models ?? [],
-    modelSource: connection.modelSource ?? 'fallback',
-  };
-}
-
-function connectionDetailDraftMatchesSnapshot(
-  draft: {
-    baseUrl: string;
-    models: ModelInfo[];
-    modelSource: 'fetched' | 'fallback';
-  },
-  snapshot: ConnectionDetailSnapshot,
-): boolean {
-  return draft.baseUrl === snapshot.baseUrl &&
-    draft.modelSource === snapshot.modelSource &&
-    modelListsEqual(draft.models, snapshot.models);
-}
-
-function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftModel = left[index];
-    const rightModel = right[index];
-    if (leftModel.id !== rightModel.id) return false;
-    if (leftModel.contextWindow !== rightModel.contextWindow) return false;
-    if (leftModel.maxOutputTokens !== rightModel.maxOutputTokens) return false;
-    if (leftModel.capabilities?.chat !== rightModel.capabilities?.chat) return false;
-    if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
-    if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
-    if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
-    if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
-  }
-  return true;
-}
-
 function modelIdListsEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
-}
-
-function relayProfilesEqual(
-  left: ReturnType<typeof normalizeRelayModelProfiles>,
-  right: ReturnType<typeof normalizeRelayModelProfiles>,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  const leftIds = Object.keys(left);
-  const rightIds = Object.keys(right);
-  if (leftIds.length !== rightIds.length) return false;
-  for (const id of leftIds) {
-    const a = left[id];
-    const b = right[id];
-    if (!a || !b) return false;
-    if (a.vision !== b.vision || a.contextWindow !== b.contextWindow) return false;
-    const al = a.thinkingLevels ?? [];
-    const bl = b.thinkingLevels ?? [];
-    if (al.length !== bl.length || al.some((level, index) => level !== bl[index])) return false;
-  }
-  return true;
 }

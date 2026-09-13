@@ -1,4 +1,27 @@
-import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type {
+  ScheduledTask,
+  ScheduledTaskRunOutcome,
+  ScheduledTaskStatus,
+} from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
 export type SourceRecordType = (typeof SOURCE_RECORD_TYPES)[number];
@@ -8,9 +31,6 @@ export type SourceAuthType = (typeof SOURCE_AUTH_TYPES)[number];
 
 export const SOURCE_RECORD_STATUSES = ['ready', 'needs_auth', 'error', 'disabled'] as const;
 export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
-
-export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask', 'execute'] as const;
-export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
 
 export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
 export type ScheduledTaskLastRunStatus = (typeof SCHEDULED_TASK_LAST_RUN_STATUSES)[number];
@@ -43,16 +63,16 @@ export interface SkillAuditRecord {
   name: string;
   description: string;
   declaredTools: string[];
+  hasDeclaredTools: boolean;
   enabled: boolean;
   sourceSlug: string;
-  permissionMode: Exclude<CapabilityAuditPermissionMode, 'execute'>;
 }
 
 export interface ScheduledTaskAuditRecord {
   id: string;
   name: string;
   enabled: boolean;
-  permissionMode: CapabilityAuditPermissionMode;
+  status: ScheduledTaskStatus;
   lastRunAt?: number;
   lastRunStatus?: ScheduledTaskLastRunStatus;
 }
@@ -69,7 +89,7 @@ export interface CapabilityAuditSummary {
   declaredToolKindCount: number;
   scheduledTaskCount: number;
   enabledScheduledTaskCount: number;
-  executableScheduledTaskCount: number;
+  activeScheduledTaskCount: number;
   failedScheduledTaskCount: number;
   skippedScheduledTaskCount: number;
 }
@@ -122,9 +142,9 @@ function normalizeSkillInputs(skills: readonly CapabilityAuditSkillInput[]): Ski
       name: normalizeNonEmptyString(skill.name) ?? id,
       description: normalizeNonEmptyString(skill.description) ?? '',
       declaredTools,
+      hasDeclaredTools: declaredTools.length > 0,
       enabled: skill.enabled ?? true,
       sourceSlug: normalizeNonEmptyString(skill.sourceSlug) ?? LOCAL_SKILL_SOURCE_SLUG,
-      permissionMode: declaredTools.length > 0 ? 'ask' : 'explore',
     };
   });
 }
@@ -174,16 +194,10 @@ function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditReco
     id: task.id,
     name: task.title,
     enabled: task.status === 'active',
-    permissionMode: scheduledTaskPermissionMode(task),
+    status: task.status,
     ...(lastRun ? { lastRunAt: lastRun.at } : {}),
     ...(lastRun ? { lastRunStatus: mapScheduledTaskRunOutcome(lastRun.outcome) } : {}),
   };
-}
-
-function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
-  if (task.status === 'completed' || task.status === 'expired') return 'explore';
-  if (task.status === 'paused') return 'ask';
-  return 'execute';
 }
 
 function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
@@ -209,8 +223,7 @@ function summarizeCapabilityAudit(
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
     scheduledTaskCount: scheduledTasks.length,
     enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
-    executableScheduledTaskCount: scheduledTasks.filter((task) => task.permissionMode === 'execute')
-      .length,
+    activeScheduledTaskCount: scheduledTasks.filter((task) => task.status === 'active').length,
     failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
     skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')

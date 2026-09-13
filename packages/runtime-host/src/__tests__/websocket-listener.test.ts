@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -154,7 +174,7 @@ test('WebSocket admission, health, Origin, and message policy fail closed', {
 test('credential revocation during WebSocket upgrade cannot admit stale authority', async () => {
   let credentialActive = true;
   let accepted = false;
-  const authority: RuntimeHostAccessAuthority = {
+  const authority: Pick<RuntimeHostAccessAuthority, 'authenticate'> = {
     authenticate: () => {
       if (!credentialActive) return undefined;
       credentialActive = false;
@@ -167,9 +187,6 @@ test('credential revocation during WebSocket upgrade cannot admit stale authorit
         canUseHostPaths: false,
       });
     },
-    issue: async () => assert.fail('Credential issue is not expected'),
-    revoke: async () => assert.fail('Credential revoke is not expected'),
-    subscribeRevocations: () => () => undefined,
   };
   const listener = await startRuntimeHostWebSocketListener({
     host: '127.0.0.1',
@@ -231,12 +248,4 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
       timer.unref();
     }),
   ]);
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }

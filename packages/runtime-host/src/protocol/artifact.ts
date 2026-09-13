@@ -1,13 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
-  ARTIFACT_STATUSES,
   type ArtifactRecord,
   type ArtifactBinaryReadFailureReason,
   type ArtifactKind,
   type ArtifactReadFailureReason,
   type ArtifactSource,
-  type ArtifactStatus,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
@@ -46,9 +63,9 @@ const ARTIFACT_REQUIRED_FIELDS = [
   'name',
   'kind',
   'sizeBytes',
-  'status',
+  'source',
 ] as const;
-const ARTIFACT_FIELDS = new Set([...ARTIFACT_REQUIRED_FIELDS, 'mimeType', 'source', 'summary']);
+const ARTIFACT_FIELDS = new Set([...ARTIFACT_REQUIRED_FIELDS, 'mimeType', 'summary']);
 
 export type ArtifactRevision = `sha256:${string}`;
 
@@ -61,9 +78,8 @@ export interface ArtifactProjection {
   readonly kind: ArtifactKind;
   readonly sizeBytes: number;
   readonly mimeType?: string;
-  readonly source?: ArtifactSource;
+  readonly source: ArtifactSource;
   readonly summary?: string;
-  readonly status: ArtifactStatus;
 }
 
 export type ArtifactQueryInput =
@@ -139,7 +155,6 @@ export interface ArtifactDeleteInput {
 
 export interface ArtifactDeleteResult {
   readonly kind: 'deleted';
-  readonly artifact: ArtifactProjection;
 }
 
 export type ArtifactIngestInput =
@@ -496,7 +511,7 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
     if (!isCanonicalBase64(chunkBase64)) {
       throw invalidProtocolFrame('Invalid artifact chunk');
     }
-    const chunkBytes = Buffer.from(chunkBase64, 'base64').byteLength;
+    const chunkBytes = Buffer.byteLength(chunkBase64, 'base64');
     if (chunkBytes > ARTIFACT_READ_CHUNK_MAX_BYTES || offset + chunkBytes > totalBytes) {
       throw invalidProtocolFrame('Invalid artifact chunk bounds');
     }
@@ -530,9 +545,9 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
 export const encodeArtifactQueryResult = decodeArtifactQueryResult;
 
 export function decodeArtifactDeleteResult(value: unknown): ArtifactDeleteResult {
-  const result = requireExactRecord(value, 'artifact delete result', ['kind', 'artifact']);
+  const result = requireExactRecord(value, 'artifact delete result', ['kind']);
   if (result.kind !== 'deleted') throw invalidProtocolFrame('Invalid artifact delete result kind');
-  const decoded = { kind: 'deleted' as const, artifact: decodeArtifactProjection(result.artifact) };
+  const decoded = { kind: 'deleted' as const };
   assertResultSize(decoded);
   return decoded;
 }
@@ -551,11 +566,10 @@ export function encodeArtifactProjection(record: ArtifactRecord): ArtifactProjec
     ...(record.mimeType === undefined
       ? {}
       : { mimeType: projectArtifactText(record.mimeType, ARTIFACT_MIME_TYPE_MAX_BYTES) }),
-    ...(record.source === undefined ? {} : { source: record.source }),
+    source: record.source,
     ...(record.summary === undefined
       ? {}
       : { summary: projectArtifactText(record.summary, ARTIFACT_SUMMARY_MAX_BYTES) }),
-    status: record.status,
   };
 }
 
@@ -575,13 +589,12 @@ function decodeArtifactProjection(value: unknown): ArtifactProjection {
     name: boundedText(record.name, 'artifact name', ARTIFACT_NAME_MAX_BYTES),
     kind: artifactKind(record.kind),
     sizeBytes: requireCount(record.sizeBytes, 'artifact sizeBytes'),
-    status: artifactStatus(record.status),
     ...(Object.hasOwn(record, 'mimeType')
       ? {
           mimeType: boundedText(record.mimeType, 'artifact mimeType', ARTIFACT_MIME_TYPE_MAX_BYTES),
         }
       : {}),
-    ...(Object.hasOwn(record, 'source') ? { source: artifactSource(record.source) } : {}),
+    source: artifactSource(record.source),
     ...(Object.hasOwn(record, 'summary')
       ? { summary: boundedText(record.summary, 'artifact summary', ARTIFACT_SUMMARY_MAX_BYTES) }
       : {}),
@@ -627,7 +640,7 @@ function decodeBinaryPreview(value: unknown): ArtifactBinaryPreview {
     const base64 = boundedText(exact.base64, 'artifact binary base64', base64MaxBytes(), true);
     if (
       !isCanonicalBase64(base64) ||
-      Buffer.from(base64, 'base64').byteLength > ARTIFACT_PREVIEW_MAX_BYTES
+      Buffer.byteLength(base64, 'base64') > ARTIFACT_PREVIEW_MAX_BYTES
     ) {
       throw invalidProtocolFrame('Invalid artifact binary base64');
     }
@@ -659,7 +672,7 @@ function boundedText(value: unknown, label: string, maxBytes: number, allowEmpty
 function boundedIngestText(value: unknown, label: string, maxBytes: number): string {
   const text = boundedText(value, label, maxBytes);
   // eslint-disable-next-line no-control-regex
-  if (/[ -]/.test(text)) throw invalidProtocolFrame(`Invalid ${label}`);
+  if (/[\x00-\x1f\x7f]/.test(text)) throw invalidProtocolFrame(`Invalid ${label}`);
   return text;
 }
 
@@ -709,20 +722,12 @@ function artifactSource(value: unknown): ArtifactSource {
   return value as ArtifactSource;
 }
 
-function artifactStatus(value: unknown): ArtifactStatus {
-  if (typeof value !== 'string' || !ARTIFACT_STATUSES.includes(value as ArtifactStatus)) {
-    throw invalidProtocolFrame('Invalid artifact status');
-  }
-  return value as ArtifactStatus;
-}
-
 function readFailureReason(value: unknown): ArtifactReadFailureReason {
   if (
     value === 'not_found' ||
     value === 'too_large' ||
     value === 'read_failed' ||
-    value === 'not_allowed' ||
-    value === 'deleted'
+    value === 'not_allowed'
   ) {
     return value;
   }

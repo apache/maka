@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Tests for the PR-UI-12 fixup #2 `applyToolOutputChunk` pure helper
  * (@kenji A3 review msg 365ff8b9).
@@ -29,9 +48,12 @@ import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_CHUNK_CHARS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  applyToolOutputChunk,
+  applyToolOutputChunk as applyToolOutputChunkWithLocale,
   type ToolOutputChunk,
 } from '@maka/ui';
+// Tests exercise stream mechanics, not copy; pin zh so markers stay verbatim.
+const applyToolOutputChunk = (prev: Parameters<typeof applyToolOutputChunkWithLocale>[0], chunk: Parameters<typeof applyToolOutputChunkWithLocale>[1], options?: Partial<Parameters<typeof applyToolOutputChunkWithLocale>[2]>) =>
+  applyToolOutputChunkWithLocale(prev, chunk, { locale: 'zh-CN', ...options });
 
 function chunk(seq: number, text: string, stream: 'stdout' | 'stderr' = 'stdout', redacted = false): ToolOutputChunk {
   return { seq, text, stream, redacted, createdAt: 1_700_000_000_000 + seq };
@@ -57,7 +79,6 @@ describe('applyToolOutputChunk — secondary redaction (defense in depth)', () =
     assert.equal(result.chunks[0]!.text.includes('sk-ant-1234567890abcdefghijklmnopqrstuvwxyz'), false);
     assert.equal(result.chunks[0]!.redacted, true);
   });
-
 
 });
 
@@ -86,7 +107,6 @@ describe('applyToolOutputChunk — per-chunk cap', () => {
       `stored.text.length=${stored.text.length} should be <= maxChunkChars=${TOOL_STREAM_MAX_CHUNK_CHARS}`,
     );
   });
-
 
 });
 

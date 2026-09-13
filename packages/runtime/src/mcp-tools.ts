@@ -1,13 +1,46 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
-import type { McpCallResult, McpToolBinding, McpToolSnapshot } from '@maka/core/mcp';
-import type { ToolCategory } from '@maka/core/permission';
+import type { ToolActivityKind } from '@maka/core/events';
+import type {
+  McpCallResult,
+  McpToolBinding,
+  McpToolDescriptor,
+  McpToolSnapshot,
+} from '@maka/core/mcp';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
+import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
 
 const MAX_PROVIDER_TOOL_NAME = 64;
 const HASH_CHARS = 10;
+
+function normalizeMcpInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  return Object.hasOwn(schema, 'type') ? schema : { ...schema, type: 'object' };
+}
 const MAX_NATIVE_IMAGE_BASE64_CHARS = 20_000_000;
 const MAX_NATIVE_IMAGES = 4;
 const MAX_MODEL_TEXT_CHARS = 200_000;
@@ -16,6 +49,11 @@ const TRUNCATION_MARKER = '\n…[truncated by Maka]';
 
 export interface McpToolProvider {
   toolSnapshot(): McpToolSnapshot;
+  prepareTool?(
+    binding: McpToolBinding,
+    args: Record<string, unknown>,
+    options: Omit<McpToolCallOptions, 'emitProgress'>,
+  ): Promise<McpPreparedToolCall>;
   callTool(
     binding: McpToolBinding,
     args: Record<string, unknown>,
@@ -23,33 +61,65 @@ export interface McpToolProvider {
   ): Promise<McpCallResult>;
 }
 
+export interface McpPreparedToolCall {
+  execute(options?: {
+    readonly emitProgress?: (current: number, total: number) => void;
+    readonly requestInteraction?: McpToolCallOptions['requestInteraction'];
+  }): Promise<McpCallResult>;
+  cancel(): Promise<void> | void;
+}
+
 export interface McpToolCallOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
+  readonly emitProgress?: (current: number, total: number) => void;
+  readonly requestInteraction?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
 }
 
 export interface McpToolInvocationContext {
   readonly sessionId: string;
+  readonly runId?: string;
   readonly turnId: string;
   readonly toolCallId: string;
   readonly cwd: string;
+  readonly executionBoundary?: ExecutionBoundary;
+  readonly permissionMode?: PermissionMode;
 }
 
 export interface BuildMcpToolsOptions {
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
+  hostAdmission?: MakaTool['hostAdmission'];
   recoveryMode?: ToolRecoveryMode;
   executionLocation?: 'host' | 'remote';
+  activityKindForDescriptor?: (descriptor: McpToolDescriptor) => ToolActivityKind | undefined;
+}
+
+export interface McpIdentifiedTool {
+  readonly tool: MakaTool;
+  readonly serverId: string;
+  readonly toolName: string;
 }
 
 export function buildMcpTools(
   provider: McpToolProvider,
   options: BuildMcpToolsOptions = {},
 ): MakaTool[] {
+  return buildMcpToolsWithIdentities(provider, options).map(({ tool }) => tool);
+}
+
+export function buildMcpToolsWithIdentities(
+  provider: McpToolProvider,
+  options: BuildMcpToolsOptions = {},
+): McpIdentifiedTool[] {
   const names = new Map<string, string>();
   const snapshot = provider.toolSnapshot();
   return snapshot.tools.map(({ descriptor, binding }) => {
+    const inputSchema = normalizeMcpInputSchema(descriptor.inputSchema);
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     const name = mcpProxyToolName(descriptor.serverId, descriptor.name);
     const collision = names.get(name);
@@ -58,50 +128,105 @@ export function buildMcpTools(
     }
     names.set(name, identity);
     return {
-      name,
-      description:
-        descriptor.description?.trim() ||
-        `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
-      displayName: descriptor.annotations?.title?.trim() || descriptor.name,
-      activityKind: 'tool',
-      // MCP annotations are advisory provider claims, not a security boundary.
-      // The trusted composition may select a stricter open-world category;
-      // ordinary MCP servers retain the side-effecting network default.
-      categoryHint: options.categoryHint ?? 'network_send',
-      ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
-      parameters: jsonSchema(descriptor.inputSchema),
-      impl: async (args: unknown, context) => {
-        // Managed network authority applies equally to Direct and nested CodeMode dispatch.
-        if (
-          options.executionLocation !== 'remote' &&
-          context.executionBoundary?.kind === 'managed' &&
-          context.executionBoundary.profile.network.kind !== 'enabled'
-        ) {
-          if (!context.requestSandboxBoundary) {
-            throw new Error('MCP network access requires sandbox boundary approval');
+      serverId: descriptor.serverId,
+      toolName: descriptor.name,
+      tool: {
+        name,
+        description: mcpToolDescription(descriptor),
+        displayName: descriptor.annotations?.title?.trim() || descriptor.name,
+        activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
+        // MCP annotations are advisory provider claims, not a security boundary.
+        // The trusted composition may select a stricter open-world category;
+        // ordinary MCP servers retain the side-effecting network default.
+        categoryHint: options.categoryHint ?? 'network_send',
+        ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
+        ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
+        // The MCP server remains the sole authority for the complete JSON
+        // Schema. Runtime only carries the declaration to the AI SDK.
+        parameters: jsonSchema(inputSchema),
+        ...(provider.prepareTool
+          ? {
+              prepareExecution: async (args: unknown, context) => {
+                const prepared = await provider.prepareTool!(binding, asArguments(args), {
+                  signal: context.abortSignal,
+                  timeoutMs: options.callTimeoutMs,
+                  context: {
+                    sessionId: context.sessionId,
+                    runId: context.runId,
+                    turnId: context.turnId,
+                    toolCallId: context.toolCallId,
+                    cwd: context.cwd,
+                    executionBoundary: context.executionBoundary,
+                    permissionMode: context.permissionMode,
+                  },
+                });
+                return {
+                  execute: (executionContext) =>
+                    prepared.execute({
+                      ...(executionContext.emitProgress
+                        ? { emitProgress: executionContext.emitProgress }
+                        : {}),
+                      ...(executionContext.requestUserForm
+                        ? {
+                            requestInteraction: (form, interactionOptions) =>
+                              executionContext.requestUserForm!(form, interactionOptions),
+                          }
+                        : {}),
+                    }),
+                  cancel: () => prepared.cancel(),
+                };
+              },
+            }
+          : {}),
+        impl: async (args: unknown, context) => {
+          // Managed network authority applies equally to Direct and nested CodeMode dispatch.
+          if (
+            options.executionLocation !== 'remote' &&
+            context.executionBoundary?.kind === 'managed' &&
+            context.executionBoundary.profile.network.kind !== 'enabled'
+          ) {
+            if (!context.requestSandboxBoundary) {
+              throw new Error('MCP network access requires sandbox boundary approval');
+            }
+            const settlement = await context.requestSandboxBoundary(
+              { network: { enabled: true } },
+              `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
+            );
+            if (settlement.request.status !== 'approved') {
+              throw new Error('MCP network access denied');
+            }
           }
-          const settlement = await context.requestSandboxBoundary(
-            { network: { enabled: true } },
-            `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
-          );
-          if (settlement.request.status !== 'approved') {
-            throw new Error('MCP network access denied');
-          }
-        }
-        return provider.callTool(binding, asArguments(args), {
-          signal: context.abortSignal,
-          timeoutMs: options.callTimeoutMs,
-          context: {
-            sessionId: context.sessionId,
-            turnId: context.turnId,
-            toolCallId: context.toolCallId,
-            cwd: context.cwd,
-          },
-        });
-      },
-      toModelOutput: ({ output }) => mcpResultToModelOutput(output),
-    } satisfies MakaTool;
+          return provider.callTool(binding, asArguments(args), {
+            signal: context.abortSignal,
+            timeoutMs: options.callTimeoutMs,
+            context: {
+              sessionId: context.sessionId,
+              turnId: context.turnId,
+              toolCallId: context.toolCallId,
+              cwd: context.cwd,
+            },
+            ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
+            ...(context.requestUserForm
+              ? {
+                  requestInteraction: (
+                    form: InteractionFormInput,
+                    interactionOptions?: { readonly cancellationSignal?: AbortSignal },
+                  ) => context.requestUserForm!(form, interactionOptions),
+                }
+              : {}),
+          });
+        },
+        toModelOutput: ({ output }) => mcpResultToModelOutput(output),
+      } satisfies MakaTool,
+    };
   });
+}
+
+function mcpToolDescription(descriptor: McpToolDescriptor): string {
+  const description =
+    descriptor.description?.trim() ||
+    `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`;
+  return description.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
 }
 
 export function mcpProxyToolName(serverId: string, toolName: string): string {
@@ -210,8 +335,9 @@ function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unkno
 
 function clipModelText(value: string, limit: number): string {
   if (value.length <= limit) return value;
+  // The marker is all-BMP, so slicing it can't split a pair.
   if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
-  return `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  return `${truncateUtf16Safe(value, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function safeJsonStringify(value: unknown): string {

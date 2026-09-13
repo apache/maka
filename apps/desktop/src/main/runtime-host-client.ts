@@ -1,14 +1,37 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
   type TurnRecord,
 } from "@maka/core/session";
-import type { Task } from "@maka/core/task-ledger";
+import { markPersisted } from "@maka/core/persisted-value";
+import {
+  projectSessionTodoItemsForDisplay,
+  type SessionTodoItem,
+} from "@maka/core/session-todo";
+
 import type {
-  ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
   CredentialStatus,
@@ -25,10 +48,16 @@ import {
   type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  prepareConnectedRuntimeHostRetirement,
+  readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
+  type RuntimeHostConnectionCatalogSnapshot,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
@@ -55,6 +84,7 @@ import {
   type MemoryQueryInput,
   type MemoryQueryResult,
   type GoalControlAction,
+  type HostStatusResult,
   type GoalProjection,
   type OperationInput,
   type OperationOutput,
@@ -69,14 +99,30 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueRetractInput,
-  type QueueRetractResult,
+  type QueueEntriesReorderInput,
+  type QueueEntryPromoteInput,
+  type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
+  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
-  type SessionConfiguration,
+  type SharedSessionCatalogProjection,
+  type CollaborationAccessQueryResult,
+  type CollaborationGrantRevokeResult,
+  type CollaborationInvitationPrepareResult,
+  type CollaborationPrincipalRevokeResult,
+  type CollaborationPrincipalRenameResult,
+  type CollaborationTurnRequestAcknowledgeResult,
+  type CollaborationTurnRequestDecideResult,
+  type CollaborationTurnRequestQueryResult,
+  type CollaborationTurnRequestWithdrawResult,
+  type SessionCollaborationGrantKind,
+  type SessionTurnAccessRequest,
+  type SessionTurnRequestIntent,
+  type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionTranscriptBootstrap,
@@ -109,17 +155,31 @@ import {
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
+const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
-export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
+export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
 export type SessionRemoveDisposition = "removed" | "restored";
+
+/**
+ * How a remove settled together with what it archived. `archivedSubtaskCount`
+ * is the Host's executed count of ordinary linked subtasks moved to the archive
+ * — 0 when the delete was called off (`restored`) or archived nothing — so the
+ * renderer's toast reports a fact rather than a renderer-side estimate.
+ */
+export interface SessionRemoveOutcome {
+  readonly disposition: SessionRemoveDisposition;
+  readonly archivedSubtaskCount: number;
+}
 
 export type DesktopRuntimeHostClientErrorCode =
   | "catalog_unstable"
@@ -143,6 +203,8 @@ export class DesktopRuntimeHostClientError extends Error {
 }
 
 export interface DesktopRuntimeHostSession {
+  setPtyInterests?(refs: readonly string[]): Promise<void>;
+  subscribePtyData?(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void): () => void;
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
@@ -228,16 +290,102 @@ export class DesktopRuntimeHostClient {
   }
 
   get hostId(): string {
+    return this.rootId;
+  }
+
+  get rootId(): string {
     return this.connection.rootId;
+  }
+
+  get peerPath(): RuntimeHostPeerConnectionPath | undefined {
+    return this.connection.peerPath;
   }
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
+  }
+
+  finalizeAccessCredential(
+    timeoutMs?: number,
+  ): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {}, timeoutMs);
+  }
+
+  prepareCollaborationInvitation(
+    sessionId: string,
+    grantKinds: readonly SessionCollaborationGrantKind[],
+  ): Promise<CollaborationInvitationPrepareResult> {
+    return this.request('collaboration.invitation.prepare', { sessionId, grantKinds });
+  }
+
+  queryCollaborationAccess(sessionId?: string): Promise<CollaborationAccessQueryResult> {
+    return this.request(
+      'collaboration.access.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  revokeCollaborationGrant(grantId: string): Promise<CollaborationGrantRevokeResult> {
+    return this.request('collaboration.grant.revoke', { grantId });
+  }
+
+  revokeCollaborationPrincipal(
+    principalId: string,
+  ): Promise<CollaborationPrincipalRevokeResult> {
+    return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  renameCollaborationPrincipal(principalId: string, displayName: string): Promise<CollaborationPrincipalRenameResult> {
+    return this.request('collaboration.principal.rename', { principalId, displayName });
+  }
+
+  createCollaborationTurnRequest(
+    intent: SessionTurnRequestIntent,
+  ): Promise<SessionTurnAccessRequest> {
+    return this.request('collaboration.turn-request.create', { intent });
+  }
+
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  acknowledgeCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult> {
+    return this.request('collaboration.turn-request.acknowledge', { requestId });
+  }
+
+  withdrawCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestWithdrawResult> {
+    return this.request('collaboration.turn-request.withdraw', { requestId });
+  }
+
+  decideCollaborationTurnRequest(
+    requestId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<CollaborationTurnRequestDecideResult> {
+    return this.request('collaboration.turn-request.decide', {
+      requestId,
+      decision,
+    });
+  }
+
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConnectionCatalogChanges(listener);
   }
 
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
@@ -259,7 +407,7 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeScheduledTaskChanges(listener);
   }
 
-  async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
+  async loadConnectionCatalog(): Promise<RuntimeHostConnectionCatalogSnapshot> {
     this.#assertOpen();
     try {
       return await readRuntimeHostConnectionCatalog(this.connection);
@@ -287,8 +435,16 @@ export class DesktopRuntimeHostClient {
   async updateRuntimePolicy(
     buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
   ): Promise<OperationOutput<"runtime.policy.query">> {
+    return this.updateRuntimePolicyIf(() => true, buildOperation);
+  }
+
+  async updateRuntimePolicyIf(
+    accepts: (policy: RuntimePolicy) => boolean,
+    buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
+  ): Promise<OperationOutput<"runtime.policy.query">> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const current = await this.queryRuntimePolicy();
+      if (!accepts(current.policy)) return current;
       const result = await this.request("runtime.policy.mutate", {
         expectedRevision: current.revision,
         operation: buildOperation(current.policy),
@@ -296,6 +452,12 @@ export class DesktopRuntimeHostClient {
       if (result.kind === "committed") return this.queryRuntimePolicy();
     }
     throw revisionConflict("Runtime Policy update", "workspace");
+  }
+
+  updateNetworkProxy(
+    input: OperationInput<"runtime.policy.network-proxy.update">,
+  ): Promise<OperationOutput<"runtime.policy.network-proxy.update">> {
+    return this.request("runtime.policy.network-proxy.update", input);
   }
 
   queryMemory(input: MemoryQueryInput): Promise<MemoryQueryResult> {
@@ -380,11 +542,35 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  verifyConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
+  saveConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.save">,
+  ): Promise<OperationOutput<"connection.onboarding.save">> {
+    return this.request("connection.onboarding.save", input);
+  }
+
+  startExternalAgentSetup(input: OperationInput<"external_agents.setup.start">): Promise<OperationOutput<"external_agents.setup.start">> {
+    return this.request("external_agents.setup.start", input);
+  }
+
+  queryExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.query">> {
+    return this.request("external_agents.setup.query", { attemptId });
+  }
+
+  cancelExternalAgentSetup(attemptId: string): Promise<OperationOutput<"external_agents.setup.cancel">> {
+    return this.request("external_agents.setup.cancel", { attemptId });
+  }
+
   startOAuthLogin(
     attemptId: string,
-    connectionId: string,
+    target: OperationInput<"oauth.login.start">["target"],
   ): Promise<OperationOutput<"oauth.login.start">> {
-    return this.request("oauth.login.start", { attemptId, connectionId });
+    return this.request("oauth.login.start", { attemptId, target });
   }
 
   queryOAuthLogin(
@@ -399,10 +585,10 @@ export class DesktopRuntimeHostClient {
     return this.request("oauth.login.cancel", { attemptId });
   }
 
-  fetchOAuthAccountUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.request("oauth.account.usage.fetch", { connectionId });
+  queryOAuthEnrollment(
+    provider: OperationInput<"oauth.enrollment.query">["provider"],
+  ): Promise<OperationOutput<"oauth.enrollment.query">> {
+    return this.request("oauth.enrollment.query", { provider });
   }
 
   async loadSkillCatalog(
@@ -540,6 +726,11 @@ export class DesktopRuntimeHostClient {
         "Session catalog kept changing while Desktop read it",
       );
     }
+  }
+
+  async getSharedSession(): Promise<SharedSessionCatalogProjection | null> {
+    this.#assertOpen();
+    return (await this.request('session.shared.query', {})).session;
   }
 
   async listProjects(
@@ -800,6 +991,30 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  resolveWorkHubCoordinationSession() {
+    return this.request("workhub.coordination.resolve", {});
+  }
+
+  async getWorkHubSession(): Promise<SessionCatalogProjection> {
+    return requireSessionProjection(await this.request('workhub.coordination.query', {}));
+  }
+
+  answerWorkHubCoordination(input: OperationInput<'workhub.coordination.answer'>) {
+    return this.request('workhub.coordination.answer', input);
+  }
+
+  configureWorkHubModel(input: OperationInput<'workhub.coordination.configureModel'>) {
+    return this.request('workhub.coordination.configureModel', input);
+  }
+
+  listWorkHubCoordinationCandidates() {
+    return this.request("workhub.coordination.candidates", {});
+  }
+
+  actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
+    return this.request('workhub.coordination.actFromTurn', input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }
@@ -816,6 +1031,20 @@ export class DesktopRuntimeHostClient {
   }): Promise<SessionCatalogProjection> {
     const result = await this.request("external-session.import", input);
     return requireSessionProjection(result.session);
+  }
+
+  exportSessionBundle(input: {
+    readonly sessionId: string;
+    readonly destination: string;
+    readonly expectedSubtreeDigest?: string;
+  }): Promise<{ readonly sessionCount: number; readonly compressedBytes: number }> {
+    return this.request("session-bundle.export", input);
+  }
+
+  importSessionBundle(input: {
+    readonly source: string;
+  }): Promise<{ readonly sessionCount: number; readonly artifactFiles: number }> {
+    return this.request("session-bundle.import", input);
   }
 
   updateSessionMetadata(
@@ -844,23 +1073,7 @@ export class DesktopRuntimeHostClient {
       this.request("session.configuration.update", {
         sessionId,
         expectedRevision: current.revision,
-        configuration: {
-          // An unlocked Session still follows the Host-owned default route.
-          // Once execution or an explicit model change locks it, the resolved
-          // catalog route is the explicit target that must survive this patch.
-          modelTarget: current.connectionLocked
-            ? {
-                kind: "explicit",
-                connectionSlug: current.llmConnectionSlug,
-                model: current.model,
-              }
-            : { kind: "default" },
-          thinkingLevel: current.thinkingLevel ?? null,
-          permissionMode: current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: current.orchestrationMode,
-          ...definedPatch,
-        },
+        patch: definedPatch,
       }),
     );
   }
@@ -911,17 +1124,32 @@ export class DesktopRuntimeHostClient {
   async removeSession(
     sessionId: string,
     options: { requireArchived?: boolean } = {},
-  ): Promise<SessionRemoveDisposition> {
+  ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
-      if (options.requireArchived && !current.isArchived) return "restored";
+      if (options.requireArchived && !current.isArchived) {
+        return { disposition: "restored", archivedSubtaskCount: 0 };
+      }
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
       });
-      if (result.kind === "removed") return "removed";
+      if (result.kind === "removed") {
+        return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
     }
     throw revisionConflict("remove", sessionId);
+  }
+
+  /**
+   * How many linked subtasks a delete of this parent would move to the archive,
+   * per the Host's own removal plan. The delete confirm warns off this so the
+   * renderer never re-derives the plan from a catalog projection that omits the
+   * operator marker and copy state.
+   */
+  async previewSessionRemoval(sessionId: string): Promise<number> {
+    const result = await this.request("session.remove.preview", { sessionId });
+    return result.archivableSubtaskCount;
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
@@ -1038,10 +1266,49 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  retractQueue(
-    input: Omit<QueueRetractInput, "originHostEpoch">,
-  ): Promise<QueueRetractResult> {
-    return this.request("queue.retract", {
+  queryMessages(
+    input: OperationInput<'turn.message.query'>,
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    return this.request('turn.message.query', input);
+  }
+
+  queryMessageExecutions(
+    input: OperationInput<'turn.message.execution.query'>,
+  ): Promise<OperationOutput<'turn.message.execution.query'>> {
+    return this.request('turn.message.execution.query', input);
+  }
+
+  retractQueueEntry(
+    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.retract", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  promoteQueueEntry(
+    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.promote", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  updateQueueEntry(
+    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.update", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  reorderQueueEntries(
+    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entries.reorder", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });
@@ -1093,16 +1360,20 @@ export class DesktopRuntimeHostClient {
   }
 
   queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
-    return this.connection.queryHostDiagnostics(2_000);
+    return this.connection.request('host.diagnostics.query', {}, 2_000);
   }
 
-  prepareHostUpgrade(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<OperationOutput<"host.upgrade.prepare">> {
-    return this.request("host.upgrade.prepare", {
-      expectedHostEpoch: this.connection.hostEpoch,
-      allowInterruptActiveTasks,
-    });
+  prepareHostRetirement(
+    mode: RuntimeHostRetirementMode,
+    options?: { readonly timeoutMs?: number; readonly allowCooperativeHandoff?: boolean },
+  ): Promise<RuntimeHostRetirementPreparation> {
+    return prepareConnectedRuntimeHostRetirement(
+      this.connection,
+      mode,
+      options?.timeoutMs ?? RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      undefined,
+      options,
+    );
   }
 
   stopTurn(
@@ -1141,35 +1412,10 @@ export class DesktopRuntimeHostClient {
     return this.request("context.compact", input);
   }
 
-  async listTasks(sessionId: string): Promise<Task[]> {
-    const projection = await collectStableProjection({
-      name: "Task ledger",
-      sessionId,
-      start: () =>
-        this.request("task.ledger.query", { kind: "list_start", sessionId }),
-      continue: (first, cursor) =>
-        this.request("task.ledger.query", {
-          kind: "list_continue",
-          sessionId,
-          revision: first.revision,
-          cursor,
-        }),
-      page(result, first) {
-        if (
-          result.kind !== "page" ||
-          result.sessionId !== sessionId ||
-          (first !== undefined && result.revision !== first.revision)
-        ) {
-          throw invalidProjection("Task ledger");
-        }
-        return {
-          source: result,
-          items: result.tasks,
-          nextCursor: result.nextCursor,
-        };
-      },
-    });
-    return projection.items;
+  async querySessionTodo(sessionId: string): Promise<SessionTodoItem[]> {
+    const result = await this.request("session.todo.query", { sessionId });
+    if (result.sessionId !== sessionId) throw invalidProjection("SessionTodo");
+    return projectSessionTodoItemsForDisplay(result.items);
   }
 
   queryUsage(
@@ -1180,6 +1426,16 @@ export class DesktopRuntimeHostClient {
 
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });
+  }
+
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
   }
 
   controlGoal(
@@ -1194,14 +1450,15 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  async clearGoal(sessionId: string): Promise<void> {
+  async controlGoalWithRetry(sessionId: string, action: GoalControlAction): Promise<void> {
     const initial = await this.queryGoal(sessionId);
     if (initial.goal === null) return;
     const goalId = initial.goal.goalId;
     let goal = initial.goal;
+    let conflict: RuntimeHostOperationError | null = null;
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       try {
-        await this.controlGoal(goal, "clear");
+        await this.controlGoal(goal, action);
         return;
       } catch (error) {
         if (
@@ -1210,12 +1467,25 @@ export class DesktopRuntimeHostClient {
         ) {
           throw error;
         }
+        conflict = error;
+        if (attempt === MAX_OPTIMISTIC_ATTEMPTS - 1) break; // a re-query would have no retry to serve
       }
       const current = await this.queryGoal(sessionId);
       if (current.goal === null || current.goal.goalId !== goalId) return;
+      if (current.goal.revision === goal.revision) {
+        // The host folds invalid transitions into operation_conflict too
+        // ("Goal cannot pause from status paused"). Every accepted transition
+        // bumps the revision, so a conflict at an unchanged revision is a
+        // status refusal, not a race — retrying is futile; surface the reason.
+        throw conflict;
+      }
       goal = current.goal;
     }
-    throw revisionConflict("Goal clear", sessionId);
+    throw revisionConflict(`Goal ${action}`, sessionId);
+  }
+
+  async clearGoal(sessionId: string): Promise<void> {
+    await this.controlGoalWithRetry(sessionId, "clear");
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {
@@ -1265,6 +1535,15 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.query">,
   ): Promise<OperationOutput<"agent.graph.query">> {
     return this.request("agent.graph.query", input);
+  }
+
+  listAgentGraphEpochs(rootSessionId: string) {
+    this.#assertOpen();
+    return readRuntimeHostAgentGraphEpochs(this.connection, rootSessionId);
+  }
+
+  listCurrentAgentGraphEpochs(rootSessionId: string) {
+    return this.request("agent.graph.epochs.query", { rootSessionId });
   }
 
   queryAgentGraphOperator(
@@ -1367,6 +1646,7 @@ export class DesktopRuntimeHostClient {
     }
     const session = new DesktopSessionHandle(subscription, () =>
       this.#sessions.delete(session),
+      async (refs) => { await this.request('subscription.pty_interest.set', { subscriptionId: subscription.subscriptionId, refs: [...refs] }); },
     );
     this.#sessions.add(session);
     return session;
@@ -1410,7 +1690,7 @@ export class DesktopRuntimeHostClient {
     }
     return [...contributions.values()]
       .sort((left, right) => left.firstSequence - right.firstSequence)
-      .map(projectSessionTurnContribution);
+      .flatMap((contribution) => projectSessionTurnContribution(contribution) ?? []);
   }
 
   async listSessionTurnLandmarks(
@@ -1529,9 +1809,11 @@ export class DesktopRuntimeHostClient {
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<OperationOutput<K>> {
     this.#assertOpen();
-    return this.connection.request(operation, input);
+    return this.connection.request(operation, input, timeoutMs, signal);
   }
 
   #assertOpen(): void {
@@ -1552,6 +1834,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
   constructor(
     private readonly subscription: RuntimeHostSessionSubscription,
     private readonly onClose: () => void,
+    readonly setPtyInterests: (refs: readonly string[]) => Promise<void>,
   ) {
     if (!subscription.transcriptBootstrap) {
       throw new Error("Desktop Session subscription omitted its transcript bootstrap");
@@ -1567,6 +1850,10 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
   loadTranscript(): Promise<StoredMessage[]> {
     this.#transcriptTask ??= this.subscription.loadTranscript(decodeStoredMessage);
     return this.#transcriptTask;
+  }
+
+  subscribePtyData(listener: Parameters<RuntimeHostSessionSubscription['subscribePtyData']>[0]): () => void {
+    return this.subscription.subscribePtyData(listener);
   }
 
   loadTranscriptOverlay(

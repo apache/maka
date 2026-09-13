@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   candidateStartupFailureExitCode,
   candidateStartupFailureForExitCode,
   classifyCandidateStartupFailure,
+  isPermanentCandidateStartupFailure,
 } from '../candidate-startup-failure.js';
 
 test('preserves the primary startup classification through cleanup aggregation', () => {
@@ -61,6 +81,25 @@ test('does not infer workspace ownership from a generic filesystem error', () =>
   assert.deepEqual(classifyCandidateStartupFailure(resourceError), {
     reason: 'internal_startup_failure',
   });
+});
+
+test('preserves a retryable Local IPC security failure across the Candidate boundary', () => {
+  const endpointError = Object.assign(new Error('private Windows ACL detail'), {
+    code: 'insecure_endpoint_directory',
+  });
+  const failure = classifyCandidateStartupFailure(
+    new AggregateError([endpointError, new Error('cleanup failed')], 'startup failed', {
+      cause: endpointError,
+    }),
+  );
+
+  assert.deepEqual(failure, { reason: 'local_ipc_security_failed' });
+  assert.deepEqual(
+    candidateStartupFailureForExitCode(candidateStartupFailureExitCode(failure)),
+    failure,
+  );
+  assert.equal(isPermanentCandidateStartupFailure(failure), false);
+  assert.equal(JSON.stringify(failure).includes('private'), false);
 });
 
 test('classifies unknown startup failures without serializing their message', () => {

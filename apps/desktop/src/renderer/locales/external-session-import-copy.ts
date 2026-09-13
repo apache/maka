@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
@@ -10,8 +29,14 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
  */
 type ExternalSessionImportCopy = {
   sourceLabel: string;
-  codex: string;
+  /** Display names by adapter id. An id with no entry falls back to the id
+   *  itself, which is legible enough to ship and obvious enough to fix. */
+  sourceNames: Readonly<Record<string, string>>;
   includeArchived: string;
+  searchLabel: string;
+  searchHelp: string;
+  searchPlaceholder: string;
+  searchEmpty: (term: string) => string;
   loading: string;
   listAria: string;
   emptyTitle: string;
@@ -25,9 +50,15 @@ type ExternalSessionImportCopy = {
   loadMore: string;
   loadingMore: string;
   duplicateNote: string;
+  importedCount: (count: number) => string;
+  openLatestImportedTask: string;
+  openLatestImportedTaskFor: (name: string) => string;
   import: string;
+  importAgain: string;
   importTask: (name: string) => string;
+  importTaskAgain: (name: string) => string;
   importing: string;
+  importingTask: (name: string) => string;
   importInProgressTitle: string;
   /**
    * Named, for the same reason the unconfirmed banner names its conversations:
@@ -37,6 +68,14 @@ type ExternalSessionImportCopy = {
   importInProgressDescription: (name: string) => string;
   importFailedTitle: string;
   importFailedFallback: string;
+  /** No usable model connection to attach the imported task to. */
+  importFailedNoModel: string;
+  /** The source conversation could not be read or converted (e.g. too large). */
+  importFailedSourceUnreadable: string;
+  importRecoveredTitle: string;
+  importRecoveredDescription: (name: string) => string;
+  importNotRecordedTitle: string;
+  importNotRecordedDescription: string;
   importOutcomeUnknownTitle: string;
   /**
    * Takes the conversation names because this is the only place that can say
@@ -44,13 +83,75 @@ type ExternalSessionImportCopy = {
    * or paged away by the time it renders.
    */
   importOutcomeUnknownDescription: (names: readonly string[]) => string;
+  selectAllAriaLabel: string;
+  /** Marked out of listed — the source's own total is not a number this page knows. */
+  selectedCount: (selected: number, listed: number) => string;
+  selectRowAriaLabel: (name: string) => string;
+  importSelected: string;
+  /** Which one of how many the batch is on, so the count means something. */
+  batchProgress: (done: number, total: number) => string;
+  batchDoneTitle: (imported: number) => string;
+  /** Counted apart from the total: these conversations now exist twice. */
+  batchDuplicated: (count: number) => string;
+  batchFailed: (count: number) => string;
+  batchNothingImported: string;
+  /** Settings › Import/export tasks — moving a Session between Maka installations. */
+  modeLabel: string;
+  modeImport: string;
+  modeExport: string;
+  makaSourceName: string;
+  makaImportTitle: string;
+  makaImportDescription: string;
+  makaImportAction: string;
+  makaImported: (count: number) => string;
+  exportTitle: string;
+  exportDescription: string;
+  exportAction: string;
+  exportActionFor: (name: string) => string;
+  exportCarriesSubagents: (count: number) => string;
+  exportSubtreeConfirmTitle: (count: number) => string;
+  exportSubtreeConfirmBody: string;
+  exportEmpty: string;
+  exported: (count: number) => string;
+  bundleBusy: string;
+  bundleSubtreeChanged: string;
+  bundleConflict: string;
+  bundleUnreadable: string;
+  bundleFailed: string;
 };
 
 const COPY = {
-  zh: {
+  'zh-CN': {
+    modeLabel: '导入或导出',
+    modeImport: '导入任务',
+    modeExport: '导出任务',
+    makaSourceName: 'Maka 会话文件',
+    makaImportTitle: '从 Maka 会话文件导入',
+    makaImportDescription: '选择另一个 Maka 导出的 .maka-session 文件。任务产生的文件和子 Agent 对话会一起带过来；模型密钥不在文件里，需要在本机重新配置。',
+    makaImportAction: '选择文件…',
+    makaImported: (count) => `已导入 ${count} 个任务`,
+    exportTitle: '导出任务',
+    exportDescription: '把一个任务写成 .maka-session 文件，在另一台机器或另一个版本的 Maka 里导入。它下面的子 Agent 对话会一起导出。',
+    exportAction: '导出',
+    exportActionFor: (name) => `导出「${name}」`,
+    exportCarriesSubagents: (count) => `含 ${count} 个子 Agent 对话`,
+    exportSubtreeConfirmTitle: (count) => `连同 ${count} 个子 Agent 对话一起导出？`,
+    exportSubtreeConfirmBody:
+      '文件里会包含这个任务和它下面的全部子 Agent 对话。子 Agent 的对话是这个任务某次工具调用的结果，单独留下会让记录不完整。',
+    exportEmpty: '还没有可以导出的任务。',
+    exported: (count) => `已导出 ${count} 个任务`,
+    bundleBusy: '这个任务正在运行，先等它结束再导出。',
+    bundleSubtreeChanged: '这个任务下面的子 Agent 对话在你确认之后变了。再导出一次，确认新的内容。',
+    bundleConflict: '目标已存在，或这个工作区已经有同一个任务。',
+    bundleUnreadable: '文件无法读取，或它来自这个版本不认识的 Maka。',
+    bundleFailed: '操作失败。',
     sourceLabel: '来源',
-    codex: 'Codex',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 会话文件' },
     includeArchived: '包含已归档的对话',
+    searchLabel: '搜索',
+    searchHelp: '匹配对话标题与项目路径。留空显示全部。',
+    searchPlaceholder: '标题或路径的一部分',
+    searchEmpty: (term) => `没有标题或路径包含「${term}」的对话。`,
     loading: '正在读取外部对话…',
     listAria: '可导入的对话',
     emptyTitle: '没有可导入的对话',
@@ -69,21 +170,152 @@ const COPY = {
     loadMore: '加载更多',
     loadingMore: '正在加载…',
     duplicateNote: '再次导入同一个对话会创建一个独立的任务。',
+    importedCount: (count) => `已导入 ${count} 次`,
+    openLatestImportedTask: '打开最近导入的任务',
+    openLatestImportedTaskFor: (name) => `打开「${name}」最近导入的任务`,
     import: '导入',
+    importAgain: '再次导入',
     importTask: (name) => `导入「${name}」`,
+    importTaskAgain: (name) => `再次导入「${name}」`,
     importing: '正在导入…',
+    importingTask: (name) => `正在导入「${name}」`,
     importInProgressTitle: '正在导入',
     importInProgressDescription: (name) => `正在导入「${name}」，完成后会直接打开这个任务。`,
     importFailedTitle: '导入失败',
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
+    importFailedNoModel: '没有可用的模型连接，无法为导入的任务选择模型。请先在 设置 · 模型 中配置并启用一个模型后再导入。',
+    importFailedSourceUnreadable: '无法读取或转换该对话，它可能过大、已损坏或暂时无法读取。请检查来源后重试。',
+    importRecoveredTitle: '已确认导入',
+    importRecoveredDescription: (name) => `「${name}」导入的任务现已可用。`,
+    importNotRecordedTitle: '没有发现新任务',
+    importNotRecordedDescription: '没有记录到新的任务，可以安全重试。',
     importOutcomeUnknownTitle: '需要确认导入结果',
+    selectAllAriaLabel: '全选或全不选',
+    selectedCount: (selected, listed) => `已选 ${selected} / ${listed}`,
+    selectRowAriaLabel: (name) => `选择 ${name}`,
+    importSelected: '导入所选',
+    batchProgress: (done, total) => `正在导入 ${done} / ${total}`,
+    batchDoneTitle: (imported) => `已导入 ${imported} 个对话`,
+    batchDuplicated: (count) => `其中 ${count} 个之前已导入过，现在各有两份。`,
+    batchFailed: (count) => `另有 ${count} 个没能导入。`,
+    batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
       `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
   },
+  'zh-TW': {
+    modeLabel: '匯入或匯出',
+    modeImport: '匯入任務',
+    modeExport: '匯出任務',
+    makaSourceName: 'Maka 工作階段檔案',
+    makaImportTitle: '從 Maka 工作階段檔案匯入',
+    makaImportDescription: '選擇另一個 Maka 匯出的 .maka-session 檔案。任務產生的檔案與子 Agent 對話會一起帶過來；模型金鑰不在檔案裡，需要在本機重新設定。',
+    makaImportAction: '選擇檔案…',
+    makaImported: (count) => `已匯入 ${count} 個任務`,
+    exportTitle: '匯出任務',
+    exportDescription: '把一個任務寫成 .maka-session 檔案，在另一台機器或另一個版本的 Maka 匯入。它底下的子 Agent 對話會一起匯出。',
+    exportAction: '匯出',
+    exportActionFor: (name) => `匯出「${name}」`,
+    exportCarriesSubagents: (count) => `含 ${count} 個子 Agent 對話`,
+    exportSubtreeConfirmTitle: (count) => `連同 ${count} 個子 Agent 對話一起匯出？`,
+    exportSubtreeConfirmBody:
+      '檔案裡會包含這個任務和它底下的全部子 Agent 對話。子 Agent 的對話是這個任務某次工具呼叫的結果，單獨留下會讓紀錄不完整。',
+    exportEmpty: '還沒有可以匯出的任務。',
+    exported: (count) => `已匯出 ${count} 個任務`,
+    bundleBusy: '這個任務正在執行，先等它結束再匯出。',
+    bundleSubtreeChanged: '這個任務底下的子 Agent 對話在你確認之後變了。再匯出一次，確認新的內容。',
+    bundleConflict: '目標已存在，或這個工作區已經有同一個任務。',
+    bundleUnreadable: '檔案無法讀取，或它來自這個版本不認識的 Maka。',
+    bundleFailed: '操作失敗。',
+    sourceLabel: '來源',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 工作階段檔案' },
+    includeArchived: '包含已歸檔的對話',
+    searchLabel: '搜尋',
+    searchHelp: '符合對話標題與專案路徑。留空顯示全部。',
+    searchPlaceholder: '標題或路徑的一部分',
+    searchEmpty: (term) => `沒有標題或路徑包含「${term}」的對話。`,
+    loading: '正在讀取外部對話…',
+    listAria: '可匯入的對話',
+    emptyTitle: '沒有可匯入的對話',
+    emptyDescription: '目前來源中沒有找到符合條件的根對話。',
+    unavailableTitle: '沒有檢測到支援的 Agent',
+    // The title already says nothing was detected, so this says what to do
+    // about it instead of saying it again. It names Codex because the renderer
+    // only ever learns which sources *were* detected — nothing but a copy
+    // string can tell someone with none what to go install. The second half is
+    // the promise that earns the permission to read another app's files.
+    unavailableDescription: '在本機使用過 Codex 後，它的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
+    loadFailedTitle: '無法讀取外部對話',
+    loadFailedFallback: '外部對話目錄暫時無法讀取，請重試。',
+    retry: '重試',
+    archived: '已歸檔',
+    loadMore: '載入更多',
+    loadingMore: '正在載入…',
+    duplicateNote: '再次匯入同一個對話會建立一個獨立的任務。',
+    importedCount: (count) => `已匯入 ${count} 次`,
+    openLatestImportedTask: '開啟最近匯入的任務',
+    openLatestImportedTaskFor: (name) => `開啟「${name}」最近匯入的任務`,
+    import: '匯入',
+    importAgain: '再次匯入',
+    importTask: (name) => `匯入「${name}」`,
+    importTaskAgain: (name) => `再次匯入「${name}」`,
+    importing: '正在匯入…',
+    importingTask: (name) => `正在匯入「${name}」`,
+    importInProgressTitle: '正在匯入',
+    importInProgressDescription: (name) => `正在匯入「${name}」，完成後會直接開啟這個任務。`,
+    importFailedTitle: '匯入失敗',
+    importFailedFallback: '該對話無法轉換或儲存。請檢查來源後重試。',
+    importFailedNoModel: '沒有可用的模型連線，無法為匯入的任務選擇模型。請先在 設定 · 模型 中設定並啟用一個模型後再匯入。',
+    importFailedSourceUnreadable: '無法讀取或轉換該對話，它可能過大、已損毀或暫時無法讀取。請檢查來源後重試。',
+    importRecoveredTitle: '已確認匯入',
+    importRecoveredDescription: (name) => `「${name}」匯入的任務現已可用。`,
+    importNotRecordedTitle: '沒有發現新任務',
+    importNotRecordedDescription: '沒有記錄到新的任務，可以安全重試。',
+    importOutcomeUnknownTitle: '需要確認匯入結果',
+    selectAllAriaLabel: '全選或全部取消選取',
+    selectedCount: (selected, listed) => `已選 ${selected} / ${listed}`,
+    selectRowAriaLabel: (name) => `選取 ${name}`,
+    importSelected: '匯入所選項目',
+    batchProgress: (done, total) => `正在匯入 ${done} / ${total}`,
+    batchDoneTitle: (imported) => `已匯入 ${imported} 個對話`,
+    batchDuplicated: (count) => `其中 ${count} 個先前已匯入，現在各有兩份。`,
+    batchFailed: (count) => `另有 ${count} 個無法匯入。`,
+    batchNothingImported: '沒有匯入任何對話。',
+    importOutcomeUnknownDescription: (names) =>
+      `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。請先在任務列表中查詢，已經出現的不要再次匯入。`,
+  },
   en: {
+    modeLabel: 'Import or export',
+    modeImport: 'Import tasks',
+    modeExport: 'Export tasks',
+    makaSourceName: 'Maka session file',
+    makaImportTitle: 'Import from a Maka session file',
+    makaImportDescription: 'Pick a .maka-session file another Maka exported. The files the task produced and the subagent conversations under it come with it; model keys are not in the file and have to be configured here.',
+    makaImportAction: 'Choose a file…',
+    makaImported: (count) => `Imported ${count} ${count === 1 ? 'task' : 'tasks'}`,
+    exportTitle: 'Export a task',
+    exportDescription: 'Write a task to a .maka-session file to import on another machine, or in another build of Maka. The subagent conversations under it are carried with it.',
+    exportAction: 'Export',
+    exportActionFor: (name) => `Export ${name}`,
+    exportCarriesSubagents: (count) => `Carries ${count} subagent ${count === 1 ? 'conversation' : 'conversations'}`,
+    exportSubtreeConfirmTitle: (count) =>
+      `Export with ${count} subagent ${count === 1 ? 'conversation' : 'conversations'}?`,
+    exportSubtreeConfirmBody:
+      'The file holds this task and every subagent conversation under it. A subagent conversation is the result of a tool call this task made, so leaving one behind leaves a hole in the record.',
+    exportEmpty: 'No task to export yet.',
+    exported: (count) => `Exported ${count} ${count === 1 ? 'task' : 'tasks'}`,
+    bundleBusy: 'That task is running. Let it finish first.',
+    bundleSubtreeChanged:
+      'The subagent conversations under this task changed after you confirmed. Export again to confirm what is there now.',
+    bundleConflict: 'The destination is taken, or this workspace already has that task.',
+    bundleUnreadable: 'The file could not be read, or it came from a Maka this build does not know.',
+    bundleFailed: 'That did not work.',
     sourceLabel: 'Source',
-    codex: 'Codex',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka session file' },
     includeArchived: 'Include archived conversations',
+    searchLabel: 'Search',
+    searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
+    searchPlaceholder: 'Part of a title or path',
+    searchEmpty: (term) => `No conversation has "${term}" in its title or path.`,
     loading: 'Reading external conversations…',
     listAria: 'Conversations available to import',
     emptyTitle: 'No conversations to import',
@@ -98,15 +330,40 @@ const COPY = {
     loadMore: 'Load more',
     loadingMore: 'Loading…',
     duplicateNote: 'Importing the same conversation again creates an independent task.',
+    importedCount: (count) => (count === 1 ? 'Imported once' : `Imported ${count} times`),
+    openLatestImportedTask: 'Open latest imported task',
+    openLatestImportedTaskFor: (name) => `Open the latest task imported from ${name}`,
     import: 'Import',
+    importAgain: 'Import again',
     importTask: (name) => `Import ${name}`,
+    importTaskAgain: (name) => `Import ${name} again`,
     importing: 'Importing…',
+    importingTask: (name) => `Importing ${name}`,
     importInProgressTitle: 'Import in progress',
     importInProgressDescription: (name) =>
       `Importing “${name}”. Maka opens the task as soon as it lands.`,
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
+    importFailedNoModel:
+      'No usable model connection to attach the imported task to. Configure and enable a model in Settings · Models, then import again.',
+    importFailedSourceUnreadable:
+      'This conversation could not be read or converted — it may be too large, malformed, or temporarily unreadable. Check the source and try again.',
+    importRecoveredTitle: 'Import confirmed',
+    importRecoveredDescription: (name) =>
+      `The imported task is available now for “${name}”.`,
+    importNotRecordedTitle: 'No new task found',
+    importNotRecordedDescription: 'No new task was recorded, so it is safe to retry.',
     importOutcomeUnknownTitle: 'Check the import result',
+    selectAllAriaLabel: 'Select all or none',
+    selectedCount: (selected, listed) => `${selected} / ${listed} selected`,
+    selectRowAriaLabel: (name) => `Select ${name}`,
+    importSelected: 'Import selected',
+    batchProgress: (done, total) => `Importing ${done} / ${total}`,
+    batchDoneTitle: (imported) => `Imported ${imported} conversations`,
+    batchDuplicated: (count) =>
+      `${count} of them had been imported before and now exist twice.`,
+    batchFailed: (count) => `${count} more could not be imported.`,
+    batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
   },

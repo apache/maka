@@ -1,12 +1,5 @@
-Maka
-Copyright 2026 The Maka Authors
+Apache Maka (incubating)
+Copyright 2026 The Apache Software Foundation
 
-The macOS Computer History helper includes clean-room code from
-open-codex-computer-history, Copyright 2026 Haoqing Wang, used under the MIT
-License. See licenses/open-computer-history/LICENSE in packaged applications.
-
-This product includes software developed by the Maka project.
-
-Third-party components remain subject to their respective licenses and
-attribution notices. Those notices are distributed with the applicable
-components and application artifacts.
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/).

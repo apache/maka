@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +29,33 @@ import {
   type MarkerFileDependencies,
   type MarkerFileHandle,
 } from '../marker-file.js';
+
+test('keeps the open primitive captured at module initialization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-marker-file-captured-open-'));
+  const markerFile = '.marker.json';
+  const originalOpen = fs.promises.open;
+  let intercepted = false;
+  fs.promises.open = (async (path, flags, mode) => {
+    if (typeof path === 'string' && path.startsWith(join(root, `${markerFile}.`))) {
+      intercepted = true;
+    }
+    return originalOpen(path, flags, mode);
+  }) as typeof fs.promises.open;
+  try {
+    await publishMarkerFile({
+      root,
+      markerFile,
+      contents: '{"schemaVersion":1}\n',
+      maxBytes: 1_024,
+      publication: 'create',
+      invalidFile: () => new Error('invalid marker'),
+    });
+    assert.equal(intercepted, false);
+  } finally {
+    fs.promises.open = originalOpen;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 for (const publication of ['create', 'replace'] as const) {
   for (const failurePhase of ['write', 'sync', 'close'] as const) {
@@ -56,7 +103,7 @@ function faultingOpen(
     let closeFailed = false;
     const wrapped: MarkerFileHandle = {
       stat: (options) => handle.stat(options),
-      readFile: (encoding) => handle.readFile(encoding),
+      read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
       writeFile: async (data, encoding) => {
         if (failurePhase === 'write') {
           await handle.writeFile(data.slice(0, 1), encoding);

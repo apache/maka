@@ -1,0 +1,131 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Release Linux check
+
+# The same lesson the Windows lane already carries, and the reason this one
+# exists: the Linux packaging path shipped with two defects that no test and no
+# check could see, because nothing outside a real Linux build ever ran it. Both
+# were in metadata electron-builder resolves before it packages anything — the
+# executable name and the deb's homepage — and both are now also asserted in
+# milliseconds by `scripts/desktop-release-targets.test.mjs`. This lane covers
+# what that one structurally cannot: fpm and the AppImage runtime producing
+# real payloads, the architecture of the native peer inside them, and the
+# packaged application actually starting.
+on:
+  pull_request:
+    # Every input whose correctness can only be observed by building on Linux.
+    # It reaches past the release scripts because the packaging configuration
+    # and the manifests own the identity fpm and the AppImage runtime demand,
+    # and the native peer is built per host.
+    paths:
+      - 'apps/desktop/electron-builder.config.mjs'
+      - 'apps/desktop/package.json'
+      - 'native/runtime-host-peer/**'
+      - 'scripts/package-linux.mjs'
+      - 'scripts/verify-linux.mjs'
+      - 'scripts/desktop-release-targets.mjs'
+      - 'scripts/desktop-update-contract.mjs'
+      - 'scripts/verify-packaged-app.mjs'
+      # What the two entries above import, and what they read. The packaging
+      # configuration pulls three scripts in, the verifier pulls in the
+      # third-party closure, and `assertPackagedResources` builds its required
+      # list by listing the icon catalogue — so adding an icon changes the
+      # assertion. `packages/**` is deliberately absent: the Windows lane
+      # already covers that half and has a closure test binding it in both
+      # directions, and what is unproven here is the packaging format, not the
+      # shared runtime. The cron below is what catches the rest.
+      - 'apps/desktop/assets/**'
+      - 'scripts/desktop-nightly.mjs'
+      - 'scripts/product-release-identity.mjs'
+      - 'scripts/release-cli-file-policy.mjs'
+      - 'scripts/third-party-closure.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-linux-check.yml'
+  # The list above is a pre-filter, not this lane's import closure, so a
+  # transitive edit it cannot match would otherwise first be observed on
+  # release day. The Nightly is not a substitute: it is a different workflow,
+  # reached only through a successful npm publication and a repository
+  # variable, so it cannot be this lane's escape from its own filter.
+  # `ci-workflow-policy.test.mjs` enumerates the directory for exactly this.
+  schedule:
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keyed on the pull request number rather than the ref, for the reason the
+# Windows lane documents: `github.ref` is refs/heads/main for the scheduled run
+# and for a dispatch alike, and one shared group would let a dispatch queue
+# behind the nightly and then be discarded while still pending.
+concurrency:
+  group: release-linux-check-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # Not `package`: the Windows lane's job already claims that name, and two
+  # checks reading `package` on the same pull request cannot be told apart.
+  package-linux:
+    # x64 only. The arm64 packages are built from the same scripts, the same
+    # configuration and the same descriptor, so this lane would re-prove all of
+    # what it can reach and none of what differs — a 16K-page host and its own
+    # native peer. The Nightly matrix builds and verifies arm64 every night.
+    runs-on: ubuntu-24.04
+    # The one tier every pull-request lane carries, not a per-lane value. This
+    # lane's first real run packaged and verified in 6m22s.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Update stable Rust for Desktop native artifacts
+        run: rustup update stable --no-self-update
+
+      # Builds the AppImage and the deb in separate electron-builder runs and
+      # merges their update feeds, which is the sequence the release and the
+      # Nightly both use.
+      - name: Package the Linux AppImage and deb
+        run: npm run package:linux
+
+      - name: Ensure xvfb
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      # Opens both payloads: the AppImage must not carry the deb's
+      # `package-type` marker, and the deb must carry it, declare an installable
+      # package name and the architecture its filename claims, and satisfy the
+      # same resource, update and dependency assertions. The native peer's ELF
+      # header is read in both. Finally the extracted AppImage is launched —
+      # `xvfb-run` because that last step drives a real renderer over CDP, the
+      # way the macOS and Windows verifications already do.
+      - name: Verify the Linux release
+        run: xvfb-run -a npm run verify:linux -- x64

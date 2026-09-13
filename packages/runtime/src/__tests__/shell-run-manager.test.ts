@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import childProcess, {
   type ExecFileException,
@@ -15,7 +35,7 @@ import {
   type ShellRunStore,
 } from '@maka/core/shell-run';
 import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
-import { createSqliteShellRunStore } from '@maka/storage';
+import { createSqliteShellRunStore } from '@maka/storage/shell-run-store';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import {
@@ -26,20 +46,80 @@ import {
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PtyProcessDriver } from '../pty-process-driver.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const NO_ABORT = new AbortController().signal;
 const TEMPORARY_WORKSPACES = new Set<string>();
+const SQLITE_SHELL_RUN_STORES = new Set<ReturnType<typeof createSqliteShellRunStore>>();
+const REAL_WINDOWS_GIT_BASH = windowsGitBashPlan();
 
 after(async () => {
+  for (const store of SQLITE_SHELL_RUN_STORES) store.close();
   await Promise.all(
     [...TEMPORARY_WORKSPACES].map((path) => rm(path, { recursive: true, force: true })),
   );
 });
 
 describe('ShellRunProcessManager', () => {
+  test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
+    const store = createSqliteShellRunStore(await workspace());
+    await store.createShellRun({
+      ...record({ shellRunId: 'user-command', status: 'completed' }),
+      visibility: 'user',
+      command: 'printf private-output',
+      output: {
+        mode: 'pipes',
+        stdout: 'private-output\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+      completedAt: 2,
+      exitCode: 0,
+    });
+    const manager = createManager(store);
+    const ref = 'maka://runtime/background-tasks/user-command';
+
+    await assert.rejects(
+      () => manager.readRuntimeResource('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () => manager.stopBackgroundTask('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () =>
+        manager.writeStdin({
+          sessionId: 'session-1',
+          ref,
+          input: 'private-input',
+          abortSignal: NO_ABORT,
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+
+    const inspected = await manager.inspectResource('session-1', ref);
+    assert.equal(inspected.output.mode, 'pipes');
+    assert.equal(inspected.output.stdout, 'private-output\n');
+    const stopped = await manager.stopBackgroundTask('session-1', ref, NO_ABORT, 'client');
+    assert.equal(stopped.kind, 'shell_run');
+    assert.equal(stopped.operation?.kind, 'stop');
+  });
+
   test('rejects unprojectable provider tool-call identities before durable admission', async () => {
     const cwd = await workspace();
-    const store = createSqliteShellRunStore(cwd);
+    const store = sqliteShellRunStore(cwd);
     const manager = createManager(store);
     const completions: boolean[] = [];
     const maximumMultibyteId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
@@ -67,7 +147,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps the default pipe path separated, durable, redacted, and observed', async () => {
     const cwd = await workspace();
-    const store = createSqliteShellRunStore(cwd);
+    const store = sqliteShellRunStore(cwd);
     const manager = createManager(store);
     const result = await manager.runForegroundBash(
       shellInput({
@@ -117,6 +197,58 @@ describe('ShellRunProcessManager', () => {
     assert.doesNotMatch(result.output.stdout, /\uFFFD/u);
   });
 
+  test('preserves the requested cwd through a real Git Bash login PTY', {
+    skip:
+      process.platform !== 'win32'
+        ? 'Git Bash PTY regression'
+        : REAL_WINDOWS_GIT_BASH
+          ? false
+          : 'Git Bash is not installed on this Windows runner',
+  }, async () => {
+    const shell = REAL_WINDOWS_GIT_BASH;
+    assert.ok(shell, 'the test skip requires a discovered Git Bash plan');
+    const cwd = await workspace();
+    await writeFile(join(cwd, 'maka-cwd-marker'), 'expected workspace', 'utf8');
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'exec "$SHELL" -l',
+        env: {
+          ...process.env,
+          SHELL: shell.exe,
+          CHERE_INVOKING: '1',
+          DISABLE_AUTO_UPDATE: 'true',
+          DISABLE_UPDATE_PROMPT: 'true',
+        },
+        shell,
+        pty: true,
+        timeoutMs: 10_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: "test -f maka-cwd-marker && printf 'MAKA_CWD_OK\\n'\r",
+      abortSignal: NO_ABORT,
+    });
+    const observed = await waitForPtyText(manager, initial.ref, /MAKA_CWD_OK/u, 10_000);
+    assert.equal(observed.output?.mode, 'pty');
+    if (observed.output?.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(observed.output), /MAKA_CWD_OK/u);
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: 'exit\r',
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+    assert.equal(completed.status, 'completed');
+  });
+
   test('uses the shared explicit PowerShell pipe plan', async () => {
     const manager = await createTestManager();
     const result = await manager.runForegroundBash(
@@ -159,7 +291,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps foreground execution bounded and rejects PTY promotion', async () => {
     const cwd = await workspace();
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const abort = new AbortController();
     const running = manager.runForegroundBash(
@@ -193,7 +325,7 @@ describe('ShellRunProcessManager', () => {
 
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -236,7 +368,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('notifies resource owners when foreground and background commands reach terminal state', async () => {
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const completions: boolean[] = [];
     await manager.runForegroundBash(
@@ -314,7 +446,7 @@ describe('ShellRunProcessManager', () => {
   test('commits a durable starting identity before the native pipe process spawns', async () => {
     const cwd = await workspace();
     const marker = join(cwd, 'spawned');
-    const backingStore = createSqliteShellRunStore(cwd);
+    const backingStore = sqliteShellRunStore(cwd);
     const createCommitted = deferred<void>();
     const releaseCreate = deferred<void>();
     const store: ShellRunStore = {
@@ -367,7 +499,7 @@ describe('ShellRunProcessManager', () => {
     for (const lifecycle of ['session', 'runtime'] as const) {
       const cwd = await workspace();
       const marker = join(cwd, `${lifecycle}-spawned`);
-      const backingStore = createSqliteShellRunStore(cwd);
+      const backingStore = sqliteShellRunStore(cwd);
       const createCommitted = deferred<void>();
       const releaseCreate = deferred<void>();
       const store: ShellRunStore = {
@@ -428,7 +560,7 @@ describe('ShellRunProcessManager', () => {
 
   test('rechecks the session fence after the durable running commit', async () => {
     const cwd = await workspace();
-    const backingStore = createSqliteShellRunStore(cwd);
+    const backingStore = sqliteShellRunStore(cwd);
     const runningCommitted = deferred<void>();
     const releaseRunning = deferred<void>();
     const store: ShellRunStore = {
@@ -553,7 +685,7 @@ describe('ShellRunProcessManager', () => {
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
     const abort = new AbortController();
-    const backingStore = createSqliteShellRunStore(await workspace());
+    const backingStore = sqliteShellRunStore(await workspace());
     const runningCommitted = deferred<void>();
     const releaseRunning = deferred<void>();
     const store: ShellRunStore = {
@@ -1035,7 +1167,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('recovers durable starting and running records without live handles as orphaned', async () => {
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     await store.createShellRun(record({ shellRunId: 'orphan-starting', status: 'starting' }));
     await store.createShellRun(record({ shellRunId: 'orphan-running', status: 'running' }));
     await store.createShellRun({
@@ -1062,7 +1194,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('concurrent orphan observers converge on the same durable terminal record', async () => {
-    const backingStore = createSqliteShellRunStore(await workspace());
+    const backingStore = sqliteShellRunStore(await workspace());
     await backingStore.createShellRun(
       record({ shellRunId: 'concurrent-orphan', status: 'running' }),
     );
@@ -1102,7 +1234,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('keeps unauthorized refs non-disclosing and rejects malformed selectors before storage', async () => {
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     await store.createShellRun({
       ...record({ shellRunId: 'owned-by-another-session', status: 'running' }),
       sessionId: 'session-2',
@@ -1606,7 +1738,7 @@ describe('ShellRunProcessManager', () => {
   test('publishes raw PTY deltas and exposes a bounded replay snapshot', async () => {
     const cwd = await workspace();
     const events: ShellRunPtyDataEvent[] = [];
-    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
+    const manager = createManager(sqliteShellRunStore(cwd), undefined, {
       onPtyData: (event) => events.push(event),
     });
     const run = await manager.runBackgroundBash(
@@ -1647,7 +1779,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1720,7 +1852,7 @@ describe('ShellRunProcessManager', () => {
     const dsrSeen = join(cwd, 'dsr-seen');
     const exitGate = join(cwd, 'exit-gate');
     const sizeBeforeExit = join(cwd, 'size-before-exit');
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1835,7 +1967,7 @@ describe('ShellRunProcessManager', () => {
   test('writeStdin itself returns terminal status when persist is held through finalization', async () => {
     const cwd = await workspace();
     const exitGate = join(cwd, 'exit-gate');
-    const backingStore = createSqliteShellRunStore(await workspace());
+    const backingStore = sqliteShellRunStore(await workspace());
     const persistHeld = deferred<void>();
     const releasePersist = deferred<void>();
     let holdNextObservation = false;
@@ -1969,7 +2101,7 @@ describe('ShellRunProcessManager', () => {
     const cwd = await workspace();
     const dirtyTrigger = join(cwd, 'emit-dirty');
     const dirtyWritten = join(cwd, 'dirty-written');
-    const store = createSqliteShellRunStore(await workspace());
+    const store = sqliteShellRunStore(await workspace());
     // The test owns flush timing: no automatic flush fires until it says so, so the
     // "not yet committed" window cannot be closed by a periodic flush racing the clock.
     const flushes = manualFlushScheduler();
@@ -2274,28 +2406,44 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('fails closed before terminal protocol replies can form an unbounded native write queue', async () => {
-    const manager = await createTestManager();
-    const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
-    const initial = await manager.runBackgroundBash(
-      shellInput({
-        cwd: await workspace(),
-        command: nodeCommand(`
-        process.stdin.setRawMode?.(true);
-        process.stdin.pause();
-        const query = '\\u001b[5n'.repeat(${queries});
-        process.stdout.write(query);
-        setInterval(() => {}, 1000);
-      `),
-        pty: true,
-        timeoutMs: 10_000,
-      }),
-    );
-    const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
-    assertShellRunSnapshot(result);
-    assert.equal(result.status, 'failed');
-    assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
-    assert.equal(manager.liveCount(), 0);
-    assert.equal(manager.livePtyCount(), 0);
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const error = args[1] as NodeJS.ErrnoException | undefined;
+      if (
+        args[0] === 'Unhandled pty write error' &&
+        (error?.code === 'EBADF' || error?.code === 'EIO')
+      ) {
+        return;
+      }
+      originalConsoleError(...args);
+    };
+    try {
+      const manager = await createTestManager();
+      const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd: await workspace(),
+          command: nodeCommand(`
+          process.stdin.setRawMode?.(true);
+          process.stdin.pause();
+          const query = '\\u001b[5n'.repeat(${queries});
+          process.stdout.write(query);
+          setInterval(() => {}, 1000);
+        `),
+          pty: true,
+          timeoutMs: 10_000,
+        }),
+      );
+      const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+      assertShellRunSnapshot(result);
+      assert.equal(result.status, 'failed');
+      assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
+      assert.equal(manager.liveCount(), 0);
+      assert.equal(manager.livePtyCount(), 0);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test('redacts a secret across a soft wrap and the scrollback/screen boundary', async () => {
@@ -2509,7 +2657,7 @@ describe('ShellRunProcessManager', () => {
     // Durable ShellRun creation fails once (the SQLite authority has no
     // filesystem seam to block on), then succeeds; the manager must release
     // the reserved slot on the failed startup.
-    const backingStore = createSqliteShellRunStore(cwd);
+    const backingStore = sqliteShellRunStore(cwd);
     let durableFailureArmed = true;
     const store: ShellRunStore = {
       async createShellRun(record) {
@@ -2721,7 +2869,7 @@ async function createTestManager(
     scheduleTimeout?: ShellRunProcessManagerInput['scheduleTimeout'];
   },
 ): Promise<ShellRunProcessManager> {
-  return createManager(createSqliteShellRunStore(await workspace()), onShellRunUpdate, options);
+  return createManager(sqliteShellRunStore(await workspace()), onShellRunUpdate, options);
 }
 
 function shellInput(input: {
@@ -2768,6 +2916,18 @@ function windowsPowerShellPlan(): ShellPlan | undefined {
   );
   if (!existsSync(executable)) return undefined;
   return { kind: 'powershell', displayName: 'Windows PowerShell 5.1', exe: executable };
+}
+
+function windowsGitBashPlan(): ShellPlan | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const executable = join(
+    process.env.ProgramFiles ?? 'C:\\Program Files',
+    'Git',
+    'bin',
+    'bash.exe',
+  );
+  if (!existsSync(executable)) return undefined;
+  return { kind: 'git-bash', displayName: 'Git Bash', exe: executable };
 }
 
 function record(input: { shellRunId: string; status: ShellRunRecord['status'] }): ShellRunRecord {
@@ -2865,15 +3025,21 @@ async function workspace(): Promise<string> {
   return path;
 }
 
+function sqliteShellRunStore(workspaceRoot: string): ShellRunStore {
+  const store = createSqliteShellRunStore(workspaceRoot);
+  SQLITE_SHELL_RUN_STORES.add(store);
+  return store;
+}
+
 async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 3_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for ShellRun state');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 20,
+    message: 'Timed out waiting for ShellRun state',
+  });
 }
 
 function nodeCommand(script: string): string {
@@ -2987,15 +3153,4 @@ function delayPosixProcessDiscovery(context: TestContext): {
     started: processTableStarted.promise,
     release: () => releaseProcessTable.resolve(),
   };
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 }
