@@ -1330,6 +1330,7 @@ export class AiSdkTurn {
             const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
             const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
+              pruned.projectionSnapshot,
             );
             if (
               pinnedEffectiveDigest === undefined ||
@@ -1352,8 +1353,10 @@ export class AiSdkTurn {
           // folded through the same reducer before it becomes messages. Without
           // this, a result archived at step N is rebuilt in full at step N+1 and
           // the ledger's account of what the model sees stops being true.
-          const foldedReplayEvents =
-            await this.deps.compaction.foldEffectiveModelHistory(replayEvents);
+          const foldedReplayEvents = await this.deps.compaction.foldEffectiveModelHistory(
+            replayEvents,
+            pruned.projectionSnapshot,
+          );
           const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
@@ -2855,6 +2858,7 @@ export class AiSdkTurn {
     const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
     let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
       budgeted?.events ?? rawPriorRuntimeContext,
+      preparedContextBudget.projectionSnapshot,
     );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;

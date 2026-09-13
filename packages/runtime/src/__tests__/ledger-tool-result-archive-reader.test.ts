@@ -45,6 +45,7 @@ import { serializedToolResultProjection } from '../tool-result-archive-transitio
 import { serializeToolResultProjectionV1 } from '../tool-result-archive-encoding.js';
 import {
   buildArchivedToolResultPlaceholder,
+  isArchivedToolResultPlaceholder,
   type ToolResultArchiveReaderInput,
 } from '../tool-result-archive.js';
 
@@ -335,16 +336,13 @@ test('new archive commits only a v2 ledger reference and is readable through the
     }),
   };
   const prepare = createLedgerArchivePreparer(evidence);
-  const outcome = await archiveToolResultAsTransition(
+  await archiveToolResultAsTransition(
     {
       sessionId: 'session',
       archiveToolResult: prepare,
       recordTransition: async (transition) => {
         f.records.push(envelope(transition));
       },
-      loadTransitions: async () => ({
-        transitions: f.records.map((row) => row.data!.transition as ModelProjectionTransition),
-      }),
       now: () => 2,
     },
     {
@@ -359,12 +357,16 @@ test('new archive commits only a v2 ledger reference and is readable through the
       reason: 'stale_tool_result_pruned_before_compact',
     },
   );
-  assert.ok(outcome);
-  assert.equal(outcome.placeholder.rewriteVersion, 2);
-  assert.equal(outcome.placeholder.artifactId, undefined);
-  assert.match(outcome.placeholder.resourceRef!, /^maka:\/\/runtime\/tool-results\//);
+  const transition = f.records[0]!.data!.transition as ModelProjectionTransition;
+  assert.equal(transition.replacement.kind, 'json');
+  const placeholder: unknown =
+    transition.replacement.kind === 'json' && transition.replacement.value;
+  assert.ok(isArchivedToolResultPlaceholder(placeholder));
+  assert.equal(placeholder.rewriteVersion, 2);
+  assert.equal(placeholder.artifactId, undefined);
+  assert.match(placeholder.resourceRef!, /^maka:\/\/runtime\/tool-results\//);
   const reader = createLedgerToolResultArchiveReader(evidence);
-  assert.deepEqual(await reader({ ...outcome.placeholder, sessionId: 'session' }), {
+  assert.deepEqual(await reader({ ...placeholder, sessionId: 'session' }), {
     ok: true,
     serializedResult: f.body,
   });
@@ -404,12 +406,9 @@ test('preflight and transition failure leave the source projection unchanged', a
     },
     now: () => 2,
   };
-  assert.equal(
-    await archiveToolResultAsTransition(services, { ...request, serializedResult: '"wrong"' }),
-    undefined,
-  );
+  await archiveToolResultAsTransition(services, { ...request, serializedResult: '"wrong"' });
   assert.equal(writes, 0);
-  assert.equal(await archiveToolResultAsTransition(services, request), undefined);
+  await archiveToolResultAsTransition(services, request);
   assert.equal(writes, 1);
   assert.equal(f.records.length, 0);
   assert.deepEqual(

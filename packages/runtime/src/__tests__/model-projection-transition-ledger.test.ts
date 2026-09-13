@@ -315,7 +315,7 @@ describe('durable transition writer', () => {
 
   test('commits archive then transition, and the fold applies the result', async () => {
     const recorded: ModelProjectionTransition[] = [];
-    const outcome = await archiveToolResultAsTransition(
+    await archiveToolResultAsTransition(
       {
         sessionId: 'session-1',
         archiveToolResult: () => ({ artifactId: 'artifact-1' }),
@@ -327,7 +327,6 @@ describe('durable transition writer', () => {
       request(),
     );
 
-    assert.ok(outcome);
     assert.equal(recorded.length, 1);
     assert.equal(
       recorded[0]?.sourceProjectionDigest,
@@ -337,48 +336,9 @@ describe('durable transition writer', () => {
     assert.ok(JSON.stringify(reduced.events[0]?.content).includes('page'));
   });
 
-  test('a writer shows the transition the fold accepts, not the one it wrote', async () => {
-    // Both Turns load the same source and append rival roots. Appending
-    // successfully does not make either one the fold's answer, so a writer must
-    // return what the ledger has settled on by the time it looks.
-    for (const order of [
-      ['artifact-a', 'artifact-b'],
-      ['artifact-b', 'artifact-a'],
-    ]) {
-      const ledger: ModelProjectionTransition[] = [];
-      const services = (artifactId: string) => ({
-        sessionId: 'session-1',
-        archiveToolResult: () => ({ artifactId }),
-        recordTransition: async (transition: ModelProjectionTransition) => {
-          ledger.push(transition);
-        },
-        loadTransitions: async () => ({ transitions: [...ledger] }),
-        now: () => 42,
-      });
-
-      await archiveToolResultAsTransition(services(order[0]!), request());
-      const second = await archiveToolResultAsTransition(services(order[1]!), request());
-
-      assert.ok(second);
-      assert.equal(ledger.length, 2);
-      const reduced = reduceEffectiveModelProjections([event], ledger);
-      assert.equal(reduced.applied.length, 1);
-      const winner = reduced.applied[0]!;
-      // The later writer sees both records, so it must not show its own when
-      // the fold prefers the other.
-      assert.equal(second.transition.transitionId, winner.transitionId);
-      assert.deepEqual(archivedToolResultProjection(second.placeholder), winner.replacement);
-      const effective = reduced.events[0];
-      assert.ok(effective?.content?.kind === 'function_response');
-      assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
-      assert.equal(effective.content.result.artifactId, second.placeholder.artifactId);
-      assert.ok(JSON.stringify(reduced.events[0]?.content).includes('page'));
-    }
-  });
-
   test('an archive failure leaves the model-visible content untouched', async () => {
     let recordCalls = 0;
-    const outcome = await archiveToolResultAsTransition(
+    await archiveToolResultAsTransition(
       {
         sessionId: 'session-1',
         archiveToolResult: () => {
@@ -392,25 +352,7 @@ describe('durable transition writer', () => {
       request(),
     );
 
-    assert.equal(outcome, undefined);
     assert.equal(recordCalls, 0);
-  });
-
-  test('a ledger failure leaves the content untouched and the artifact unreachable', async () => {
-    const outcome = await archiveToolResultAsTransition(
-      {
-        sessionId: 'session-1',
-        archiveToolResult: () => ({ artifactId: 'artifact-orphan' }),
-        recordTransition: () => Promise.reject(new Error('ledger is unavailable')),
-        now: () => 42,
-      },
-      request(),
-    );
-
-    assert.equal(outcome, undefined);
-    const reduced = reduceEffectiveModelProjections([event], []);
-
-    assert.ok(serializedEffective(reduced.events).includes(SECRET));
   });
 });
 

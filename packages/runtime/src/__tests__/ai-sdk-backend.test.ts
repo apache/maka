@@ -6676,6 +6676,110 @@ describe('AiSdkBackend model history', () => {
     assert.doesNotMatch(prompt, /RAW_TRANSITIONED_TOOL_BODY/);
   });
 
+  test('checkpoint replay uses the durable winner after refused or uncertain prune commits', async () => {
+    for (const failure of ['rival', 'write-ack', 'read'] as const) {
+      const model = completionModel();
+      const transitions: ModelProjectionTransition[] = [];
+      const priorEvents = [
+        runtimeTextEvent({
+          id: 'snapshot-user',
+          turnId: 'turn-old',
+          role: 'user',
+          author: 'user',
+          text: 'inspect output',
+        }),
+        runtimeEvent({
+          id: 'snapshot-call',
+          turnId: 'turn-old',
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'snapshot-tool',
+            name: 'Bash',
+            args: {},
+          },
+        }),
+        runtimeEvent({
+          id: 'snapshot-result',
+          turnId: 'turn-old',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'snapshot-tool',
+            name: 'Bash',
+            result: 'large output\n'.repeat(2000),
+          },
+        }),
+      ];
+      const checkpoint = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: priorEvents,
+        summary: structuredSummary('STALE_SNAPSHOT_SUMMARY'),
+      });
+      let reads = 0;
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        contextBudget: { toolResultPrune: { enabled: true }, historyCompact: { enabled: true } },
+        loadHistoryCompactCheckpoint: () => checkpoint,
+        toolResultArchive: testToolResultArchive({
+          archiveToolResult: async () => ({
+            ledger: true,
+            commitTransition: async (transition, persist) => {
+              if (failure === 'rival') {
+                transitions.push(transition);
+                return false;
+              }
+              await persist(transition);
+              if (failure === 'write-ack') throw new Error('commit acknowledgement lost');
+              return true;
+            },
+          }),
+        }),
+        recordModelProjectionTransition: async (transition) => {
+          transitions.push(transition);
+        },
+        loadModelProjectionTransitions: async () => {
+          if (++reads === 2 && failure === 'read')
+            throw new Error('ledger unavailable after commit');
+          return {
+            transitions: [...transitions],
+            unreadableTargets: new Set<string>(),
+            unscopedUnreadable: 0,
+          };
+        },
+      });
+      const events: SessionEvent[] = [];
+      const send = async () => {
+        for await (const event of backend.send({
+          turnId: 'turn-new',
+          text: 'continue',
+          context: [],
+          runtimeContext: priorEvents,
+        }))
+          events.push(event);
+      };
+      if (failure === 'read') await assert.rejects(send, /ledger unavailable after commit/);
+      else await send();
+      assert.equal(transitions.length, 1);
+      if (failure === 'read') {
+        assert.equal(model.doStreamCalls.length, 0);
+      } else {
+        const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+        assert.doesNotMatch(prompt, /STALE_SNAPSHOT_SUMMARY/);
+        assert.match(prompt, /maka:\/\/runtime\/tool-results\/snapshot-result/);
+        const usage = events.find((event) => event.type === 'token_usage');
+        assert.ok(usage?.type === 'token_usage');
+        assert.equal(usage.contextBudget?.prunedToolResults, 1);
+        assert.equal(usage.contextBudget?.archiveWriteFailures, 0);
+      }
+    }
+  });
+
   test('a transition committed after creation invalidates the checkpoint at pre-turn replay (#4845 review)', async () => {
     // The checkpoint pins the EFFECTIVE digest of its covered prefix. A
     // projection transition committed AFTER the fold (here: a later turn's

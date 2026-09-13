@@ -88,7 +88,6 @@ import {
   type LoadedModelProjectionTransitions,
 } from './model-projection-transition-ledger.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 import type { SessionEvent } from '@maka/core/events';
 import type { AsyncEventQueue } from './async-queue.js';
@@ -271,7 +270,6 @@ export class AiSdkCompaction {
       sessionId: this.sessionId,
       archiveToolResult: (candidate) => archive(candidate),
       recordTransition: (transition) => record(transition, turnId),
-      loadTransitions: () => this.loadModelProjectionTransitions(),
       now: this.now,
     };
   }
@@ -545,11 +543,14 @@ export class AiSdkCompaction {
    *
    * The current Turn's own events go through here on every provider step, for
    * the same reason prior Turns do: what the model sees is the folded ledger,
-   * not the raw one. A ledger this build cannot read in full leaves the slice
-   * untouched — the content is then merely unpruned, never wrongly replaced.
+   * not the raw one. Checkpoint validation and replay pass the same snapshot;
+   * standalone callers read one here. Unreadable targets remain withheld.
    */
-  public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
-    const loaded = await this.loadModelProjectionTransitions();
+  public async foldEffectiveModelHistory(
+    events: readonly RuntimeEvent[],
+    snapshot?: LoadedModelProjectionTransitions,
+  ): Promise<RuntimeEvent[]> {
+    const loaded = snapshot ?? (await this.loadModelProjectionTransitions());
     if (loaded.transitions.length === 0 && loaded.unreadableTargets.size === 0) {
       return [...events];
     }
@@ -594,17 +595,17 @@ export class AiSdkCompaction {
     turnId: string,
   ): Promise<{
     events: RuntimeEvent[];
+    projectionSnapshot: LoadedModelProjectionTransitions;
     stats?: ToolResultPruneStats;
   }> {
     const policy = this.input.contextBudget;
-    const loaded = await this.loadModelProjectionTransitions();
-    let transitions = loaded.transitions;
+    let loaded = await this.loadModelProjectionTransitions();
     let effective = reduceEffectiveModelProjections(
       runtimeContext,
-      transitions,
+      loaded.transitions,
       loaded.unreadableTargets,
     );
-    if (!policy) return { events: effective.events };
+    if (!policy) return { events: effective.events, projectionSnapshot: loaded };
     let stats: ToolResultPruneStats | undefined;
 
     // A chain this reader cannot see in full is a chain it must not extend: a
@@ -623,12 +624,8 @@ export class AiSdkCompaction {
         policy.toolResultPrune,
         policy.charsPerToken ?? 4,
       );
-      const committed: ModelProjectionTransition[] = [];
-      let archiveFailures = 0;
-      let estimatedTokensBefore = 0;
-      let estimatedTokensAfter = 0;
       for (const candidate of candidates) {
-        const outcome = await archiveToolResultAsTransition(services, {
+        await archiveToolResultAsTransition(services, {
           runtimeEventId: candidate.runtimeEventId,
           turnId: candidate.turnId,
           toolCallId: candidate.toolCallId,
@@ -640,36 +637,42 @@ export class AiSdkCompaction {
           reason: candidate.reason,
           result: candidate.result,
         });
-        if (!outcome) {
-          archiveFailures += 1;
-          continue;
-        }
-        committed.push(outcome.transition);
-        estimatedTokensBefore += candidate.originalEstimatedTokens;
-        estimatedTokensAfter += estimateTokens(
-          serializedToolResultProjection(outcome.transition.replacement).length,
-          policy.charsPerToken ?? 4,
-        );
       }
-      if (committed.length > 0) {
-        transitions = [...transitions, ...committed];
+      if (candidates.length > 0) {
+        // Writes (including a rival winner or an uncertain commit) cannot tell
+        // us what the model sees. Read once after the batch and use this same
+        // snapshot for checkpoint validation, replay, and diagnostics.
+        loaded = await this.loadModelProjectionTransitions();
         effective = reduceEffectiveModelProjections(
           runtimeContext,
-          transitions,
+          loaded.transitions,
           loaded.unreadableTargets,
         );
-      }
-      if (committed.length > 0 || archiveFailures > 0) {
         stats = {
-          prunedToolResults: committed.length,
-          prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
-          prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
-          archiveWriteFailures: archiveFailures,
+          prunedToolResults: 0,
+          prunedToolResultEstimatedTokensBefore: 0,
+          prunedToolResultEstimatedTokensAfter: 0,
+          archiveWriteFailures: 0,
         };
+        for (const candidate of candidates) {
+          const applied = effective.applied.find(
+            (transition) => transition.target.runtimeEventId === candidate.runtimeEventId,
+          );
+          if (!applied) {
+            stats.archiveWriteFailures++;
+            continue;
+          }
+          stats.prunedToolResults++;
+          stats.prunedToolResultEstimatedTokensBefore += candidate.originalEstimatedTokens;
+          stats.prunedToolResultEstimatedTokensAfter += estimateTokens(
+            serializedToolResultProjection(applied.replacement).length,
+            policy.charsPerToken ?? 4,
+          );
+        }
       }
     }
 
-    return { events: effective.events, ...(stats ? { stats } : {}) };
+    return { events: effective.events, projectionSnapshot: loaded, ...(stats ? { stats } : {}) };
   }
 
   public async prepareContextBudgetPolicy(
@@ -678,12 +681,14 @@ export class AiSdkCompaction {
   ): Promise<{
     policy: ContextBudgetPolicy | undefined;
     events: RuntimeEvent[];
+    projectionSnapshot: LoadedModelProjectionTransitions;
     diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
   }> {
     const policy = this.input.contextBudget;
     const prepared = await this.pruneToolResults(runtimeContext, turnId);
     const effective = { events: prepared.events };
-    if (!policy) return { policy, events: effective.events };
+    if (!policy)
+      return { policy, events: effective.events, projectionSnapshot: prepared.projectionSnapshot };
     let nextPolicy = policy;
     let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined = prepared.stats;
 
@@ -743,6 +748,7 @@ export class AiSdkCompaction {
     return {
       policy: nextPolicy,
       events: effective.events,
+      projectionSnapshot: prepared.projectionSnapshot,
       ...(diagnosticPatch ? { diagnosticPatch } : {}),
     };
   }

@@ -29,7 +29,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { estimateTokens, sha256, utf8ByteLength } from './context-budget-helpers.js';
 import { projectionArtifactMedia } from './durable-tool-result-projection.js';
-import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
+import { baseToolResultProjection } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildArchivedToolResultPlaceholder,
@@ -79,15 +79,6 @@ export interface ToolResultArchiveTransitionServices {
   sessionId: string;
   archiveToolResult: ToolResultArchiveRecorder;
   recordTransition: ModelProjectionTransitionRecorder;
-  /**
-   * Re-read the durable ledger after an append.
-   *
-   * A successful append does not make this transition the fold's answer: a
-   * concurrent Turn can append a rival successor to the same source, and the
-   * fold accepts exactly one of them. Without this seam the caller would show a
-   * replacement that the next read replaces with the other writer's.
-   */
-  loadTransitions?: () => Promise<{ transitions: ModelProjectionTransition[] }>;
   now: () => number;
 }
 
@@ -107,22 +98,16 @@ export interface ToolResultArchiveTransitionRequest {
   result?: unknown;
 }
 
-export interface ToolResultArchiveTransitionOutcome {
-  placeholder: ArchivedToolResultPlaceholder;
-  transition: ModelProjectionTransition;
-}
-
 /**
  * Archive one body and commit the transition that replaces its projection.
  *
- * Returns `undefined` when either durable step fails: the caller then leaves
- * the model-visible content exactly as it was, which is the only outcome that
- * keeps "visible history is append-only" true under partial failure.
+ * This is a write attempt, not a projection decision. The caller must read
+ * the durable ledger afterwards, including after a failed or uncertain write.
  */
 export async function archiveToolResultAsTransition(
   services: ToolResultArchiveTransitionServices,
   request: ToolResultArchiveTransitionRequest,
-): Promise<ToolResultArchiveTransitionOutcome | undefined> {
+): Promise<void> {
   const bodySha256 = sha256(request.serializedResult);
   let archived: ToolResultArchiveLocation | void;
   try {
@@ -216,38 +201,11 @@ export async function archiveToolResultAsTransition(
     } else {
       await services.recordTransition(transition);
     }
-    const winner = await winningTransition(services, transition);
-    if (winner && winner.transitionId !== transition.transitionId) {
-      // The rival won. Show what the ledger says, not what this writer wrote;
-      // its own record stays durable and inert, and the body it archived is
-      // unreachable exactly as a refused transition's archive should be.
-      const replaced = winner.replacement.kind === 'json' ? winner.replacement.value : undefined;
-      if (!isArchivedToolResultPlaceholder(replaced)) return undefined;
-      return { placeholder: replaced, transition: winner };
-    }
   } catch {
-    // The archive artifact is now unreferenced: nothing in the effective
-    // history names it, which is what reducer-derived reachability reports. It
-    // is content-addressed, so a retry of the same decision reuses it rather
-    // than publishing a second one. No cleanup pass consumes that reachability
-    // yet, so such an artifact is retained until one does — it cannot break
-    // replay, but it is not reclaimed either (#4283).
+    // A storage failure does not prove that no transition committed. Only the
+    // caller's subsequent authoritative read can decide what is effective.
     return undefined;
   }
-  return { placeholder, transition };
-}
-
-/** The transition the durable fold accepts for this target, after an append. */
-async function winningTransition(
-  services: ToolResultArchiveTransitionServices,
-  appended: ModelProjectionTransition,
-): Promise<ModelProjectionTransition | undefined> {
-  if (!services.loadTransitions) return appended;
-  const { transitions } = await services.loadTransitions();
-  return nextInChain(transitions, appended.previousTransitionId, appended.sourceProjectionDigest, {
-    id: appended.target.toolCallId,
-    name: appended.target.toolName,
-  });
 }
 
 export function collectToolResultArchiveCandidates(
