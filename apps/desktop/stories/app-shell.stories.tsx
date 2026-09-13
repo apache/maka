@@ -2638,6 +2638,16 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
     const root = tailScroller();
     await document.fonts.ready;
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+    // Real path: open the completed process, then start reading from its
+    // bottom. Live processes already start open. No upward warm-up traversal.
+    const process = root.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+    if (process && !process.open) {
+      process.querySelector('summary')!.click();
+      await waitFor(() => expect(process.open).toBe(true));
+      await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
+      scrollAsReader(root, root.scrollHeight);
+      await painted(4);
+    }
     await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
     // A single Turn taller than several viewports is the point; without the
     // overflow the rest proves nothing.
