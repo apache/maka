@@ -49,7 +49,10 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
+import {
+  IDLE_GRACE_MS_ENV_VAR,
+  connectOrSpawnRuntimeHostWithDependencies,
+} from '../client/connect-or-spawn.js';
 import {
   launchDetachedRuntimeHostCandidate,
   type DetachedCandidateAttempt,
@@ -187,6 +190,59 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.deepEqual(result, { kind: 'failed', reason: 'stored_data_incompatible' });
     });
+  });
+
+  const launchedIdleGraceMs = async (
+    input: { idleGraceMs?: number },
+    env: NodeJS.ProcessEnv,
+  ): Promise<number | undefined> => {
+    let launched: number | undefined;
+    await withHostPaths(async (paths) => {
+      let connectCalls = 0;
+      await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          ...input,
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          env,
+          random: () => 0,
+          connectHost: async () => {
+            connectCalls += 1;
+            return connectCalls === 1
+              ? {
+                  kind: 'unavailable' as const,
+                  reason: 'not_registered' as const,
+                  endpointConnected: false,
+                }
+              : { kind: 'election_deadline_elapsed' as const, endpointConnected: false };
+          },
+          launchCandidate: (candidate) => {
+            launched = candidate.idleGraceMs;
+            return {
+              spawned: Promise.resolve({
+                pid: 4242,
+                exited: new Promise<never>(() => undefined),
+              }),
+            };
+          },
+        },
+      );
+    });
+    return launched;
+  };
+
+  test('forwards the environment idle grace to the Candidate', async () => {
+    assert.equal(await launchedIdleGraceMs({}, { [IDLE_GRACE_MS_ENV_VAR]: '2000' }), 2_000);
+  });
+
+  test('an explicit idle grace takes precedence over the environment', async () => {
+    const env = { [IDLE_GRACE_MS_ENV_VAR]: 'not-a-number' };
+    assert.equal(await launchedIdleGraceMs({ idleGraceMs: 0 }, env), 0);
   });
 
   test('reports an operational migration blocker as a permanent election failure', async () => {
