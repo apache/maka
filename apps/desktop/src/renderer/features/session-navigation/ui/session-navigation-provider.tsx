@@ -166,6 +166,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
       sessionProjectName: controller.selectors.sessionProjectName,
+      sessionLocation: controller.selectors.sessionLocation,
       sessionMeta: controller.selectors.sessionMeta,
       sessionBadge,
       onSelectSession: props.onSelectSession,
@@ -175,6 +176,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [
       controller.layout.viewMode,
       controller.selectors.groups,
+      controller.selectors.sessionLocation,
       controller.selectors.sessionMeta,
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,

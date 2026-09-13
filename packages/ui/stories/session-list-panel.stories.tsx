@@ -100,6 +100,7 @@ function panelProps(input: {
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
+  sessionLocation?: SessionListPanelProps['sessionLocation'];
   onSelectSession?: SessionListPanelProps['onSelectSession'];
 }): SessionListPanelProps {
   return {
@@ -115,6 +116,7 @@ function panelProps(input: {
     ...(input.groups ? { groups: input.groups } : {}),
     ...(input.projectActions ? { projectActions: input.projectActions } : {}),
     ...(input.worktreeSessionIds ? { worktreeSessionIds: input.worktreeSessionIds } : {}),
+    ...(input.sessionLocation ? { sessionLocation: input.sessionLocation } : {}),
     onSelectSession: input.onSelectSession ?? noop,
     onSelect: noop,
     onOpenSettings: noop,
@@ -580,6 +582,12 @@ export const ProjectGroups: Story = {
             streamingSessionIds: new Set(['proj-worktree']),
             viewMode: 'project',
             worktreeSessionIds: new Set(['proj-worktree']),
+            // The real selector only names a location for a project with more
+            // than one, so the fixture mirrors that: maka is the only one.
+            sessionLocation: (session) =>
+              maka.locations.some((location) => location.path === session.cwd)
+                ? session.cwd
+                : undefined,
             groups: [
               {
                 id: `project:${maka.id}`,
@@ -687,6 +695,17 @@ export const ProjectGroups: Story = {
     if (!taskHoverCard) throw new Error('task hover card is missing');
     await expect(within(taskHoverCard).getByText('worktree 上的修复')).toBeVisible();
     await expect(within(taskHoverCard).getByText(/glm-4\.7/)).toBeVisible();
+    // The visible location line, not just its accessible description: a task in
+    // a multi-location project says which working directory it actually uses.
+    const locationLine = within(taskHoverCard).getByText(
+      '/workspace/maka-agent/.worktree/sidebar',
+      { exact: true },
+    );
+    await expect(locationLine).toBeVisible();
+    expect(locationLine).toHaveAttribute(
+      'title',
+      '/workspace/maka-agent/.worktree/sidebar',
+    );
 
     await userEvent.hover(navigation);
     await waitFor(() => expect(

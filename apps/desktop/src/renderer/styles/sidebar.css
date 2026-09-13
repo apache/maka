@@ -308,6 +308,7 @@
 }
 
 .maka-sidebar-hover-card-path,
+.maka-sidebar-hover-card-location,
 .maka-sidebar-hover-card-project {
   min-width: 0;
   overflow: hidden;

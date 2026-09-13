@@ -29,7 +29,10 @@ import {
 } from '@maka/ui';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
-import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
+import {
+  deriveSessionLocation,
+  deriveWorktreeSessionIds,
+} from '../model/session-project-grouping.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import {
   selectRailLayout,
@@ -59,6 +62,7 @@ export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
   sessionProjectName(session: SessionSummary): string | undefined;
+  sessionLocation(session: SessionSummary): string | undefined;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
@@ -140,23 +144,36 @@ export function useSessionNavigationController(
     () => new Map(rail.sessions.map((session) => [session.id, session])),
     [rail.sessions],
   );
-  const projectNameByIdentity = useMemo(() => {
-    const names = new Map<string, string>();
+  const projectByIdentity = useMemo(() => {
+    const projects = new Map<string, ProjectRecord>();
     for (const project of input.projects) {
-      names.set(project.id, project.name);
-      for (const alias of project.aliases ?? []) names.set(alias, project.name);
+      projects.set(project.id, project);
+      for (const alias of project.aliases ?? []) projects.set(alias, project);
     }
-    return names;
+    return projects;
   }, [input.projects]);
   const sessionProjectName = useCallback(
     (session: SessionSummary): string | undefined =>
       deriveTitlebarProjectName({
         projectName: session.projectId
-          ? projectNameByIdentity.get(session.projectId)
+          ? projectByIdentity.get(session.projectId)?.name
           : undefined,
         projectPath: session.cwd,
       }),
-    [projectNameByIdentity],
+    [projectByIdentity],
+  );
+  const sessionLocation = useCallback(
+    (session: SessionSummary): string | undefined => {
+      // The same Host boundary the worktree mark honours: `projects` are the
+      // local ones, and a remote/environment session's cwd must not be matched
+      // against a local project's locations just because they look alike.
+      const projected: SessionNavigationSession | undefined = sessionById.get(session.id);
+      if (projected && runtimeHostProfileUsesHostWorkspace(projected.profileKind)) {
+        return undefined;
+      }
+      return deriveSessionLocation(session, projectByIdentity);
+    },
+    [projectByIdentity, sessionById],
   );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
@@ -169,8 +186,8 @@ export function useSessionNavigationController(
   );
 
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionMeta }),
-    [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
+    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionLocation, sessionMeta }),
+    [groups, sessionLocation, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
   const selection = useSessionSelection({

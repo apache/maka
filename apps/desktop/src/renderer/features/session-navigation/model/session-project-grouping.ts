@@ -92,10 +92,46 @@ export function deriveWorktreeSessionIds(
   return ids;
 }
 
+export function deriveSessionLocation(
+  session: SessionSummary,
+  projectsByIdentity: ReadonlyMap<string, ProjectRecord>,
+): string | undefined {
+  if (!session.projectId || !session.cwd) return undefined;
+  const project = projectsByIdentity.get(session.projectId);
+  if (!project || project.locations.length <= 1) return undefined;
+  const match = project.locations.find((location) => samePath(location.path, session.cwd!));
+  return match?.path;
+}
+
+/**
+ * Whether two paths name the same location.
+ *
+ * Separators are unified first: a Host may hand back either, and `/Users/a/b`
+ * and `\Users\a\b` are one directory on Windows, so mixed forms must match —
+ * the worktree mark and the location line both depend on it. Windows paths
+ * (drive-absolute and UNC) then fold case, matching the OS's case-insensitive
+ * semantics; POSIX paths stay exact.
+ */
 function samePath(left: string, right: string): boolean {
-  return normalizePath(left) === normalizePath(right);
+  const a = normalizePath(left);
+  const b = normalizePath(right);
+  if (isWindowsPath(a) !== isWindowsPath(b)) return false;
+  return isWindowsPath(a) ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+  const unified = path.replace(/\\/g, '/');
+  if (unified === '') return '';
+  const trimmed = unified.replace(/\/+$/, '');
+  if (trimmed.length === 0) {
+    // The path was all separators: a POSIX root, or the UNC root `\\`.
+    return unified.startsWith('//') ? '//' : '/';
+  }
+  // A drive root keeps its separator, or `C:\` would normalize to `C:` and
+  // stop being recognised as a Windows path — losing case folding.
+  return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}/` : trimmed;
+}
+
+function isWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:\//.test(path) || path.startsWith('//');
 }
