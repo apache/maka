@@ -36,6 +36,7 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
+  canReadPath,
   canWritePath,
   createReadOnlyPermissionProfile,
   type PermissionProfile,
@@ -309,6 +310,40 @@ describe('filesystem worker client Grep target scope', () => {
 });
 
 describe('filesystem worker operation-scoped Seatbelt profile', () => {
+  test('Grep grants ancestor metadata exactly and never follows an unauthorized metadata link', async () => {
+    const root = await temporaryDirectory('maka-grep-metadata-');
+    const source = join(root, 'src');
+    const outside = await temporaryDirectory('maka-grep-metadata-outside-');
+    await mkdir(source);
+    await writeFile(join(root, '.gitignore'), 'generated/\n');
+    await writeFile(join(outside, 'rules'), '*\n');
+    await symlink(join(outside, 'rules'), join(root, '.ignore'));
+    const { client, transforms } = fakeClient();
+    await client.execute({
+      operation: {
+        kind: 'grep',
+        path: source,
+        pattern: 'x',
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 1000,
+      },
+      cwd: root,
+      permissionProfile: {
+        type: 'managed',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+        },
+        network: { kind: 'restricted' },
+      },
+    });
+    const { profile, pathContext } = transforms[0]!.command;
+    assert.equal(canReadPath(profile, join(root, '.gitignore'), pathContext), true);
+    assert.equal(canReadPath(profile, join(root, 'private.txt'), pathContext), false);
+    assert.equal(canReadPath(profile, join(outside, 'rules'), pathContext), false);
+  });
+
   test('narrows a write worker to the exact target while preserving the base policy', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-operation-profile-');
     const target = join(workspace, 'target.txt');

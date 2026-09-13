@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { canReadPath, canWritePath, type PermissionProfile } from '@maka/core/permission-profile';
 
 import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
@@ -375,7 +375,23 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
+    const searchMetadata: string[] = [];
+    if (operation.kind === 'grep' && target.targetType === 'directory') {
+      // Narrow the data scan to its target without dropping already-authorized
+      // ancestor ignore rules. Configuration files never grant their parent tree.
+      for (let parent = dirname(target.enforcementPath); ; parent = dirname(parent)) {
+        for (const name of ['.gitignore', '.ignore', '.rgignore', '.git', '.git/info/exclude']) {
+          const path = join(parent, name);
+          if (!canReadPath(effectiveProfile, path, pathContext)) continue;
+          const canonical = await realpath(path).catch(() => undefined);
+          if (canonical && canReadPath(effectiveProfile, canonical, pathContext)) {
+            searchMetadata.push(canonical);
+          }
+        }
+        if (dirname(parent) === parent) break;
+      }
+    }
+    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary, searchMetadata);
     const pinnedTarget =
       platform === 'linux' && !entryMode && target.targetType !== 'missing'
         ? (() => {
@@ -669,6 +685,7 @@ function deriveWorkerProfile(
       ];
     };
   },
+  searchMetadata: readonly string[],
 ): PermissionProfile {
   if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return profile;
   const target = operationBoundary.filesystem.entries[0];
@@ -684,6 +701,12 @@ function deriveWorkerProfile(
           access: target.access,
           match: target.scope,
         },
+        ...searchMetadata.map((path) => ({
+          kind: 'path' as const,
+          path,
+          access: 'read' as const,
+          match: 'exact' as const,
+        })),
       ],
     },
     network: { kind: 'restricted' },
