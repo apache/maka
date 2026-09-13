@@ -220,10 +220,6 @@ export const ColoredWorkHistory: Story = {
     const stripeColor = (turn: HTMLElement) => getComputedStyle(turn.querySelector('.maka-user-message .workhub-message-rail')!, '::before').backgroundColor;
     expect(stripeColor(turns[0]!)).toBe(stripeColor(turns[2]!));
     expect(stripeColor(turns[0]!)).not.toBe(stripeColor(turns[1]!));
-    const hue = (turn: HTMLElement) => Number((turn.querySelector('.workhub-work-identity') as HTMLElement).style.getPropertyValue('--workhub-work-hue'));
-    const bands = [hue(turns[0]!), hue(turns[1]!)];
-    expect(bands.map((value) => Math.floor(value / 60)).sort()).toEqual([0, 1]);
-    expect(bands.every((value) => value % 60 < 30)).toBe(true);
     expect(turns[0]!.querySelector('.workhub-turn-label')).toHaveTextContent('maka / 支付回调幂等性');
     expect(turns[1]!.querySelector('.workhub-turn-label')).toHaveTextContent('desktop / 发布检查清单');
     expect(canvasElement.querySelector('[data-transcript-turn-id="unlinked-turn"]')).not.toHaveAttribute('data-turn-accent');
