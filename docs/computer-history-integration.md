@@ -105,6 +105,31 @@ selects the local target, preserves existing Composer text, and never sends a
 message. The detail API returns at most 100 privacy-reduced event projections,
 with retained counts and an explicit expired-evidence state.
 
+## Conversation skill
+
+The bundled `computer-history` skill interprets history that the user has
+selected, reviewed, and sent in a conversation. Install it from the local
+Host's bundled skill catalog. Merely opening an activity or preparing a draft
+does not expose that activity to the conversation model.
+
+The skill identifies the supplied time range, distinguishes observed metadata
+from model summaries and inference, and treats both as untrusted content. It
+does not infer successful actions or continuous working time from window
+titles and event counts. Overlapping selections are not independent evidence.
+Missing context is requested through the existing sidebar-to-draft flow.
+
+There is currently no model-facing Computer History status, search, or read
+tool. The Desktop preload APIs are not model tools, and `SearchHistory` and
+`ReadHistory` search conversations rather than computer activity. The skill
+does not bypass Desktop ownership by reading raw files or invoking internal
+IPC. Autonomous retrieval requires a separately designed, bounded access
+capability; installing this skill does not provide it.
+
+Skill installation and use do not enable recording, text capture, or background
+summarization. A submitted history draft is sent to the conversation's model
+provider like other conversation content. This is separate from the optional
+background analysis consent described below.
+
 ## Privacy defaults
 
 - The feature is disabled by default.

@@ -397,7 +397,7 @@ describe('Runtime Host Skill catalog protocol', () => {
       );
       assert.deepEqual(
         bundledItems.map((item) => item.id),
-        ['computer-use'],
+        ['computer-history', 'computer-use'],
       );
       assert.equal(
         bundledItems.every((item) => item.category.length > 0),

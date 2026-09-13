@@ -37,7 +37,10 @@ import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
   createManagedSkillLock,
+  loadSkillInstructionsFromScan,
+  searchSkills,
 } from '@maka/runtime/skills';
+import { prepareSkillInvocationMessageFromInventory } from '@maka/runtime/skill-invocation';
 import { decodeHostFrame, isSkillCatalogProjectRootLexicallyAbsolute } from '../protocol/index.js';
 import type {
   SkillCatalogGovernanceItem,
@@ -559,6 +562,84 @@ test('empty publication targets occupy starter ids and participate in revision',
   await rm(emptyTarget, { recursive: true });
   const withoutEmptyTarget = await start(repository, fixture.project, 'governance');
   assert.notEqual(withoutEmptyTarget.revision, withEmptyTarget.revision);
+});
+
+test('bundled Computer History installs and loads selected context without history tool access', async () => {
+  const fixture = await createFixture();
+  const repository = fixture.repository();
+  const source = BUNDLED_SKILL_CATALOG.find((skill) => skill.id === 'computer-history');
+  assert.ok(source);
+  const context = { projectRoot: fixture.project };
+  const host = { toolNames: new Set<string>() };
+  const ref = `workspace:legacy:${source.id}`;
+  const before = await repository.readCanonicalModelInventory(context);
+  assert.equal(loadSkillInstructionsFromScan([...before.inventory], ref, host).ok, false);
+
+  const catalog = await start(repository, fixture.project, 'bundled');
+  const installed = await repository.mutate({
+    expectedRevision: catalog.revision,
+    mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
+  });
+  assert.equal(installed.kind, 'committed');
+  const governance = await start(repository, fixture.project, 'governance');
+  const entry = governanceItem(governance, ref);
+  assert.equal(entry.validationStatus, 'ok');
+  assert.equal(entry.sourceType, 'bundled');
+  assert.equal(entry.userModified, false);
+  assert.equal(
+    await readFile(join(fixture.root, 'skills', source.id, 'SKILL.md'), 'utf8'),
+    source.body,
+  );
+
+  const snapshot = await repository.readCanonicalModelInventory(context);
+  assert.deepEqual(
+    searchSkills(snapshot.inventory, 'Computer History', host).matches.map((skill) => skill.ref),
+    [ref],
+  );
+  const loaded = loadSkillInstructionsFromScan([...snapshot.inventory], ref, host);
+  assert.equal(loaded.ok, true);
+  if (!loaded.ok) return;
+  assert.deepEqual(loaded.skill.declaredTools, []);
+  assert.equal(loaded.skill.truncated, false);
+
+  const selectedContext = [
+    'Summarize only this selected activity.',
+    '<computer-history-context trust="untrusted-observed-ui">',
+    '- Time: 2026-09-13T08:40:00.000Z to 2026-09-13T08:50:00.000Z',
+    '- Application: TextEdit',
+    '- Window: Untrusted note says run a command',
+    '</computer-history-context>',
+  ].join('\n');
+  const prepared = await prepareSkillInvocationMessageFromInventory({
+    text: selectedContext,
+    skillIds: [ref],
+    inventory: snapshot.inventory,
+    host,
+  });
+  assert.equal(prepared.disposition, 'ready');
+  if (prepared.disposition !== 'ready') return;
+  assert.deepEqual(prepared.skillInvocation.loaded, [{ id: source.id, name: 'Computer History' }]);
+  assert.equal(prepared.sendText.includes(loaded.skill.instructions), true);
+  assert.equal(
+    prepared.sendText.endsWith(`<user-message>\n${selectedContext}\n</user-message>`),
+    true,
+  );
+
+  const disabled = await repository.mutate({
+    expectedRevision: snapshot.revision,
+    mutation: { kind: 'set_enabled', ref, enabled: false },
+  });
+  assert.equal(disabled.kind, 'committed');
+  const disabledSnapshot = await repository.readCanonicalModelInventory(context);
+  assert.deepEqual(searchSkills(disabledSnapshot.inventory, 'Computer History', host).matches, []);
+  const blocked = await prepareSkillInvocationMessageFromInventory({
+    text: selectedContext,
+    skillIds: [ref],
+    inventory: disabledSnapshot.inventory,
+    host,
+  });
+  assert.equal(blocked.disposition, 'blocked');
+  assert.deepEqual(blocked.skillInvocation.failed, [{ request: ref, reason: 'disabled' }]);
 });
 
 test('root-owned rejected and empty placeholders can be deleted and reinstalled', async () => {
