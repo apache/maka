@@ -104,7 +104,8 @@ test('Glob retains native pattern membership, including hidden entries and expli
   ];
   if (process.platform !== 'win32') {
     await symlink('src', join(root, 'link'));
-    patterns.push('link/*.ts');
+    await symlink('..', join(root, 'src', 'parent-link'));
+    patterns.push('link/*.ts', 'src/**/*.ts', 'src/*/*.ts', '**/parent-link/*.ts');
   }
   for (const pattern of patterns) {
     const expected = [];

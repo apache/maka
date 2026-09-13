@@ -34,6 +34,7 @@ export async function globFiles(input: {
   const files: string[] = [];
   for await (const file of globIterate(input.pattern, {
     cwd: input.cwd,
+    ignore: { childrenIgnored: (entry) => entry.isSymbolicLink() },
     fs: {
       readdir(path, options, callback) {
         readdir(path, options, (error, entries) => {

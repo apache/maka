@@ -2428,7 +2428,7 @@ describe('builtin write tools path containment', () => {
       'inside edited\n',
     );
     const scopedGlobResult = await runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'src') }, cwd);
-    assert.deepStrictEqual((scopedGlobResult as { files: string[] }).files, [
+    assert.deepStrictEqual((scopedGlobResult as { files: string[] }).files.sort(), [
       'inside.txt',
       'written.txt',
     ]);
