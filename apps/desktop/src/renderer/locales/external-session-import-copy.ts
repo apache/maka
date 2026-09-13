@@ -18,6 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
  * 设置 › 活动 › 导入任务.
@@ -72,6 +73,7 @@ type ExternalSessionImportCopy = {
   importFailedNoModel: string;
   /** The source conversation could not be read or converted (e.g. too large). */
   importFailedSourceUnreadable: string;
+  importFailedSourceLimit: (limit: ExternalSessionLimit) => string;
   importRecoveredTitle: string;
   importRecoveredDescription: (name: string) => string;
   importNotRecordedTitle: string;
@@ -185,6 +187,13 @@ const COPY = {
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
     importFailedNoModel: '没有可用的模型连接，无法为导入的任务选择模型。请先在 设置 · 模型 中配置并启用一个模型后再导入。',
     importFailedSourceUnreadable: '无法读取或转换该对话，它可能过大、已损坏或暂时无法读取。请检查来源后重试。',
+    importFailedSourceLimit: (limit) => `该对话超过导入限制：${{
+      transcript_bytes: '源文件大小',
+      record_bytes: '单条记录大小',
+      records: '记录数量',
+      converted_bytes: '转换后内容大小',
+      messages: '消息数量',
+    }[limit.kind]}最多 ${limit.max.toLocaleString('zh-CN')}${limit.kind.endsWith('_bytes') ? ' 字节' : ' 条'}。请缩小源对话；直接重试不会改变此限制。`,
     importRecoveredTitle: '已确认导入',
     importRecoveredDescription: (name) => `「${name}」导入的任务现已可用。`,
     importNotRecordedTitle: '没有发现新任务',
@@ -266,6 +275,13 @@ const COPY = {
     importFailedFallback: '該對話無法轉換或儲存。請檢查來源後重試。',
     importFailedNoModel: '沒有可用的模型連線，無法為匯入的任務選擇模型。請先在 設定 · 模型 中設定並啟用一個模型後再匯入。',
     importFailedSourceUnreadable: '無法讀取或轉換該對話，它可能過大、已損毀或暫時無法讀取。請檢查來源後重試。',
+    importFailedSourceLimit: (limit) => `該對話超過匯入限制：${{
+      transcript_bytes: '來源檔案大小',
+      record_bytes: '單筆記錄大小',
+      records: '記錄數量',
+      converted_bytes: '轉換後內容大小',
+      messages: '訊息數量',
+    }[limit.kind]}最多 ${limit.max.toLocaleString('zh-TW')}${limit.kind.endsWith('_bytes') ? ' 位元組' : ' 筆'}。請縮小來源對話；直接重試不會改變此限制。`,
     importRecoveredTitle: '已確認匯入',
     importRecoveredDescription: (name) => `「${name}」匯入的任務現已可用。`,
     importNotRecordedTitle: '沒有發現新任務',
@@ -348,6 +364,13 @@ const COPY = {
       'No usable model connection to attach the imported task to. Configure and enable a model in Settings · Models, then import again.',
     importFailedSourceUnreadable:
       'This conversation could not be read or converted — it may be too large, malformed, or temporarily unreadable. Check the source and try again.',
+    importFailedSourceLimit: (limit) => `This conversation exceeds the import limit: ${{
+      transcript_bytes: 'source file size',
+      record_bytes: 'single record size',
+      records: 'record count',
+      converted_bytes: 'converted content size',
+      messages: 'message count',
+    }[limit.kind]} allows at most ${limit.max.toLocaleString('en')}${limit.kind.endsWith('_bytes') ? ' bytes' : ''}. Reduce the source conversation; retrying it unchanged will not help.`,
     importRecoveredTitle: 'Import confirmed',
     importRecoveredDescription: (name) =>
       `The imported task is available now for “${name}”.`,

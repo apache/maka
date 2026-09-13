@@ -43,7 +43,10 @@ import {
   sanitizeForeignTitle,
   type ClaudeTitleCandidates,
 } from '@maka/core/foreign-session';
-import { externalSessionMatchesQuery } from '@maka/core/external-session';
+import {
+  ExternalSessionLimitError,
+  externalSessionMatchesQuery,
+} from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
@@ -352,7 +355,11 @@ class ClaudeTranscriptSnapshot {
       const metadata = await handle.stat();
       if (!metadata.isFile()) throw new Error('Claude Code transcript is not a regular file');
       if (metadata.size > maxBytes) {
-        throw new Error(`Claude Code transcript exceeds ${maxBytes} bytes: ${sessionId}`);
+        throw new ExternalSessionLimitError(
+          'transcript_bytes',
+          maxBytes,
+          `Claude Code transcript exceeds ${maxBytes} bytes: ${sessionId}`,
+        );
       }
       return new ClaudeTranscriptSnapshot(handle, metadata.size);
     } catch (error) {
@@ -464,6 +471,8 @@ async function* readClaudeTranscriptRecords(
 function assertClaudeRecordSize(actualBytes: number, maxBytes: number, sessionId: string): void {
   if (actualBytes > maxBytes) {
     throw new ClaudeTranscriptReadLimitError(
+      'record_bytes',
+      maxBytes,
       `Claude Code transcript record exceeds ${maxBytes} bytes: ${sessionId}`,
     );
   }
@@ -472,12 +481,14 @@ function assertClaudeRecordSize(actualBytes: number, maxBytes: number, sessionId
 function assertClaudeRecordCount(actual: number, maxRecords: number, sessionId: string): void {
   if (actual > maxRecords) {
     throw new ClaudeTranscriptReadLimitError(
+      'records',
+      maxRecords,
       `Claude Code transcript has more than ${maxRecords} records: ${sessionId}`,
     );
   }
 }
 
-class ClaudeTranscriptReadLimitError extends Error {}
+class ClaudeTranscriptReadLimitError extends ExternalSessionLimitError {}
 
 function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined {
   const text = bytes.toString('utf8').trim();
@@ -630,7 +641,11 @@ class ClaudeResponseCollector {
     if (responseId === undefined) return;
     const retainedBytes = Buffer.byteLength(JSON.stringify(record), 'utf8');
     if (retainedBytes > this.#maxBytes - this.#retainedBytes) {
-      throw new Error(`Claude Code transcript converts to more than ${this.#maxBytes} bytes`);
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        this.#maxBytes,
+        `Claude Code transcript converts to more than ${this.#maxBytes} bytes`,
+      );
     }
     this.#retainedBytes += retainedBytes;
     const existing = this.responses.get(responseId);
@@ -877,13 +892,17 @@ class ClaudeTranscriptConverter {
 
   #append(message: StoredMessage): void {
     if (this.#messages.length >= this.#limits.maxMessages) {
-      throw new Error(
+      throw new ExternalSessionLimitError(
+        'messages',
+        this.#limits.maxMessages,
         `Claude Code transcript converts to more than ${this.#limits.maxMessages} messages`,
       );
     }
     const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
     if (encodedBytes > this.#limits.maxConvertedBytes - this.#convertedBytes) {
-      throw new Error(
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        this.#limits.maxConvertedBytes,
         `Claude Code transcript converts to more than ${this.#limits.maxConvertedBytes} bytes`,
       );
     }
