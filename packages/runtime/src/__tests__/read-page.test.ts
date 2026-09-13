@@ -57,6 +57,18 @@ test('a long Unicode line continues without loss and refuses changed content', (
   assert.equal(pieces.join(''), content.split('\n')[1]);
 });
 
+test('line-boundary continuations reject a rolling output snapshot', () => {
+  const lines = Array.from({ length: 160 }, (_, i) => `line-${i} ${'x'.repeat(100)}`);
+  const content = lines.join('\n');
+  const first = readPage(content, { path: 'maka://runtime/background-tasks/live' });
+  assert.ok(first.next);
+  assert.equal(first.partialLine, undefined);
+  const second = readPage(content, first.next);
+  assert.equal(second.content.split('\n')[0], lines[first.returnedLines]);
+  assert.equal(second.partialLine, undefined);
+  assert.throws(() => readPage(lines.slice(10).join('\n'), first.next!), /content changed/);
+});
+
 test('archive Read decodes content lines and retains terminal execution metadata', () => {
   assert.equal(
     readToolResultPage(JSON.stringify({ content: 'a\nb\nc' }), {

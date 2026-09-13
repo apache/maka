@@ -186,6 +186,20 @@ export function parseToolResultArchiveResourceRef(
 export const TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS =
   'Use Read with the next parameters to continue this result.';
 
+/** A complete canonical event address, including when read from untrusted history. */
+export function parseToolResultEventAddress(path: string): string | null {
+  const prefix = 'maka://runtime/tool-results/';
+  if (!path.startsWith(prefix)) return null;
+  try {
+    const id = decodeURIComponent(path.slice(prefix.length));
+    return id.length > 0 && id.length <= 512 && `${prefix}${encodeURIComponent(id)}` === path
+      ? id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function readToolResultArchiveResource(
   reader: ToolResultArchiveResourceReader,
   sessionId: string,
@@ -193,11 +207,8 @@ export async function readToolResultArchiveResource(
   abortSignal?: AbortSignal,
 ): Promise<unknown> {
   const { path } = resolveReadInput(input);
-  const prefix = 'maka://runtime/tool-results/';
-  if (!path.startsWith(prefix))
-    throw new Error('Invalid Maka tool-result address. Use the path returned by a tool.');
-  const runtimeEventId = decodeURIComponent(path.slice(prefix.length));
-  if (!runtimeEventId || runtimeEventId.length > 512 || path.includes('?') || path.includes('#'))
+  const runtimeEventId = parseToolResultEventAddress(path);
+  if (!runtimeEventId)
     throw new Error('Invalid Maka address. Copy the complete path returned by the tool.');
   abortSignal?.throwIfAborted();
   const result = await reader.readArchivedToolResultResource({

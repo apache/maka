@@ -74,7 +74,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     };
     const first = await read({ path });
     assert.equal(first.content, 'first');
-    assert.deepEqual(first.next, { path, offset: 1 });
+    assert.ok(first.next);
     const long = await read(first.next!);
     assert.equal(long.partialLine, true);
     const continuation = await read(long.next!);
@@ -83,6 +83,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     assert.equal((await read({ path, offset: 2, limit: 1 })).content, 'last');
     assert.equal((await read({ path, limit: 1 })).next, null);
     await writeFile(path, 'changed');
+    await assert.rejects(read(first.next!), /content changed/);
     await assert.rejects(read(long.next!), /content changed/);
   });
   test('fails closed for managed file operations when the worker is unavailable', async () => {

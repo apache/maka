@@ -151,23 +151,20 @@ export function readPage(
     let next: ReadInput | null = null;
     if (!complete) {
       const remaining = input.limit === undefined ? undefined : input.limit - returnedLines;
-      next = partialLine
-        ? {
-            path: `${CONTINUATION_PREFIX}${Buffer.from(resolved.path).toString('base64url')}?at=${stop}&sha=${(digest ??= digestText(content))}`,
-            ...(remaining === undefined ? {} : { limit: remaining }),
-          }
-        : {
-            path: resolved.path,
-            offset: offset + returnedLines,
-            ...(remaining === undefined ? {} : { limit: remaining }),
-          };
+      const position = partialLine ? stop : stop + 1;
+      next = {
+        path: `${CONTINUATION_PREFIX}${Buffer.from(resolved.path).toString('base64url')}?at=${position}&sha=${(digest ??= digestText(content))}`,
+        ...(remaining === undefined ? {} : { limit: remaining }),
+      };
     }
     return {
       content: content.slice(start, Math.max(start, stop)),
       offset,
       returnedLines,
       totalLines,
-      ...(partialLine || resolved.position !== undefined ? { partialLine: true as const } : {}),
+      ...(partialLine || (offset < totalLines && start > starts[offset]!)
+        ? { partialLine: true as const }
+        : {}),
       next,
     };
   };

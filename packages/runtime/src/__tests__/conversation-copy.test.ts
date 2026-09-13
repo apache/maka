@@ -3242,6 +3242,7 @@ for (const inspectFirst of [false, true]) {
 
 test('conversation copy rebuilds projection transitions against the copied events', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-transition-copy-'));
+  const invalidPath = `maka://read/${Buffer.from('maka://runtime/tool-results/event-result%').toString('base64url')}?at=0&sha=${'a'.repeat(32)}`;
   try {
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
@@ -3278,6 +3279,31 @@ test('conversation copy rebuilds projection transitions against the copied event
         content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: { path: 'notes.txt' } },
       }),
       resultEvent,
+      runtimeEvent({
+        id: 'invalid-read-call',
+        ts: 2.3,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'invalid-read',
+          name: 'Read',
+          args: { path: invalidPath },
+        },
+      }),
+      runtimeEvent({
+        id: 'invalid-read-result',
+        ts: 2.4,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'invalid-read',
+          name: 'Read',
+          result: { kind: 'text', text: 'Invalid Maka address' },
+          isError: true,
+        },
+      }),
       runtimeEvent({ id: 'event-terminal', ts: 3, status: 'completed' }),
     ]) {
       await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
@@ -3353,6 +3379,14 @@ test('conversation copy rebuilds projection transitions against the copied event
     const targetResult = targetEvents.find((event) => event.content?.kind === 'function_response');
     assert.ok(targetResult);
     assert.notEqual(targetResult.id, 'event-result');
+    assert.ok(
+      targetEvents.some(
+        (event) =>
+          event.content?.kind === 'function_call' &&
+          event.content.name === 'Read' &&
+          JSON.stringify(event.content.args) === JSON.stringify({ path: invalidPath }),
+      ),
+    );
     const copiedTransitions = await loadModelProjectionTransitionsFromRunLedger(
       runStore,
       'session-target',

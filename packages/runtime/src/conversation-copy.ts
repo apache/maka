@@ -53,6 +53,7 @@ import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
+  parseToolResultEventAddress,
 } from './tool-result-archive-resource.js';
 import {
   deserializeToolResultArchive,
@@ -78,7 +79,12 @@ import {
 import { archivedToolResultProjection } from './tool-result-archive-transition.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 import { createHash } from 'node:crypto';
-import { readToolResultPage, readableToolResult, READ_PAGE_MAX_CHARS } from './read-page.js';
+import {
+  readToolResultPage,
+  readableToolResult,
+  resolveReadInput,
+  READ_PAGE_MAX_CHARS,
+} from './read-page.js';
 
 export interface ConversationCopySlice {
   readonly messages: readonly StoredMessage[];
@@ -808,20 +814,27 @@ function rewriteReadInput(
   references: ConversationCopyMessageReferenceMap,
   clonedEvents: ReadonlyMap<string, RuntimeEvent>,
 ): Record<string, unknown> & { path: string } {
-  const rewrite = (path: string): string =>
-    rewriteLedgerArchiveText(
-      references.mode === 'exact'
-        ? rewriteAttachmentResourceRefs(path, references.artifactIds)
-        : path,
-      references,
-    );
-  if (!input.path.startsWith('maka://read/')) return { ...input, path: rewrite(input.path) };
-  const url = new URL(input.path);
-  const original = Buffer.from(url.pathname.slice(1), 'base64url').toString('utf8');
-  const path = rewrite(original);
+  let original: string;
+  try {
+    original = resolveReadInput(input).path;
+  } catch {
+    return input;
+  }
   const prefix = 'maka://runtime/tool-results/';
-  if (original.startsWith(prefix) && path !== original) {
-    const copied = clonedEvents.get(decodeURIComponent(original.slice(prefix.length)));
+  const eventId = parseToolResultEventAddress(original);
+  if (original.startsWith(prefix) && !eventId) return input;
+  const path = eventId
+    ? `${prefix}${encodeURIComponent(references.runtimeEventIds.get(eventId) ?? eventId)}`
+    : rewriteLedgerArchiveText(
+        references.mode === 'exact'
+          ? rewriteAttachmentResourceRefs(original, references.artifactIds)
+          : original,
+        references,
+      );
+  if (!input.path.startsWith('maka://read/')) return { ...input, path };
+  const url = new URL(input.path);
+  if (eventId && path !== original) {
+    const copied = clonedEvents.get(eventId);
     const projection = copied && baseToolResultProjection(copied);
     const digest =
       projection &&
