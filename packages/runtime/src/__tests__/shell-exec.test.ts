@@ -241,8 +241,9 @@ describe('runShellWithBoundedTail', () => {
   });
 
   test('keeps the bounded tail of oversized output without a newline', async () => {
-    const r = await runShellWithBoundedTail(
-      "head -c 500 /dev/zero | tr '\\0' x",
+    const r = await runProcessWithBoundedTail(
+      process.execPath,
+      ['-e', "process.stdout.write('x'.repeat(500))"],
       base({ maxRetainedChars: 50 }),
     );
     assert.equal(r.exitCode, 0);
