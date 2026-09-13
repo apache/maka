@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+
 /** Either a React synthetic event or the native one it wraps. */
 export interface ChatInputCompositionEvent {
   key?: string;
@@ -121,6 +123,23 @@ export function mentionQueryMatches(query: string, text: string): boolean {
 /** Normalize `/skill:<query>` and bare `/<query>` into the same Skill search query. */
 export function skillMentionQuery(query: string): string {
   return query.toLowerCase().startsWith('skill:') ? query.slice('skill:'.length) : query;
+}
+
+/** Skills already in the draft, excluding the invocation currently being completed. */
+export function selectedSkillIds(draft: string, rawQuery: string): Set<string> {
+  // A full `/skill:id` query will be replaced by the chosen chip. Ignore that
+  // occurrence only; an earlier chip with the same id must still hide the row.
+  let queryId = /^skill:([A-Za-z0-9._-]+)$/.exec(rawQuery)?.[1]?.toLowerCase();
+  const selected = new Set<string>();
+  for (const match of draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    const id = match[1].toLowerCase();
+    if (id === queryId) {
+      queryId = undefined;
+    } else {
+      selected.add(id);
+    }
+  }
+  return selected;
 }
 
 /** Return the searchable command query only when `/` starts the draft's first token. */
