@@ -1066,6 +1066,70 @@ describe('ACP Session registry', () => {
     });
   }
 
+  test('retains a cancelled prompt until Stop delivery settles after a terminal event', async () => {
+    const sessionId = 'cancel-before-stop-response';
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const stop = deferred<unknown>();
+    let started = false;
+    let stopping = false;
+    let connectionClosed = false;
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              const turn = runningTurn(sessionId, 'turn');
+              subscription.setRoot(turn);
+              started = true;
+              return {
+                kind: 'started',
+                turn,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (operation === 'turn.stop') {
+              stopping = true;
+              subscription.setRoot(completedTurn(sessionId, 'turn'));
+              return stop.promise;
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => subscription,
+          close: async () => {
+            connectionClosed = true;
+          },
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => 'turn',
+    });
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    let promptSettled = false;
+    const prompt = registry
+      .prompt({ sessionId, prompt: [{ type: 'text', text: 'run' }] }, promptContext([]))
+      .then((result) => {
+        promptSettled = true;
+        return result;
+      });
+    await waitFor(() => started && subscription.nextCalls >= 2);
+    // Allow the start response to settle before cancellation, as in a live stream.
+    await new Promise((resolve) => setImmediate(resolve));
+    const cancellation = registry.cancel({ sessionId });
+    await waitFor(() => stopping);
+    await new Promise((resolve) => setImmediate(resolve));
+    const disposal = registry.dispose();
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(promptSettled, false, 'terminal observation must not discard pending Stop');
+      assert.equal(connectionClosed, false, 'teardown must keep Stop transport alive');
+    } finally {
+      stop.resolve({});
+      await Promise.all([cancellation, disposal]);
+    }
+    assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+    assert.equal(connectionClosed, true);
+  });
+
   test('retires a failed real Session channel so the next prompt opens a fresh one', async () => {
     const sessionId = 'session-reattach';
     const first = new FakeSubscription(continuitySnapshot(sessionId));
