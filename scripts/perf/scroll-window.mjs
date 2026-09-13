@@ -109,6 +109,12 @@ try {
   for (const scene of scenes) {
     for (let trial = 0; trial < trials; trial++) {
       const page = await browser.newPage({ viewport: { width: 1352, height: 932 } });
+      if (process.env.SCROLL_WINDOW_CPU_RATE) {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Emulation.setCPUThrottlingRate', {
+          rate: Number(process.env.SCROLL_WINDOW_CPU_RATE),
+        });
+      }
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.goto(
@@ -151,10 +157,42 @@ try {
           ),
         ).observe({ type: 'longtask' });
         let previous;
+        let previousRendered;
+        let previousText;
+        // Follow an actual visible glyph, not the top of a provisional shell
+        // or a tall Turn whose beginning can be far outside the viewport.
+        const readingText = (top) => {
+          const box = root.getBoundingClientRect();
+          for (let y = top + 8; y < top + root.clientHeight; y += 48) {
+            const caret = document.caretRangeFromPoint(box.left + box.width / 2, y);
+            const node = caret?.startContainer;
+            if (
+              !node ||
+              node.nodeType !== Node.TEXT_NODE ||
+              !node.parentElement?.closest('.maka-turn') ||
+              !node.textContent.length
+            )
+              continue;
+            const start = Math.min(caret.startOffset, node.textContent.length - 1);
+            const range = document.createRange();
+            range.setStart(node, start);
+            range.setEnd(node, start + 1);
+            const rect = range.getBoundingClientRect();
+            if (rect.height > 0 && rect.top >= top && rect.bottom <= top + root.clientHeight) {
+              return { range, node, top: rect.top };
+            }
+          }
+        };
         const frame = () => {
           const turns = [...root.querySelectorAll('[data-turn-id]')];
           const top = root.getBoundingClientRect().top;
           const anchor = turns.find((turn) => turn.getBoundingClientRect().bottom > top);
+          const rendered = turns.find(
+            (turn) =>
+              turn.matches('.maka-turn') &&
+              turn.getBoundingClientRect().bottom > top &&
+              turn.getBoundingClientRect().top < top + root.clientHeight,
+          );
           const old = previous && root.querySelector(`[data-turn-id="${previous.id}"]`);
           const sample = {
             ms: performance.now(),
@@ -169,6 +207,16 @@ try {
             first: turns[0]?.dataset.turnId,
             last: turns.at(-1)?.dataset.turnId,
             phase: probe.phase,
+            anchorId: previous?.id,
+            anchorWasPlaceholder: previous?.placeholder,
+            renderedAnchorId: previousRendered?.node.dataset.turnId,
+            renderedAnchorDelta: previousRendered?.node.isConnected
+              ? previousRendered.node.getBoundingClientRect().top - previousRendered.top
+              : null,
+            readerDelta:
+              previousText?.node.isConnected && previousText.range.getClientRects().length
+                ? previousText.range.getBoundingClientRect().top - previousText.top
+                : null,
             membership: [...root.querySelectorAll('[data-transcript-turn-id]')]
               .map((turn) => turn.dataset.transcriptTurnId)
               .join(','),
@@ -177,8 +225,16 @@ try {
           };
           probe.frames.push(sample);
           previous = anchor
-            ? { id: anchor.dataset.turnId, top: anchor.getBoundingClientRect().top }
+            ? {
+                id: anchor.dataset.turnId,
+                top: anchor.getBoundingClientRect().top,
+                placeholder: anchor.hasAttribute('data-virtual-placeholder'),
+              }
             : undefined;
+          previousRendered = rendered
+            ? { node: rendered, top: rendered.getBoundingClientRect().top }
+            : undefined;
+          previousText = readingText(top);
           if (probe.running) requestAnimationFrame(frame);
         };
         requestAnimationFrame(frame);
@@ -267,11 +323,12 @@ try {
               !frame.phase.startsWith('up-repeat') &&
               frame.phase === data.frames[i].phase &&
               !frame.phase.endsWith('pause') &&
-              frame.anchorDelta !== null
-                ? [-frame.anchorDelta]
+              frame.readerDelta !== null
+                ? [-frame.readerDelta]
                 : [],
             ),
         ),
+        readerSamples: data.frames.filter((frame) => frame.readerDelta !== null).length,
         maxLongTaskMs: Math.max(0, ...data.tasks.map((task) => task.duration)),
         longTaskMs: data.tasks.reduce((sum, task) => sum + task.duration, 0),
         maxMounted: Math.max(...data.frames.map((frame) => frame.count)),
@@ -289,6 +346,15 @@ try {
       console.log(JSON.stringify(row));
       assert.equal(blankFrames.length, 0, 'native traversal must not expose an empty transcript');
       assert.equal(revisitShrink.length, 0, 'revisiting measured history must preserve its extent');
+      assert(
+        data.frames.some(
+          (frame) =>
+            frame.phase.startsWith('up-') &&
+            !frame.phase.startsWith('up-repeat') &&
+            frame.readerDelta !== null,
+        ),
+        'the glyph probe must observe rendered text during the cold upward traversal',
+      );
       assert(row.coldMaxReversePx <= 1, 'height corrections must not reverse an upward reader');
       if (scene === 'virtual-history-mixed-content' && trial === 0) {
         // Reuse the real paging/mounting path at a different layout width.
@@ -347,6 +413,7 @@ try {
     'frontend-scroll-window',
     {
       browser: browser.version(),
+      cpuThrottlingRate: Number(process.env.SCROLL_WINDOW_CPU_RATE ?? 1),
       samples,
       viewport: '1352x932',
       conditions: `${trials} fresh documents per scene; native wheel, 24 ticks of 450px with >=16ms spacing and 350ms pauses. Full up/down traversal; fonts and Markdown ready. Same driver on baseline and experiment refs.`,
