@@ -654,7 +654,10 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
-    const backgroundTaskHealthTool = buildBackgroundTaskHealthTool(runtimeResources!, webFetchService);
+    const backgroundTaskHealthTool = buildBackgroundTaskHealthTool(
+      runtimeResources!,
+      webFetchService,
+    );
     pluginWeb.bindRuntime({
       search: ({ query, limit, abortSignal }) =>
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),

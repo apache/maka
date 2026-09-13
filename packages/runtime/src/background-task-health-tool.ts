@@ -22,7 +22,11 @@ import type { ToolResultContent } from '@maka/core/events';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export interface BackgroundTaskHealthReader {
-  readRuntimeResource(sessionId: string, ref: string, abortSignal: AbortSignal): Promise<ToolResultContent>;
+  readRuntimeResource(
+    sessionId: string,
+    ref: string,
+    abortSignal: AbortSignal,
+  ): Promise<ToolResultContent>;
 }
 
 export interface BackgroundTaskEndpointProbe {
@@ -47,13 +51,32 @@ export function buildBackgroundTaskHealthTool(
     categoryHint: 'web_read',
     description:
       'Check a tracked background task and, when given its HTTP endpoint, verify that the endpoint is reachable. Process tracking and endpoint readiness are reported separately.',
-    parameters: z.object({
-      ref: z.string().describe('The maka://runtime/background-tasks/<id> ref returned by Bash'),
-      url: z.string().url().refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), 'Health endpoint must use HTTP or HTTPS').optional().describe('The HTTP or HTTPS endpoint to probe'),
-    }).strict(),
+    parameters: z
+      .object({
+        ref: z.string().describe('The maka://runtime/background-tasks/<id> ref returned by Bash'),
+        url: z
+          .string()
+          .url()
+          .refine(
+            (value) => ['http:', 'https:'].includes(new URL(value).protocol),
+            'Health endpoint must use HTTP or HTTPS',
+          )
+          .optional()
+          .describe('The HTTP or HTTPS endpoint to probe'),
+      })
+      .strict(),
     impl: async ({ ref, url }, context) => {
-      const resource = await reader.readRuntimeResource(context.sessionId, ref, context.abortSignal);
-      if (!resource || typeof resource !== 'object' || Array.isArray(resource) || resource.kind !== 'shell_run') {
+      const resource = await reader.readRuntimeResource(
+        context.sessionId,
+        ref,
+        context.abortSignal,
+      );
+      if (
+        !resource ||
+        typeof resource !== 'object' ||
+        Array.isArray(resource) ||
+        resource.kind !== 'shell_run'
+      ) {
         throw new Error('BackgroundTaskHealth requires a shell_run runtime resource');
       }
       const shell = resource as Extract<ToolResultContent, { kind: 'shell_run' }>;
@@ -63,10 +86,17 @@ export function buildBackgroundTaskHealthTool(
         ...(shell.pid !== undefined ? { pid: shell.pid } : {}),
       };
       if (!url) return JSON.stringify({ process, endpoint: { status: 'not_checked' } });
-      const endpoint = await probe.probe({ url, sessionId: context.sessionId, abortSignal: context.abortSignal });
+      const endpoint = await probe.probe({
+        url,
+        sessionId: context.sessionId,
+        abortSignal: context.abortSignal,
+      });
       return JSON.stringify({
         process,
-        endpoint: { ...endpoint, health: endpoint.status >= 200 && endpoint.status < 400 ? 'healthy' : 'unhealthy' },
+        endpoint: {
+          ...endpoint,
+          health: endpoint.status >= 200 && endpoint.status < 400 ? 'healthy' : 'unhealthy',
+        },
       });
     },
   };
