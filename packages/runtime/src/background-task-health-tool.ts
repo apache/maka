@@ -88,13 +88,33 @@ export function buildBackgroundTaskHealthTool(
         ...(shell.pid !== undefined ? { pid: shell.pid } : {}),
         ...(shell.completedAt !== undefined ? { completedAt: shell.completedAt } : {}),
         ...(shell.failureMessage !== undefined ? { failureMessage: shell.failureMessage } : {}),
+        ...(shell.output
+          ? {
+              logs:
+                shell.output.mode === 'pipes'
+                  ? { stdout: shell.output.stdout, stderr: shell.output.stderr }
+                  : { screen: shell.output.screen, scrollback: shell.output.scrollback },
+            }
+          : {}),
       };
       if (!url) return JSON.stringify({ process, endpoint: { status: 'not_checked' } });
-      const endpoint = await probe.probe({
-        url,
-        sessionId: context.sessionId,
-        abortSignal: context.abortSignal,
-      });
+      let endpoint;
+      try {
+        endpoint = await probe.probe({
+          url,
+          sessionId: context.sessionId,
+          abortSignal: context.abortSignal,
+        });
+      } catch (error) {
+        return JSON.stringify({
+          process,
+          endpoint: {
+            health: 'unknown',
+            target: new URL(url).origin,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
       return JSON.stringify({
         process,
         endpoint: {
