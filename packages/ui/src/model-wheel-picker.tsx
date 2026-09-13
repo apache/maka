@@ -18,7 +18,7 @@
  */
 
 import { type ReactNode, useId, useLayoutEffect, useRef, useState } from 'react';
-import { Button } from '@astryxdesign/core';
+import { Button, useLayer } from '@astryxdesign/core';
 import { Check, ICON_SIZE } from './icons.js';
 
 export interface ModelWheelOption {
@@ -29,7 +29,7 @@ export interface ModelWheelOption {
   disabled?: boolean;
 }
 
-/** Shared inline picker: the model at the settled snap position takes effect. */
+/** Shared overlay picker: the model at the settled snap position takes effect. */
 export function ModelWheelPicker(props: {
   options: readonly ModelWheelOption[];
   value?: string;
@@ -46,25 +46,44 @@ export function ModelWheelPicker(props: {
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLSpanElement>(null);
   const open = props.open ?? internalOpen;
   const setOpen = (next: boolean) => {
     if (props.open === undefined) setInternalOpen(next);
     props.onOpenChange?.(next);
   };
-  return open ? <ModelWheel {...props} onClose={(restoreFocus) => {
-    setOpen(false);
-    if (restoreFocus) requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
-  }} /> : <Button ref={trigger} type="button" variant="ghost" size={props.size ?? 'sm'}
-    label={props.label} icon={props.icon} tooltip={props.tooltip}
+  const layer = useLayer({ mode: 'context', lazyMount: true, lightDismiss: true,
+    onHide: () => setOpen(false) });
+  useLayoutEffect(() => {
+    if (open) layer.show();
+    else layer.hide();
+  }, [open, layer.show, layer.hide]);
+  useLayoutEffect(() => {
+    const element = anchor.current;
+    if (!open || !element) return;
+    // Saving another model can change the label while the wheel is open.
+    // Keep its anchor's footprint stable throughout that interaction.
+    element.style.width = `${element.getBoundingClientRect().width}px`;
+    return () => { element.style.removeProperty('width'); };
+  }, [open]);
+  return <span ref={anchor} className="maka-model-wheel-anchor" data-open={open}>
+    <Button ref={(element) => { trigger.current = element; layer.ref(element); }} type="button" variant="ghost" size={props.size ?? 'sm'}
+    label={props.label} icon={props.icon} tooltip={open ? undefined : props.tooltip}
     isDisabled={props.disabled || props.options.length === 0}
     className={props.triggerClassName} aria-label={props.ariaLabel}
-    aria-haspopup="listbox" aria-expanded={false}
-    onClick={() => setOpen(true)}
+    aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? layer.id : undefined}
+    onMouseDown={(event) => { if (open) event.preventDefault(); }}
+    onClick={() => setOpen(!open)}
     onKeyDown={(event) => {
       if (!props.disabled && props.options.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault(); event.stopPropagation(); setOpen(true);
       }
-    }} />;
+    }} />
+    {layer.render(open && layer.isOpen ? <ModelWheel {...props} onClose={(restoreFocus) => {
+    setOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
+    }} /> : null, { placement: 'above', alignment: 'start', offset: 4, className: 'maka-model-wheel-popup' })}
+  </span>;
 }
 
 const ROW_HEIGHT = 44;

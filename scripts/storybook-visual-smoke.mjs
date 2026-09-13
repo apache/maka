@@ -71,6 +71,7 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-settings-pages--appearance',
   'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+  'product-workhub--standard-composer',
 ]);
 const FORCED_COLORS_STORY_IDS = new Set([
   'product-settings-pages--general-forced-colors-focus-ring',

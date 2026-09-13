@@ -33,6 +33,8 @@ test('the wheel applies settled selection once and restores the saved model on f
     }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb',
+    getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
   const root = createRoot(document.querySelector('#root')!);
   const calls: string[] = [];

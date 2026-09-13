@@ -169,19 +169,49 @@ export const FullConversationAndWorkIdentity: Story = {
   },
 };
 export const FullConversationNarrow: Story = { ...FullConversationAndWorkIdentity, parameters: { viewport: { defaultViewport: 'tablet' } } };
+// Real path: the docked WorkHub composer opens its model wheel before sending.
 export const StandardComposer: Story = {
   render: () => <Surface />,
   play: async ({ canvasElement }) => {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
-    await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
+    const trigger = canvas.getByRole('button', { name: /切换当前任务模型/ });
+    const layout = () => Array.from(canvasElement.querySelectorAll('.maka-composer-editor, .maka-composer button')).map((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+    const before = layout();
+    await userEvent.click(trigger);
     const wheel = canvas.getByRole('listbox', { name: /切换当前任务模型/ });
+    await waitFor(() => expect(wheel).toHaveFocus());
+    expect(layout()).toEqual(before);
     await expect(within(wheel).getByRole('option', { name: /model-a/, selected: true })).toBeInTheDocument();
     await userEvent.keyboard('{End}');
     await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
     await waitFor(() => expect(within(wheel).getByRole('option', { name: /model-b/, selected: true })).toBeInTheDocument());
+    expect(layout()).toEqual(before);
+    await waitFor(() => {
+      const selected = wheel.querySelector('[aria-selected="true"]')!.getBoundingClientRect();
+      const viewport = wheel.getBoundingClientRect();
+      expect(Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2)).toBeLessThanOrEqual(1);
+    });
+    const activeLabel = wheel.querySelector('[data-active="true"] .maka-model-wheel-label')!;
+    const otherLabel = wheel.querySelector('[data-active="false"] .maka-model-wheel-label')!;
+    await waitFor(() => expect(new DOMMatrix(getComputedStyle(activeLabel).transform).a).toBeGreaterThan(new DOMMatrix(getComputedStyle(otherLabel).transform).a));
+    expect(getComputedStyle(wheel).outlineStyle).toBe('solid');
     await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(layout()).toEqual(before);
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
+    await userEvent.tab();
+    await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
+    expect(canvasElement.ownerDocument.activeElement).not.toBe(canvasElement.ownerDocument.body);
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;

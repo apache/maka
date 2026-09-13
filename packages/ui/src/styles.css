@@ -19,6 +19,10 @@
 
 @import 'katex/dist/katex.min.css';
 
+.maka-model-wheel-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
+.maka-model-wheel-anchor > button { min-width: 0; max-width: 100%; }
+.maka-model-wheel-anchor[data-open='true'] > button { width: 100%; }
+.maka-model-wheel-popup { border-radius: var(--radius-container); background: var(--color-background-popover); box-shadow: var(--shadow-med); }
 .maka-model-wheel { position: relative; width: min(264px, 55vw); max-width: 100%; }
 .maka-model-wheel::before { content: ''; position: absolute; inset: 44px 0; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
 .maka-model-wheel-viewport { position: relative; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; mask-image: linear-gradient(transparent, black 32%, black 68%, transparent); outline: none; }

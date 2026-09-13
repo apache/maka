@@ -296,7 +296,7 @@ function WorkHubContents() {
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
-            <div hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
+            <div className="workHubComposerContent" hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
@@ -336,10 +336,10 @@ function WorkHubContents() {
                 </div>
               }
             />
-            </div>
             {!progress && floating && !conversationExpanded && (
               <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={toggleConversation} />
             )}
+            </div>
           </div>
         }
       >
