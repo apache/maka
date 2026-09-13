@@ -552,7 +552,7 @@
         "nonTriviaTokens": 2284
       },
       "src/renderer/app-shell-revision-actions.ts": {
-        "importDeclarations": 4,
+        "importDeclarations": 5,
         "bridgePaths": {
           "window.maka.sessions.abandonSessionCopy": 2,
           "window.maka.sessions.reviseBeforeTurn": 1
@@ -570,10 +570,11 @@
           "./platform/desktop/session-message-settlement.js": 1,
           "./session-copy-attempt.js": 1,
           "./session-workspace-errors.js": 1,
-          "@maka/core/session": 1
+          "@maka/core/session": 1,
+          "@maka/ui": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2846
+        "importSpecifiers": 9,
+        "nonTriviaTokens": 2318
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
