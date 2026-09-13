@@ -117,6 +117,16 @@ export class ComputerHistorySummaries {
     return this.#read();
   }
 
+  /** Main-only reveal of a validated persisted document, independent of timeline filtering. */
+  async reveal(id: string, showItemInFolder: (path: string) => void): Promise<void> {
+    if (typeof id !== 'string' || id.length > 23 || !isOwnedSummaryFilename(`${id}.md`)) {
+      throw invalidSummary();
+    }
+    await this.#maintenance;
+    if (!(await this.#directoryExists())) throw invalidSummary();
+    await this.#readFile(`${id}.md`, showItemInFolder);
+  }
+
   /** Abort and drain, then delete overlapping summaries. -Infinity also removes corrupt owned files. */
   clear(fromMs: number): Promise<void> {
     if (typeof fromMs !== 'number' || Number.isNaN(fromMs)) {
@@ -259,31 +269,45 @@ export class ComputerHistorySummaries {
       if (!entry.name.endsWith('.md')) continue;
       if (!entry.isFile()) throw invalidSummary();
       try {
-        const file = await open(
-          join(this.#directory, entry.name),
-          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-        );
-        try {
-          const info = await file.stat();
-          if (!info.isFile() || info.size > MAX_FILE_BYTES) throw invalidSummary();
-          const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
-          let size = 0;
-          while (size < buffer.length) {
-            const { bytesRead } = await file.read(buffer, size, buffer.length - size, null);
-            if (bytesRead === 0) break;
-            size += bytesRead;
-          }
-          if (size > MAX_FILE_BYTES) throw invalidSummary();
-          const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, size));
-          summaries.push(decodeSummary(text, entry.name));
-        } finally {
-          await file.close();
-        }
+        summaries.push(await this.#readFile(entry.name));
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
     }
     return summaries.sort(compareSummaries);
+  }
+
+  async #readFile(
+    filename: string,
+    showItemInFolder?: (path: string) => void,
+  ): Promise<StoredComputerHistorySummary> {
+    const path = join(this.#directory, filename);
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.size > MAX_FILE_BYTES) throw invalidSummary();
+      const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await file.read(buffer, size, buffer.length - size, null);
+        if (bytesRead === 0) break;
+        size += bytesRead;
+      }
+      if (size > MAX_FILE_BYTES) throw invalidSummary();
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, size));
+      const summary = decodeSummary(text, filename);
+      if (showItemInFolder) {
+        if (!(await this.#directoryExists())) throw invalidSummary();
+        const current = await lstat(path);
+        if (!current.isFile() || current.isSymbolicLink() ||
+            current.dev !== info.dev || current.ino !== info.ino ||
+            current.size !== info.size || current.mtimeMs !== info.mtimeMs) throw invalidSummary();
+        showItemInFolder(path);
+      }
+      return summary;
+    } finally {
+      await file.close();
+    }
   }
 
   async #write(summary: StoredComputerHistorySummary, current: () => boolean): Promise<void> {

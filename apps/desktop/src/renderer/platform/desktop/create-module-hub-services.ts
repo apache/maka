@@ -134,6 +134,7 @@ export function createDesktopModuleHubServices(
       timeline: (days) => bridge.computerHistory.timeline(days),
       applications: (bundleIds) => bridge.computerHistory.applications(bundleIds),
       detail: (id) => bridge.computerHistory.detail(id),
+      revealSummary: (id) => bridge.computerHistory.revealSummary(id),
       updateSettings: (patch) => bridge.computerHistory.updateSettings(patch),
       requestPermissions: () => bridge.computerHistory.requestPermissions(),
       pause: (duration) => bridge.computerHistory.pause(duration),

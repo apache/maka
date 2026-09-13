@@ -533,6 +533,7 @@ test('interval clear rejects corrupt summaries but all-clear deletes them withou
   const path = join(home, 'summaries', (await readdir(join(home, 'summaries')))[0]!);
   const original = await readFile(path, 'utf8');
   const metadata = JSON.parse(original.split('\n')[1]!);
+  const showItemInFolder = t.mock.fn((_path: string) => {});
   for (const text of [
     'not frontmatter',
     '---\n{invalid}\n---\nbody\n',
@@ -549,12 +550,51 @@ test('interval clear rejects corrupt summaries but all-clear deletes them withou
   ]) {
     await writeFile(path, text);
     await assert.rejects(summaries.list());
+    await assert.rejects(summaries.reveal(`10min-${BASE}`, showItemInFolder));
+    assert.equal(showItemInFolder.mock.callCount(), 0);
     await assert.rejects(summaries.run([]));
     await assert.rejects(summaries.clear(BASE));
     assert.equal(await readFile(path, 'utf8'), text);
     await summaries.clear(Number.NEGATIVE_INFINITY);
     assert.deepEqual(await readdir(join(home, 'summaries')), []);
   }
+});
+
+test('reveal resolves only a canonical persisted document, including old or rollup-hidden leaves', async (t) => {
+  const home = await fixture(t);
+  const generate = t.mock.fn(async () => CONTENT);
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS, generate,
+  });
+  await summaries.run([event(BASE + MINUTE)]);
+  const directory = join(home, 'summaries');
+  const leaf = `10min-${BASE}`;
+  assert.equal((await summaries.list()).length, 2);
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => BASE + 90 * 86_400_000,
+    generate: async () => assert.fail('reveal must not generate'),
+  });
+  // An unrelated damaged file must not turn exact-ID lookup into a directory scan.
+  await writeFile(join(directory, `10min-${BASE + TEN_MINUTES}.md`), 'unrelated corrupt summary');
+  const shown: string[] = [];
+  const showItemInFolder = (path: string) => { shown.push(path); };
+  assert.equal(await reopened.reveal(leaf, showItemInFolder), undefined);
+  assert.deepEqual(shown, [join(directory, `${leaf}.md`)]);
+  for (const id of [
+    '../notes', `${leaf}.md`, '0000000000000000', '10min-00', '10min-1',
+    `10min-${'1'.repeat(1_000)}`, `10min-${BASE + TEN_MINUTES}`, `10min-${BASE + 2 * TEN_MINUTES}`,
+  ]) {
+    await assert.rejects(reopened.reveal(id, showItemInFolder));
+  }
+  await rm(join(directory, `${leaf}.md`));
+  await assert.rejects(reopened.reveal(leaf, showItemInFolder));
+  await mkdir(join(directory, `${leaf}.md`));
+  await assert.rejects(reopened.reveal(leaf, showItemInFolder));
+  await rm(join(directory, `${leaf}.md`), { recursive: true });
+  await writeFile(join(directory, `${leaf}.md`), Buffer.from([0xff, 0xfe]));
+  await assert.rejects(reopened.reveal(leaf, showItemInFolder));
+  assert.deepEqual(shown, [join(directory, `${leaf}.md`)]);
+  assert.equal(generate.mock.callCount(), 2);
 });
 
 test('all-clear removes only canonical owned summary filenames', async (t) => {
@@ -590,6 +630,7 @@ test('rejects symlinked homes, summary directories and files without touching th
   await mkdir(target);
   const linkHome = join(root, 'linked-home');
   await symlink(target, linkHome);
+  const showItemInFolder = t.mock.fn((_path: string) => {});
   const create = (home: string) =>
     new ComputerHistorySummaries({
       home,
@@ -597,12 +638,14 @@ test('rejects symlinked homes, summary directories and files without touching th
       generate: async () => CONTENT,
     });
   await assert.rejects(create(linkHome).list(), /Invalid/);
+  await assert.rejects(create(linkHome).reveal(`10min-${BASE}`, showItemInFolder));
   await assert.rejects(create(linkHome).clear(Number.NEGATIVE_INFINITY), /Invalid/);
   const directoryHome = join(root, 'directory-home');
   await mkdir(directoryHome);
   await symlink(target, join(directoryHome, 'summaries'));
   await assert.rejects(create(directoryHome).run([event(BASE + MINUTE)]), /Invalid/);
   await assert.rejects(create(directoryHome).clear(Number.NEGATIVE_INFINITY), /Invalid/);
+  await assert.rejects(create(directoryHome).reveal(`10min-${BASE}`, showItemInFolder));
 
   const fileHome = join(root, 'file-home');
   const directory = join(fileHome, 'summaries');
@@ -612,6 +655,9 @@ test('rejects symlinked homes, summary directories and files without touching th
   await symlink(secret, join(directory, `10min-${BASE}.md`));
   await symlink(target, join(directory, `6h-${BASE}.md`));
   await assert.rejects(create(fileHome).list(), /Invalid/);
+  await assert.rejects(create(fileHome).reveal(`10min-${BASE}`, showItemInFolder));
+  await assert.rejects(create(fileHome).reveal(`6h-${BASE}`, showItemInFolder));
+  assert.equal(showItemInFolder.mock.callCount(), 0);
   await assert.rejects(create(fileHome).clear(BASE), /Invalid/);
   await create(fileHome).clear(Number.NEGATIVE_INFINITY);
   assert.deepEqual(await readdir(directory), []);

@@ -3547,6 +3547,9 @@ const makaBridge = {
     detail(id: string): Promise<ComputerHistoryDetail | null> {
       return ipcRenderer.invoke('computer-history:detail', id);
     },
+    revealSummary(id: string): Promise<void> {
+      return ipcRenderer.invoke('computer-history:reveal-summary', id);
+    },
     deleteEntry(id: string): Promise<ComputerHistoryStatus> {
       return ipcRenderer.invoke('computer-history:delete-entry', id);
     },

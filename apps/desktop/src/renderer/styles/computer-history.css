@@ -101,9 +101,15 @@
 .computer-history-app-name { gap: 6px; min-width: 0; }
 .computer-history-document { min-width: 0; margin-top: 22px; }
 .computer-history-document-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding-block: 12px; margin-bottom: 20px; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
-.computer-history-document-name { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 140px; color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-document-name { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--muted-foreground); font: var(--maka-text-supporting); }
 .computer-history-document-name > svg { flex-shrink: 0; }
 .computer-history-document-name > span { overflow-wrap: anywhere; }
+.computer-history-document-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.computer-history-document-file-actions { display: flex; align-items: center; gap: 4px; }
+.computer-history-document-info { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 4px; }
+.computer-history-document-filename { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.computer-history-document-filename > code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: var(--maka-text-supporting); }
+.computer-history-document-filename > button { flex-shrink: 0; }
 .computer-history-document-body { min-height: 160px; }
 .computer-history-document-body .astryx-list,
 .computer-history-document-body .astryx-checkbox-list { margin-inline: 0; }

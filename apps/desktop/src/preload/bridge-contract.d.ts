@@ -1732,6 +1732,8 @@ export interface MakaBridge {
     timeline(days?: number): Promise<ComputerHistoryTimeline>;
     /** Resolves an authoritative timeline ID; null means the entry is no longer available. */
     detail(id: string): Promise<ComputerHistoryDetail | null>;
+    /** Reveal an owned saved summary by ID; rejects unavailable files and never exposes paths. */
+    revealSummary(id: string): Promise<void>;
     /** Deletes matching raw evidence and overlapping summaries; rejects stale/invalid IDs. */
     deleteEntry(id: string): Promise<ComputerHistoryStatus>;
     /** Retries consented analysis. Model failures are reported in the returned summary status. */

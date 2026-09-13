@@ -43,6 +43,7 @@ import type {
 } from '@maka/core/computer-history';
 import { useComputerHistoryController } from '../controller/use-computer-history-controller.js';
 import { useComputerHistoryApplications } from '../controller/use-computer-history-applications.js';
+import { useModuleHubServices } from '../services-context.js';
 import {
   computerHistoryCopy, filterHistoryEntries, historyAppName, historySuggestionDraft, localHistoryDay, shiftHistoryDay,
 } from './computer-history-copy.js';
@@ -57,6 +58,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
 }) {
   const locale = useUiLocale();
   const copy = computerHistoryCopy(locale);
+  const { clipboard } = useModuleHubServices();
   const [day, setDay] = useState('');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
@@ -251,7 +253,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                   <div aria-busy={controller.detailLoading}>
                     {controller.detailLoading ? <div className="computer-history-detail-skeleton"><Skeleton height={28} width="100%" /><Skeleton height={16} width="45%" /><Skeleton height={80} width="100%" /></div>
                       : controller.detailError && !detail ? <EmptyState headingLevel={3} title={copy.documentFailed} description={controller.detailError} actions={<Button label={copy.refresh} size="sm" variant="ghost" onClick={() => void controller.refresh()} />} />
-                        : detail?.document ? <ComputerHistoryDocument key={selected.id} document={detail.document} />
+                        : detail?.document ? <ComputerHistoryDocument key={selected.id} document={detail.document} onCopy={(text) => clipboard.writeText(text)} onReveal={() => service.revealSummary(selected.id)} />
                           : <EmptyState headingLevel={3} title={copy.missing} isCompact />}
                   </div>
                 ) : <Text type="supporting" color="secondary">{copy.noDocument}</Text>}

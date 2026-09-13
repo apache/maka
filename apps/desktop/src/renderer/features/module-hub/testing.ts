@@ -215,6 +215,7 @@ export function createFakeModuleHubServices(
       timeline: async () => notConfigured("computerHistory.timeline"),
       applications: async () => notConfigured("computerHistory.applications"),
       detail: async () => notConfigured("computerHistory.detail"),
+      revealSummary: async () => notConfigured("computerHistory.revealSummary"),
       updateSettings: async () => notConfigured("computerHistory.updateSettings"),
       requestPermissions: async () => notConfigured("computerHistory.requestPermissions"),
       pause: async () => notConfigured("computerHistory.pause"),

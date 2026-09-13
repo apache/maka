@@ -1510,7 +1510,97 @@ test('cancelled retry drains late provider rejection without restoring a stale a
   assert.equal((await service.timeline()).entries.some(({ summaryLevel }) => summaryLevel), false);
 });
 
-test('detail and entry-deletion IPC reject arbitrary selectors and unregister cleanly', async (t) => {
+test('reveal uses only a validated stored summary without disturbing the active recorder', async (t) => {
+  const collector = fakeCollector();
+  const generateSummary = t.mock.fn(async () => SUMMARY);
+  const shown: string[] = [];
+  const { service, home, segment } = await fixture(t, {
+    platform: 'darwin', helperPath: process.execPath, spawn: collector.spawn, generateSummary,
+    showItemInFolder: (path) => { shown.push(path); },
+  });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const id = (await service.timeline()).entries[0]!.id;
+  await service.updateSettings({ enabled: true, summariesEnabled: false });
+  const recorder = collector.recorder;
+  const calls = [...collector.calls];
+  const raw = await readFile(join(segment, 'events.jsonl'), 'utf8');
+  const settings = await service.settings();
+
+  assert.equal(await service.revealSummary(id), undefined);
+
+  assert.deepEqual(shown, [join(home, 'summaries', `${id}.md`)]);
+  assert.deepEqual(collector.calls, calls);
+  assert.equal(collector.recorder, recorder);
+  assert.equal(collector.active, true);
+  assert.equal(generateSummary.mock.callCount(), 1);
+  assert.deepEqual(await service.settings(), settings);
+  assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), raw);
+  const deleting = service.deleteEntry(id);
+  const revealAfterDelete = service.revealSummary(id);
+  await deleting;
+  await assert.rejects(revealAfterDelete, /summary could not be revealed/);
+  assert.equal(shown.length, 1);
+});
+
+test('reveal rejects absent integration and redacts storage or shell errors', async (t) => {
+  const absent = await fixture(t);
+  await assert.rejects(absent.service.revealSummary('10min-0'), /reveal is unavailable/);
+  let shellCalls = 0;
+  const { service, home, segment } = await fixture(t, {
+    generateSummary: async () => SUMMARY,
+    showItemInFolder: (path) => { shellCalls++; throw new Error(`Cannot open private path ${path}`); },
+  });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const id = (await service.timeline()).entries[0]!.id;
+  for (const selected of [id, '10min-0', '0000000000000000']) {
+    await assert.rejects(service.revealSummary(selected), (error: unknown) => {
+      assert.equal((error as Error).message, 'Computer History summary could not be revealed');
+      assert.doesNotMatch(String(error), new RegExp(home));
+      return true;
+    });
+  }
+  assert.equal(shellCalls, 1);
+});
+
+test('reveal completes while another summary model runs without cancelling it', { timeout: 5_000 }, async (t) => {
+  const entered = deferred<AbortSignal>();
+  const result = deferred<ComputerHistorySummaryContent>();
+  const shown: string[] = [];
+  let calls = 0;
+  const { service, home, segment } = await fixture(t, {
+    generateSummary: async (_input, signal) => {
+      if (++calls === 1) return SUMMARY;
+      entered.resolve(signal);
+      return result.promise;
+    },
+    showItemInFolder: (path) => { shown.push(path); },
+  });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const id = (await service.timeline()).entries[0]!.id;
+  await appendFile(join(segment, 'events.jsonl'), event('2026-08-15T10:20:00.000Z', 'mouse.click') + '\n');
+  const generating = service.summarize();
+  try {
+    const signal = await entered.promise;
+    assert.equal(await service.revealSummary(id), undefined);
+    assert.deepEqual(shown, [join(home, 'summaries', `${id}.md`)]);
+    assert.equal(signal.aborted, false);
+    assert.equal(calls, 2);
+    assert.equal((await service.status()).summaryState, 'running');
+  } finally {
+    result.resolve(SUMMARY);
+    await generating;
+  }
+  assert.equal((await service.status()).summaryState, 'idle');
+  assert.equal((await service.timeline()).entries.filter(({ summaryLevel }) => summaryLevel).length, 2);
+});
+
+test('detail, reveal and entry-deletion IPC reject arbitrary selectors and unregister cleanly', async (t) => {
   const { service, segment } = await fixture(t);
   await seedClosedInterval(segment);
   const handlers = new Map<string, (_event: unknown, ...args: unknown[]) => unknown>();
@@ -1524,7 +1614,7 @@ test('detail and entry-deletion IPC reject arbitrary selectors and unregister cl
   const id = (await service.timeline()).entries[0]!.id;
   assert.ok(await handlers.get('computer-history:detail')!({}, id));
   for (const input of [undefined, null, '../events.jsonl', { start: NOW, end: NOW }, '', 'x'.repeat(1_000)]) {
-    for (const channel of ['computer-history:detail', 'computer-history:delete-entry']) {
+    for (const channel of ['computer-history:detail', 'computer-history:reveal-summary', 'computer-history:delete-entry']) {
       await assert.rejects(async () => handlers.get(channel)!({}, input), /Invalid Computer History entry id/);
     }
   }
@@ -1537,8 +1627,12 @@ test('detail and entry-deletion IPC reject arbitrary selectors and unregister cl
   assert.equal(handlers.size, 0);
 });
 
-test('bundled preload routes applications, detail, retry and deletion to the local authority without host scope', async (t) => {
-  const { service, segment } = await fixture(t);
+test('bundled preload routes applications, detail, reveal, retry and deletion to the local authority without host scope', async (t) => {
+  const shown: string[] = [];
+  const { service, segment, home } = await fixture(t, {
+    generateSummary: async () => SUMMARY,
+    showItemInFolder: (path) => { shown.push(path); },
+  });
   await seedClosedInterval(segment);
   const handlers = new Map<string, (_event: unknown, ...args: unknown[]) => unknown>();
   const unregister = registerComputerHistoryIpc({
@@ -1586,6 +1680,12 @@ test('bundled preload routes applications, detail, retry and deletion to the loc
   await assert.rejects(history.retrySummary(), /consent is disabled/);
   assert.equal((await history.deleteEntry(entry.id)).eventCount, 0);
   assert.equal(await history.detail(entry.id), null);
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const summaryId = (await service.timeline()).entries[0]!.id;
+  assert.equal(await history.revealSummary(summaryId), undefined);
+  assert.deepEqual(shown, [join(home, 'summaries', `${summaryId}.md`)]);
   assert.deepEqual(calls, [
     { channel: 'computer-history:applications', args: [applicationIds] },
     { channel: 'computer-history:applications', args: [['../private/application.app']] },
@@ -1594,6 +1694,7 @@ test('bundled preload routes applications, detail, retry and deletion to the loc
     { channel: 'computer-history:retry-summary', args: [] },
     { channel: 'computer-history:delete-entry', args: [entry.id] },
     { channel: 'computer-history:detail', args: [entry.id] },
+    { channel: 'computer-history:reveal-summary', args: [summaryId] },
   ]);
 });
 
@@ -1606,7 +1707,7 @@ function deferred<T>() {
 
 type FixtureOptions = Partial<Pick<
   ConstructorParameters<typeof ComputerHistoryService>[0],
-  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn'
+  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn' | 'showItemInFolder'
 >>;
 
 async function fixture(t: TestContext, options: FixtureOptions = {}) {

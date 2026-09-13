@@ -64,3 +64,38 @@ application names and marks belong to their respective owners.
 The installed GitHub CLI has no native attachment option. These six images
 are kept on the feature branch for PR links, with user authorization. No
 separate image branch or GitHub Contents API upload is used.
+
+## Document Toolbar Follow-Up
+
+The following images capture the actual production history reader before and
+after the approved "Activity summary" toolbar and Reveal in Finder changes.
+They are not screenshots of the naming alternatives.
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `document-toolbar-before.png` | 1440 x 900 | Original filename toolbar, first summary selected |
+| `document-toolbar-after.png` | 1440 x 900 | Matched summary with approved toolbar |
+| `document-toolbar-after-light-390.png` | 390 x 844 | Responsive light reader |
+| `document-toolbar-info-dark-390.png` | 390 x 844 | Dark reader with settled original-filename popover |
+
+This follow-up uses the local `separated.html` synthetic-service preview:
+1440 x 900, light theme, DPR 1, 100% zoom, `zh-CN`, `Asia/Shanghai`, fixed clock
+`2026-09-13T12:30:00+08:00`, first activity selected, reader scroll position 0.
+The stored fixture filename is `10min-1789273200000.md`. The history and
+document are production components; the surrounding preview sidebar is
+prototype scaffolding, not the production `SessionSidebarNav`.
+The before/after desktop pair has identical title, body, selection, theme,
+viewport and scroll position. Its document body is the separated-preview
+fixture; it does not form a matched pair with the earlier reader screenshots
+above. The supplemental images use the same fixture. Screenshot capture waits
+for finite DOM animations to finish and stable geometry over consecutive
+frames; the narrow info popover is fully opaque and 320px wide.
+
+The final synthetic browser matrix passed 12 records: eight preview/source
+geometry checks and four interaction cases across both widths and themes.
+It verifies exact original-filename and full-Markdown clipboard text,
+keyboard focus restoration, reveal success/error callbacks and pending guards,
+and source/scroll preservation. There were no page errors, downloads, action
+network requests or settings writes. The previous clipboard text was restored.
+Finder callbacks are synthetic here; these images do not establish native
+Finder behavior. No private history or real recorder was accessed.

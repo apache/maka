@@ -250,6 +250,8 @@ export interface ModuleHubComputerHistoryService {
   /** Local application metadata for at most 32 bundle identifiers per request. */
   applications(bundleIds: readonly string[]): Promise<readonly ComputerHistoryApplication[]>;
   detail(id: string): Promise<ComputerHistoryDetail | null>;
+  /** Reveal an existing local summary by entry ID; never accepts or returns a path. */
+  revealSummary(id: string): Promise<void>;
   updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings>;
   requestPermissions(): Promise<ComputerHistoryStatus>;
   pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus>;

@@ -96,6 +96,7 @@ describe('createDesktopModuleHubServices', () => {
     await services.computerHistory.status();
     await services.computerHistory.clear('all');
     await services.computerHistory.detail('entry');
+    await services.computerHistory.revealSummary('10min-1789273200000');
     await services.computerHistory.updateSettings({ enabled: false });
     await services.computerHistory.requestPermissions();
     await services.computerHistory.pause('1h');
@@ -106,6 +107,7 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'history.status', args: [] },
       { name: 'history.clear', args: ['all'] },
       { name: 'history.detail', args: ['entry'] },
+      { name: 'history.revealSummary', args: ['10min-1789273200000'] },
       { name: 'history.updateSettings', args: [{ enabled: false }] },
       { name: 'history.requestPermissions', args: [] },
       { name: 'history.pause', args: ['1h'] },
@@ -113,6 +115,9 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'history.deleteEntry', args: ['entry'] },
       { name: 'history.retrySummary', args: [] },
     ]);
+    const failure = new Error('Computer History summary could not be revealed');
+    history.revealSummary = async () => { throw failure; };
+    await assert.rejects(services.computerHistory.revealSummary('10min-1789273200000'), (error) => error === failure);
   });
 
   it('reads the analysis model from the ready local Host, never a selected remote', async () => {

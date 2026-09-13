@@ -24,7 +24,7 @@ import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { ComputerHistoryStatus, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
-import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import {
   ComputerHistoryPage, ComputerHistorySettingsPage, createFakeModuleHubServices,
   ModuleHubServicesProvider, type ModuleHubServices,
@@ -133,7 +133,7 @@ for (const page of ['settings', 'history'] as const) {
     await act(async () => h.root.render(createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(AstryxLocaleProvider, {
-        children: createElement(ModuleHubServicesProvider, { services }, content),
+        children: createElement(ToastProvider, { children: createElement(ModuleHubServicesProvider, { services }, content) }),
       }),
     })));
     if (page === 'history') {
@@ -201,8 +201,8 @@ test('background detail failure retains the mounted Source view and scroll, whil
   await act(async () => h.root.render(createElement(LocaleProvider, {
     locale: 'en',
     children: createElement(AstryxLocaleProvider, {
-      children: createElement(ModuleHubServicesProvider, { services },
-        createElement(ComputerHistoryPage, { onCreateDraft() {}, onOpenSettings() {}, isObscured: false })),
+      children: createElement(ToastProvider, { children: createElement(ModuleHubServicesProvider, { services },
+        createElement(ComputerHistoryPage, { onCreateDraft() {}, onOpenSettings() {}, isObscured: false })) }),
     }),
   })));
   const row = (title: string) => {

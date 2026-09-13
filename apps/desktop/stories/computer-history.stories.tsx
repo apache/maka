@@ -328,6 +328,7 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
         ? { entry, document: fixtureDocument(entry), events: [], eventTotal: 0, rawAvailable: false, truncated: false }
         : fixtureDetail(entry);
     },
+    revealSummary: async () => { throw new Error('Synthetic summaries have no saved file to reveal in Finder.'); },
     updateSettings: async (patch) => {
       probes.onSettingsWrite(patch);
       if (scenario === 'settings-error') throw new Error('Synthetic settings write failed.');

@@ -112,6 +112,7 @@ export class ComputerHistoryService {
   readonly #spawn: typeof spawn;
   readonly #summaries?: ComputerHistorySummaries;
   readonly #applications: ComputerHistoryApplications;
+  readonly #showItemInFolder?: (path: string) => void;
   #recorder?: ChildProcess;
   #recorderEpoch = 0;
   #lastError?: string;
@@ -135,6 +136,7 @@ export class ComputerHistoryService {
     platform?: NodeJS.Platform;
     now?: () => number;
     spawn?: typeof spawn;
+    showItemInFolder?: (path: string) => void;
     generateSummary?: (
       input: ComputerHistorySummaryInput,
       signal: AbortSignal,
@@ -145,6 +147,7 @@ export class ComputerHistoryService {
     this.#platform = input.platform ?? process.platform;
     this.#now = input.now ?? Date.now;
     this.#spawn = input.spawn ?? spawn;
+    this.#showItemInFolder = input.showItemInFolder;
     this.#applications = new ComputerHistoryApplications({
       helperPath: this.#helperPath, platform: this.#platform, spawn: this.#spawn, now: this.#now,
     });
@@ -420,6 +423,21 @@ export class ComputerHistoryService {
         truncated: events.length > MAX_DETAIL_EVENTS,
         rawAvailable: events.length > 0,
       };
+    }, false);
+  }
+
+  async revealSummary(id: string): Promise<void> {
+    requireEntryId(id);
+    await this.#mutate(async () => {
+      if (!this.#summaries || !this.#showItemInFolder) {
+        throw new Error('Computer History summary reveal is unavailable');
+      }
+      try {
+        await this.#summaries.reveal(id, this.#showItemInFolder);
+      } catch {
+        // Filesystem and shell errors can contain private local paths.
+        throw new Error('Computer History summary could not be revealed');
+      }
     }, false);
   }
 
@@ -905,6 +923,7 @@ export function registerComputerHistoryIpc(input: {
     'computer-history:timeline': (days) => input.service.timeline(integer(days, 7)),
     'computer-history:applications': (ids) => input.service.applications(ids as readonly string[]),
     'computer-history:detail': (id) => input.service.detail(requireEntryId(id)),
+    'computer-history:reveal-summary': (id) => input.service.revealSummary(requireEntryId(id)),
     'computer-history:delete-entry': (id) => input.service.deleteEntry(requireEntryId(id)),
     'computer-history:retry-summary': () => input.service.retrySummary(),
     'computer-history:update-settings': (patch) =>

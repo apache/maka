@@ -56,10 +56,14 @@ show time, title, a short summary, and native application icons. The detail
 surface shows the title, description, interval, contributing applications, and
 the complete saved Markdown body. Rendered Markdown is the default, with
 headings, lists, tables, quotations, and syntax-highlighted code blocks. A source
-mode shows the complete serialization, including frontmatter. Reading the
-document requires no file-manager handoff. Observed links remain inert text and
-images render only their alt text, preventing commands or network requests on
-selection. Recorded events and source windows stay collapsed until requested.
+mode shows the complete serialization, including frontmatter. The document
+toolbar uses "Activity summary"; file information exposes the original stored
+filename, and copy actions retain the full Markdown or original filename.
+"Reveal in Finder" locates the existing saved file without exporting a copy or
+renaming it. Reading the document requires no file-manager handoff. Observed
+links remain inert text and images render only their alt text, preventing
+commands or network requests on selection. Recorded events and source windows
+stay collapsed until requested.
 The history page includes:
 
 - recording state, pause/resume, and refresh;
@@ -156,6 +160,12 @@ document. The body is bounded to 8 KiB and the serialized file to 128 KiB; reade
 must render it as untrusted Markdown. This does not alter the escaped Composer
 context or the existing 30-day detail lookup. Summary application identities
 prefer native bundle IDs, with name-only fallbacks when no ID was observed.
+
+The reveal operation accepts only a summary entry ID. Main resolves and
+validates the owned persisted Markdown before asking the operating system to
+select it; no renderer-supplied path is accepted or returned. Missing, corrupt,
+or symlinked files fail visibly rather than creating an export. Revealing a
+file does not enable collection or trigger model processing.
 
 Pause, disable, clear, and shutdown initiate collector control without waiting
 for model cancellation to settle. Full clear deletes owned summary files without

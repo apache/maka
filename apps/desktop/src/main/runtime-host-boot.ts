@@ -544,6 +544,7 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
 });
 const computerHistoryService = new ComputerHistoryService({
   home: join(userDataDir, "computer-history"),
+  showItemInFolder: (path) => shell.showItemInFolder(path),
   helperPath: app.isPackaged
     ? join(process.resourcesPath, "bin", "open-history")
     : join(app.getAppPath(), "resources", "bin", "open-history"),
