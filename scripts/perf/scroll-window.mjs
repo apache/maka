@@ -86,7 +86,7 @@ try {
             top: root.scrollTop,
             height: root.scrollHeight,
             viewport: root.clientHeight,
-            count: turns.length,
+            count: root.querySelectorAll('.maka-turn[data-turn-id]').length,
             first: turns[0]?.dataset.turnId,
             last: turns.at(-1)?.dataset.turnId,
             phase: probe.phase,
@@ -105,6 +105,8 @@ try {
       for (const [direction, delta] of [
         ['up', -450],
         ['down', 450],
+        ['up-repeat', -450],
+        ['down-repeat', 450],
       ]) {
         for (let burst = 0; burst < 12; burst++) {
           await page.evaluate((phase) => {
@@ -120,7 +122,7 @@ try {
           await page.waitForTimeout(350);
           const reached = await page.evaluate((direction) => {
             const root = document.querySelector('[data-chat-scroll-container]');
-            return direction === 'up'
+            return direction.startsWith('up')
               ? root.scrollTop <= 1
               : root.scrollHeight - root.scrollTop - root.clientHeight <= 1;
           }, direction);
@@ -147,10 +149,14 @@ try {
         const delta = frame.height - data.frames[i].height;
         return delta < -1 ? [{ ...frame, delta }] : [];
       });
+      const blankFrames = data.frames.filter((frame) => frame.count === 0);
+      const revisitShrink = shrink.filter((frame) => frame.phase.startsWith('up-repeat'));
       const row = {
         scene,
         trial,
         shrinkCount: shrink.length,
+        blankFrames: blankFrames.length,
+        revisitShrinkCount: revisitShrink.length,
         shrinkPx: -shrink.reduce((sum, frame) => sum + frame.delta, 0),
         maxLongTaskMs: Math.max(0, ...data.tasks.map((task) => task.duration)),
         longTaskMs: data.tasks.reduce((sum, task) => sum + task.duration, 0),
@@ -167,6 +173,8 @@ try {
       );
       await page.screenshot({ path: path.join(outputDir, `scroll-window-${scene}-${trial}.png`) });
       console.log(JSON.stringify(row));
+      assert.equal(blankFrames.length, 0, 'native traversal must not expose an empty transcript');
+      assert.equal(revisitShrink.length, 0, 'revisiting measured history must preserve its extent');
       await page.close();
     }
   }

@@ -253,8 +253,7 @@ test('WorkHub holds transcript and live handoff together until publication is ad
   let held = true;
   let idle!: () => void;
   const detach = h.controller.viewportNavigation.attachCommitScheduler(h.sessionId, {
-    commitIfIdle(commit) { if (held) return false; commit(); return true; },
-    subscribeToIdle(listener) { idle = listener; return () => {}; },
+    commitRange(commit) { if (held) idle = commit; else commit(); },
   });
   const messages: StoredMessage[] = [
     { type: 'user', id: 'user', turnId, text: 'held prompt', ts: 1 },

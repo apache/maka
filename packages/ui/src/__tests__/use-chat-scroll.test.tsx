@@ -396,7 +396,7 @@ test('an older request at offset zero does not move the reader', async () => {
   assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
 });
 
-test('idle range admission commits the React DOM before a subsequent input can begin', async () => {
+test('range admission commits the React DOM even if native input starts before publication', async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -419,7 +419,7 @@ test('idle range admission commits the React DOM before a subsequent input can b
     navigation.commitRange('admission', () => publish('new'));
     await Promise.resolve();
     assert.equal(document.querySelector('#mount')!.textContent, 'new',
-      'an admitted update must not remain in React scheduling after its idle check');
+      'an admitted update must not remain in React scheduling after publication');
   });
   await act(async () => {
     navigation.commitRange('admission', () => publish('held'));
@@ -429,8 +429,8 @@ test('idle range admission commits the React DOM before a subsequent input can b
     });
     transcript.scroller.dispatchEvent(down);
     await Promise.resolve();
-    assert.equal(document.querySelector('#mount')!.textContent, 'new',
-      'input that starts before admission must hold the queued update');
+    assert.equal(document.querySelector('#mount')!.textContent, 'held',
+      'available rows must reach React while native input remains held');
   });
   await act(() => document.dispatchEvent(new window.Event('pointerup')));
   await act(() => {
@@ -461,9 +461,10 @@ test('a source publication survives viewport unmount without another source upda
   mountedRoot = createRoot(document.querySelector('#mount')!);
   await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
   await act(() => wheel(transcript.scroller, -100));
-  await act(() => navigation.commitRange('session', () => publish('latest')));
-  assert.equal(document.querySelector('#mount')!.textContent, 'old');
-  await act(() => show(false));
+  await act(() => {
+    navigation.commitRange('session', () => publish('latest'));
+    show(false);
+  });
   assert.equal(document.querySelector('#mount')!.textContent, 'latest');
   await act(() => show(true));
   assert.equal(document.querySelector('#mount')!.textContent, 'latest');
@@ -508,7 +509,7 @@ for (const hasOlder of [false, true]) {
         });
       }
     }));
-    assert.equal(publications, 0, 'input holds publication, including an accepted history request');
+    assert.equal(publications, 1, 'input must not starve an accepted history request');
     await frame(); await frame();
     assert.equal(requests, hasOlder ? 1 : 0);
     assert.equal(publications, 1);
@@ -522,7 +523,7 @@ for (const hasOlder of [false, true]) {
   });
 }
 
-test('a held fill publishes before trimming or chaining from the new geometry', async () => {
+test('a fill publishes during input while eviction still waits for the reader to settle', async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -578,9 +579,9 @@ test('a held fill publishes before trimming or chaining from the new geometry', 
   });
   assert.equal(requests, 1);
   await act(() => finishRead());
-  assert.equal(publications, 0);
-  assert.deepEqual(retained, [], 'published IDs cannot trim source while its new page is held');
-  assert.equal(requests, 1, 'a held response must not chain reads using stale geometry');
+  assert.equal(publications, 1);
+  assert.deepEqual(retained, [], 'active input still prevents eviction');
+  assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');
   await act(() => document.dispatchEvent(new window.Event('pointerup')));
   await frame(); await frame();
   assert.equal(publications, 1);

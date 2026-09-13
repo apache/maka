@@ -61,11 +61,10 @@ export interface TranscriptScrollSnapshot {
 }
 
 export interface TranscriptScrollAuthority {
-  /** Whether native input still holds the published geometry. */
+  /** Whether native input is still active; window eviction waits for it. */
   isInputActive(): boolean;
-  /** Synchronously publish and preserve geometry if native input permits it. */
-  commitIfIdle(commit: () => void): boolean;
-  subscribeToIdle(listener: () => void): () => void;
+  /** Publish available rows and preserve the current reading anchor. */
+  commitRange(commit: () => void): void;
   /** Take the scroller. Returns the detach for the effect that called it. */
   attach(root: HTMLElement | null): () => void;
   /** One-shot: put the tail back under the reader and follow it again. */
@@ -115,7 +114,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
-  const idleListeners = new Set<() => void>();
   let pointer: number | undefined;
   let touchHeld = false;
   const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
@@ -139,10 +137,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     } finally {
       target.style.overflowAnchor = pinned ? 'none' : 'auto';
     }
-  };
-  const notifyIdle = (): void => {
-    if (isInputActive()) return;
-    for (const listener of [...idleListeners]) listener();
   };
   let readingTurnId: string | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
@@ -183,15 +177,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
 
   return {
     isInputActive,
-    commitIfIdle(commit) {
-      if (isInputActive()) return false;
-      commitRange(commit);
-      return true;
-    },
-    subscribeToIdle(listener) {
-      idleListeners.add(listener);
-      return () => { idleListeners.delete(listener); };
-    },
+    commitRange,
     attach(next) {
       root = next;
       const target = root;
@@ -251,7 +237,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         requestAnimationFrame(() => {
           if (gesture !== pending || pending.direction !== undefined) return;
           gesture = undefined;
-          notifyIdle();
           if (pinned) writeToTail();
         });
       };
@@ -300,9 +285,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         publish();
       };
       const onScrollEnd = (): void => {
-        // An explicit navigation may already have retired the gesture while
-        // a pointer or touch was held. Release still has to wake publication.
-        notifyIdle();
         const ended = gesture;
         if (!ended) return;
         const top = ended.top;
@@ -316,7 +298,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           // the pin. Settling an unmoved edge gesture must not release it too.
           pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
-          notifyIdle();
           publish();
           if (pinned) writeToTail();
           // An anchor navigation can supersede the last in-flight page while
@@ -393,16 +374,12 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pointer = undefined;
       touchHeld = false;
       pinned = true;
-      queueMicrotask(notifyIdle);
       writeToTail();
       publish();
     },
     releasePin() {
       gesture = undefined;
       pinned = false;
-      // Commands can originate in a React effect. Publish before their next
-      // positioning frame, outside React's lifecycle, if a range is pending.
-      queueMicrotask(notifyIdle);
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },

@@ -21,7 +21,7 @@
  * Publication outlives a viewport: only the source owner can invalidate its data. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
-  let viewport: { sessionId: string; commitIfIdle: (commit: () => void) => boolean } | undefined;
+  let viewport: { sessionId: string; commitRange: (commit: () => void) => void } | undefined;
   let pending: { sessionId: string; commit: () => void } | undefined;
   const drain = (): void => {
     const update = pending;
@@ -30,20 +30,17 @@ export function createTranscriptViewportNavigation() {
       pending = undefined;
       update.commit();
     };
-    if (viewport?.sessionId === update.sessionId) viewport.commitIfIdle(commit);
+    if (viewport?.sessionId === update.sessionId) viewport.commitRange(commit);
     else commit();
   };
   return {
     attachCommitScheduler(sessionId: string, authority: {
-      commitIfIdle(commit: () => void): boolean;
-      subscribeToIdle(listener: () => void): () => void;
+      commitRange(commit: () => void): void;
     }): () => void {
-      const attached = { sessionId, commitIfIdle: authority.commitIfIdle };
+      const attached = { sessionId, commitRange: authority.commitRange };
       viewport = attached;
-      const unsubscribe = authority.subscribeToIdle(drain);
       queueMicrotask(drain);
       return () => {
-        unsubscribe();
         if (viewport !== attached) return;
         viewport = undefined;
         // React cleanup may be running. Publish after it, without depending
