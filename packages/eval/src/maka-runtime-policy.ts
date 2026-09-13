@@ -23,7 +23,7 @@ export function makaEvalRuntimePolicyDocument(proxyUrl?: string) {
   const policy = createDefaultRuntimePolicy();
   const proxy = proxyUrl ? new URL(proxyUrl) : undefined;
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 4 as const,
     revision: 0,
     policy: {
       ...policy,

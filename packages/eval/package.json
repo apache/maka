@@ -35,6 +35,9 @@
     "test:dist": "node --test \"dist/**/*.test.js\" && python3 -m unittest discover --start-directory harbor --pattern 'test_*.py'",
     "test:egress-proxy:live": "python3 harbor/test_egress_filter_live.py"
   },
+  "devDependencies": {
+    "@maka/storage": "0.1.0"
+  },
   "dependencies": {
     "@maka/core": "0.1.0",
     "@maka/runtime-host": "0.1.0",

@@ -35,6 +35,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { resolveStorageRoot, tryAcquireInteractiveRootReader } from '@maka/storage/root-authority';
+import { openInteractiveRuntimePolicyStoresForRead } from '@maka/storage/runtime-policy-stores';
 import { FileAttemptStore } from '../attempt-store.js';
 import type { ExperimentCell, ExperimentSpec, JsonObject } from '../experiment.js';
 import { createExternalSubjectAdapter } from '../external-subject.js';
@@ -1165,9 +1167,28 @@ test('the DeepSeek Harness arm pins its own minimal composition', async () => {
   assert.deepEqual(profile.dsh.profile.bundles, []);
 });
 
-test('Maka Eval policy enables privacy independently of the tool profile', () => {
-  const document = makaEvalRuntimePolicyDocument();
-  assert.equal(document.policy.privacy.incognitoActive, true);
+test('Maka Eval policy is readable by the Host policy store', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-policy-'));
+  try {
+    await writeFile(
+      join(root, 'runtime-policy.json'),
+      JSON.stringify(makaEvalRuntimePolicyDocument('http://127.0.0.1:8080')),
+    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const reader = await tryAcquireInteractiveRootReader(capability);
+    assert.ok(reader);
+    try {
+      const stores = await openInteractiveRuntimePolicyStoresForRead(reader.lease);
+      const { policy } = await stores.runtimePolicy.getSnapshot();
+      assert.equal(policy.privacy.incognitoActive, true);
+      assert.equal(policy.networkProxy.enabled, true);
+      assert.equal(policy.networkProxy.port, 8080);
+    } finally {
+      await reader.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('experiment specs do not declare an executor working-directory authority', async () => {
