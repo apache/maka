@@ -2352,7 +2352,7 @@ function SettledTranscriptHarness({
  * settled before its turns were laid out would be asked for the next page
  * against the geometry of the previous one.
  */
-function HistoryHarness({ turns, bounded = false }: { turns: number; bounded?: boolean }) {
+function HistoryHarness({ turns, bounded = false, olderTurns = HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE }: { turns: number; bounded?: boolean; olderTurns?: number }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
@@ -2363,7 +2363,7 @@ function HistoryHarness({ turns, bounded = false }: { turns: number; bounded?: b
       chat={{
         messages: transcriptTurns(range.from, range.count),
         viewportNavigation,
-        hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
+        hasOlderHistory: range.from > -olderTurns,
         hasNewerHistory: bounded && range.from + range.count < turns,
         onRetainWindow: bounded ? ({ firstTurnId, lastTurnId }) => {
           // The real scroll hook chooses the retained band. This fixture only
@@ -2386,8 +2386,8 @@ function HistoryHarness({ turns, bounded = false }: { turns: number; bounded?: b
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
-            from: Math.max(-HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE, current.from - HISTORY_BATCH),
-            count: current.count + Math.min(HISTORY_BATCH, current.from + HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE),
+            from: Math.max(-olderTurns, current.from - HISTORY_BATCH),
+            count: current.count + Math.min(HISTORY_BATCH, current.from + olderTurns),
           })));
           await painted(2);
           return true;
@@ -2575,7 +2575,7 @@ export const HistoryWindowTraversal: Story = {
 // Real path: traverse a long Session, return through already read history,
 // and jump to a loaded Turn whose body is currently outside the viewport.
 export const VirtualHistoryContinuity: Story = {
-  render: () => <HistoryHarness turns={40} bounded />,
+  render: () => <HistoryHarness turns={24} olderTurns={8} bounded />,
   play: async () => {
     await historySettled();
     const root = tailScroller();
