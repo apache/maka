@@ -19,13 +19,11 @@
 
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v6 adds the captured target identity (opaque decimal-string dev/ino) to
-// FilesystemWorkerTarget, so the worker can compare-and-swap against the
-// inode that was authorised at lock acquisition instead of only the path
-// string. The identity is carried as strings because bigint cannot cross the
-// JSON protocol boundary.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
+// v8 requires exact Grep counts alongside bounded matches. Older workers must
+// not be accepted as successful searches with missing completeness metadata.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 8 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -155,8 +153,8 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       pattern: z.string(),
       glob: z.string().min(1).optional(),
-      maxCountPerFile: z.number().int().positive(),
-      limit: z.number().int().positive(),
+      maxCountPerFile: z.number().int().positive().max(GREP_MAX_LINES_PER_FILE),
+      limit: z.number().int().positive().max(GREP_MAX_LINES),
       timeoutMs: z.number().int().positive(),
     })
     .strict(),
@@ -218,7 +216,25 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('glob'), files: z.array(z.string()) }).strict(),
-  z.object({ kind: z.literal('grep'), matches: z.array(z.string()) }).strict(),
+  z
+    .object({
+      kind: z.literal('grep'),
+      matches: z
+        .array(z.string())
+        .max(GREP_MAX_LINES)
+        .refine((matches) => Buffer.byteLength(JSON.stringify(matches)) <= GREP_MAX_MATCH_BYTES),
+      matchedLines: z.number().int().nonnegative(),
+      returnedLines: z.number().int().nonnegative(),
+      omittedLines: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+    })
+    .strict()
+    .refine(
+      (result) =>
+        result.returnedLines === result.matches.length &&
+        result.matchedLines === result.returnedLines + result.omittedLines &&
+        result.truncated === result.omittedLines > 0,
+    ),
 ]);
 
 export const FilesystemWorkerErrorCodeSchema = z.enum([

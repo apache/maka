@@ -156,7 +156,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     const sourceDirectory = join(workspace, 'src');
     const sourceFile = join(sourceDirectory, 'health.ts');
     await mkdir(sourceDirectory);
-    await writeFile(sourceFile, 'export const healthSignal = true;\n', 'utf8');
+    await writeFile(sourceFile, 'export const healthSignal = true;\n'.repeat(51), 'utf8');
 
     const fileResult = await client.execute({
       operation: grepOperation(sourceFile, 'healthSignal'),
@@ -166,7 +166,13 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     });
     assert.equal(fileResult.kind, 'grep');
     if (fileResult.kind === 'grep') {
-      assert.equal(fileResult.matches.length, 1);
+      assert.equal(fileResult.matches.length, 50);
+      assert.partialDeepStrictEqual(fileResult, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
       assert.match(fileResult.matches[0] ?? '', /healthSignal/);
     }
 
@@ -178,7 +184,13 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     });
     assert.equal(directoryResult.kind, 'grep');
     if (directoryResult.kind === 'grep') {
-      assert.equal(directoryResult.matches.length, 1);
+      assert.equal(directoryResult.matches.length, 50);
+      assert.partialDeepStrictEqual(directoryResult, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
       assert.match(directoryResult.matches[0] ?? '', /healthSignal/);
     }
 
@@ -188,7 +200,14 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       mode: 'ask',
       expectedIdentity: 'unchecked',
     });
-    assert.deepEqual(emptyResult, { kind: 'grep', matches: [] });
+    assert.deepEqual(emptyResult, {
+      kind: 'grep',
+      matches: [],
+      matchedLines: 0,
+      returnedLines: 0,
+      omittedLines: 0,
+      truncated: false,
+    });
   });
 });
 

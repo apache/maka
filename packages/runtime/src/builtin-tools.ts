@@ -43,6 +43,7 @@ import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/cor
 import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
+import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from './grep-search.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
 import { executeApplyPatchOperations } from './apply-patch-batch.js';
@@ -614,11 +615,21 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     {
       name: 'Grep',
       activityKind: 'search',
-      description: 'Search file contents with a regex via ripgrep.',
+      description: `Search file contents with a ripgrep regex. Scans files as text, including binary files; directory traversal respects ripgrep ignore rules and glob filters. Returns path:line:content matches and exact matchedLines, returnedLines, omittedLines, and truncated from one completed search. Keeps at most ${GREP_MAX_LINES_PER_FILE} lines per file, ${GREP_MAX_LINES} total, and ${GREP_MAX_MATCH_BYTES / 1024} KiB of JSON matches; oversized or non-UTF8 lines/paths may be omitted. Narrow path, glob, or pattern for more matches, or use Read to inspect a file. Failed searches have unknown totals.`,
       parameters: z.object({
-        pattern: z.string(),
-        path: z.string().optional(),
-        glob: z.string().optional(),
+        pattern: z
+          .string()
+          .describe('Ripgrep regular expression; use an empty pattern to match every line.'),
+        path: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('File or directory to search; defaults to the session working directory.'),
+        glob: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Optional ripgrep file glob, for example **/*.ts.'),
       }),
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
@@ -632,8 +643,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             path: path ?? '.',
             pattern,
             ...(glob ? { glob } : {}),
-            maxCountPerFile: 50,
-            limit: 200,
+            maxCountPerFile: GREP_MAX_LINES_PER_FILE,
+            limit: GREP_MAX_LINES,
             timeoutMs: GREP_TIMEOUT_MS,
           },
           ...filesystemCall(ctx),
@@ -644,7 +655,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'no search result came back',
             'the pattern is absent',
           );
-        return { matches: result.matches };
+        const { kind: _kind, ...searchResult } = result;
+        return searchResult;
       },
     },
   ];

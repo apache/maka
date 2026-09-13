@@ -18,7 +18,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { exec, execFile } from 'node:child_process';
+import { exec } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import {
@@ -46,9 +46,9 @@ import type { ShellPlan } from './shell-detect.js';
 import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
 import { readTextLineWindow } from './text-line-window.js';
+import { searchFiles, type GrepResult } from './grep-search.js';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 export type WorkspaceExecutorFacts = ToolExecutionFacts;
 
@@ -217,9 +217,7 @@ export interface WorkspaceGrepInput {
   abortSignal?: AbortSignal;
 }
 
-export interface WorkspaceGrepResult {
-  matches: string[];
-}
+export type WorkspaceGrepResult = GrepResult;
 
 export interface WorkspaceExecutorFactsProvider {
   readonly facts: WorkspaceExecutorFacts;
@@ -448,19 +446,9 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {
-    const args = ['-n', '--no-heading', `--max-count=${input.maxCountPerFile}`];
-    if (input.glob) args.push('--glob', input.glob);
-    args.push('--', input.pattern, input.path);
     try {
-      const { stdout } = await execFileAsync('rg', args, {
-        cwd: input.cwd,
-        maxBuffer: 5 * 1024 * 1024,
-        timeout: input.timeoutMs,
-        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
-      });
-      return { matches: stdout.split('\n').filter(Boolean).slice(0, input.limit) };
+      return await searchFiles({ ...input, executable: 'rg' });
     } catch (error: any) {
-      if (error?.code === 1) return { matches: [] };
       // Node reports a missing spawn cwd exactly like a missing executable
       // (both `spawn rg ENOENT`), so only blame ripgrep once the cwd exists.
       if (error?.code === 'ENOENT' && (await isDirectory(input.cwd)))

@@ -273,7 +273,14 @@ describe('filesystem worker client Grep target scope', () => {
       expectedIdentity: 'unchecked',
     });
 
-    assert.deepEqual(result, { kind: 'grep', matches: ['file.ts:1:value'] });
+    assert.deepEqual(result, {
+      kind: 'grep',
+      matches: ['file.ts:1:value'],
+      matchedLines: 1,
+      returnedLines: 1,
+      omittedLines: 0,
+      truncated: false,
+    });
     assert.equal(requests[0]?.expectedTarget.scope, 'exact');
   });
 
@@ -584,7 +591,14 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
     case 'apply_patch':
       return { kind: 'apply_patch', ok: true, path: request.operation.path };
     case 'grep':
-      return { kind: 'grep', matches: ['file.ts:1:value'] };
+      return {
+        kind: 'grep',
+        matches: ['file.ts:1:value'],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      };
     case 'glob':
       return { kind: 'glob', files: [] };
     default:

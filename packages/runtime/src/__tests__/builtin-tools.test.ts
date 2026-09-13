@@ -42,6 +42,7 @@ import {
   type PermissionProfile,
 } from '@maka/core/permission-profile';
 import { buildBuiltinTools } from '../builtin-tools.js';
+import { encodeDefaultDurableToolResultOutput } from '../durable-tool-result-projection.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
@@ -2196,6 +2197,26 @@ describe('builtin read tools path containment', () => {
     assert.partialDeepStrictEqual(result, { content: 'inside' });
   });
 
+  test('Grep carries exact omitted-line counts through the executor and model projection', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-grep-completeness-'));
+    try {
+      await writeFile(join(cwd, 'matches.txt'), 'token token\n'.repeat(51));
+      const result = await runTool(tool('Grep'), { pattern: 'token' }, cwd);
+      assert.partialDeepStrictEqual(result, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
+      assert.partialDeepStrictEqual(encodeDefaultDurableToolResultOutput(result, 'session-1'), {
+        kind: 'json',
+        value: result,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('Glob and Grep constrain search roots to session cwd', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'maka-read-outside-'));
@@ -2789,7 +2810,13 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     resolveWritablePath: async ({ path }) => ({ path }),
     writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
     globFiles: async () => ({ files: [] }),
-    grepFiles: async () => ({ matches: [] }),
+    grepFiles: async () => ({
+      matches: [],
+      matchedLines: 0,
+      returnedLines: 0,
+      omittedLines: 0,
+      truncated: false,
+    }),
   };
   return Object.assign(base, overrides);
 }

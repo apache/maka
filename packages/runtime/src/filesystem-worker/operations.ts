@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { spawn } from 'node:child_process';
+import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
@@ -66,34 +66,15 @@ import { isLikelySandboxDenial } from '../sandbox/detect.js';
 const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
 
 const DEFAULT_GLOB_LIMIT = 200;
-const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
-const MAX_GREP_STDERR_BYTES = 16 * 1024;
 
 export interface FilesystemWorkerOperationDependencies {
   grepExecutable?: string;
   /** Where this worker runs, as the Host observed it; names the install location in Grep's guidance. */
   ripgrepEnvironment?: RipgrepEnvironment;
-  runGrep?: FilesystemWorkerGrepRunner;
+  runGrep?: GrepRunner;
   /** Set when the worker runs inside the Windows AppContainer sandbox. */
   windowsSandboxed?: boolean;
 }
-
-export interface FilesystemWorkerGrepRunInput {
-  executable: string;
-  args: readonly string[];
-  cwd: string;
-  timeoutMs: number;
-}
-
-export interface FilesystemWorkerGrepRunResult {
-  exitCode: number;
-  stdout: string;
-  stderrTail: string;
-}
-
-export type FilesystemWorkerGrepRunner = (
-  input: FilesystemWorkerGrepRunInput,
-) => Promise<FilesystemWorkerGrepRunResult>;
 
 export async function executeFilesystemWorkerRequest(
   request: FilesystemWorkerRequest,
@@ -421,17 +402,18 @@ export async function executeFilesystemOperation(
           'grep_unavailable',
           ripgrepMissingMessage(dependencies.ripgrepEnvironment),
         );
-      const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
-      if (operation.glob) args.push('--glob', operation.glob);
-      args.push('--', operation.pattern, path);
-      const result = await (dependencies.runGrep ?? runRipgrep)({
-        executable: grepExecutable,
-        args,
-        // The target is canonical and absolute. Running from its filesystem root avoids
-        // requiring operation-scoped workers to read the broader session workspace.
-        cwd: parse(path).root,
-        timeoutMs: operation.timeoutMs,
-      }).catch((error: unknown) => {
+      const result = await searchFiles(
+        {
+          ...operation,
+          path,
+          executable: grepExecutable,
+          // The target is canonical and absolute. Running from its filesystem root avoids
+          // requiring operation-scoped workers to read the broader session workspace.
+          cwd: parse(path).root,
+          timeoutMs: operation.timeoutMs,
+        },
+        dependencies.runGrep,
+      ).catch((error: unknown) => {
         // The cwd is a filesystem root, which always exists, so a spawn ENOENT
         // means the executable this worker was launched with is gone — removed
         // after the launch configuration checked it. Left alone it would be
@@ -441,24 +423,17 @@ export async function executeFilesystemOperation(
             'grep_unavailable',
             ripgrepVanishedMessage(grepExecutable, dependencies.ripgrepEnvironment),
           );
+        if (error instanceof GrepSearchError) {
+          throw operationError(
+            isLikelySandboxDenial({ stdout: '', stderr: error.message, sandboxed: true })
+              ? 'sandbox_denied'
+              : 'filesystem_error',
+            error.message,
+          );
+        }
         throw error;
       });
-      if (result.exitCode === 1) return { kind: 'grep', matches: [] };
-      if (result.exitCode !== 0) {
-        const detail = result.stderrTail.trim();
-        throw operationError(
-          isLikelySandboxDenial({ stdout: result.stdout, stderr: detail, sandboxed: true })
-            ? 'sandbox_denied'
-            : 'filesystem_error',
-          detail
-            ? `Grep failed while searching files.\n${detail}`
-            : 'Grep failed while searching files.',
-        );
-      }
-      return {
-        kind: 'grep',
-        matches: result.stdout.split('\n').filter(Boolean).slice(0, operation.limit),
-      };
+      return { kind: 'grep', ...result };
     }
   }
 }
@@ -698,60 +673,4 @@ async function lstatTargetTypeOf(path: string): Promise<FilesystemWorkerTarget['
 function nodeErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
   return typeof error.code === 'string' ? error.code : undefined;
-}
-
-async function runRipgrep(
-  input: FilesystemWorkerGrepRunInput,
-): Promise<FilesystemWorkerGrepRunResult> {
-  return await new Promise((resolvePromise, reject) => {
-    const child = spawn(input.executable, [...input.args], {
-      cwd: input.cwd,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    let stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let settled = false;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      rejectOnce(operationError('filesystem_error', 'Grep timed out.'));
-    }, input.timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > MAX_GREP_OUTPUT_BYTES) {
-        child.kill('SIGKILL');
-        rejectOnce(operationError('filesystem_error', 'Grep output exceeded the worker limit.'));
-      } else {
-        chunks.push(chunk);
-      }
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrTail = appendBoundedTail(stderrTail, chunk, MAX_GREP_STDERR_BYTES);
-    });
-    child.once('error', (error) => rejectOnce(error));
-    child.once('close', (exitCode) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise({
-        exitCode: exitCode ?? 2,
-        stdout: Buffer.concat(chunks).toString('utf8'),
-        stderrTail: stderrTail.toString('utf8'),
-      });
-    });
-
-    function rejectOnce(error: unknown): void {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    }
-  });
-}
-
-function appendBoundedTail(current: Buffer, chunk: Buffer, limit: number): Buffer {
-  if (chunk.length >= limit) return chunk.subarray(chunk.length - limit);
-  if (current.length + chunk.length <= limit) return Buffer.concat([current, chunk]);
-  return Buffer.concat([current.subarray(current.length - (limit - chunk.length)), chunk]);
 }

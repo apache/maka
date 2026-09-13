@@ -34,6 +34,7 @@ import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import type { GrepRunInput } from '../grep-search.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   type FilesystemWorkerOperation,
@@ -229,7 +230,7 @@ describe('filesystem worker operations', () => {
         grepExecutable: '/usr/bin/rg',
         runGrep: async (input) => {
           grepCwd = input.cwd;
-          return { exitCode: 0, stdout: '1:const healthSignal = true;\n', stderrTail: '' };
+          return grepRunOutput(input, target, 'const healthSignal = true;');
         },
       },
     );
@@ -239,7 +240,14 @@ describe('filesystem worker operations', () => {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId: 'request-1',
       ok: true,
-      result: { kind: 'grep', matches: ['1:const healthSignal = true;'] },
+      result: {
+        kind: 'grep',
+        matches: [`${target}:1:const healthSignal = true;`],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      },
     });
   });
 
@@ -333,7 +341,7 @@ describe('filesystem worker operations', () => {
         grepExecutable: '/usr/bin/rg',
         runGrep: async (input) => {
           grepArgs = input.args;
-          return { exitCode: 0, stdout: '1:const style = "-webkit-box";\n', stderrTail: '' };
+          return grepRunOutput(input, target, 'const style = "-webkit-box";');
         },
       },
     );
@@ -343,7 +351,14 @@ describe('filesystem worker operations', () => {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId: 'request-1',
       ok: true,
-      result: { kind: 'grep', matches: ['1:const style = "-webkit-box";'] },
+      result: {
+        kind: 'grep',
+        matches: [`${target}:1:const style = "-webkit-box";`],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      },
     });
   });
 
@@ -369,10 +384,18 @@ describe('filesystem worker operations', () => {
 
     const empty = await executeFilesystemWorkerRequest(request, {
       grepExecutable: '/usr/bin/rg',
-      runGrep: async () => ({ exitCode: 1, stdout: '', stderrTail: '' }),
+      runGrep: async (input) => grepRunOutput(input, target),
     });
     assert.equal(empty.ok, true);
-    if (empty.ok) assert.deepEqual(empty.result, { kind: 'grep', matches: [] });
+    if (empty.ok)
+      assert.deepEqual(empty.result, {
+        kind: 'grep',
+        matches: [],
+        matchedLines: 0,
+        returnedLines: 0,
+        omittedLines: 0,
+        truncated: false,
+      });
 
     const failed = await executeFilesystemWorkerRequest(request, {
       grepExecutable: '/usr/bin/rg',
@@ -690,6 +713,17 @@ describe('filesystem worker operations', () => {
     assert.equal(response.result.diff, undefined);
   });
 });
+
+function grepRunOutput(input: GrepRunInput, path: string, text?: string) {
+  const events = [
+    ...(text === undefined
+      ? []
+      : [{ type: 'match', data: { path: { text: path }, lines: { text }, line_number: 1 } }]),
+    { type: 'summary', data: { stats: { matched_lines: text === undefined ? 0 : 1 } } },
+  ];
+  input.onStdout(Buffer.from(events.map((event) => JSON.stringify(event)).join('\n') + '\n'));
+  return { exitCode: text === undefined ? 1 : 0, stderrTail: '' };
+}
 
 async function requestFor(
   operation: FilesystemWorkerOperation,
