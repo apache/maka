@@ -18,6 +18,7 @@
  */
 
 import { promises as fs, readdir } from 'node:fs';
+import { resolve } from 'node:path';
 import { globIterate } from 'glob';
 
 export async function globFiles(input: {
@@ -26,10 +27,13 @@ export async function globFiles(input: {
   limit?: number;
 }): Promise<{ files: string[] }> {
   let failure: NodeJS.ErrnoException | undefined;
-  function record(error: NodeJS.ErrnoException): void {
-    // Missing literal matches and non-directory pattern components are normal.
-    // glob otherwise suppresses I/O failures too, which would hide incomplete walks.
-    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') failure ??= error;
+  const directories = new Set([resolve(input.cwd)]);
+  function record(error: NodeJS.ErrnoException, path: string): void {
+    // Speculative literal components may miss. A directory already admitted by
+    // cwd, stat, or enumeration disappearing instead makes this walk incomplete.
+    if (directories.has(resolve(path)) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) {
+      failure ??= error;
+    }
   }
   const files: string[] = [];
   for await (const file of globIterate(input.pattern, {
@@ -38,16 +42,22 @@ export async function globFiles(input: {
     fs: {
       readdir(path, options, callback) {
         readdir(path, options, (error, entries) => {
-          if (error) record(error);
+          if (error) record(error, path as string);
+          else
+            for (const entry of entries) {
+              if (entry.isDirectory()) directories.add(resolve(path as string, entry.name));
+            }
           callback(error, entries);
         });
       },
       promises: {
         async lstat(path) {
           try {
-            return await fs.lstat(path);
+            const stat = await fs.lstat(path);
+            if (stat.isDirectory()) directories.add(resolve(path as string));
+            return stat;
           } catch (error) {
-            record(error as NodeJS.ErrnoException);
+            record(error as NodeJS.ErrnoException, path as string);
             throw error;
           }
         },

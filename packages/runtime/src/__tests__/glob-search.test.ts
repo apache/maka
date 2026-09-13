@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import nodeFs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   chmod,
   glob,
@@ -25,6 +27,7 @@ import {
   mkdtemp,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -35,6 +38,61 @@ import { test } from 'node:test';
 import { executeFilesystemOperation } from '../filesystem-worker/operations.js';
 import { globFiles } from '../glob-search.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
+
+test('Glob reports a resolved cwd disappearing before traversal', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-glob-disappeared-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = join(root, 'cwd');
+  await mkdir(cwd);
+  const local = new LocalWorkspaceExecutor();
+  const resolved = await local.resolveExistingPath({
+    cwd,
+    path: '.',
+    label: 'Glob cwd',
+    scope: 'workspace',
+  });
+  await rename(cwd, join(root, 'moved'));
+  await assert.rejects(local.globFiles({ cwd: resolved.path, pattern: '**/*' }), {
+    code: 'ENOENT',
+  });
+});
+
+test('Glob reports an enumerated directory disappearing or changing type during traversal', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-race-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const originalReaddir = nodeFs.readdir;
+  for (const replaceWithFile of [false, true]) {
+    const cwd = join(root, replaceWithFile ? 'replaced' : 'disappeared');
+    const queued = join(cwd, 'queued');
+    await mkdir(queued, { recursive: true });
+    await writeFile(join(queued, 'hidden.txt'), 'hidden');
+    let changed = false;
+    t.mock.method(nodeFs, 'readdir', ((
+      path: string,
+      options: { withFileTypes: true },
+      callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
+    ) => {
+      originalReaddir(path, options, (error, entries) => {
+        if (String(path) === cwd && !error && !changed) {
+          changed = true;
+          nodeFs.renameSync(queued, join(root, `moved-${replaceWithFile}`));
+          if (replaceWithFile) nodeFs.writeFileSync(queued, 'now a file');
+        }
+        callback(error, entries);
+      });
+    }) as typeof nodeFs.readdir);
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(globFiles({ cwd, pattern: '**/*.txt' }), {
+        code: replaceWithFile ? 'ENOTDIR' : 'ENOENT',
+      });
+      assert.equal(changed, true);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  }
+});
 
 test('both Glob paths report permission failures and recover after permissions are restored', {
   skip: process.platform === 'win32' || process.getuid?.() === 0,
@@ -99,6 +157,7 @@ test('Glob retains native pattern membership, including hidden entries and expli
     'src/@(a|b).*',
     'src/.*',
     'missing/*.ts',
+    'src/a.ts/*.ts',
     'src',
     '**',
   ];
