@@ -51,7 +51,7 @@ import type {
 } from './filesystem-worker/client.js';
 import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
-import { operationAccess } from './filesystem-worker/protocol.js';
+import { FilesystemWorkerOperationSchema, operationAccess } from './filesystem-worker/protocol.js';
 import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -211,6 +211,8 @@ export function createBoundaryFilesystemExecutor(
     call: FilesystemBackendExecuteInput,
     expectedIdentity?: FilesystemTargetIdentity,
   ): Promise<FilesystemResult> {
+    if (call.operation.kind === 'read')
+      FilesystemWorkerOperationSchema.parse({ ...call.operation, cwd: call.cwd });
     const worker = workerFor(call.executionBoundary);
     if (!worker) {
       // The local backend consumes the same identity authority as the worker

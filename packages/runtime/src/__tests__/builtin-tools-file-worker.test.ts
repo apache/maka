@@ -27,6 +27,8 @@ import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-pro
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
 import { buildBuiltinTools } from '../builtin-tools.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
+import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../filesystem-worker/protocol.js';
@@ -39,6 +41,46 @@ afterEach(async () => {
 });
 
 describe('builtin file tools use the sandboxed worker', () => {
+  test('direct Read rejects invalid coordinates before selecting any backend', async () => {
+    const cwd = await temporaryDirectory('maka-read-coordinates-');
+    await writeFile(join(cwd, 'sample.txt'), 'one\ntwo\nthree');
+    let workerCalls = 0;
+    const filesystem = createBoundaryFilesystemExecutor({
+      workspace: createLocalWorkspaceExecutor(),
+      worker: {
+        execute: async () => {
+          workerCalls++;
+          throw new Error('Unexpected worker dispatch');
+        },
+      },
+    });
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+    for (const executionBoundary of [
+      managed,
+      { kind: 'bypass', revision: 0 } as const,
+      { kind: 'external', revision: 0 } as const,
+    ]) {
+      for (const coordinates of [{ offset: -1 }, { offset: 1.5 }, { limit: 0 }]) {
+        await assert.rejects(
+          filesystem.execute({
+            cwd,
+            executionBoundary,
+            operation: { kind: 'read', path: 'sample.txt', ...coordinates },
+          }),
+          (error: unknown) => error instanceof Error && error.name === 'ZodError',
+        );
+      }
+    }
+    assert.equal(workerCalls, 0);
+    const page = await filesystem.execute({
+      cwd,
+      executionBoundary: { kind: 'bypass', revision: 0 },
+      operation: { kind: 'read', path: 'sample.txt' },
+    });
+    assert.equal(page.kind, 'read');
+    assert.ok('content' in page);
+    assert.equal(page.content, 'one\ntwo\nthree');
+  });
   test('pages large files before the worker response boundary, including long-line continuations', async () => {
     const cwd = await temporaryDirectory('maka-read-large-');
     const path = join(cwd, 'large.txt');
