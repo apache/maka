@@ -56,6 +56,8 @@ import type { SessionAdmissionLease } from './session-admission-gate.js';
 export interface WorkHubAdmittedAction extends Omit<WorkHubCoordinationActFromTurnInput, 'turnId'> {
   readonly userText: string;
   readonly attachments?: AttachmentRef[];
+  /** Only supplied by the Host after accepting an exact durable form option. Never a wire proposal. */
+  readonly selectedTarget?: { readonly sessionId: string; readonly workspaceDigest: string };
 }
 
 type AdmittedWorkHubAction = WorkHubAdmittedAction & { readonly coordinationTurnId?: string };
@@ -173,6 +175,8 @@ export interface WorkHubRetirementResult {
 }
 
 export interface WorkHubDelegationAssignmentInput {
+  /** Rechecked under the target admission lease, only before a fresh assignment. */
+  readonly validateFreshTarget?: () => Promise<void>;
   readonly coordinationTurnId?: string;
   readonly actionId: string;
   readonly actionFingerprint: `sha256:${string}`;
@@ -529,25 +533,47 @@ export class WorkHubCoordinationActionGate {
     }
 
     const candidates = await this.candidates();
-    if (candidates.candidateSetId !== input.candidateSetId) {
+    if (!input.selectedTarget && candidates.candidateSetId !== input.candidateSetId) {
       throw new WorkHubActionGateFailure(
         'candidate_set_stale',
         'WorkHub Session candidates changed; refresh before delegating',
       );
     }
-    const target = candidates.candidates.find(
-      (candidate) => candidate.candidateRef === proposal.candidateRef,
+    const target = candidates.candidates.find((candidate) =>
+      input.selectedTarget
+        ? candidate.sessionId === input.selectedTarget.sessionId &&
+          digest(candidate.workspace) === input.selectedTarget.workspaceDigest
+        : candidate.candidateRef === proposal.candidateRef,
     );
     if (!target) {
       throw new WorkHubActionGateFailure(
-        'candidate_unavailable',
-        'WorkHub target is not in the admitted candidate set',
+        input.selectedTarget ? 'candidate_set_stale' : 'candidate_unavailable',
+        'WorkHub target is no longer in the offered workspace',
       );
     }
     this.#assertTarget(target);
 
     return this.#assign(
-      delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
+      {
+        ...delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
+        ...(input.selectedTarget
+          ? {
+              validateFreshTarget: async () => {
+                const fresh = (await this.candidates()).candidates.find(
+                  (candidate) =>
+                    candidate.sessionId === input.selectedTarget!.sessionId &&
+                    digest(candidate.workspace) === input.selectedTarget!.workspaceDigest,
+                );
+                if (!fresh)
+                  throw new WorkHubActionGateFailure(
+                    'candidate_set_stale',
+                    'The selected work changed before admission',
+                  );
+                this.#assertTarget(fresh);
+              },
+            }
+          : {}),
+      },
       context,
     );
   }
@@ -1108,6 +1134,7 @@ function digest(value: unknown): `sha256:${string}` {
 
 function actionFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
   const common = {
+    ...(input.selectedTarget ? { selectedTarget: input.selectedTarget } : {}),
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),

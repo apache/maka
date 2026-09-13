@@ -87,6 +87,7 @@ import { RunTrace } from '../run-trace.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
+import { buildForegroundBashTool } from '../shell-tools.js';
 import {
   createTestAiSdkBackend,
   projectedTranscriptOf,
@@ -1559,7 +1560,36 @@ describe('AiSdkBackend model history', () => {
     assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 32_768 - 1_024);
   });
 
-  test('leaves OpenAI-compatible output limits to their provider adapter', async () => {
+  test('rejects an output budget consumed entirely by fixed thinking before sending', async () => {
+    const model = completionModel();
+    const backend = createBackend({
+      connection: {
+        slug: 'kimi-coding-plan',
+        providerType: 'kimi-coding-plan',
+        defaultModel: 'kimi-for-coding',
+        modelOverrides: { 'kimi-for-coding': { maxOutputTokens: 1024 } },
+      },
+      modelId: 'kimi-for-coding',
+      providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } },
+      modelFactory: () => model,
+      tools: [],
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-current',
+      text: 'Hello',
+      context: [],
+    })) {
+      events.push(event);
+    }
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.match(
+      events.find((event) => event.type === 'error')?.message ?? '',
+      /Output budget must exceed/,
+    );
+  });
+
+  test('leaves catalog-derived OpenAI-compatible output limits to their provider adapter', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
@@ -2245,6 +2275,46 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('a persisted quote-only user event replays its excerpt into the provider prompt (#4804)', async () => {
+    // The headline behaviour of #4804 measured at the production seam: a
+    // stored user event whose text is empty but whose quotes carry the turn
+    // must reach the provider prompt as the excerpt itself, not be skipped
+    // as invisible or summarized as a count.
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+    } as never);
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'and the current ask',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-quote',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            content: {
+              kind: 'text',
+              text: '',
+              quotes: [{ text: 'the deploy failed at step three' }],
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const historical = prompt[0]?.content as Array<{ type: string; text?: string }>;
+    const joined = JSON.stringify(historical);
+    assert.match(joined, /the deploy failed at step three/, 'the excerpt reaches the prompt');
+    assert.match(joined, /quoted_excerpt/, 'the excerpt renders in its canonical envelope');
+  });
+
   test('current-turn image attachment keeps its Read reference unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
@@ -2286,7 +2356,9 @@ describe('AiSdkBackend model history', () => {
     const text = parts.map((p) => p.text ?? '').join('\n');
     assert.ok(text.includes('describe this chart'), `expected original text in: ${text}`);
     assert.ok(
-      text.includes('<attachment>\nRead argument: {"ref":"maka://runtime/attachments/artifact-1"}'),
+      text.includes(
+        '<attachment>\nRead argument: {"path":"maka://runtime/attachments/artifact-1"}',
+      ),
       `expected attachment Read reference in: ${text}`,
     );
     assert.doesNotMatch(text, /does not support image input/);
@@ -4369,7 +4441,7 @@ describe('AiSdkBackend model history', () => {
       serializedResult: string;
       bodySha256: string;
     }> = [];
-    const oldResult = { body: 'x'.repeat(500) };
+    const oldResult = { body: 'x'.repeat(20_000) };
     const transitions: ModelProjectionTransition[] = [];
     const backend = createBackend({
       connection: connection(),
@@ -4378,10 +4450,8 @@ describe('AiSdkBackend model history', () => {
       tools: [],
       contextBudget: {
         name: 'archive-test',
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         charsPerToken: 1,
       },
@@ -6333,10 +6403,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-transition-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6386,7 +6454,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-fold-1',
           name: 'Read',
-          result: { body: 'y'.repeat(400) },
+          result: { body: 'y'.repeat(20_000) },
           isError: false,
         },
       }),
@@ -6433,10 +6501,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-transition-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6486,10 +6552,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-summary-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6545,7 +6609,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-echo-1',
           name: 'Read',
-          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          result: { body: 'x'.repeat(20_000) + 'RAW_TRANSITIONED_TOOL_BODY' },
           isError: false,
         },
       }),
@@ -6583,10 +6647,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-summary-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6613,6 +6675,110 @@ describe('AiSdkBackend model history', () => {
     );
     assert.match(prompt, /ECHO /);
     assert.doesNotMatch(prompt, /RAW_TRANSITIONED_TOOL_BODY/);
+  });
+
+  test('checkpoint replay uses the durable winner after refused or uncertain prune commits', async () => {
+    for (const failure of ['rival', 'write-ack', 'read'] as const) {
+      const model = completionModel();
+      const transitions: ModelProjectionTransition[] = [];
+      const priorEvents = [
+        runtimeTextEvent({
+          id: 'snapshot-user',
+          turnId: 'turn-old',
+          role: 'user',
+          author: 'user',
+          text: 'inspect output',
+        }),
+        runtimeEvent({
+          id: 'snapshot-call',
+          turnId: 'turn-old',
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'snapshot-tool',
+            name: 'Bash',
+            args: {},
+          },
+        }),
+        runtimeEvent({
+          id: 'snapshot-result',
+          turnId: 'turn-old',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'snapshot-tool',
+            name: 'Bash',
+            result: 'large output\n'.repeat(2000),
+          },
+        }),
+      ];
+      const checkpoint = buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: priorEvents,
+        summary: structuredSummary('STALE_SNAPSHOT_SUMMARY'),
+      });
+      let reads = 0;
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        contextBudget: { toolResultPrune: { enabled: true }, historyCompact: { enabled: true } },
+        loadHistoryCompactCheckpoint: () => checkpoint,
+        toolResultArchive: testToolResultArchive({
+          archiveToolResult: async () => ({
+            ledger: true,
+            commitTransition: async (transition, persist) => {
+              if (failure === 'rival') {
+                transitions.push(transition);
+                return false;
+              }
+              await persist(transition);
+              if (failure === 'write-ack') throw new Error('commit acknowledgement lost');
+              return true;
+            },
+          }),
+        }),
+        recordModelProjectionTransition: async (transition) => {
+          transitions.push(transition);
+        },
+        loadModelProjectionTransitions: async () => {
+          if (++reads === 2 && failure === 'read')
+            throw new Error('ledger unavailable after commit');
+          return {
+            transitions: [...transitions],
+            unreadableTargets: new Set<string>(),
+            unscopedUnreadable: 0,
+          };
+        },
+      });
+      const events: SessionEvent[] = [];
+      const send = async () => {
+        for await (const event of backend.send({
+          turnId: 'turn-new',
+          text: 'continue',
+          context: [],
+          runtimeContext: priorEvents,
+        }))
+          events.push(event);
+      };
+      if (failure === 'read') await assert.rejects(send, /ledger unavailable after commit/);
+      else await send();
+      assert.equal(transitions.length, 1);
+      if (failure === 'read') {
+        assert.equal(model.doStreamCalls.length, 0);
+      } else {
+        const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+        assert.doesNotMatch(prompt, /STALE_SNAPSHOT_SUMMARY/);
+        assert.match(prompt, /maka:\/\/runtime\/tool-results\/snapshot-result/);
+        const usage = events.find((event) => event.type === 'token_usage');
+        assert.ok(usage?.type === 'token_usage');
+        assert.equal(usage.contextBudget?.prunedToolResults, 1);
+        assert.equal(usage.contextBudget?.archiveWriteFailures, 0);
+      }
+    }
   });
 
   test('a transition committed after creation invalidates the checkpoint at pre-turn replay (#4845 review)', async () => {
@@ -6666,7 +6832,7 @@ describe('AiSdkBackend model history', () => {
           kind: 'function_response',
           id: 'tool-echo-1',
           name: 'Read',
-          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          result: { body: 'x'.repeat(20_000) + 'RAW_TRANSITIONED_TOOL_BODY' },
           isError: false,
         },
       }),
@@ -6688,7 +6854,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       summarizeHistoryCompact: echoSummarizer,
@@ -6724,10 +6890,8 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxResultEstimatedTokens: 1,
-          minRecentTurnsFull: 0,
         },
         historyCompact: { enabled: true },
       },
@@ -6767,7 +6931,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'checkpoint-effective-drift-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => recorded.at(-1),
@@ -6827,7 +6991,7 @@ describe('AiSdkBackend model history', () => {
       contextBudget: {
         name: 'unreadable-target-replay-test',
         charsPerToken: 1,
-        staleToolResultPrune: { enabled: false },
+        toolResultPrune: { enabled: false },
         historyCompact: { enabled: true },
       },
       loadModelProjectionTransitions: async () => ({
@@ -7790,14 +7954,14 @@ describe('AiSdkBackend error surfaces', () => {
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
 
-    // In-turn result now folds in a redacted, bounded tail of stderr/stdout so
+    // In-turn result folds in a bounded tail of stderr/stdout so
     // the model can see *why* the command failed (the full structured content
     // still goes to session history, asserted below).
     assert.deepEqual(result, {
       error: [
         '命令退出码 2',
         '--- stderr ---\nstderr before failure',
-        '--- stdout ---\nstdout before failure\nAuthorization: Bearer [redacted]',
+        '--- stdout ---\nstdout before failure\nAuthorization: Bearer sk-live-secret-token-value',
       ].join('\n\n'),
     });
     assert.equal(messages[0]?.isError, true);
@@ -7813,11 +7977,11 @@ describe('AiSdkBackend error surfaces', () => {
       exitCode: 2,
       output: {
         mode: 'pipes',
-        stdout: 'stdout before failure\nAuthorization: Bearer [redacted]',
+        stdout: 'stdout before failure\nAuthorization: Bearer sk-live-secret-token-value',
         stderr: 'stderr before failure',
         stdoutTruncated: false,
         stderrTruncated: false,
-        redacted: true,
+        redacted: false,
       },
     });
   });
@@ -8893,17 +9057,30 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageCheckpoints[0]?.costUsd, undefined);
   });
 
-  test('a pruned tool result is readable again through the tool its placeholder names', async () => {
-    // The whole loop through real dispatch (#2026): the budget prunes an
-    // oversized result, the runtime mints a placeholder naming `ArchiveRead`,
-    // the model calls it with the ref that placeholder carried, and the body
-    // lands back in the conversation. Advertising the decoder is only half the
-    // invariant; the other half is that calling it works from inside the turn.
-    const durable = durableTurnHarness('turn-1', 'read the big file');
-    const largeBody = 'ARCHIVED_BODY_SENTINEL'.repeat(200);
+  test('a pruned Bash result retains durable output and is readable without rerunning', async () => {
+    const durable = durableTurnHarness('turn-1', 'run the verbose command');
+    const stdoutLines = [
+      'FRONT_SENTINEL',
+      ...Array.from(
+        { length: 4_000 },
+        (_, index) => `line-${String(index).padStart(4, '0')}-${'x'.repeat(36)}`,
+      ),
+      'TAIL_SENTINEL',
+    ];
+    const stdout = stdoutLines.join('\n');
+    const stderr = 'ERR_SENTINEL';
     const store = new Map<string, string>();
     const prompts: unknown[] = [];
+    let executeCalls = 0;
     let streamCalls = 0;
+    const findArchive = (value: any): any => {
+      if (value?.kind === 'maka.archived_tool_result') return value;
+      if (value && typeof value === 'object')
+        for (const child of Object.values(value)) {
+          const found = findArchive(child);
+          if (found) return found;
+        }
+    };
     const model = new MockLanguageModelV4({
       doStream: async ({ prompt }) => {
         streamCalls += 1;
@@ -8921,19 +9098,17 @@ describe('AiSdkBackend usage telemetry', () => {
               },
             },
           ] as LanguageModelV4StreamPart[];
+        const archive = findArchive(prompt);
         const chunks: LanguageModelV4StreamPart[] =
           streamCalls === 1
-            ? call('tool-1', 'Read', { path: 'big.md' })
-            : // The newest completed step is never pruned, so a second call is
-              // what makes the Read result stale enough to be archived.
-              streamCalls === 2
-              ? call('tool-2', 'Bash', { cmd: 'continue' })
+            ? call('tool-1', 'Bash', { command: 'verbose-command' })
+            : streamCalls === 2
+              ? call('tool-2', 'Read', { path: archive.resourceRef, limit: 1 })
               : streamCalls === 3
-                ? call('tool-3', 'ArchiveRead', {
-                    // Read the ref out of the placeholder the runtime just
-                    // handed us, exactly as a model would.
-                    ref: /maka:\/\/archive\/[^"\\]+/.exec(JSON.stringify(prompt))?.[0] ?? 'missing',
-                    operation: 'read',
+                ? call('tool-3', 'Read', {
+                    path: archive.resourceRef,
+                    offset: stdoutLines.length,
+                    limit: 1,
                   })
                 : [
                     { type: 'stream-start', warnings: [] },
@@ -8956,33 +9131,32 @@ describe('AiSdkBackend usage telemetry', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [
-        {
-          name: 'Read',
-          description: 'Read description',
-          parameters: z.object({ path: z.string() }),
-          impl: async () => ({ body: largeBody }),
-        },
-        {
-          name: 'Bash',
-          description: 'Bash description',
-          parameters: z.object({ cmd: z.string() }),
-          impl: async () => ({ body: 'small' }),
-        },
+        buildForegroundBashTool({
+          description: 'Run a foreground command.',
+          execute: async () => {
+            executeCalls += 1;
+            throw Object.assign(new Error('Command failed with exit code 7'), {
+              code: 7,
+              stdout,
+              stderr,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            });
+          },
+        }),
       ],
       contextBudget: {
-        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        toolResultPrune: { enabled: true },
       },
       // A real store, so the decoder has to reach what the writer actually wrote.
       toolResultArchive: createToolResultArchiveCapability({
         archiveToolResult: async (event) => {
-          const artifactId = `artifact-${store.size + 1}`;
-          store.set(artifactId, event.serializedResult);
-          return { artifactId };
+          store.set(event.runtimeEventId, event.serializedResult);
+          return { ledger: true };
         },
-        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
         readArchivedToolResultResource: async (event) => {
           const serializedResult =
-            event.storage === 'ledger' ? undefined : store.get(event.artifactId);
+            event.storage === 'event' ? store.get(event.runtimeEventId) : undefined;
           return serializedResult === undefined
             ? { ok: false, reason: 'not_found' }
             : { ok: true, serializedResult };
@@ -8993,26 +9167,66 @@ describe('AiSdkBackend usage telemetry', () => {
 
     for await (const event of backend.send(durable.input())) durable.record(event);
 
-    assert.match(
-      store.get('artifact-1') ?? '',
-      /ARCHIVED_BODY_SENTINEL/,
-      'the oversized Read result must have been archived',
+    const durableResult = durable.ledger.find(
+      (event) =>
+        event.content?.kind === 'function_response' &&
+        event.content.name === 'Bash' &&
+        event.content.id === 'tool-1',
     );
-    const thirdPrompt = JSON.stringify(prompts[2]);
-    assert.doesNotMatch(thirdPrompt, /ARCHIVED_BODY_SENTINEL/);
-    assert.match(thirdPrompt, /maka:\/\/archive\//);
-    assert.match(
-      JSON.stringify(prompts[3]),
-      /ARCHIVED_BODY_SENTINEL/,
-      'the ArchiveRead result must carry the archived body back into the conversation',
-    );
+    assert.ok(durableResult?.content?.kind === 'function_response');
+    const terminal = durableResult.content.result as {
+      exitCode: number;
+      status: string;
+      output: { stdout: string; stderr: string; redacted: boolean };
+    };
+    assert.equal(terminal.exitCode, 7);
+    assert.equal(terminal.status, 'failed');
+    assert.ok(terminal.output.stdout.length > 180_000);
+    assert.match(terminal.output.stdout, /^FRONT_SENTINEL/);
+    assert.match(terminal.output.stdout, /TAIL_SENTINEL$/);
+    assert.equal(terminal.output.stdout, stdout);
+    assert.equal(terminal.output.stderr, stderr);
+    assert.equal(terminal.output.redacted, false);
+
+    const secondPrompt = prompts[1];
+    const archive = findArchive(secondPrompt);
+    assert.ok(archive);
+    assert.match(archive.resourceRef, /^maka:\/\/runtime\/tool-results\//);
+    assert.match(archive.page.content, /^FRONT_SENTINEL/);
+    assert.ok(archive.page.content.length < terminal.output.stdout.length);
+    assert.ok(archive.page.next);
+    assert.equal(archive.page.metadata.status, 'failed');
+    assert.equal(archive.page.metadata.exitCode, 7);
+    assert.equal(archive.page.metadata.redacted, false);
+    assert.doesNotMatch(JSON.stringify(secondPrompt), /TAIL_SENTINEL/);
+
+    const findToolResult = (value: any, toolCallId: string): any => {
+      if (value?.toolCallId === toolCallId && value.output !== undefined) return value;
+      if (value && typeof value === 'object')
+        for (const child of Object.values(value)) {
+          const found = findToolResult(child, toolCallId);
+          if (found) return found;
+        }
+    };
+    assert.equal(findToolResult(secondPrompt, 'tool-1')?.output.type, 'error-json');
+    const frontRead = findToolResult(prompts[2], 'tool-2');
+    assert.ok(frontRead);
+    assert.match(JSON.stringify(frontRead.output), /FRONT_SENTINEL/);
+    assert.match(JSON.stringify(frontRead.output), /"exitCode":7/);
+    const stderrRead = findToolResult(prompts[3], 'tool-3');
+    assert.ok(stderrRead);
+    assert.match(JSON.stringify(stderrRead.output), /ERR_SENTINEL/);
+    assert.match(JSON.stringify(stderrRead.output), /"exitCode":7/);
+    assert.equal(executeCalls, 1);
+    const archived = [...store.values()][0] ?? '';
+    assert.match(archived, /TAIL_SENTINEL/);
   });
 
-  test('records active tool-result prune diagnostics in usage telemetry', async () => {
+  test('accumulates pruning across provider steps once in persisted and live usage', async () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const largeBody = 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED'.repeat(200);
+    const largeBody = 'x'.repeat(20_000) + 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED';
     const archivedToolCallIds: string[] = [];
     let streamCalls = 0;
     const prompts: unknown[] = [];
@@ -9109,11 +9323,11 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Bash',
           description: 'Bash description',
           parameters: z.object({ cmd: z.string() }),
-          impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE' }),
+          impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE'.repeat(600) }),
         },
       ],
       contextBudget: {
-        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        toolResultPrune: { enabled: true },
       },
       toolResultArchive: testToolResultArchive({
         archiveToolResult: async (candidate) => {
@@ -9124,7 +9338,41 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
     });
 
-    for await (const event of backend.send(durable.input())) {
+    const prior = [
+      runtimeTextEvent({
+        id: 'prior-user',
+        turnId: 'prior-turn',
+        role: 'user',
+        author: 'user',
+        text: 'read previous',
+      }),
+      runtimeEvent({
+        id: 'prior-call',
+        turnId: 'prior-turn',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'prior-tool',
+          name: 'Read',
+          args: { path: 'previous.txt' },
+        },
+      }),
+      runtimeEvent({
+        id: 'prior-result',
+        turnId: 'prior-turn',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'prior-tool',
+          name: 'Read',
+          result: { body: largeBody },
+          modelProjection: { version: 1, kind: 'json', value: { body: largeBody } },
+        },
+      }),
+    ];
+    for await (const event of backend.send(durable.input({ runtimeContext: prior }))) {
       durable.record(event);
       events.push(event);
     }
@@ -9139,7 +9387,7 @@ describe('AiSdkBackend usage telemetry', () => {
       | undefined;
     assert.equal(streamCalls, 4);
     const secondPrompt = JSON.stringify(prompts[1]);
-    assert.match(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
+    assert.doesNotMatch(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.doesNotMatch(secondPrompt, /maka\.active_archived_tool_result/);
     const thirdPrompt = JSON.stringify(prompts[2]);
     assert.doesNotMatch(thirdPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
@@ -9153,15 +9401,17 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.match(fourthPrompt, /artifact-tool-1/);
     // Each result is archived once, no matter how many later steps rebuild the
     // Turn: the ledger, not a per-run memory, is what says it already happened.
-    assert.deepEqual(archivedToolCallIds, ['tool-1', 'tool-2']);
+    assert.deepEqual(archivedToolCallIds, ['prior-tool', 'tool-1', 'tool-2', 'tool-3']);
     for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
-      assert.equal(contextBudget?.activePrunedToolResults, 2);
-      assert.equal(contextBudget?.activeArchiveFailures, undefined);
-      assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
+      assert.equal(contextBudget?.prunedToolResults, 4);
+      assert.equal(contextBudget?.archiveWriteFailures, 0);
+      assert.ok(
+        ((contextBudget?.prunedToolResultEstimatedTokensBefore as number | undefined) ?? 0) > 0,
+      );
     }
   });
 
-  test('projects superseded current-turn observations before the next provider step', async () => {
+  test('keeps small observations even when a newer Read supersedes their range', async () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const prompts: unknown[] = [];
@@ -9225,10 +9475,8 @@ describe('AiSdkBackend usage telemetry', () => {
       ],
       contextBudget: {
         charsPerToken: 1,
-        activeToolResultPrune: {
+        toolResultPrune: {
           enabled: true,
-          maxCurrentResultEstimatedTokens: 10_000,
-          minSupersededResultEstimatedTokens: 1,
         },
       },
       toolResultArchive: testToolResultArchive({
@@ -9242,13 +9490,13 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(streamCalls, 3);
     assert.match(JSON.stringify(prompts[1]), /OLD_READ_RESULT/);
     const thirdPrompt = JSON.stringify(prompts[2]);
-    assert.doesNotMatch(thirdPrompt, /OLD_READ_RESULT/);
+    assert.match(thirdPrompt, /OLD_READ_RESULT/);
     assert.match(thirdPrompt, /NEW_READ_RESULT/);
-    assert.match(thirdPrompt, /newer_read_covers_range/);
+    assert.doesNotMatch(thirdPrompt, /maka\.archived_tool_result/);
     const usageMessage = messages.find(
       (message) => (message as { type?: string }).type === 'token_usage',
     ) as { contextBudget?: Record<string, unknown> } | undefined;
-    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, 1);
+    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, undefined);
     assert.equal(usageMessage?.contextBudget?.activeDuplicateToolResults, undefined);
   });
 
@@ -15222,6 +15470,69 @@ describe('AiSdkBackend steering durability and identity', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
     ]);
+  });
+
+  test('a prior-turn steering event replays its image attachments as image parts', async () => {
+    // The original steered request materialized its images natively through
+    // appendImageParts; a replay that kept only the envelope text would hand
+    // a recovery turn attachment references without the pixels the first
+    // request received. The steering provider identity must survive too.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 8, 9]);
+    const model = textCompletionModel('done');
+    const backend = steeringBackend(model, {
+      supportsVision: true,
+      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
+    });
+    const steeredEvent = runtimeTextEvent({
+      id: 'rt-steer',
+      turnId: 'turn-prev',
+      role: 'user',
+      author: 'user',
+      text: 'steered earlier',
+    });
+    (steeredEvent.content as { steering?: true }).steering = true;
+    (steeredEvent.content as { attachments?: unknown[] }).attachments = [
+      {
+        kind: 'image',
+        name: 'chart.png',
+        mimeType: 'image/png',
+        bytes: 123,
+        ref: {
+          kind: 'session_file',
+          sessionId: 'session-1',
+          relativePath: 'attachments/chart.png',
+        },
+      },
+    ];
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [steeredEvent],
+      }),
+    );
+
+    const prompt = model.doStreamCalls[0]?.prompt ?? [];
+    const steeredReplay = prompt[0];
+    const parts = steeredReplay?.content as Array<{
+      type: string;
+      text?: string;
+      mediaType?: string;
+    }>;
+    assert.ok(
+      parts.find((part) => part.type !== 'text' && part.mediaType === 'image/png'),
+      `expected a native image part on the steering replay, got: ${JSON.stringify(parts)}`,
+    );
+    assert.match(
+      parts[0]?.text ?? '',
+      /steered earlier/,
+      'the envelope text stays the leading part',
+    );
+    assert.ok(
+      steeredReplay?.providerOptions,
+      'the steering provider identity survives the materialization',
+    );
   });
 
   test('persists provider metadata a canonical event can read back', async () => {

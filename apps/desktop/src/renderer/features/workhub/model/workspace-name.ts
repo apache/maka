@@ -17,14 +17,8 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { getStartupRecoveryCopy } from '../runtime-host-boot-copy.js';
 
-test('startup recovery copy preserves Traditional Chinese', () => {
-  const copy = getStartupRecoveryCopy('zh-TW');
-  assert.equal(copy.storageRoot.title, 'Maka 工作區需要修復');
-  assert.match(copy.storageRoot.detail('C:\\Maka'), /磁碟識別碼/);
-  assert.equal(copy.runtimeHost.title, '預設 Runtime Host 無法連線');
-  assert.match(copy.runtimeHost.detail('失敗'), /設定中處理/);
-});
+/** Display basename for a Host path, independent of the renderer platform. */
+export function workspaceNameFromCwd(cwd: string | undefined): string | undefined {
+  return cwd?.replace(/[/\\]+$/, '').split(/[/\\]/).at(-1) || undefined;
+}

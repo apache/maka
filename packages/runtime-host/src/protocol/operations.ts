@@ -360,6 +360,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'web-search.execute',
   'workhub.coordination.answer',
   'workhub.coordination.actFromTurn',
+  'workhub.coordination.selectAndDelegate',
   'workhub.coordination.candidates',
   'workhub.coordination.configureModel',
   'workhub.coordination.query',

@@ -45,3 +45,5 @@ export type {
 
 export { GenericProviderMark } from './generic-provider-mark.js';
 export { parseContextWindowInput } from './context-window-input.js';
+export { CapabilityEditor } from './provider-capability-editor.js';
+export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dialog.js';

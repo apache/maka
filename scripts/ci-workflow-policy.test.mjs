@@ -56,19 +56,19 @@ test('GitHub output matches the selections consumed by CI', () => {
   assert.deepEqual(outputKeys, consumedKeys);
 });
 
-test('one job remains the only required-check authority', () => {
+test('one unconditional job carries the required context on every pull request', () => {
   const workflow = readWorkflow('ci.yml');
 
   // `.asf.yaml` requires `test`. A paths filter would stop the workflow and
-  // leave that check pending forever, and a second job would create another
-  // authority. Metadata-only edits may skip this job under a different name;
-  // the retarget contract below proves that exception cannot impersonate it.
+  // leave that check pending forever, and a second job would make the same
+  // pull request queue for a scarce runner twice to reach one verdict.
   assert.doesNotMatch(triggerBlock('ci.yml'), /\bpaths(-ignore)?:/u);
 
   const jobsBlock = workflow.slice(workflow.indexOf('\njobs:'));
   const jobs = [...jobsBlock.matchAll(/^ {2}([a-z0-9_-]+):$/gmu)].map((match) => match[1]);
   assert.deepEqual(jobs, ['test']);
   assert.doesNotMatch(jobsBlock, /^ {4}needs:/mu);
+  assert.doesNotMatch(jobsBlock, /^ {4}if:/mu);
 });
 
 test('comparison precedes planning and every later gate uses plan outputs', () => {
@@ -114,25 +114,6 @@ test('every core diff gate consumes the shared comparison without resolving anot
     );
   }
   assert.match(workflow, /HEAD_SHA: \$\{\{ steps\.comparison\.outputs\.head \}\}/u);
-});
-
-test('core CI runs on base retargets without letting metadata edits replace the required check', () => {
-  const workflow = readWorkflow('ci.yml');
-
-  assert.match(workflow, /types: \[opened, synchronize, reopened, edited\]/u);
-  assert.match(
-    workflow,
-    /group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\$\{\{ github\.event\.action == 'edited' && github\.event\.changes\.base\.ref\.from == '' && format\('-ignored-\{0\}', github\.run_id\) \|\| '' \}\}/u,
-  );
-  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
-  assert.match(
-    workflow,
-    /name: \$\{\{ github\.event_name == 'pull_request' && github\.event\.action == 'edited' && github\.event\.changes\.base\.ref\.from == '' && 'ignored-edit' \|\| 'test' \}\}/u,
-  );
-  assert.match(
-    workflow,
-    /if: \$\{\{ github\.event_name != 'pull_request' \|\| github\.event\.action != 'edited' \|\| github\.event\.changes\.base\.ref\.from != '' \}\}/u,
-  );
 });
 
 test('core CI uses the Windows inventory package-script authority', () => {

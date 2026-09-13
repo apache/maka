@@ -36,7 +36,7 @@
  * per-model supported set, so the UI and runtime share one source of truth.
  */
 
-import type { ProviderType } from './llm-connections.js';
+import type { ModelInfo, ProviderType } from './llm-connections.js';
 import { lookupModelMetadata } from './model-metadata.js';
 
 /**
@@ -117,57 +117,46 @@ function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly T
   return THINKING_LEVELS.filter((level) => choices.has(level));
 }
 
-/**
- * One model as declared by the user: the facts no other source can be trusted
- * to know. Every field is independent, and every ABSENT field means "Auto" —
- * the provider's /models report and the metadata chain decide. The single
- * exception in shape, not spirit, is `vision: false`: an explicit DISABLE that
- * overrides Auto, because the runtime would otherwise believe a vision report
- * the provider may emit regardless.
- *
- * Declarations live on the connection as a first-class typed field
- * (`relayModelProfiles`, keyed by model id) rather than on the `models[]` rows
- * a catalog refresh rewrites, so they sit next to the user-edited connection
- * fields and survive it.
- *
- * The name is historical, and the table now splits by FIELD rather than by
- * provider. `contextWindow` and `vision` state facts about a model: a relay's
- * models are unknown to `model-metadata.ts`, but so is any model newer than
- * the bundled snapshot on any provider, and a provider without a model-list
- * endpoint cannot describe one either. Confining those to relays left the user
- * no way to state a context window Maka had no other way to learn (#1584).
- *
- * `thinkingLevels` and `serviceTier` stay relay-only: they name wire features
- * (`reasoning_effort` tiers, priority processing) that only the
- * OpenAI-compatible relays accept. `assertProfileFieldsFitProvider` in the
- * catalog codec is the write seam that enforces it, so reads here do not
- * re-derive it; `supportsRelayFastServiceTier` below is a narrower read-side
- * question — which relay MODELS carry the tier.
- *
- * One invariant is still enforced at the store boundaries: declarations exist
- * only for models in `enabledModelIds` (disabling a model deletes its
- * declaration).
- */
-export interface RelayModelProfile {
+/** A connection-scoped user model record. An empty record preserves a manually added id. */
+export interface ModelOverride {
+  readonly knowledgeCutoff?: string;
+  readonly capabilities?: Omit<NonNullable<ModelInfo['capabilities']>, 'vision'>;
+  readonly modalities?: ModelInfo['modalities'];
   readonly thinkingLevels?: readonly ThinkingLevel[];
   readonly vision?: boolean;
   readonly contextWindow?: number;
+  readonly compactionThreshold?: number;
+  readonly inputLimit?: number;
+  /** Per-request output budget, including thinking tokens; not model capacity. */
+  readonly maxOutputTokens?: number;
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
   /** Use OpenAI's low-latency service tier for this relay model. */
   readonly serviceTier?: 'fast';
 }
 
-export type RelayModelProfiles = Readonly<Record<string, RelayModelProfile>>;
+export type ModelOverrides = Readonly<Record<string, ModelOverride>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefined {
+function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
   if (!isRecord(entry)) return undefined;
   const declared: {
+    knowledgeCutoff?: string;
+    capabilities?: ModelOverride['capabilities'];
+    modalities?: ModelOverride['modalities'];
     thinkingLevels?: readonly ThinkingLevel[];
     vision?: boolean;
     contextWindow?: number;
+    compactionThreshold?: number;
+    inputLimit?: number;
+    maxOutputTokens?: number;
+    displayName?: string;
+    description?: string;
+    apiProtocol?: 'openai-chat' | 'openai-responses' | 'anthropic-messages';
     serviceTier?: 'fast';
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
@@ -191,17 +180,30 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
     }
   }
   if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
-  // Safe-integer, matching the store codec's 1..MAX_SAFE_INTEGER bound: a
-  // value that normalizes here must never be rejected by the write it feeds.
-  if (
-    typeof entry.contextWindow === 'number' &&
-    Number.isSafeInteger(entry.contextWindow) &&
-    entry.contextWindow > 0
-  ) {
-    declared.contextWindow = entry.contextWindow;
+  for (const field of [
+    'contextWindow',
+    'compactionThreshold',
+    'inputLimit',
+    'maxOutputTokens',
+  ] as const) {
+    const value = entry[field];
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+      declared[field] = value;
   }
+  for (const field of ['displayName', 'description', 'knowledgeCutoff'] as const) {
+    if (typeof entry[field] === 'string') declared[field] = entry[field];
+  }
+  if (isRecord(entry.capabilities)) declared.capabilities = entry.capabilities;
+  if (isRecord(entry.modalities))
+    declared.modalities = entry.modalities as unknown as ModelOverride['modalities'];
+  if (
+    entry.apiProtocol === 'openai-chat' ||
+    entry.apiProtocol === 'openai-responses' ||
+    entry.apiProtocol === 'anthropic-messages'
+  )
+    declared.apiProtocol = entry.apiProtocol;
   if (entry.serviceTier === 'fast') declared.serviceTier = 'fast';
-  return Object.keys(declared).length > 0 ? (declared as RelayModelProfile) : undefined;
+  return declared;
 }
 
 /**
@@ -214,32 +216,25 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
  * keys, and literal assignment would poison the prototype instead of storing
  * the entry.
  */
-export function normalizeRelayModelProfiles(
-  table: unknown,
-): Record<string, RelayModelProfile> | undefined {
+export function normalizeModelOverrides(table: unknown): Record<string, ModelOverride> | undefined {
   if (!isRecord(table)) return undefined;
-  const parsed: [string, RelayModelProfile][] = [];
+  const parsed: [string, ModelOverride][] = [];
   for (const [modelId, entry] of Object.entries(table)) {
     if (modelId.length === 0 || modelId.length > 512) continue;
-    const declared = normalizeRelayModelProfile(entry);
+    const declared = normalizeModelOverride(entry);
     if (declared) parsed.push([modelId, declared]);
   }
   return parsed.length > 0 ? Object.fromEntries(parsed) : undefined;
 }
 
-/**
- * Restore the `keys(profiles) ⊆ enabledModelIds` invariant after a selection
- * change that left the table untouched: profiles for models the user just
- * disabled are dropped rather than kept stale. Returns `undefined` for an
- * empty remainder so the recycled state reads as "no profiles", never "{}".
- */
-export function pruneRelayModelProfiles(
-  table: RelayModelProfiles | undefined,
-  enabledModelIds: readonly string[],
-): RelayModelProfiles | undefined {
+/** Remove profiles for models explicitly retired from a provider. */
+export function pruneModelOverrides(
+  table: ModelOverrides | undefined,
+  retainedModelIds: readonly string[],
+): ModelOverrides | undefined {
   if (table === undefined) return undefined;
   const kept = Object.fromEntries(
-    Object.entries(table).filter(([modelId]) => enabledModelIds.includes(modelId)),
+    Object.entries(table).filter(([modelId]) => retainedModelIds.includes(modelId)),
   );
   return Object.keys(kept).length > 0 ? kept : undefined;
 }
@@ -251,54 +246,29 @@ export function pruneRelayModelProfiles(
  */
 export interface ConnectionThinkingContext {
   readonly providerType: ProviderType;
-  readonly relayModelProfiles?: RelayModelProfiles;
+  readonly modelOverrides?: ModelOverrides;
 }
 
 /**
  * The one read seam for user declarations: thinking, vision, and context
  * window reads all enter through here, so the precedence of a declaration over
  * the metadata chain is decided in exactly one place. Entries ride through
- * `normalizeRelayModelProfile` so even a hand-edited local file degrades to
+ * `normalizeModelOverride` so even a hand-edited local file degrades to
  * Auto instead of trusting a malformed field.
  */
-export function relayModelProfile(
+export function modelOverride(
   connection: ConnectionThinkingContext,
   modelId: string,
-): RelayModelProfile | undefined {
-  return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
+): ModelOverride | undefined {
+  return normalizeModelOverride(connection.modelOverrides?.[modelId]);
 }
 
-/** The connection fields the declared-window rule reads; structural so runtime and UI projections both fit. */
-export interface DeclaredContextWindowContext extends ConnectionThinkingContext {
-  readonly models?: readonly {
-    readonly id: string;
-    readonly contextWindow?: number;
-    readonly inputLimit?: number;
-    readonly factOverriddenFields?: readonly string[];
-  }[];
-}
-
-/**
- * The context window the USER declared for a model — the Maka window: the
- * proactive compaction target, and nothing else. Exactly two sources count as
- * a declaration: a model-facts pin (`factOverriddenFields` includes
- * `contextWindow`, narrowest of window/input limit) and a relay model profile.
- * A provider's `/models` report and generated metadata describe the model and
- * are shown as a hint; they never become a threshold on their own. This is the
- * single owner of that rule for runtime and UI (#4559).
- */
+/** The user's proactive compaction target; model capacity never supplies a default. */
 export function declaredContextWindow(
-  connection: DeclaredContextWindowContext,
+  connection: ConnectionThinkingContext,
   modelId: string,
 ): number | undefined {
-  const model = connection.models?.find((candidate) => candidate.id === modelId);
-  if (model?.factOverriddenFields?.includes('contextWindow')) {
-    const values = [model.contextWindow, model.inputLimit].filter(
-      (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
-    );
-    return values.length > 0 ? Math.min(...values) : undefined;
-  }
-  return relayModelProfile(connection, modelId)?.contextWindow;
+  return modelOverride(connection, modelId)?.compactionThreshold;
 }
 
 /**
@@ -322,7 +292,7 @@ export function supportsRelayFastServiceTier(providerType: ProviderType, modelId
 
 /**
  * OpenAI-compatible relay connections declare thinking support **per model** via
- * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
+ * `modelOverrides[modelId].thinkingLevels` — a relay may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable
  * declaration for that model every provider (including relays) falls through
@@ -332,7 +302,7 @@ export function thinkingVariantsForConnection(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): readonly ThinkingLevel[] {
-  const declared = relayModelProfile(connection, modelId)?.thinkingLevels;
+  const declared = modelOverride(connection, modelId)?.thinkingLevels;
   if (declared) return declared;
   return thinkingVariantsForModel(connection.providerType, modelId);
 }
@@ -382,4 +352,63 @@ export function thinkingVariantsForModel(
   modelId: string,
 ): readonly ThinkingLevel[] {
   return deriveThinkingChoices(thinkingOptionsForModel(providerType, modelId));
+}
+
+export function applyModelOverride(
+  model: ModelInfo,
+  override: ModelOverride | undefined,
+): ModelInfo {
+  if (!override) return model;
+  const {
+    thinkingLevels: _thinking,
+    serviceTier: _tier,
+    compactionThreshold: _threshold,
+    maxOutputTokens: _outputBudget,
+    vision,
+    capabilities,
+    ...facts
+  } = override;
+  return {
+    ...model,
+    ...facts,
+    capabilities: {
+      ...model.capabilities,
+      ...capabilities,
+      ...(vision === undefined ? {} : { vision }),
+    },
+  };
+}
+
+export type ModelLimits = Pick<ModelInfo, 'contextWindow' | 'inputLimit'>;
+
+export function resolveModelLimits(
+  providerType: ProviderType,
+  model: ModelInfo,
+  override?: ModelOverride,
+): ModelLimits {
+  const metadata = lookupModelMetadata(providerType, model.id);
+  const contextWindow = override?.contextWindow ?? model.contextWindow ?? metadata.contextWindow;
+  const inputLimit = override?.inputLimit ?? model.inputLimit ?? metadata.inputLimit;
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(inputLimit === undefined ? {} : { inputLimit }),
+  };
+}
+
+export function modelLimitsConflict(limits: ModelLimits): boolean {
+  return (
+    limits.contextWindow !== undefined &&
+    limits.inputLimit !== undefined &&
+    limits.inputLimit > limits.contextWindow
+  );
+}
+
+export function applyConnectionModelOverrides<
+  T extends { readonly models?: readonly ModelInfo[]; readonly modelOverrides?: ModelOverrides },
+>(connection: T): T {
+  const models = new Map((connection.models ?? []).map((model) => [model.id, model]));
+  for (const [id, override] of Object.entries(connection.modelOverrides ?? {})) {
+    models.set(id, applyModelOverride(models.get(id) ?? { id }, override));
+  }
+  return { ...connection, models: [...models.values()] };
 }

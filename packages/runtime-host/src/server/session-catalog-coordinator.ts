@@ -1140,7 +1140,7 @@ export class HostSessionCatalogCoordinator {
       );
     }
     // Fail-closed for undeclared levels only: the catalog entry carries the
-    // typed `relayModelProfiles` table, so a relay's user-declared levels DO
+    // typed `modelOverrides` table, so a relay's user-declared levels DO
     // reach this gate. A level outside the resolved variants is still
     // rejected — execution-model-authority rebuilds the runtime connection
     // from the same table, so whatever passes here is exactly what the wire
@@ -1150,7 +1150,7 @@ export class HostSessionCatalogCoordinator {
       !thinkingVariantsForConnection(
         {
           providerType: connection.providerType,
-          relayModelProfiles: connection.relayModelProfiles,
+          modelOverrides: connection.modelOverrides,
         },
         selected.modelId,
       ).includes(thinkingLevel)

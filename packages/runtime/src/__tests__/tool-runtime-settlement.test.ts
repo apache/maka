@@ -388,6 +388,7 @@ describe('ToolRuntime settlement', () => {
         version: 1,
         kind: 'json',
         value: projected,
+        ...(terminal.status !== 'completed' ? { isError: true } : {}),
       });
       assert.equal(terminalResults[index]?.cmd, terminal.cmd);
     }

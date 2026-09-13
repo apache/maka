@@ -25,7 +25,7 @@ import type {
 } from './llm-connections.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
-import type { RelayModelProfile } from './model-thinking.js';
+import type { ModelOverride } from './model-thinking.js';
 import {
   networkProxyCredentialTarget,
   type ChatDefaultPermissionMode,
@@ -68,7 +68,7 @@ export {
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
   decodeConnectionCredentialTarget,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   decodeConnectionModel,
   decodeConnectionName,
   decodeConnectionSlug,
@@ -286,12 +286,8 @@ export interface ConnectionConfiguration {
   readonly baseUrl?: string;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
-  /**
-   * Per-model relay declarations (thinking levels, vision, context window),
-   * as a typed table scoped to `enabledModelIds` — never an extras bag.
-   * Execution paths read it through the shared `relayModelProfile` seam.
-   */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  /** Connection-scoped user declarations, independent of the enabled selection. */
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
   readonly requestBodyOverlay?: JsonObject;
 }
 
@@ -302,8 +298,6 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly modelSource?: ConnectionModelDiscoveryResult['source'];
   readonly modelsFetchedAt?: ConnectionModelDiscoveryResult['fetchedAt'];
   readonly lastTest?: ConnectionTestSummary;
-  /** Digest of the model-facts subset used when `lastTest` was recorded. */
-  readonly lastTestModelFactsFingerprint?: string;
 }
 
 export type ConnectionOnboardingTarget =
@@ -340,7 +334,7 @@ export interface ConnectionCatalogEntryUpdate {
    * against); `null` clears all declarations; a table replaces them wholly.
    * Profile-blind writers simply omit the key and can never clobber.
    */
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>> | null;
   /** Absent leaves the overlay unchanged; null clears it; an object replaces it. */
   readonly requestBodyOverlay?: JsonObject | null;
 }

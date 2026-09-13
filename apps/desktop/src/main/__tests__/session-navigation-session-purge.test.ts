@@ -57,7 +57,6 @@ type SweepHarness = {
   /** Each `remove` call as `[sessionId, requireArchived]`. */
   removeOptions: Array<[string, boolean]>;
   cleared: string[];
-  selections: Array<string | undefined>;
   /** Titles of the success toasts a row action raised. */
   toasts: string[];
   /** Their descriptions, positionally — the half that carries the counts. */
@@ -141,8 +140,6 @@ function createActions(input: {
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
-    activeIdRef: input.activeIdRef,
-    clearActiveMessages: () => undefined,
     clearSessionRendererState: (id) => {
       input.harness.cleared.push(id);
     },
@@ -150,10 +147,6 @@ function createActions(input: {
     refreshSessions: async () => input.refreshed ?? [],
     service: input.service,
     sessionsRef: { current: input.sessions },
-    setActiveId: (id) => {
-      input.harness.selections.push(id);
-      input.activeIdRef.current = id;
-    },
     toastApi: {
       success: (title: string, description?: string) => {
         input.harness.toasts.push(title);
@@ -172,7 +165,6 @@ function harness(): SweepHarness {
     archived: [],
     removeOptions: [],
     cleared: [],
-    selections: [],
     toasts: [],
     toastDescriptions: [],
     listCalls: 0,
@@ -210,7 +202,6 @@ describe('purgeSessions', () => {
     // The family goes, not just the representative, and the open member of it
     // stops being the active session.
     assert.deepEqual(h.cleared.sort(), ['a', 'a-v2', 'b']);
-    assert.deepEqual(h.selections, [undefined]);
     // Nothing rejected, so there is nothing to check back.
     assert.equal(h.listCalls, 0);
   });
@@ -295,7 +286,6 @@ describe('purgeSessions', () => {
     // A task that is still there keeps its renderer state, including being the
     // open one.
     assert.deepEqual(h.cleared, ['first']);
-    assert.deepEqual(h.selections, []);
     assert.equal(activeIdRef.current, 'rescued');
   });
 

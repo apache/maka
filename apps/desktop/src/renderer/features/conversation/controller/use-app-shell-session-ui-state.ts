@@ -18,7 +18,8 @@
  */
 
 import { useRef, useState } from 'react';
-import type { StoredMessage } from '@maka/core/session';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { TransientUserMessageProjection } from '@maka/ui';
 import { currentTranscriptRange } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
 
@@ -27,11 +28,23 @@ interface TranscriptSource {
   snapshot(): { readonly messages: readonly StoredMessage[]; readonly ready: boolean };
 }
 
+export type TranscriptPublisher<Controller> = (
+  sessionId: string,
+  controller: Controller,
+  isCurrent: () => boolean,
+  onReady: () => void,
+) => void;
+
 /** The rendered messages and gap flags are a single publication. The source
  * may advance during reader input, but only the scroll authority admits it. */
-export function useAppShellSessionUiState<Controller extends { readonly store: TranscriptSource }>(
+export function useAppShellSessionUiState<
+  Controller extends { readonly store: TranscriptSource },
+  Session extends SessionSummary & { localState?: string; shared?: boolean },
+>(
+  sessions: readonly Session[],
+  requestedSessionId: string | undefined,
   activeIdRef: { current: string | undefined },
-  publishMessages: (messages: StoredMessage[]) => void,
+  commitTranscript: (sessionId: string, messages: StoredMessage[], controller: Controller) => boolean,
 ) {
   // The observable controller retains its own identity and subscriptions;
   // publication is the React view of the active transcript, not a store copy.
@@ -40,10 +53,16 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
   const controller = controllerRef.current;
   const transcriptRangeRef = useRef<Controller | undefined>(undefined);
   const messagesRef = useRef<StoredMessage[]>([]);
+  const transientMessagesBySessionRef = useRef(
+    new Map<string, Map<string, TransientUserMessageProjection>>(),
+  );
+  const [transientMessages, setTransientMessagesState] = useState<TransientUserMessageProjection[]>([]);
+  const [messageLoadPending, setMessageLoadPending] = useState(false);
   const [view, setView] = useState<{
+    sessionId: string | undefined;
     messages: StoredMessage[];
     range: ReturnType<TranscriptSource['range']> | undefined;
-  }>({ messages: [], range: undefined });
+  }>({ sessionId: undefined, messages: [], range: undefined });
 
   // These actions capture only lifetime-stable refs, setters and the workspace
   // callback that dispatches through its actions ref. Keep their identities as
@@ -52,21 +71,34 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
     isMessagePublished: (message: StoredMessage) => messagesRef.current.includes(message),
     setMessagesState(messages: StoredMessage[]) {
       setView({
+        sessionId: activeIdRef.current,
         messages,
         range: messages.length
           ? currentTranscriptRange(transcriptRangeRef.current, activeIdRef.current)
           : undefined,
       });
     },
-    publishTranscript(sessionId: string, store: TranscriptSource, onReady: () => void) {
+    publishTranscript(
+      sessionId: string,
+      rangeController: Controller,
+      isCurrent: () => boolean,
+      onReady: () => void,
+    ) {
       controller.transcriptViewportNavigation.commitRange(sessionId, () => {
-        if (transcriptRangeRef.current?.store !== store || activeIdRef.current !== sessionId) return;
-        const snapshot = store.snapshot();
-        publishMessages([...snapshot.messages]);
-        if (snapshot.ready) onReady();
+        if (!isCurrent()) return;
+        const snapshot = rangeController.store.snapshot();
+        if (!snapshot.ready || !commitTranscript(sessionId, [...snapshot.messages], rangeController)) return;
+        onReady();
       });
     },
   }));
+
+  const activeCatalogSession = sessions.find((session) => session.id === view.sessionId);
+  const requestedCatalogSession = sessions.find((session) => session.id === requestedSessionId);
+  // Locally staged tasks cannot admit Host reads until creation completes.
+  const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;
+  const requestedHostSession = requestedCatalogSession?.localState !== 'pending' ? requestedCatalogSession : undefined;
+  const sharedSessionActive = activeCatalogSession?.shared === true;
 
   return {
     controller,
@@ -76,6 +108,21 @@ export function useAppShellSessionUiState<Controller extends { readonly store: T
       messages: view.messages,
       publishedTranscriptRange: view.range,
       ...actions,
+    },
+    display: {
+      activeId: view.sessionId,
+      transientMessages,
+      transientMessagesBySessionRef,
+      setTransientMessagesState,
+      messageLoadPending,
+      setMessageLoadPending,
+      activeCatalogSession,
+      activeHostSession,
+      requestedCatalogSession,
+      requestedHostSession,
+      sharedSessionActive,
+      ownerActiveId: sharedSessionActive ? undefined : activeHostSession?.id,
+      switchingSession: view.sessionId !== requestedSessionId,
     },
   };
 }

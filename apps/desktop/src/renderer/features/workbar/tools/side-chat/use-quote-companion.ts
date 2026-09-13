@@ -199,10 +199,22 @@ export interface UseQuoteCompanionResult {
   /** Runs `/compact` against the committed companion fork when it is idle. */
   compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
-   *  quotes in place so the user can retry. */
-  send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
-  /** Insert text into the active companion turn at the next model step. */
-  steer: (text: string) => Promise<boolean>;
+   *  quotes in place so the user can retry. `onAdmitted` fires only once the
+   *  Host admission is confirmed (never on an unknown outcome), so callers
+   *  can retire submitted attachments on the same boundary as the quotes. */
+  send: (
+    text: string,
+    attachmentItems?: WorkbarIngestInput[],
+    onAdmitted?: () => void,
+  ) => Promise<boolean>;
+  /** Insert text — or a structured-only quote/attachment — into the active
+   *  companion turn at the next model step. `onAdmitted` follows the same
+   *  confirmed-admission boundary as `send`. */
+  steer: (
+    text: string,
+    attachmentItems?: WorkbarIngestInput[],
+    onAdmitted?: () => void,
+  ) => Promise<boolean>;
   /** Queue text for the next companion turn while the current turn continues. */
   queue: (text: string) => Promise<boolean>;
   promoteQueuedEntry: (entryId: string) => Promise<void>;
@@ -1087,12 +1099,17 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
+      onAdmitted?: () => void,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (isExactCompactCommand(trimmed)) return compact();
+      // A structured-only Message (empty text carrying a quote or an attachment)
+      // is a valid send since the admission widening (#4804), so the guard
+      // rejects only when nothing at all is staged.
+      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       if (
         !mountedRef.current ||
-        !trimmed ||
+        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachmentItems?.length) ||
         submitLockRef.current ||
         compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
@@ -1105,7 +1122,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       setSubmitLocked(true);
       setError(null);
       const turnId = crypto.randomUUID();
-      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
       // Show the user's question IMMEDIATELY as an optimistic bubble, before the
       // fork exists. On a first send `ensureFork` makes a Host round trip, and the
@@ -1123,7 +1139,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const admission: PendingAdmission = {
         messageId: turnId,
         events: [],
-        consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
+        // Quotes and submitted attachments share one cleanup boundary —
+        // confirmed Host admission (#4804). An unknown outcome keeps them
+        // staged until the reconciliation binds the Turn or a retraction
+        // releases the send, so nothing staged is consumed on a guess.
+        consumeOnAdmission: () => {
+          onQuotesConsumed(quoteSnapshot);
+          onAdmitted?.();
+        },
       };
       const optimisticMessage: TransientUserMessageProjection = {
         id: turnId,
@@ -1359,13 +1382,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const submitFollowUp = useCallback(async (
     text: string,
     placement: MessageQueuePlacement,
+    structured?: { attachmentItems?: WorkbarIngestInput[]; onAdmitted?: () => void },
   ): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
+    // Steering shares `send`'s structured-only contract: a quote or an
+    // attachment alone is a valid steering Message (#4804). Queued entries
+    // stay text-only, matching the Host queue contract.
+    const quoteSnapshot =
+      placement === 'current_turn' ? snapshotCompanionQuotes(panelId, pendingQuotes) : null;
+    const hasStructuredContent =
+      (quoteSnapshot?.quotes.length ?? 0) > 0 || (structured?.attachmentItems?.length ?? 0) > 0;
     if (
       !mountedRef.current ||
       !id ||
-      !trimmed ||
+      (!trimmed && !hasStructuredContent) ||
       !turnInFlight ||
       (placement === 'current_turn' && pendingAdmissionRef.current !== null)
     ) {
@@ -1376,6 +1407,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       messageId: admissionId,
       events: [],
     };
+    if (placement === 'current_turn') {
+      // Steering quotes stay staged until the Host admits the steering
+      // Message; a failed or retracted steer keeps them available for retry.
+      // Submitted attachments share that boundary: an unknown outcome keeps
+      // them staged until reconciliation binds the Turn or the steer retracts.
+      admission.consumeOnAdmission = () => {
+        if (quoteSnapshot && quoteSnapshot.quotes.length > 0) onQuotesConsumed(quoteSnapshot);
+        structured?.onAdmitted?.();
+      };
+    }
     const optimisticMessage: TransientUserMessageProjection = {
       id: admissionId,
       text: trimmed,
@@ -1389,7 +1430,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     addPendingUserMessage(optimisticMessage);
     if (placement === 'current_turn') setPendingAdmission(admission);
     try {
-      const outcome = await sideChat.submitFollowUp(id, placement, trimmed, admissionId);
+      const outcome = await sideChat.submitFollowUp(id, placement, trimmed, admissionId, {
+        ...(quoteSnapshot && quoteSnapshot.quotes.length > 0
+          ? { quotes: [...quoteSnapshot.quotes] }
+          : {}),
+        ...(structured?.attachmentItems?.length
+          ? { attachmentItems: structured.attachmentItems }
+          : {}),
+      });
       if (!mountedRef.current) return false;
       if (placement === 'current_turn' && (await admission.stopPromise) === 'confirmed') {
         return false;
@@ -1440,10 +1488,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [
     addPendingUserMessage,
     bindAdmittedTurn,
-    reconcileStartedFollowUpTurn,
-    recordOwnedTurn,
     dropOptimisticUserMessage,
     mountedRef,
+    onQuotesConsumed,
+    panelId,
+    pendingQuotes,
+    reconcileStartedFollowUpTurn,
+    recordOwnedTurn,
     releaseAdmission,
     resolveAdmission,
     setPendingAdmission,
@@ -1452,7 +1503,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   ]);
 
   const steer = useCallback(
-    (text: string) => submitFollowUp(text, 'current_turn'),
+    (
+      text: string,
+      attachmentItems?: WorkbarIngestInput[],
+      onAdmitted?: () => void,
+    ) => submitFollowUp(text, 'current_turn', { attachmentItems, onAdmitted }),
     [submitFollowUp],
   );
   const queue = useCallback(

@@ -106,15 +106,12 @@ export function useSessionNavigationController(
     () =>
       createSessionNavigationRowActions({
         uiLocale: locale,
-        activeIdRef: portsRef.current.activeIdRef,
-        clearActiveMessages: () => portsRef.current.clearActiveMessages(),
         clearSessionRendererState: (sessionId) =>
           portsRef.current.clearSessionRendererState(sessionId),
         pendingSessionRowActionsRef: portsRef.current.pendingSessionRowActionsRef,
         refreshSessions: () => portsRef.current.refreshSessions(),
         service,
         sessionsRef: portsRef.current.sessionsRef,
-        setActiveId: (sessionId) => portsRef.current.activateSession(sessionId),
         toastApi: {
           success: (title, description) => portsRef.current.toastApi.success(title, description),
           error: (title, description, details, target) =>

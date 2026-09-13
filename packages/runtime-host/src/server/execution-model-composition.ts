@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
-import { relayModelProfile } from '@maka/core/model-thinking';
+import { modelOverride } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
@@ -407,7 +407,7 @@ async function buildHostAiSdkBackend(
           target.connection.providerType,
           target.connection.models,
           target.model,
-          relayModelProfile(target.connection, target.model)?.vision,
+          modelOverride(target.connection, target.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,

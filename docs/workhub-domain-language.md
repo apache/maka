@@ -68,6 +68,31 @@ Turn. Recovery reuses it. The main coordination model may explain it or form a
 matching proposal, but cannot replace its candidate or operation. The binding is
 not Action Gate authorization.
 
+**Target choice** is a Host-owned interaction inside an admitted Coordination
+Turn. The production `tasks.select_and_delegate` operation accepts a bounded
+candidate offer and delegated task text, publishes a durable single-select Form,
+and submits the exact accepted target to the Action Gate. Its opaque option binds
+the candidate reference, Session identity and workspace fingerprint; display names
+and model-written question answers never supply this binding. The request identity
+includes the originating Turn, Run, operation input and admitted user content.
+
+The generic interaction store owns pending/answered/closed state. Renderer reloads
+read that state; they do not restart submission or retain a separate waiting
+Promise. Cancellation and Run closure perform no delegation. A Host restart closes
+orphaned interactions through existing recovery; it cannot resurrect their local
+continuations. An unanswered offer expires for execution after ten minutes. An
+already assigned action replays its durable result rather than executing twice.
+
+A selected Session may be rebound against fresh candidate state in the same
+workspace. Changes to other candidates do not choose another Session. Removal,
+archival or workspace movement requires a new selection. The Gate repeats this
+validation under target admission before a fresh assignment.
+
+Coordination admission permits asking and waiting; it does not admit target
+execution. This interaction works with the default coordination model and does
+not enable the optional pre-admission model-routing experiment. An immutable
+Host-bound routing decision cannot be replaced by a choice in the same Turn.
+
 **Active-Turn action** names the currently executing coordination Turn. The Host
 checks its live execution, durable admission and coordination tool profile, then
 reads the original request and attachments from that admission. A tool cannot
@@ -153,3 +178,17 @@ WorkHub does not scan or rewrite that content for secrets.
 | Transcript services | [create-workhub-services.ts](../apps/desktop/src/renderer/platform/desktop/create-workhub-services.ts) |
 | Native window presentation | [workhub-presentation.ts](../apps/desktop/src/main/workhub-presentation.ts) |
 | Shared document appearance | [document-appearance.ts](../apps/desktop/src/renderer/platform/desktop/document-appearance.ts) |
+
+## Presentation and submission boundaries
+
+Main owns the complete native progress-to-conversation transition: bounds,
+visibility, paint retirement and activation policy. The WorkHub renderer reports
+interaction content needs through conversation layout. Both orders of progress
+paint and interaction publication converge to the same conversation window;
+automatic expansion is passive and cannot reverse dismissal of the current Turn.
+
+The submission owner invokes visibility reset for a new send or a rejected send's
+retry. Unknown-outcome reconciliation and transcript refresh remain separate,
+read-oriented paths. The renderer restores local composer focus when an interaction
+ends only while it still owns focus; individual answer callbacks do not schedule
+focus changes.

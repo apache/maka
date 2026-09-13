@@ -17,6 +17,17 @@
  * under the License.
  */
 
-/* Astryx convergence: connection-list / Claude card chrome moved to Banner,
-   Card, StatusDot, ProgressBar. File kept as an import seam so settings.css
-   does not thrash while the last hand-rolled helpers are retired. */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { nativeFileDialogCopy } from '../native-file-dialog-copy.js';
+
+test('every native file dialog string is translated in each locale', () => {
+  const en = nativeFileDialogCopy('en');
+  for (const locale of ['zh-CN', 'zh-TW'] as const) {
+    const copy = nativeFileDialogCopy(locale);
+    for (const key of Object.keys(en) as Array<keyof typeof en>) {
+      assert.notEqual(copy[key], en[key], `${locale}: ${key} is still the English string`);
+      assert.match(copy[key], /[一-鿿]/u, `${locale}: ${key} carries no Han text`);
+    }
+  }
+});

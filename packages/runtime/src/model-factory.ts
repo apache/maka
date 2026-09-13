@@ -689,7 +689,7 @@ function buildFamilyWire(
     reasoningReplay.kind === 'responses' &&
     reasoningReplay.contract.adapter === 'openai' &&
     supportsRelayFastServiceTier(connection.providerType, modelId)
-      ? connection.relayModelProfiles?.[modelId]?.serviceTier
+      ? connection.modelOverrides?.[modelId]?.serviceTier
       : undefined;
   // Provider selection and reasoning continuation are independent. The OpenAI
   // provider reads its provider-options namespace; the Open Responses provider

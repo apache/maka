@@ -396,7 +396,6 @@ function relayConnection(): ProjectedLlmConnection {
       isDefault: true,
       supportsVision: false,
       thinkingLevels: [],
-      describedByMetadata: false,
     }],
   };
 }

@@ -127,7 +127,7 @@ interface MidTurnFixtureOptions {
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
   /** Enable the default-on active tool-result prune with a tiny threshold. */
-  activeToolResultPrune?: boolean;
+  toolResultPrune?: boolean;
   /**
    * Summarize through the real `buildLlmHistorySummarizer` against a mock
    * provider, so the compaction settles a canonical record instead of the
@@ -498,7 +498,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ],
       ...(options.withoutContextWindow || options.declareContextWindow === false
         ? {}
-        : { relayModelProfiles: { 'mock-model-id': { contextWindow } } }),
+        : { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }),
     },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
@@ -521,10 +521,18 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           toolExecutions.push(args.path);
           if (args.path === 'one.md')
             return {
-              body: options.firstResult ?? (options.hugeFirstResult ? HUGE_RESULT : RAW_SPAN_ONE),
+              body:
+                options.firstResult ??
+                (options.hugeFirstResult
+                  ? options.toolResultPrune
+                    ? 'x'.repeat(20_000) + 'HUGE_RESULT_'
+                    : HUGE_RESULT
+                  : RAW_SPAN_ONE),
             };
           if (args.path === 'three.md') return { body: ROLLING_TAIL };
-          return { body: RAW_SPAN_TWO };
+          return {
+            body: options.toolResultPrune ? 'x'.repeat(20_000) + 'RAW_SPAN_TWO_' : RAW_SPAN_TWO,
+          };
         },
       },
       ...(options.bigActiveTool
@@ -565,16 +573,15 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
             enabled: true,
             midTurn: { enabled: true },
           },
-          ...(options.activeToolResultPrune
+          ...(options.toolResultPrune
             ? {
-                activeToolResultPrune: {
+                toolResultPrune: {
                   enabled: true,
-                  maxCurrentResultEstimatedTokens: 30,
                 },
               }
             : {}),
         },
-    ...(options.activeToolResultPrune
+    ...(options.toolResultPrune
       ? {
           toolResultArchive: testToolResultArchive({
             archiveToolResult: () => ({ artifactId: 'artifact-archived-1' }),
@@ -1113,7 +1120,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   });
 
   test('active tool-result prune re-converges the rebuilt tail after a capacity replacement', async () => {
-    const fixture = buildFixture({ activeToolResultPrune: true });
+    const fixture = buildFixture({ toolResultPrune: true });
     await runFixtureTurn(fixture, consumer);
 
     assert.equal(fixture.model.doStreamCalls.length, 3);
@@ -1128,7 +1135,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // capacity replacement must not resurrect the raw body.
     assert.equal(thirdPrompt.includes('RAW_SPAN_TWO_'), false);
     assert.match(thirdPrompt, /artifact-archived-1/);
-    assert.match(thirdPrompt, /active_current_turn_tool_result_pruned_before_next_step/);
+    assert.match(thirdPrompt, /tool_result_pruned/);
   });
 
   test('compacts at most once per send', async () => {
@@ -1152,7 +1159,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       withoutPriorTurns: true,
       hugeFirstResult: true,
       finalAtSecondCall: true,
-      activeToolResultPrune: true,
+      toolResultPrune: true,
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1425,7 +1432,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       contextWindow: 200,
       finalAtSecondCall: true,
       hugeFirstResult: true,
-      activeToolResultPrune: true,
+      toolResultPrune: true,
       finalStepUsage: { input: 50, output: 10 },
     });
     await runFixtureTurn(fixture, consumer);

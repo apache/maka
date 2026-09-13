@@ -66,6 +66,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let conversationExpanded = false;
   let compactHeight = 96;
   let expandedHeight = 720;
+  let interactionPending = false;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeTarget: Electron.Rectangle | undefined;
   let resizeViewportHeight: number | undefined;
@@ -347,6 +348,31 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     changed();
   }
 
+  /** Completes the native transition, regardless of which renderer paint arrived first. */
+  function expandProgress(request: number): void {
+    if (request !== progressRequest || !floating || !deps.isEnabled()) return;
+    conversationExpanded = true;
+    expandOnFocus = true;
+    const current = floating.getBounds();
+    const area = screen.getDisplayMatching(current).workArea;
+    const width = Math.min(conversationBounds?.width ?? 520, area.width);
+    const height = Math.min(expandedHeight, area.height);
+    clearProgressRequest();
+    conversationBounds = undefined;
+    floating.setResizable(true);
+    changed();
+    resizeFloating({
+      width, height,
+      x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
+      y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
+    }, true);
+    // Expansion may beat progress-ready and unmount its paint callback.
+    showWindowInactive(floating, deps.revealMode);
+    // A send acknowledgement can arrive after the user has switched
+    // apps. Growing the conversation must not steal focus back.
+    if (floating.isFocused()) focusComposer();
+  }
+
   function requestProgress(): void {
     const main = deps.mainWindow();
     const dockVisible = placement === 'docked' && parent === main && main?.isVisible() && !main.isMinimized()
@@ -369,6 +395,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const width = Math.min(360, area.width), height = Math.min(112, area.height);
     target.setBounds({ width, height, x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96) });
     fitFloating();
+    if (interactionPending) { expandProgress(progressRequest); return; }
     // The renderer acknowledges its painted card before showInactive, avoiding
     // one frame of the old full conversation in the compact native window.
     changed();
@@ -457,7 +484,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         return { main, isMain };
       };
       authorize();
-      if (command === 'show-conversation' && payload !== undefined) {
+      if (command === 'show-conversation') {
         if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
         if (payload !== progressRequest) return;
       }
@@ -534,38 +561,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (height !== bounds.height) resizeFloating({ ...bounds, height, y: Math.max(area.y, bounds.y + bounds.height - height) }, true);
             return;
           }
-          case 'show-conversation': {
-            if (payload !== undefined && payload !== progressRequest) return;
-            conversationExpanded = true;
-            expandOnFocus = true;
-            if (progressRequest !== undefined && floating) {
-              const current = floating.getBounds();
-              const area = screen.getDisplayMatching(current).workArea;
-              const width = Math.min(conversationBounds?.width ?? 520, area.width);
-              const height = Math.min(expandedHeight, area.height);
-              clearProgressRequest();
-              conversationBounds = undefined;
-              floating.setResizable(true);
-              changed();
-              resizeFloating({
-                width, height,
-                x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
-                y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
-              }, true);
-              // A send acknowledgement can arrive after the user has switched
-              // apps. Growing the conversation must not steal focus back.
-              if (floating.isFocused()) focusComposer();
-              return;
-            }
-            detach(true);
-            return;
-          }
+          case 'show-conversation': expandProgress(payload as number); return;
           case 'detach': detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');
-            const value = payload as { expanded?: unknown; compactHeight?: unknown } | null;
-            if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0) throw new Error('Invalid WorkHub conversation layout');
-            if (progressRequest !== undefined) return;
+            const value = payload as { expanded?: unknown; compactHeight?: unknown; interactionPending?: unknown } | null;
+            if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0 || (value.interactionPending !== undefined && typeof value.interactionPending !== 'boolean')) throw new Error('Invalid WorkHub conversation layout');
+            interactionPending = value.interactionPending === true;
+            if (progressRequest !== undefined) {
+              if (interactionPending) expandProgress(progressRequest);
+              return;
+            }
             // Desktop's wider composer must not overwrite the remembered floating
             // height and force a second resize on the next shortcut summon.
             if (!floating || placement === 'floating') compactHeight = Math.max(80, Math.ceil(value.compactHeight));

@@ -150,8 +150,6 @@ export interface ProviderDefaults {
    * registered so stored connections still decode; it just cannot be used.
    */
   retired?: true;
-  /** User-declared per-model capabilities are authoritative for this provider. */
-  relayModelProfiles?: boolean;
   /**
    * Models with dated evidence of persistent breakage whose failure shape the
    * send itself cannot surface (e.g. empty completions that still bill).
@@ -1587,7 +1585,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
-    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1600,7 +1597,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
-    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',

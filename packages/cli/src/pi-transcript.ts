@@ -18,6 +18,7 @@
  */
 
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
+import { resolveReadInput } from '@maka/runtime/read-page';
 import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
@@ -2140,8 +2141,15 @@ function findShellRunParent(
 /** The runtime-resource ref a tool call is aimed at, when the args carry one. */
 function readArgsRef(args: unknown): string | undefined {
   const ref =
-    args !== null && typeof args === 'object' ? (args as { ref?: unknown }).ref : undefined;
-  return typeof ref === 'string' && ref.length > 0 ? ref : undefined;
+    args !== null && typeof args === 'object'
+      ? ((args as { path?: unknown }).path ?? (args as { ref?: unknown }).ref)
+      : undefined;
+  if (typeof ref !== 'string' || !ref) return undefined;
+  try {
+    return resolveReadInput({ path: ref }).path;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

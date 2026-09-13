@@ -23,7 +23,7 @@ import {
   createDefaultRuntimePolicy,
   decodeCanonicalConnectionCatalogEntry,
   decodeCanonicalRuntimePolicy,
-  decodeRelayModelProfilesTable,
+  decodeModelOverridesTable,
   normalizeCreateCatalogConnectionInput,
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
@@ -296,10 +296,10 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       baseUrl: 'https://relay.example/v1',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
+      modelOverrides: table,
     },
   });
-  assert.deepEqual(draft.connection.relayModelProfiles, table);
+  assert.deepEqual(draft.connection.modelOverrides, table);
   const responsesDraft = normalizeCreateCatalogConnectionInput({
     expectedCatalogRevision: 0,
     connection: {
@@ -309,10 +309,10 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       baseUrl: 'https://responses.example/v1',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
+      modelOverrides: table,
     },
   });
-  assert.deepEqual(responsesDraft.connection.relayModelProfiles, table);
+  assert.deepEqual(responsesDraft.connection.modelOverrides, table);
   // The canonical path re-decodes the same table (entry = draft + identity).
   const entry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
@@ -320,7 +320,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     revision: 1,
     models: [],
   });
-  assert.deepEqual(entry.relayModelProfiles, table);
+  assert.deepEqual(entry.modelOverrides, table);
 
   // An empty table is never a state: drafts omit the key, updates read it as
   // the same clear-instruction `null` gives.
@@ -332,17 +332,17 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       providerType: 'openai-compatible',
       enabled: true,
       enabledModelIds: [],
-      relayModelProfiles: {},
+      modelOverrides: {},
     },
   });
-  assert.equal(emptyDraft.connection.relayModelProfiles, undefined);
+  assert.equal(emptyDraft.connection.modelOverrides, undefined);
   const emptyUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: {},
+    modelOverrides: {},
   });
-  assert.equal(emptyUpdate.relayModelProfiles, null);
+  assert.equal(emptyUpdate.modelOverrides, null);
 
   // The update input is tri-state: null (or the equivalent {}) clears, a
   // table replaces, and an ABSENT key means untouched — absent must never
@@ -352,9 +352,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     name: 'Relay',
     enabled: true,
     enabledModelIds: [],
-    relayModelProfiles: null,
+    modelOverrides: null,
   });
-  assert.equal(update.relayModelProfiles, null);
+  assert.equal(update.modelOverrides, null);
   const absentUpdate = normalizeConnectionCatalogEntryUpdate({
     name: 'Relay',
     enabled: true,
@@ -381,9 +381,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
         providerType: 'openai',
         enabled: true,
         enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: facts,
+        modelOverrides: facts,
       },
-    }).connection.relayModelProfiles,
+    }).connection.modelOverrides,
     facts,
   );
   assert.deepEqual(
@@ -392,10 +392,10 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
         name: 'Other',
         enabled: true,
         enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: facts,
+        modelOverrides: facts,
       },
       'anthropic',
-    ).relayModelProfiles,
+    ).modelOverrides,
     facts,
   );
 
@@ -416,7 +416,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             providerType: 'openai',
             enabled: true,
             enabledModelIds: ['relay-reasoner'],
-            relayModelProfiles: wireShaped,
+            modelOverrides: wireShaped,
           },
         }),
       /require[s]? an OpenAI-compatible connection/,
@@ -429,7 +429,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             name: 'Other',
             enabled: true,
             enabledModelIds: ['relay-reasoner'],
-            relayModelProfiles: wireShaped,
+            modelOverrides: wireShaped,
           },
           'anthropic',
         ),
@@ -440,37 +440,32 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
 
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
-      { name: 'Other', enabled: true, enabledModelIds: [], relayModelProfiles: null },
+      { name: 'Other', enabled: true, enabledModelIds: [], modelOverrides: null },
       'anthropic',
-    ).relayModelProfiles,
+    ).modelOverrides,
     null,
   );
 
-  // The subset invariant: profiles exist only for ENABLED models. The store
-  // prunes profiles of deselected models, so a key outside the set marks a
-  // document the store never wrote.
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdate({
-        name: 'Relay',
-        enabled: true,
-        enabledModelIds: ['relay-reasoner'],
-        relayModelProfiles: { 'disabled-model': { vision: true } },
-      }),
-    RuntimePolicyDomainDecodeError,
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdate({
+      name: 'Relay',
+      enabled: true,
+      enabledModelIds: [],
+      modelOverrides: { 'disabled-model': { vision: true } },
+    }).modelOverrides,
+    { 'disabled-model': { vision: true } },
   );
 
   // Model ids are relay-supplied strings; __proto__/constructor/toString
   // must survive the table as ordinary own keys — the decode builds the
   // table with fromEntries precisely so '__proto__' cannot poison the result
   // object's prototype and quietly drop the entry.
-  const hostileTable = decodeRelayModelProfilesTable(
+  const hostileTable = decodeModelOverridesTable(
     // An object literal could not even express `__proto__` as an own key —
     // the deserialized document is the realistic carrier of a hostile id.
     JSON.parse(
       '{"__proto__":{"vision":true},"constructor":{"vision":false},"toString":{"contextWindow":8192}}',
     ),
-    ['__proto__', 'constructor', 'toString'],
   );
   assert.deepEqual(Object.keys(hostileTable).sort(), ['__proto__', 'constructor', 'toString']);
   assert.equal(JSON.stringify(hostileTable).includes('"__proto__"'), true);
@@ -483,7 +478,6 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { thinkingLevels: ['off'] } }, // disable wire, not a declarable tier
     { m: { thinkingLevels: ['low', 'low'] } }, // duplicate
     { m: { thinkingLevels: [] } }, // empty level list
-    { m: {} }, // declares nothing
     { m: { vision: 'yes' } },
     { m: { contextWindow: 0 } },
     { m: { contextWindow: 1.5 } },
@@ -491,7 +485,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { vision: true, extra: 1 } }, // unknown key in the entry
   ]) {
     assert.throws(
-      () => decodeRelayModelProfilesTable(bad, ['m']),
+      () => decodeModelOverridesTable(bad),
       RuntimePolicyDomainDecodeError,
       JSON.stringify(bad),
     );

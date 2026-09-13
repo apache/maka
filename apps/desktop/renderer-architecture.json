@@ -154,7 +154,6 @@
     "src/renderer/settings/personalization-settings-section.tsx",
     "src/renderer/settings/projects-settings-page.tsx",
     "src/renderer/settings/provider-add-form.tsx",
-    "src/renderer/settings/provider-add-model-dialog.tsx",
     "src/renderer/settings/provider-add-submission.ts",
     "src/renderer/settings/provider-brand-marks.tsx",
     "src/renderer/settings/provider-catalog-page.tsx",
@@ -165,8 +164,6 @@
     "src/renderer/settings/provider-endpoint-presentation.ts",
     "src/renderer/settings/provider-oauth-section.tsx",
     "src/renderer/settings/providers-panel.tsx",
-    "src/renderer/settings/relay-profile-draft.ts",
-    "src/renderer/settings/relay-thinking-bulk.ts",
     "src/renderer/settings/request-customization-editor.tsx",
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
@@ -325,7 +322,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3646
+        "nonTriviaTokens": 3618
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -442,7 +439,7 @@
         "nonTriviaTokens": 642
       },
       "src/renderer/app-shell-effects.ts": {
-        "importDeclarations": 11,
+        "importDeclarations": 10,
         "bridgePaths": {
           "window.maka.app.info": 1,
           "window.maka.appWindow.subscribeCommand": 1,
@@ -478,7 +475,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../shared/runtime-host-identity.js": 1,
           "./app-shell-copy": 1,
           "./browser-storage": 1,
           "./locales/conversation-copy.js": 1,
@@ -491,7 +487,7 @@
           "@maka/core/session-event-health": 1,
           "react": 1
         },
-        "importSpecifiers": 19,
+        "importSpecifiers": 18,
         "nonTriviaTokens": 3718
       },
       "src/renderer/app-shell-overlays.tsx": {
@@ -577,7 +573,7 @@
           "@maka/core/session": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2156
+        "nonTriviaTokens": 2155
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -676,7 +672,7 @@
           "./session-workspace-errors.js": 1
         },
         "importSpecifiers": 3,
-        "nonTriviaTokens": 650
+        "nonTriviaTokens": 620
       },
       "src/renderer/app-shell-turn-view-model.ts": {
         "importDeclarations": 6,
@@ -711,7 +707,6 @@
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.abandonPlanProposal": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
@@ -719,7 +714,6 @@
           "window.maka.sessions.promoteQueueEntry": 1,
           "window.maka.sessions.reorderQueueEntries": 1,
           "window.maka.sessions.retractQueueEntry": 1,
-          "window.maka.sessions.setCollaborationMode": 1,
           "window.maka.sessions.subscribeActiveInteractions": 1,
           "window.maka.sessions.updateQueueEntry": 1,
           "window.maka.settings.getClient": 1,
@@ -860,7 +854,7 @@
           "react": 1
         },
         "importSpecifiers": 104,
-        "nonTriviaTokens": 13459
+        "nonTriviaTokens": 13386
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -932,9 +926,8 @@
           "useAppShellSessionList": 1,
           "useAppShellSessionUiState": 1,
           "useExternalStoreSelector": 1,
-          "useRef": 5,
-          "useSessionCatalogController": 1,
-          "useState": 2
+          "useRef": 4,
+          "useSessionCatalogController": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -949,8 +942,8 @@
           "./use-external-store-selector.js": 1,
           "react": 1
         },
-        "importSpecifiers": 9,
-        "nonTriviaTokens": 464
+        "importSpecifiers": 8,
+        "nonTriviaTokens": 461
       }
     },
     "closure": {
@@ -1706,6 +1699,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "@maka/core/attachments": 1,
           "@maka/core/redaction": 1,
           "@maka/core/ui-locale": 1
         }
@@ -2951,25 +2945,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/provider-add-model-dialog.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 4,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../features/connection-settings": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/FormLayout": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/settings/provider-add-submission.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -3056,12 +3031,10 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../features/connection-settings": 1,
+          "../features/connection-settings": 2,
           "./password-input": 1,
-          "./provider-add-model-dialog": 1,
           "./provider-display": 1,
           "./provider-endpoint-presentation": 1,
-          "./relay-thinking-bulk": 1,
           "./request-customization-editor": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-expandable-row": 1,
@@ -3178,26 +3151,6 @@
           "@maka/ui/icons": 1,
           "react": 1
         }
-      },
-      "src/renderer/settings/relay-profile-draft.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/core/model-thinking": 1
-        }
-      },
-      "src/renderer/settings/relay-thinking-bulk.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/settings/request-customization-editor.tsx": {
         "bridgePaths": {},
@@ -3762,12 +3715,12 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useEffect": 6,
+          "useEffect": 5,
           "useKeyedActionGuard": 1,
           "useMountedRef": 1,
-          "useRef": 4,
+          "useRef": 3,
           "useRuntimeHostSettingsErrorReporter": 1,
-          "useState": 14,
+          "useState": 11,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -3778,12 +3731,9 @@
           "../features/connection-settings": 1,
           "./connection-name-draft.js": 1,
           "./provider-connection-status": 1,
-          "./relay-profile-draft": 1,
-          "./relay-thinking-bulk": 1,
           "./runtime-host-settings-target.js": 1,
           "./use-action-guard": 1,
           "@maka/core/llm-connections": 2,
-          "@maka/core/model-catalog": 1,
           "@maka/core/model-thinking": 1,
           "@maka/core/provider-registry": 1,
           "@maka/ui": 1,

@@ -2346,7 +2346,7 @@ test('publishes only the bounded shell-run correlation from poll args', async ()
     ts: 2,
     toolUseId: 'tool-1',
     toolName: 'Read',
-    args: { ref, unrelated: 'not published' },
+    args: { path: ref, unrelated: 'not published' },
   });
   await waitFor(() => sink.frames.length === 1);
 

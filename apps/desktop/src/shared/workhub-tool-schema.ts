@@ -158,6 +158,14 @@ const delegationTarget = z.discriminatedUnion("disposition", [
     .strict(),
 ]);
 export const workHubTasksSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("select_and_delegate"),
+    candidateSetId: z.string().min(1),
+    candidateRefs: z.array(z.string().min(1)).min(1).max(32),
+    text: z.string().min(1).max(48000),
+  }).strict().describe(
+    "When an existing target is ambiguous or the user asks to choose, offer the relevant candidateRefs from one fresh candidates result. The Host asks the user and delegates this text directly to their exact selection; cancellation performs no delegation. Do not use AskUserQuestion to select task identities or reinterpret the answer into another delegate call.",
+  ),
   z
     .object({ operation: z.literal("candidates") })
     .strict()

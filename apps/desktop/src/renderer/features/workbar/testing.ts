@@ -24,6 +24,7 @@ export type {
   WorkbarServices,
   WorkbarSessionTracePage,
   WorkbarSessionUsageSummary,
+  WorkbarIngestInput,
 } from './ports.js';
 
 export * from './model/workbar-tabs.js';
@@ -74,13 +75,16 @@ export function createFakeWorkbarServices(
       subscribeSessionEvents: noopSubscription,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: noopSubscription,
+      subscribeUpdates: noopSubscription,
       start: async () => {
         throw new Error('Fake terminal.start is not configured');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => null,
       detach: async () => undefined,
-      write: async () => null,
+      write: async () => undefined,
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
@@ -95,7 +99,6 @@ export function createFakeWorkbarServices(
       close: async () => undefined,
       getState: async () => null,
       subscribeState: noopSubscription,
-      subscribeLive: noopSubscription,
     },
     artifacts: {
       list: async () => [],
@@ -103,6 +106,7 @@ export function createFakeWorkbarServices(
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: false, reason: 'missing' }),
+      showInFolder: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
     inspector: {

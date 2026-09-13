@@ -42,6 +42,7 @@ import {
   type RuntimeHandoffPause,
 } from './runtime-handoff.js';
 import {
+  hasMeaningfulMessageContent,
   isMessageContent,
   normalizeMessageContent,
   type MessageContent,
@@ -1558,7 +1559,10 @@ export function isPartialRuntimeEvent(event: RuntimeEvent): boolean {
 /**
  * True if the event carries content whose kind is eligible for model
  * history projection: text, thinking, function_call, or function_response.
- * Error-only content and pure action/refs events are NOT model-visible.
+ * A user-authored text event with structured context (quotes or attachments)
+ * is model-visible even when the inline text is empty — the structured part
+ * is what carries the turn (#4804). Error-only content and pure action/refs
+ * events are NOT model-visible.
  *
  * This is a content-kind check only. Callers still apply `partial`
  * filtering (partial chunks are never replayed into the next model call).
@@ -1569,7 +1573,7 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
   if (!content) return false;
   switch (content.kind) {
     case 'text':
-      return content.text.length > 0;
+      return hasMeaningfulMessageContent(content);
     case 'thinking':
     case 'function_call':
     case 'function_response':

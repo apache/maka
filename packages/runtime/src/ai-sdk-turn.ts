@@ -112,7 +112,6 @@ import {
   decodePlaintextResponsesReasoningState,
   responsesReasoningItemId,
 } from './responses-reasoning-state.js';
-import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { finitePositive } from './context-budget-helpers.js';
 import type {
   AutomaticMemoryCompactionDecision,
@@ -123,11 +122,7 @@ import {
   contextDiagnosticsCompactionOf,
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
-import {
-  AiSdkCompaction,
-  hasActiveToolResultPruneDiagnosticPatch,
-  hasBlockingReplayDiagnostics,
-} from './ai-sdk-compaction.js';
+import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -163,7 +158,7 @@ import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
   mergeContextBudgetDiagnostic,
-  mergeContextBudgetDiagnosticPatches,
+  addToolResultPruneStats,
   minimalContextBudgetDiagnostic,
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
@@ -1138,8 +1133,6 @@ export class AiSdkTurn {
       return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
     };
     let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
-    let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
-    let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
@@ -1304,6 +1297,14 @@ export class AiSdkTurn {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
+          const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
+          if (pruned.stats) {
+            if (pruned.stats.prunedToolResults > 0) pruneAppliedAtStep = runtimeSteps;
+            contextBudgetForTelemetry = addToolResultPruneStats(
+              contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
+              pruned.stats,
+            );
+          }
           const projectionCheckpoint = midTurnState?.projectionCheckpoint;
           const rawProjectionEvents = projectionCheckpoint
             ? [
@@ -1329,6 +1330,7 @@ export class AiSdkTurn {
             const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
             const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
+              pruned.projectionSnapshot,
             );
             if (
               pinnedEffectiveDigest === undefined ||
@@ -1351,8 +1353,10 @@ export class AiSdkTurn {
           // folded through the same reducer before it becomes messages. Without
           // this, a result archived at step N is rebuilt in full at step N+1 and
           // the ledger's account of what the model sees stops being true.
-          const foldedReplayEvents =
-            await this.deps.compaction.foldEffectiveModelHistory(replayEvents);
+          const foldedReplayEvents = await this.deps.compaction.foldEffectiveModelHistory(
+            replayEvents,
+            pruned.projectionSnapshot,
+          );
           const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
@@ -1400,8 +1404,8 @@ export class AiSdkTurn {
         });
 
         const onMidTurnDiagnosticPatch = (patch: Partial<ContextBudgetDiagnostic>): void => {
-          midTurnCompactDiagnosticPatch = mergeContextBudgetDiagnosticPatches(
-            midTurnCompactDiagnosticPatch,
+          contextBudgetForTelemetry = mergeContextBudgetDiagnostic(
+            contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
             patch,
           );
         };
@@ -1421,26 +1425,11 @@ export class AiSdkTurn {
             : undefined,
           turnAbortController.signal,
         );
-        // When mid-turn capacity compaction is active, the prune must also cover
-        // the newest completed step; see collectPrunableCompletedStepToolCallIds.
-        const activeToolResultPruneIncludesNewestStep = midTurnState !== undefined;
-        const activeToolResultPruneHook = this.deps.compaction.buildActiveToolResultPruneProjection(
-          turnId,
-          activeToolResultPruneIncludesNewestStep,
-          (patch) => {
-            pruneAppliedAtStep = runtimeSteps;
-            activeToolResultPruneDiagnosticPatch = mergeActiveToolResultPruneDiagnosticPatches(
-              activeToolResultPruneDiagnosticPatch,
-              patch,
-            );
-          },
-        );
         const projectCurrentToolAvailability: RequestProjectionStage = (options) =>
           plan.projectActiveTools?.(options);
         const shapedProjection = composeRequestProjection(
           projectCurrentToolAvailability,
           midTurnCapacityHook,
-          activeToolResultPruneHook,
         );
         // Hooks shape; nothing measures the final payload. Whether it fits is
         // the provider's answer (#4559).
@@ -2081,21 +2070,7 @@ export class AiSdkTurn {
                   : undefined;
               if (recovered) {
                 overflowRetryUsed = true;
-                // Recovery rebuilds the request from the durable ledger, whose
-                // tool results intentionally retain their full bodies. Re-enter
-                // the active-result projection before dispatch so an archived
-                // result cannot reappear in provider context on the retry.
-                const recoveredProjection = activeToolResultPruneHook
-                  ? await activeToolResultPruneHook({
-                      completedSteps: completedProviderSteps,
-                      stepNumber: runtimeSteps,
-                      model,
-                      messages: recovered.messages,
-                      activeTools: activeToolsForRequest,
-                      resolveDispatch,
-                    })
-                  : undefined;
-                attemptMessages = recoveredProjection?.messages ?? recovered.messages;
+                attemptMessages = recovered.messages;
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
@@ -2471,11 +2446,7 @@ export class AiSdkTurn {
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
-            const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
-              contextBudgetForTelemetry,
-              activeToolResultPruneDiagnosticPatch,
-              midTurnCompactDiagnosticPatch,
-            );
+            const contextBudgetForUsage = contextBudgetForTelemetry;
             // Persisted alongside the live event so transcript rebuilds from
             // stored messages keep the TUI ctx segment instead of degrading to
             // `?/<window>` (#4019). Computed once; both writers share it.
@@ -2642,11 +2613,6 @@ export class AiSdkTurn {
       } finally {
         watchdogState.current?.stop();
         if (this.watchdog === watchdogState.current) this.watchdog = null;
-        contextBudgetForTelemetry = contextBudgetWithRequestProjectionDiagnostics(
-          contextBudgetForTelemetry,
-          activeToolResultPruneDiagnosticPatch,
-          midTurnCompactDiagnosticPatch,
-        );
         // `tokenUsage` still backfills from the completed steps when the send
         // ended without a final `usage`: the terminal outcome and the
         // `token_usage` SessionEvent below both read it. An unusable sample in
@@ -2892,6 +2858,7 @@ export class AiSdkTurn {
     const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
     let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
       budgeted?.events ?? rawPriorRuntimeContext,
+      preparedContextBudget.projectionSnapshot,
     );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
@@ -3205,19 +3172,6 @@ class ContinuationReplayEmptyError extends Error {
   }
 }
 
-function mergeActiveToolResultPruneDiagnosticPatches(
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): ActiveToolResultPruneDiagnosticPatch {
-  return {
-    ...sumOptionalCounts('activePrunedToolResults', left, right),
-    ...sumOptionalCounts('activeSupersededToolResults', left, right),
-    ...sumOptionalCounts('activeDuplicateToolResults', left, right),
-    ...sumOptionalCounts('activeArchiveFailures', left, right),
-    ...sumOptionalCounts('activeEstimatedTokensSaved', left, right),
-  };
-}
-
 function mergeNormalizedUsage(
   current: NormalizedAiSdkUsage | undefined,
   next: NormalizedAiSdkUsage,
@@ -3240,26 +3194,6 @@ function mergeNormalizedUsage(
     ...(next.rawFinishReason !== undefined ? { rawFinishReason: next.rawFinishReason } : {}),
     cachedInputTokens: cacheHitInputTokens,
   };
-}
-
-function sumOptionalCounts<K extends keyof ActiveToolResultPruneDiagnosticPatch>(
-  key: K,
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): Pick<ActiveToolResultPruneDiagnosticPatch, K> | Record<string, never> {
-  const total = (left[key] ?? 0) + (right[key] ?? 0);
-  return total > 0 ? ({ [key]: total } as Pick<ActiveToolResultPruneDiagnosticPatch, K>) : {};
-}
-
-function contextBudgetWithRequestProjectionDiagnostics(
-  base: ContextBudgetDiagnostic | undefined,
-  patch: ActiveToolResultPruneDiagnosticPatch,
-  compactionPatch: Partial<ContextBudgetDiagnostic> | undefined,
-): ContextBudgetDiagnostic | undefined {
-  const prunePatch = hasActiveToolResultPruneDiagnosticPatch(patch) ? patch : undefined;
-  const mergedPatch = mergeContextBudgetDiagnosticPatches(prunePatch, compactionPatch);
-  if (!mergedPatch) return base;
-  return mergeContextBudgetDiagnostic(base ?? minimalContextBudgetDiagnostic(), mergedPatch);
 }
 
 function projectMemoryConversationPrefix(

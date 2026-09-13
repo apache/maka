@@ -420,8 +420,8 @@ describe('busy-raced send settlement', () => {
           activated.push(sessionId);
           activeIdRef.current = sessionId;
         },
-        setActiveId: (sessionId: string | undefined) => {
-          activeIdRef.current = sessionId;
+        retireSession: (sessionId: string) => {
+          if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
         },
         ...transientState.deps,
       });
@@ -460,8 +460,8 @@ describe('busy-raced send settlement', () => {
         activateSessionForFirstSend: async (sessionId) => {
           activeIdRef.current = sessionId;
         },
-        setActiveId: (sessionId: string | undefined) => {
-          activeIdRef.current = sessionId;
+        retireSession: (sessionId: string) => {
+          if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
         },
         ...transientState.deps,
       });

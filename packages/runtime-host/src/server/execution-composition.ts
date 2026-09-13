@@ -1940,6 +1940,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel: dependencies.workHubRoutingModel,
+      requestForm: (input) => interactions.requestForm(input),
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
@@ -2167,6 +2168,7 @@ export async function createExecutionRuntimeHostComposition(
             (await sessionAdmission.runMany(
               [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
               async (lease) => {
+                await input.validateFreshTarget?.();
                 const rootState = coordinator.readRootState(input.targetSessionId);
                 if (!create && rootState.kind === 'reserved') {
                   throw new WorkHubActionEffectFailure(

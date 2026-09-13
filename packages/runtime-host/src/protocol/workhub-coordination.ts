@@ -222,6 +222,18 @@ export interface WorkHubCoordinationActFromTurnInput {
   readonly delegationText?: string;
 }
 
+export interface WorkHubCoordinationSelectAndDelegateInput {
+  readonly turnId: string;
+  readonly actionId: string;
+  readonly candidateSetId: string;
+  readonly candidateRefs: readonly string[];
+  readonly delegationText: string;
+}
+
+export type WorkHubCoordinationSelectAndDelegateResult =
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'delegated'; readonly result: WorkHubCoordinationActResult };
+
 export type WorkHubCoordinationActResult = Exclude<
   WorkHubActionResult,
   { disposition: 'answer_here' | 'clarify' }
@@ -292,6 +304,24 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
     errors: CANDIDATE_ERRORS,
     decodeInput: decodeWorkHubCoordinationCandidatesInput,
     decodeOutput: decodeWorkHubCoordinationCandidatesResult,
+  }),
+
+  'workhub.coordination.selectAndDelegate': defineOperation<
+    WorkHubCoordinationSelectAndDelegateInput,
+    WorkHubCoordinationSelectAndDelegateResult,
+    (typeof TURN_ERRORS)[number] | 'candidate_set_stale'
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: [...TURN_ERRORS, 'candidate_set_stale'],
+    decodeInput: decodeWorkHubCoordinationSelectAndDelegateInput,
+    decodeOutput: (value) => {
+      const result = requireShapedRecord(value, 'WorkHub selection result', ['kind'], ['result']);
+      if (result.kind === 'cancelled' && result.result === undefined) return { kind: 'cancelled' };
+      if (result.kind === 'delegated')
+        return { kind: 'delegated', result: decodeWorkHubCoordinationActResult(result.result) };
+      throw invalidProtocolFrame('Invalid WorkHub selection result');
+    },
   }),
 
   'workhub.coordination.actFromTurn': defineOperation<
@@ -378,6 +408,41 @@ export function decodeWorkHubCoordinationCandidatesResult(
   return {
     candidateSetId: candidateSetId(result.candidateSetId),
     candidates: result.candidates.map(decodeWorkHubCoordinationCandidate),
+  };
+}
+
+export function decodeWorkHubCoordinationSelectAndDelegateInput(
+  value: unknown,
+): WorkHubCoordinationSelectAndDelegateInput {
+  const input = requireExactRecord(value, 'WorkHub selection input', [
+    'turnId',
+    'actionId',
+    'candidateSetId',
+    'candidateRefs',
+    'delegationText',
+  ]);
+  if (
+    !Array.isArray(input.candidateRefs) ||
+    input.candidateRefs.length < 1 ||
+    input.candidateRefs.length > WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid WorkHub selection candidates');
+  }
+  const candidateRefs = input.candidateRefs.map((ref) =>
+    requireEntityId(ref, 'WorkHub candidate reference'),
+  );
+  if (new Set(candidateRefs).size !== candidateRefs.length)
+    throw invalidProtocolFrame('Duplicate WorkHub selection candidates');
+  return {
+    turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
+    actionId: requireEntityId(input.actionId, 'WorkHub action id'),
+    candidateSetId: requireUtf8String(input.candidateSetId, 'WorkHub candidate set', 256),
+    candidateRefs,
+    delegationText: requireUtf8String(
+      input.delegationText,
+      'WorkHub delegation text',
+      WORKHUB_COORDINATION_TEXT_MAX_BYTES,
+    ),
   };
 }
 
