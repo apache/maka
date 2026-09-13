@@ -130,6 +130,7 @@ try {
           frames: [],
           events: [],
           tasks: [],
+          longAnimationFrames: [],
           running: true,
           phase: 'start',
         });
@@ -156,6 +157,16 @@ try {
             })),
           ),
         ).observe({ type: 'longtask' });
+        // Keep browser attribution beside the geometry samples. Storybook's
+        // own observers also run here; a long task alone is not evidence that
+        // mounting a Turn or parsing Markdown caused it. This observer only
+        // records completed long frames and performs no DOM measurements.
+        if (!PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')) {
+          throw new Error('The performance browser must support long animation frame attribution');
+        }
+        new PerformanceObserver((list) =>
+          probe.longAnimationFrames.push(...list.getEntries().map((entry) => entry.toJSON())),
+        ).observe({ type: 'long-animation-frame' });
         let previous;
         let previousRendered;
         let previousText;
