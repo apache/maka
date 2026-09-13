@@ -19,11 +19,15 @@
 
 import assert from "node:assert/strict";
 import fs, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
+import {
+  artifactPresentationRoot,
+  registerRuntimeHostArtifactsIpc,
+} from "../runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 
 for (const launchFails of [false, true]) {
@@ -497,4 +501,60 @@ test("Attachment byte IPC stops a stream that exceeds its preview admission", as
     await read({}, "session-1", "artifact-drifted"),
     { ok: false, reason: "too_large" },
   );
+});
+
+test("Open materializes under the generation root the preview preflight probes", async () => {
+  // The preflight reports on artifactPresentationRoot(hostEpoch). If the Open
+  // action ever stopped using that same value, the preflight would describe a
+  // directory nothing writes to, and its verdict would be about the wrong path.
+  const hostEpoch = `preflight-wiring-${randomUUID()}`;
+  const expectedRoot = artifactPresentationRoot(hostEpoch);
+  const content = Buffer.from("materialized");
+  const handlers = new Map<string, Handler>();
+  const opened: string[] = [];
+  const artifact = {
+    id: "artifact-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    createdAt: 1,
+    name: "result.bin",
+    kind: "image",
+    sizeBytes: content.byteLength,
+    mimeType: "image/png",
+    status: "live",
+  } as const;
+
+  try {
+    registerRuntimeHostArtifactsIpc({
+      uiLocale: () => "en" as const,
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+      // No presentationRoot override: this is the production default path.
+      client: {
+        hostEpoch,
+        async getArtifact() {
+          return artifact;
+        },
+        async streamArtifact(
+          _sessionId: string,
+          _artifactId: string,
+          writeChunk: (chunk: Uint8Array) => Promise<void>,
+        ) {
+          await writeChunk(content);
+          return content.byteLength;
+        },
+      } as never,
+      mainWindowController: {} as never,
+      showItemInFolder: (path) => opened.push(path),
+    });
+
+    assert.deepEqual(await handlers.get("app:openArtifactPath")?.({}, "session-1", "artifact-1"), {
+      ok: true,
+      opened: "result.bin",
+    });
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0], join(expectedRoot, "session-1", "artifact-1-result.bin"));
+    assert.deepEqual(await readFile(opened[0] as string), content);
+  } finally {
+    await rm(expectedRoot, { recursive: true, force: true });
+  }
 });

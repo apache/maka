@@ -55,12 +55,25 @@ type RuntimeHostAttachmentPreviewIpcDeps = Pick<
 
 const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
 
+const ARTIFACT_PRESENTATION_DIR = "maka-runtime-host-artifacts";
+
+/**
+ * Where the Open action materializes an artifact before handing it to the
+ * operating system. Exported so the local preview preflight probes the very
+ * directory this path uses, instead of a plausible-looking stand-in; omit the
+ * epoch to name the root shared by every Host generation.
+ */
+export function artifactPresentationRoot(hostEpoch?: string): string {
+  return hostEpoch === undefined
+    ? join(tmpdir(), ARTIFACT_PRESENTATION_DIR)
+    : join(tmpdir(), ARTIFACT_PRESENTATION_DIR, hostEpoch);
+}
+
 export function registerRuntimeHostArtifactsIpc(
   deps: RuntimeHostArtifactsIpcDeps,
 ): void {
   const presentationRoot =
-    deps.presentationRoot ??
-    join(tmpdir(), "maka-runtime-host-artifacts", deps.client.hostEpoch);
+    deps.presentationRoot ?? artifactPresentationRoot(deps.client.hostEpoch);
 
   handleReconnectableRead(
     deps.ipcMain,
