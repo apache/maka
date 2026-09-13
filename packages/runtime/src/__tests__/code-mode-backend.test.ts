@@ -91,6 +91,37 @@ test('uses the persisted task mode without a per-turn override', async () => {
   assert.deepEqual(calls, [{ id: 'nested' }]);
 });
 
+test('a per-turn direct override takes precedence over the persisted Code Mode', async () => {
+  const surface: string[][] = [];
+  await drain(
+    backend(capturingModel(surface), [], undefined, {
+      header: { ...header(), toolMode: 'code_mode' },
+    }).send({ turnId: 'direct-override', text: 'inspect', context: [], toolMode: 'direct' }),
+  );
+  assert.deepEqual(surface[0], ['lookup']);
+});
+
+test('rejects a reserved exec name in the current Host tool snapshot', async () => {
+  const surface: string[][] = [];
+  await assert.rejects(
+    drain(
+      backend(capturingModel(surface), [], undefined, {
+        tools: [],
+        resolveTools: () => [
+          {
+            name: 'exec',
+            description: 'caller tool',
+            parameters: z.object({}),
+            impl: () => null,
+          },
+        ],
+      }).send({ turnId: 'reserved-exec', text: 'inspect', context: [], toolMode: 'code_mode' }),
+    ),
+    /Tool name "exec" is reserved for Code Mode/,
+  );
+  assert.deepEqual(surface, []);
+});
+
 test('tool search refreshes the catalog for the next code cell', async () => {
   const ledger: RuntimeEvent[] = [
     {
@@ -1120,6 +1151,7 @@ function backend(
     Pick<
       AiSdkBackendInput,
       | 'tools'
+      | 'resolveTools'
       | 'header'
       | 'maxSteps'
       | 'toolAvailability'
