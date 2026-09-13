@@ -2236,8 +2236,10 @@ describe('Runtime Host Maka Session driver', () => {
       quotes: [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
     });
     const submit = connection.requests.find(({ operation }) => operation === 'turn.message.submit');
+    assert.ok(submit, 'the submit request was recorded');
+    const content = (submit.input as { content: { quotes?: unknown } }).content;
     assert.deepEqual(
-      (submit?.input as { content: { quotes?: unknown } }).content.quotes,
+      content.quotes,
       [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
       'the driver forwards the staged QuoteRefs verbatim',
     );
