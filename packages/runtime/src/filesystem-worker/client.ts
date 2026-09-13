@@ -375,7 +375,11 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const searchMetadata: { path: string; targetType: 'file' | 'directory' }[] = [];
+    const searchMetadata: {
+      path: string;
+      canonicalPath: string;
+      targetType: 'file' | 'directory';
+    }[] = [];
     if (operation.kind === 'grep' && target.targetType === 'directory') {
       // Narrow the data scan to its target without dropping already-authorized
       // ancestor ignore rules. Configuration files never grant their parent tree.
@@ -388,7 +392,8 @@ export class FilesystemWorkerClient {
             const metadata = await lstat(canonical).catch(() => undefined);
             if (metadata?.isFile() || (name === '.git' && metadata?.isDirectory())) {
               searchMetadata.push({
-                path: canonical,
+                path,
+                canonicalPath: canonical,
                 targetType: metadata.isDirectory() ? 'directory' : 'file',
               });
             }
@@ -400,7 +405,9 @@ export class FilesystemWorkerClient {
     const workerProfile = deriveWorkerProfile(
       effectiveProfile,
       operationBoundary,
-      searchMetadata.map(({ path }) => path),
+      searchMetadata.map(({ path, canonicalPath }) =>
+        platform === 'linux' ? path : canonicalPath,
+      ),
     );
     const pinnedTarget =
       platform === 'linux' && !entryMode && target.targetType !== 'missing'
@@ -476,14 +483,17 @@ export class FilesystemWorkerClient {
       if (platform === 'linux') {
         for (const metadata of searchMetadata) {
           const pinned = pinExistingLinuxProfilePath({
-            ...metadata,
+            path: metadata.canonicalPath,
+            targetType: metadata.targetType,
             access: 'read',
             childFd: 5 + pinnedMetadata.length,
           });
           if (!pinned) {
             throw clientError('path_changed', 'validation', requestId);
           }
-          pinnedMetadata.push(pinned);
+          // rg opens the ancestor's lexical name. Bind the verified canonical
+          // source there even when the original metadata entry was a symlink.
+          pinnedMetadata.push({ ...pinned, path: metadata.path });
         }
       }
       transformed = this.input.sandboxManager.transform({

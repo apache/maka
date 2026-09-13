@@ -314,8 +314,11 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     const root = await temporaryDirectory('maka-grep-linux-metadata-');
     const source = join(root, 'src');
     await mkdir(source);
-    await mkdir(join(root, '.git', 'info'), { recursive: true });
-    await writeFile(join(root, '.gitignore'), 'generated/\n');
+    await mkdir(join(root, 'git-metadata', 'info'), { recursive: true });
+    await symlink(join(root, 'git-metadata'), join(root, '.git'));
+    await writeFile(join(root, 'rules'), 'generated/\n');
+    await symlink(join(root, 'rules'), join(root, '.gitignore'));
+    await writeFile(join(root, '.ignore'), 'temporary/\n');
     await writeFile(join(root, '.git', 'info', 'exclude'), 'private/\n');
     const { client, transforms, processInputs } = fakeClient({ platform: 'linux' });
     await client.execute({
@@ -339,7 +342,12 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     });
     const pinned = transforms[0]!.command.pathContext.pinnedProfilePaths!;
     const argv = processInputs[0]!.argv;
-    for (const path of [source, join(root, '.gitignore'), join(root, '.git', 'info', 'exclude')]) {
+    for (const path of [
+      source,
+      join(root, '.gitignore'),
+      join(root, '.ignore'),
+      join(root, '.git', 'info', 'exclude'),
+    ]) {
       const entry = pinned.find((entry) => entry.path === path);
       assert.ok(entry);
       assert.ok(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${entry.fd}`, path));
