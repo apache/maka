@@ -21,9 +21,9 @@ import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { GREP_MAX_LINES, GREP_MAX_LINES_PER_FILE, GREP_MAX_MATCH_BYTES } from '../grep-search.js';
 
-// v8 requires exact Grep counts alongside bounded matches. Older workers must
+// v9 requires exact Grep counts alongside bounded matches. Older workers must
 // not be accepted as successful searches with missing completeness metadata.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 8 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 9 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
