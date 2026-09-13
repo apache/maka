@@ -78,13 +78,14 @@ export function resolveReadInput(input: ReadInput): {
   try {
     const url = new URL(input.path);
     const path = Buffer.from(url.pathname.slice(1), 'base64url').toString('utf8');
-    const position = Number(url.searchParams.get('at'));
+    const at = url.searchParams.get('at') ?? '';
+    const position = Number(at);
     const digest = url.searchParams.get('sha') ?? '';
     if (
       !path ||
       path.startsWith(CONTINUATION_PREFIX) ||
+      !/^\d+$/.test(at) ||
       !Number.isSafeInteger(position) ||
-      position < 0 ||
       !/^[a-f0-9]{32}$/.test(digest) ||
       input.offset !== undefined
     )

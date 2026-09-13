@@ -19,7 +19,25 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readPage, readToolResultPage, READ_PAGE_MAX_CHARS, type ReadInput } from '../read-page.js';
+import {
+  readPage,
+  readToolResultPage,
+  resolveReadInput,
+  READ_PAGE_MAX_CHARS,
+  type ReadInput,
+} from '../read-page.js';
+
+test('malformed continuation positions fail instead of restarting the resource', () => {
+  const page = readPage('x'.repeat(10000), { path: 'file.txt' });
+  assert.ok(page.next);
+  for (const at of [undefined, '', ' ', '-1', '1.5', '1e2']) {
+    const url = new URL(page.next.path);
+    if (at === undefined) url.searchParams.delete('at');
+    else url.searchParams.set('at', at);
+    assert.throws(() => resolveReadInput({ path: url.toString() }), /Invalid Read continuation/);
+  }
+  assert.ok(resolveReadInput(page.next).position! > 0);
+});
 
 test('default and explicit large ranges stay bounded and continue to the requested end', () => {
   const lines = Array.from({ length: 900 }, (_, i) => `line ${i} ${'x'.repeat(160)}`);
