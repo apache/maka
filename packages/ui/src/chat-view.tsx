@@ -47,6 +47,7 @@ import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import { useTranscriptKnownSpace } from './use-transcript-known-space.js';
+import { VirtualTranscriptTurn } from './virtual-transcript-turn.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
@@ -552,6 +553,7 @@ export function ChatView(props: {
   }
   const knownSpace = useTranscriptKnownSpace(scrollRef, props.activeSession?.id,
     turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow));
+  const virtualized = Boolean(props.onRetainWindow) && typeof IntersectionObserver !== 'undefined';
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -761,10 +763,16 @@ export function ChatView(props: {
                 aria-hidden="true" style={{ height: knownSpace.beforeHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {turns.map((turn) => {
                 return (
-                  <div
-                    key={turn.turnId}
-                    className="maka-transcript-turn"
-                    data-transcript-turn-id={turn.turnId}
+                  <VirtualTranscriptTurn
+                    key={`${props.activeSession?.id}:${turn.turnId}`}
+                    turnId={turn.turnId}
+                    scrollRef={scrollRef}
+                    enabled={virtualized}
+                    required={turn.turnId === props.activeTurn?.turnId
+                      || turn.turnId === scrollTargetTurn?.turnId
+                      || turn.turnId === props.restoreTargetTurn?.turnId}
+                    initialHeight={knownSpace.height(turn.turnId)}
+                    onMeasure={knownSpace.measure}
                   >
                     <TurnView
                       turn={turn}
@@ -814,7 +822,7 @@ export function ChatView(props: {
                     {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
                       <Fragment key={item.id}>{item.content}</Fragment>
                     ))}
-                  </div>
+                  </VirtualTranscriptTurn>
                 );
               })}
               {transientMessages.filter(

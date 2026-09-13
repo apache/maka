@@ -221,9 +221,12 @@ export function useChatScroll(input: {
         ? commandTargetTurnId.current
         : undefined;
       if (pending && turns.some((turn) => turn.dataset.turnId === pending)) return;
+      const selection = root.ownerDocument.getSelection?.();
       const kept = turns.filter((turn) => {
         const box = turn.getBoundingClientRect();
-        return box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4;
+        return (box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4)
+          || turn.contains(root.ownerDocument.activeElement)
+          || Boolean(selection && !selection.isCollapsed && selection.containsNode(turn, true));
       });
       const first = kept[0]?.dataset.turnId;
       const last = kept.at(-1)?.dataset.turnId;

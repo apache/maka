@@ -17,12 +17,10 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
-// Experiment only: measured space within one overlapping, fixed-layout history
-// traversal. No unknown-height estimates, persistent cache or publication change.
-// Resize/content revision and arbitrary disconnected navigation are not acceptance
-// claims of this A/B prototype. It is not intended to merge as a complete design.
+// The geometry ledger contains sizes and identities, never message bodies.
+// Unmeasured loaded rows get a local placeholder; unseen history has no estimate.
 export function useTranscriptKnownSpace(
   root: RefObject<HTMLElement | null>,
   sessionId: string | undefined,
@@ -37,31 +35,32 @@ export function useTranscriptKnownSpace(
   }>({ sessionId, ids: [], pitch: new Map(), gap: 0 });
   const old = previous.current;
   const mounted = new Set(ids);
-  const overlaps = old.sessionId === sessionId
+  const overlaps = enabled && old.sessionId === sessionId
     ? old.ids.flatMap((id, index) => mounted.has(id) ? [index] : []) : [];
   const prefix = overlaps.length ? old.ids.slice(0, overlaps[0]) : [];
   const suffix = overlaps.length ? old.ids.slice(overlaps.at(-1)! + 1) : [];
   const pitch = overlaps.length ? new Map(old.pitch) : new Map<string, number>();
-  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (pitch.get(id) ?? 0), 0);
+  const estimate = 320;
+  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (pitch.get(id) ?? estimate + old.gap), 0);
   const before = sum(prefix);
   const after = sum(suffix);
   const gap = overlaps.length ? old.gap : 0;
 
+  useEffect(() => {
+    if (!enabled) return;
+    const parent = root.current?.querySelector('.maka-transcript-turn')?.parentElement;
+    if (parent) previous.current.gap = Number.parseFloat(getComputedStyle(parent).rowGap) || 0;
+  }, [enabled, root, sessionId]);
   useLayoutEffect(() => {
     if (!enabled) return;
-    const rows = [...(root.current?.querySelectorAll<HTMLElement>('.maka-transcript-turn') ?? [])];
-    const nextGap = rows[0]?.parentElement
-      ? Number.parseFloat(getComputedStyle(rows[0].parentElement).rowGap) || 0 : 0;
-    for (const row of rows) {
-      const id = row.dataset.transcriptTurnId;
-      if (id) pitch.set(id, row.getBoundingClientRect().height + nextGap);
-    }
-    previous.current = { sessionId, ids: [...prefix, ...ids, ...suffix], pitch, gap: nextGap };
+    previous.current = { sessionId, ids: [...prefix, ...ids, ...suffix], pitch, gap: previous.current.gap };
   });
 
   return {
     before, after,
     beforeHeight: Math.max(0, before - gap),
     afterHeight: Math.max(0, after - gap),
+    height: (id: string) => Math.max(1, (pitch.get(id) ?? estimate + gap) - gap),
+    measure: (id: string, height: number) => previous.current.pitch.set(id, height + previous.current.gap),
   };
 }

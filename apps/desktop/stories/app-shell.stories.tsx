@@ -2572,6 +2572,57 @@ export const HistoryWindowTraversal: Story = {
   render: () => <HistoryHarness turns={40} bounded />,
 };
 
+// Real path: traverse a long Session, return through already read history,
+// and jump to a loaded Turn whose body is currently outside the viewport.
+export const VirtualHistoryContinuity: Story = {
+  render: () => <HistoryHarness turns={40} bounded />,
+  play: async () => {
+    await historySettled();
+    const root = tailScroller();
+    const bodies = () => root.querySelectorAll('.maka-turn[data-turn-id]');
+    await waitFor(() => {
+      expect(bodies().length).toBeGreaterThan(0);
+      expect(bodies().length).toBeLessThan(root.querySelectorAll('.maka-transcript-turn').length);
+    });
+    const placeholder = root.querySelector<HTMLElement>('[data-virtual-placeholder]')!;
+    const target = placeholder.dataset.turnId!;
+    scrollAsReader(root, root.scrollTop + placeholder.getBoundingClientRect().top - root.getBoundingClientRect().top);
+    await waitFor(() => expect(root.querySelector(`.maka-turn[data-turn-id="${target}"]`)).not.toBeNull());
+
+    const traverse = async (direction: -1 | 1) => {
+      for (let step = 0; step < 160; step++) {
+        scrollAsReader(root, root.scrollTop + direction * root.clientHeight / 2);
+        await painted(5);
+        if (direction < 0 ? root.scrollTop <= 1 : root.scrollHeight - root.clientHeight - root.scrollTop <= 1) return;
+      }
+      throw new Error('History traversal did not reach its edge');
+    };
+    await traverse(-1);
+    await traverse(1);
+    await painted(8);
+    const knownHeight = root.scrollHeight;
+    await traverse(-1);
+    await traverse(1);
+    await painted(8);
+    expect(Math.abs(root.scrollHeight - knownHeight), 'revisiting measured history must preserve its extent').toBeLessThanOrEqual(1);
+    expect(bodies().length).toBeLessThan(16);
+
+    const selected = bodies().item(bodies().length - 1);
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const text = selection.toString();
+    expect(text.length).toBeGreaterThan(0);
+    await traverse(-1);
+    expect(selected.isConnected, 'an active selection must survive leaving the viewport').toBe(true);
+    expect(selection.toString()).toBe(text);
+    selection.removeAllRanges();
+    await waitFor(() => expect(selected.isConnected, 'released offscreen content should unmount').toBe(false));
+  },
+};
+
 // #4256: one Turn taller than several viewports, its reasoning / answer / tool
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
 // content-visibility bounds them. Reasoning stays mounted while folded, so it is

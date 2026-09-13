@@ -44,7 +44,9 @@ test('dense upward input with real Host history', async () => {
       const diagnose = process.env.MAKA_PERF_DIAGNOSE === '1';
       for (let trial = 0; trial < (diagnose ? 1 : 3); trial++) {
         await page.reload();
-        await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+        await expect(page.locator('.maka-turn[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(
+          1,
+        );
         if (process.env.MAKA_PERF_NO_HAS === '1') {
           const removed = await page.evaluate(() => {
             const removed: string[] = [];
@@ -120,11 +122,17 @@ test('dense upward input with real Host history', async () => {
             const ids = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].map(
               (el) => el.dataset.turnId,
             );
-            if (p.ranges.at(-1)?.ids.join(',') === ids.join(',')) return;
+            const mountedCount = root.querySelectorAll('.maka-turn[data-turn-id]').length;
+            if (
+              p.ranges.at(-1)?.ids.join(',') === ids.join(',') &&
+              p.ranges.at(-1)?.mountedCount === mountedCount
+            )
+              return;
             p.ranges.push({
               ms: performance.now(),
               phase: p.phase,
               ids,
+              mountedCount,
             });
           };
           range();
@@ -208,7 +216,10 @@ test('dense upward input with real Host history', async () => {
           20,
         );
         const initial = raw.frames[0];
-        const changes = raw.ranges.slice(1);
+        const changes = raw.ranges.filter(
+          (frame: any, i: number) =>
+            i > 0 && frame.ids.join(',') !== raw.ranges[i - 1].ids.join(','),
+        );
         expect(
           changes.length,
           'real Host history must publish at least one changed range',
@@ -228,11 +239,17 @@ test('dense upward input with real Host history', async () => {
           maxFrameGapMs: Math.max(
             ...raw.frames.slice(1).map((frame: any, i: number) => frame.ms - raw.frames[i].ms),
           ),
-          maxMounted: Math.max(...raw.ranges.map((frame: any) => frame.ids.length)),
+          maxMounted: Math.max(...raw.ranges.map((frame: any) => frame.mountedCount)),
           publicationsDuringInput: changes.filter((frame: any) => frame.ms < releasedAt).length,
           publicationsAfterInput: changes.filter((frame: any) => frame.ms >= releasedAt).length,
           firstPublicationAfterReleaseMs: firstReleased ? firstReleased.ms - releasedAt : -1,
         };
+        if (process.env.MAKA_PERF_VARIANT === 'V') {
+          expect(
+            row.maxMounted,
+            'a fetched page must not mount all of its Turn bodies',
+          ).toBeLessThan(Math.max(...raw.ranges.map((frame: any) => frame.ids.length)) / 2);
+        }
         samples.push(row);
         console.log(JSON.stringify(row));
         await writeFile(
