@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 32 |
-| platform-contract | 36 |
+| platform-contract | 37 |
 
-Total Windows-excluded declarations: **95**
+Total Windows-excluded declarations: **96**
 
 ## Inventory
 
@@ -35,6 +35,7 @@ Total Windows-excluded declarations: **95**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
+| platform-contract | `apps/desktop/src/main/__tests__/skill-locations.test.ts` reports an unreadable Skill directory instead of an available empty location | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory unreadable' : process.getuid?.() === 0` |
 | platform-contract | `packages/cli/src/__tests__/acp-prompt-content.test.ts` rejects a FIFO without blocking the process | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` shortens POSIX paths under the home directory | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` keeps POSIX paths outside the home directory absolute | `process.platform === 'win32'` |

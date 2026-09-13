@@ -86,7 +86,9 @@ test('location counts include disabled, shadowed and rejected Skill copies', asy
 });
 
 test('reports an unreadable Skill directory instead of an available empty location', {
-  skip: process.platform === 'win32' || process.getuid?.() === 0,
+  skip: process.platform === 'win32'
+    ? 'POSIX permissions are required to make the Skill directory unreadable'
+    : process.getuid?.() === 0,
 }, async () => {
   await withFixture(async (context) => {
     const directory = join(context.projectRoot, '.agents', 'skills');
