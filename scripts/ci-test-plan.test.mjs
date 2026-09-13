@@ -495,6 +495,32 @@ test('full-suite authority files select every surface', () => {
   }
 });
 
+test('a full suite still selects the icon and toolchain gates only from their own inputs', () => {
+  const dependencies = planTests(['package.json'], { graph });
+  assert.equal(dependencies.full, true);
+  assert.equal(dependencies.appIcons, false);
+  assert.equal(dependencies.deepseekHarnessToolchain, false);
+
+  const workflow = planTests(['.github/workflows/ci.yml'], { graph });
+  assert.equal(workflow.appIcons, true);
+  assert.equal(workflow.deepseekHarnessToolchain, true);
+
+  const withInputs = planTests(
+    [
+      'package.json',
+      'scripts/generate-app-icons.py',
+      'scripts/prepare-deepseek-harness-toolchain.mjs',
+    ],
+    { graph },
+  );
+  assert.equal(withInputs.appIcons, true);
+  assert.equal(withInputs.deepseekHarnessToolchain, true);
+
+  const forced = planTests([], { graph, forceFull: true });
+  assert.equal(forced.appIcons, true);
+  assert.equal(forced.deepseekHarnessToolchain, true);
+});
+
 // The SessionTodo cutover (#4351) retired an operation and stranded every
 // workspace holding a credential issued before it (#4420). It changed the
 // vocabulary, not the decoders — so a trigger listing only decoders stays green
