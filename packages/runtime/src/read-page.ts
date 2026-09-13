@@ -198,6 +198,7 @@ export function readableToolResult(serialized: string): string {
     if (
       value &&
       typeof value === 'object' &&
+      Object.keys(value).length === 2 &&
       'kind' in value &&
       value.kind === 'text' &&
       'text' in value &&
@@ -207,6 +208,7 @@ export function readableToolResult(serialized: string): string {
     if (
       value &&
       typeof value === 'object' &&
+      Object.keys(value).length === 1 &&
       'content' in value &&
       typeof value.content === 'string'
     )

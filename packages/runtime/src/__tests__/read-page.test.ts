@@ -117,3 +117,21 @@ test('archive Read decodes content lines and retains terminal execution metadata
     next: null,
   });
 });
+
+test('archive Read preserves fields beside structured text across pages', () => {
+  for (const value of [
+    { content: 'x'.repeat(9000), cursor: 'CURSOR-123', status: 'more' },
+    { kind: 'text', text: 'x'.repeat(9000), cursor: 'CURSOR-123' },
+  ]) {
+    const serialized = JSON.stringify(value);
+    let input: ReadInput | null = { path: 'maka://runtime/tool-results/e' };
+    let recovered = '';
+    while (input) {
+      const page = readToolResultPage(serialized, input);
+      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      recovered += page.content;
+      input = page.next;
+    }
+    assert.deepEqual(JSON.parse(recovered), value);
+  }
+});
