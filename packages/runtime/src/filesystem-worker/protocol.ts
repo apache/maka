@@ -219,14 +219,14 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('grep'),
-      matches: z
-        .array(z.string())
-        .max(GREP_MAX_LINES)
-        .refine((matches) => Buffer.byteLength(JSON.stringify(matches)) <= GREP_MAX_MATCH_BYTES),
       matchedLines: z.number().int().nonnegative(),
       returnedLines: z.number().int().nonnegative(),
       omittedLines: z.number().int().nonnegative(),
       truncated: z.boolean(),
+      matches: z
+        .array(z.string())
+        .max(GREP_MAX_LINES)
+        .refine((matches) => Buffer.byteLength(JSON.stringify(matches)) <= GREP_MAX_MATCH_BYTES),
     })
     .strict()
     .refine(

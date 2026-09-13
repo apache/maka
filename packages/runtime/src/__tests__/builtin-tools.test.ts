@@ -2201,7 +2201,13 @@ describe('builtin read tools path containment', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-grep-completeness-'));
     try {
       await writeFile(join(cwd, 'matches.txt'), 'token token\n'.repeat(51));
-      const result = await runTool(tool('Grep'), { pattern: 'token' }, cwd);
+      const grep = tool('Grep');
+      const input = (grep.parameters as z.ZodTypeAny).parse({
+        pattern: 'token',
+        path: '',
+        glob: '',
+      });
+      const result = await runTool(grep, input, cwd);
       assert.partialDeepStrictEqual(result, {
         matchedLines: 51,
         returnedLines: 50,

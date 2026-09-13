@@ -622,14 +622,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           .describe('Ripgrep regular expression; use an empty pattern to match every line.'),
         path: z
           .string()
-          .min(1)
           .optional()
           .describe('File or directory to search; defaults to the session working directory.'),
-        glob: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('Optional ripgrep file glob, for example **/*.ts.'),
+        glob: z.string().optional().describe('Optional ripgrep file glob, for example **/*.ts.'),
       }),
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
@@ -640,7 +635,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         const result = await filesystem.execute({
           operation: {
             kind: 'grep',
-            path: path ?? '.',
+            path: path || '.',
             pattern,
             ...(glob ? { glob } : {}),
             maxCountPerFile: GREP_MAX_LINES_PER_FILE,

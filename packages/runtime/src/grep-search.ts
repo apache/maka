@@ -90,11 +90,11 @@ export async function searchFiles(
     );
   }
   return {
-    matches,
     matchedLines,
     returnedLines: matches.length,
     omittedLines: matchedLines - matches.length,
     truncated: matchedLines > matches.length,
+    matches,
   };
 
   function onStdout(chunk: Buffer): void {
