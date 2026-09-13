@@ -62,6 +62,22 @@ export interface SkillEntry {
   manageable?: boolean;
 }
 
+export type SkillLocationRef =
+  | 'project:maka'
+  | 'project:agents'
+  | 'workspace:legacy'
+  | 'user:maka'
+  | 'user:agents';
+
+export interface SkillLocation {
+  ref: SkillLocationRef;
+  scope: 'project' | 'workspace' | 'user';
+  source: 'maka' | 'agents' | 'legacy';
+  path: string;
+  status: 'available' | 'missing' | 'blocked_path' | 'read_failed';
+  skillCount: number;
+}
+
 export type SkillGovernanceStatus = 'not_managed' | 'source_missing' | 'up_to_date' | 'update_available' | 'local_modified' | 'metadata_error';
 export type SkillValidationStatus = 'ok' | 'missing_lock' | 'modified' | 'metadata_error';
 export type SkillValidationCode =

@@ -84,7 +84,6 @@ export function buildCommandList(args: {
   onSetDefaultConnection?(slug: string): Promise<void> | void;
   onOpenWorkspace?(): Promise<void> | void;
   onOpenProjectFolder?(): Promise<void> | void;
-  onOpenSkillsFolder?(): Promise<void> | void;
   /** Copy the active conversation as Markdown to the clipboard. */
   onExportActiveConversation?(): Promise<void> | void;
   /**
@@ -321,16 +320,6 @@ export function buildCommandList(args: {
       Icon: FolderOpen,
       keywords: [...copy.staticKeywords['diag:open-project-folder']],
       run: () => args.onOpenProjectFolder!(),
-    });
-  }
-  if (args.onOpenSkillsFolder) {
-    cmds.push({
-      id: 'diag:open-skills',
-      kind: 'action',
-      ...staticCopy('diag:open-skills'),
-      Icon: FolderOpen,
-      keywords: [...copy.staticKeywords['diag:open-skills']],
-      run: () => args.onOpenSkillsFolder!(),
     });
   }
   if (args.onExportActiveConversation && args.activeSessionId) {

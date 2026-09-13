@@ -57,6 +57,7 @@ test("projects an empty Skill surface until a remote Project is selected", async
     "skills:listInvocable",
     "skills:catalog:list",
     "skills:sources:list",
+    "skills:locations:list",
   ]) {
     const handler = handlers.get(channel);
     assert.ok(handler, `missing ${channel} handler`);
@@ -110,4 +111,35 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
     collaborationMode: "plan",
     permissionMode: "bypass",
   });
+});
+
+test("blocks Skill location opening for a remote Runtime Host", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  let opened = false;
+  registerRuntimeHostSkillsIpc({
+    ipcMain: {
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+    },
+    client: {} as DesktopRuntimeHostClient,
+    workspaceRoot: "/client-workspace",
+    mainWindowController: {} as never,
+    getSelectedWorkspaceTarget: async () => ({ kind: "project", projectId: "remote" }),
+    resolveNewSessionWorkspaceTarget: async () => undefined,
+    getDefaultPermissionMode: async () => "ask",
+    openPath: async () => {
+      opened = true;
+      return "";
+    },
+    allowLocalPaths: false,
+    resolveLocale: async () => "en",
+  });
+
+  const handler = handlers.get("skills:locations:open");
+  assert.ok(handler);
+  assert.deepEqual(
+    await handler({} as never, "user:agents", { createIfMissing: true }),
+    { ok: false, reason: "blocked_path" },
+  );
+  assert.equal(opened, false);
 });

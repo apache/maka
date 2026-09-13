@@ -698,6 +698,13 @@ function ExtensionsSkillsSurface(props: {
           badge: <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />,
         }}
         skills={props.skills ?? []}
+        skillLocations={[
+          { ref: 'project:maka', scope: 'project', source: 'maka', path: '/project/.maka/skills', status: 'missing', skillCount: 0 },
+          { ref: 'project:agents', scope: 'project', source: 'agents', path: '/project/.agents/skills', status: 'available', skillCount: 2 },
+          { ref: 'workspace:legacy', scope: 'workspace', source: 'legacy', path: '/workspace/skills', status: 'missing', skillCount: 0 },
+          { ref: 'user:maka', scope: 'user', source: 'maka', path: '~/.maka/skills', status: 'available', skillCount: 1 },
+          { ref: 'user:agents', scope: 'user', source: 'agents', path: '~/.agents/skills', status: 'available', skillCount: 4 },
+        ]}
         managedSkillSources={[]}
         bundledSkillCatalog={props.bundledSkillCatalog ?? []}
         onRefreshSkills={noop}
@@ -705,7 +712,7 @@ function ExtensionsSkillsSurface(props: {
         onRefreshBundledSkillCatalog={noop}
         onOpenSkill={noop}
         onUseSkill={noop}
-        onOpenSkillsFolder={noop}
+        onOpenSkillLocation={noop}
         onInstallBundledSkill={noop}
         onPreviewManagedSkillUpdate={async (skillId) => (
           skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
@@ -844,6 +851,7 @@ function ProductionModuleHubHostSurface() {
         <ModuleHubProvider
           selection={{ section: 'extensions', module: 'skills' }}
           selectModule={noop}
+          clientPathsAccessible={true}
           useSkillInChat={noop}
           openSession={noop}
           appendComposerText={noop}

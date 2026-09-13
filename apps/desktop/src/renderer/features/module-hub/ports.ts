@@ -34,6 +34,8 @@ import type {
   ManagedSkillSourceEntry,
   ManagedSkillUpdatePreview,
   SkillEntry,
+  SkillLocation,
+  SkillLocationRef,
 } from '@maka/ui';
 
 export type ModuleHubUnsubscribe = () => void;
@@ -129,8 +131,21 @@ export type OpenSkillResult =
         | 'open_failed';
     };
 
+export type OpenSkillLocationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | 'unknown_location'
+        | 'missing'
+        | 'blocked_path'
+        | 'create_failed'
+        | 'open_failed';
+    };
+
 export interface ModuleHubSkillsService {
   list(host: ModuleHubRuntimeHostRef): Promise<SkillEntry[]>;
+  listLocations(host: ModuleHubRuntimeHostRef): Promise<SkillLocation[]>;
   listManagedSources(host: ModuleHubRuntimeHostRef): Promise<ManagedSkillSourceEntry[]>;
   listBundledCatalog(host: ModuleHubRuntimeHostRef): Promise<BundledSkillCatalogEntry[]>;
   importManagedSource(host: ModuleHubRuntimeHostRef): Promise<ImportManagedSkillSourceResult>;
@@ -165,6 +180,11 @@ export interface ModuleHubSkillsService {
     target: 'file' | 'directory',
     host: ModuleHubRuntimeHostRef,
   ): Promise<OpenSkillResult>;
+  openLocation(
+    ref: SkillLocationRef,
+    options: { createIfMissing?: boolean },
+    host: ModuleHubRuntimeHostRef,
+  ): Promise<OpenSkillLocationResult>;
 }
 
 export type ScheduledTaskCreateInput = Omit<CreateScheduledTaskInput, 'createdBy'>;

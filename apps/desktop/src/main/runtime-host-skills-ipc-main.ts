@@ -36,6 +36,7 @@ import type {
   ManagedSkillUpdatePreview,
   SkillEntry,
   SkillGovernanceDetails,
+  SkillLocation,
 } from "@maka/ui";
 import type { createMainWindowController } from "./main-window.js";
 import {
@@ -49,6 +50,7 @@ import type {
 import type { UiLocale } from "@maka/core/ui-locale";
 import { nativeFileDialogCopy } from "./native-file-dialog-copy.js";
 import { resolveSkillOpenPath } from "./skill-open-path.js";
+import { listSkillLocations, resolveSkillLocation } from "./skill-locations.js";
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -180,6 +182,41 @@ export function registerRuntimeHostSkillsIpc(
         : [],
     );
   });
+
+  handleReconnectableRead(deps.ipcMain, "skills:locations:list", async (): Promise<SkillLocation[]> => {
+    if (deps.allowLocalPaths === false) return [];
+    const workspace = await deps.getSelectedWorkspaceTarget();
+    if (!workspace) return [];
+    const snapshot = await deps.client.loadSkillCatalog({ workspace }, "governance");
+    return listSkillLocations({
+      projectRoot: snapshot.workspace.hostCwd,
+      workspaceRoot: deps.workspaceRoot,
+    });
+  });
+
+  deps.ipcMain.handle(
+    "skills:locations:open",
+    async (_event, ref: string, options?: { createIfMissing?: unknown }) => {
+      if (deps.allowLocalPaths === false) {
+        return { ok: false as const, reason: "blocked_path" as const };
+      }
+      const workspace = await requireSelectedWorkspaceTarget(deps);
+      const snapshot = await deps.client.loadSkillCatalog({ workspace }, "governance");
+      const resolved = await resolveSkillLocation(
+        {
+          projectRoot: snapshot.workspace.hostCwd,
+          workspaceRoot: deps.workspaceRoot,
+        },
+        ref,
+        options?.createIfMissing === true,
+      );
+      if (!resolved.ok) return resolved;
+      const error = await deps.openPath(resolved.path);
+      return error
+        ? { ok: false as const, reason: "open_failed" as const }
+        : { ok: true as const };
+    },
+  );
 
   deps.ipcMain.handle("skills:sources:importLocalFile", async () => {
     if (deps.allowLocalPaths === false) {

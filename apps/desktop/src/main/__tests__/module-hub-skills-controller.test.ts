@@ -104,6 +104,7 @@ function input(
   return {
     uiLocale: "en",
     active: true,
+    clientPathsAccessible: false,
     toastApi: toastRecorder(records),
     useSkillInChat: () => undefined,
     ...overrides,
@@ -147,6 +148,16 @@ test("Skills projections have independent same-Host generation and default-Host 
           sourceType: "local",
         },
       ],
+      listLocations: async () => [
+        {
+          ref: "project:agents",
+          scope: "project",
+          source: "agents",
+          path: "/project/.agents/skills",
+          status: "available",
+          skillCount: 1,
+        },
+      ],
       listBundledCatalog: async () => [
         {
           id: "bundled-a",
@@ -183,6 +194,7 @@ test("Skills projections have independent same-Host generation and default-Host 
   assert.equal(controller().revision, 2);
   assert.equal(controller().host.managedSkillSources[0]?.id, "source-a");
   assert.equal(controller().host.bundledSkillCatalog[0]?.id, "bundled-a");
+  assert.equal(controller().host.skillLocations[0]?.ref, "project:agents");
 
   const lateHostRead = deferred<SkillEntry[]>();
   services.skills.list = async () => lateHostRead.promise;
@@ -213,6 +225,10 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
         calls.push("list");
         return [];
       },
+      listLocations: async () => {
+        calls.push("locations");
+        return [];
+      },
       listManagedSources: async () => {
         calls.push("sources");
         return [];
@@ -237,7 +253,7 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
     },
   });
   const activeInput = input(records, {
-    openSkillsFolder: () => undefined,
+    clientPathsAccessible: true,
   });
   await act(async () => renderController(root, services, activeInput));
   const importManagedSkillSource =
@@ -261,11 +277,11 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
   assert.deepEqual(calls.splice(0), ["sources"]);
 
   await act(async () => controller().host.onInstallManagedSkill("source-a"));
-  assert.deepEqual(calls.splice(0), ["list", "sources"]);
+  assert.deepEqual(calls.splice(0), ["list", "locations", "sources"]);
   assert.equal(records.at(-1)?.kind, "success");
 
   await act(async () => controller().host.onInstallBundledSkill("bundled-a"));
-  assert.deepEqual(calls.splice(0), ["list", "catalog"]);
+  assert.deepEqual(calls.splice(0), ["list", "locations", "catalog"]);
 
   await act(async () => {
     assert.equal(await controller().host.onUpdateManagedSkill("managed"), true);
@@ -281,7 +297,7 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
   await act(async () =>
     controller().host.onDeleteSkill("user:agents:bundled-a"),
   );
-  assert.deepEqual(calls.splice(0), ["list", "catalog"]);
+  assert.deepEqual(calls.splice(0), ["list", "locations", "catalog"]);
   assert.match(records.at(-1)?.description ?? "", /bundled-a/);
 
   const lateInstall = deferred<ReturnType<typeof skill>>();
@@ -309,7 +325,7 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
   let defaultHost = hostA;
   const openFailure = deferred<never>();
   const used: string[] = [];
-  const opened: string[] = [];
+  const opened: Array<{ ref: string; createIfMissing: boolean }> = [];
   const defaults = createFakeModuleHubServices();
   const services = createFakeModuleHubServices({
     runtimeHosts: {
@@ -319,6 +335,10 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     skills: {
       ...defaults.skills,
       open: async () => openFailure.promise,
+      openLocation: async (ref, options) => {
+        opened.push({ ref, createIfMissing: options.createIfMissing === true });
+        return { ok: true };
+      },
     },
   });
 
@@ -332,7 +352,7 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     ),
   );
   assert.equal(controller().host.onOpenSkill, undefined);
-  assert.equal(controller().host.onOpenSkillsFolder, undefined);
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
   assert.equal(controller().host.onImportManagedSkillSource, undefined);
   controller().host.onUseSkill("skill-a", "Skill A");
   assert.deepEqual(used, ["skill-a:Skill A"]);
@@ -343,9 +363,7 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
       services,
       input(records, {
         useSkillInChat: () => undefined,
-        openSkillsFolder: () => {
-          opened.push("folder");
-        },
+        clientPathsAccessible: true,
       }),
     ),
   );
@@ -354,8 +372,11 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     typeof controller().host.onImportManagedSkillSource,
     "function",
   );
-  controller().host.onOpenSkillsFolder?.();
-  assert.deepEqual(opened, ["folder"]);
+  assert.equal(typeof controller().host.onOpenSkillLocation, "function");
+  await act(async () =>
+    controller().host.onOpenSkillLocation?.("user:agents", true),
+  );
+  assert.deepEqual(opened, [{ ref: "user:agents", createIfMissing: true }]);
 
   const pendingOpen = controller().host.onOpenSkill?.("skill-a");
   defaultHost = hostB;
@@ -395,7 +416,7 @@ test("Skills errors recheck the active surface after an async Host fence", async
     },
   });
 
-  const capability = { openSkillsFolder: () => undefined };
+  const capability = { clientPathsAccessible: true };
   await act(async () =>
     renderController(root, services, input(records, capability)),
   );
@@ -423,15 +444,17 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
   const records: ToastRecord[] = [];
   const host = { profileId: "profile-a", hostId: "host-a" };
   const staleHostRecheck = deferred<typeof host>();
+  const staleLocationRead = deferred<[]>();
   let hostReads = 0;
   let skillReads = 0;
+  let locationReads = 0;
   const defaults = createFakeModuleHubServices();
   const services = createFakeModuleHubServices({
     runtimeHosts: {
       ...defaults.runtimeHosts,
       getDefault: async () => {
         hostReads += 1;
-        return hostReads === 2 ? staleHostRecheck.promise : host;
+        return hostReads === 3 ? staleHostRecheck.promise : host;
       },
     },
     skills: {
@@ -440,6 +463,10 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
         skillReads += 1;
         if (skillReads === 1) throw new Error("stale refresh failed");
         return [skill("fresh")];
+      },
+      listLocations: async () => {
+        locationReads += 1;
+        return locationReads === 1 ? staleLocationRead.promise : [];
       },
     },
   });
@@ -450,7 +477,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
     await Promise.resolve();
     await Promise.resolve();
   });
-  assert.equal(hostReads, 2);
+  assert.equal(hostReads, 3);
 
   await act(async () => controller().host.onRefreshSkills());
   assert.deepEqual(
@@ -459,6 +486,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
   );
 
   staleHostRecheck.resolve(host);
+  staleLocationRead.resolve([]);
   await act(async () => staleRefresh);
   assert.deepEqual(records, []);
 });

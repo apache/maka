@@ -111,6 +111,7 @@ test('controller scoping removes shell-wide work from Module Hub updates', async
   const controllerInput = {
     selection: { section: 'sessions' } as const,
     selectModule: () => undefined,
+    clientPathsAccessible: false,
     useSkillInChat: () => undefined,
     openSession: () => undefined,
     appendComposerText: () => undefined,

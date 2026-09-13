@@ -251,7 +251,7 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
-import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
+import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillLocation, SkillLocationRef } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
@@ -1900,6 +1900,13 @@ export interface MakaBridge {
       importLocalFile(host?: DesktopRuntimeHostRef): Promise<
         | { ok: true; source: ManagedSkillSourceEntry }
         | { ok: false; reason: 'cancelled' | 'invalid_skill' | 'already_exists' | 'blocked_path' | 'write_failed' }
+      >;
+    };
+    locations: {
+      list(host?: DesktopRuntimeHostRef): Promise<SkillLocation[]>;
+      open(ref: SkillLocationRef, options?: { createIfMissing?: boolean }, host?: DesktopRuntimeHostRef): Promise<
+        | { ok: true }
+        | { ok: false; reason: 'unknown_location' | 'missing' | 'blocked_path' | 'create_failed' | 'open_failed' }
       >;
     };
     installManaged(sourceId: string, host?: DesktopRuntimeHostRef): Promise<

@@ -51,7 +51,6 @@ export const STATIC_COMMAND_IDS = [
   'nav:daily-review',
   'diag:open-workspace',
   'diag:open-project-folder',
-  'diag:open-skills',
   'diag:export-conversation',
   'diag:save-conversation-file',
   'diag:copy-today-daily-review',
@@ -101,7 +100,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'nav:daily-review': ['daily', 'review', 'today', '每日', '回顾', '今天'],
   'diag:open-workspace': ['workspace', 'folder', 'open', 'finder', '工作区', '文件夹', '目录'],
   'diag:open-project-folder': ['project', 'folder', 'open', 'finder', '项目', '目录', '文件夹'],
-  'diag:open-skills': ['skills', 'folder', 'open', 'finder', '技能', '文件夹'],
   'diag:export-conversation': ['export', 'markdown', 'copy', 'conversation', '导出', '任务', '剪贴板', 'md'],
   'diag:save-conversation-file': [
     'save',
@@ -292,6 +290,8 @@ type ShellCopy = {
   skillActions: {
     refreshSkillsFailedTitle: string;
     refreshSkillsFallback: string;
+    refreshLocationsFailedTitle: string;
+    refreshLocationsFallback: string;
     refreshSourcesFailedTitle: string;
     refreshSourcesFallback: string;
     refreshBundledFailedTitle: string;
@@ -326,6 +326,12 @@ type ShellCopy = {
     deletedDescription(id: string): string;
     openFailedTitle: string;
     openFallback: string;
+    openLocationFailedTitle: string;
+    openLocationFallback: string;
+    openLocationFailures: Record<
+      'unknown_location' | 'missing' | 'blocked_path' | 'create_failed' | 'open_failed',
+      string
+    >;
     openFailures: Record<
       'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed',
       string
@@ -569,11 +575,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: 'Finder',
     group: '诊断',
   },
-  'diag:open-skills': {
-    label: '打开 Skills 文件夹',
-    hint: 'Finder',
-    group: '诊断',
-  },
   'diag:export-conversation': {
     label: '导出当前任务为 Markdown',
     hint: '复制到剪贴板',
@@ -665,11 +666,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:open-project-folder': {
     label: 'Open project folder',
-    hint: 'Finder',
-    group: 'Diagnostics',
-  },
-  'diag:open-skills': {
-    label: 'Open Skills folder',
     hint: 'Finder',
     group: 'Diagnostics',
   },
@@ -915,6 +911,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
       refreshSkillsFallback: '刷新技能失败，请稍后重试。',
+      refreshLocationsFailedTitle: '刷新技能位置失败',
+      refreshLocationsFallback: '刷新技能位置失败，请稍后重试。',
       refreshSourcesFailedTitle: '刷新来源库失败',
       refreshSourcesFallback: '刷新来源库失败，请稍后重试。',
       refreshBundledFailedTitle: '刷新内置技能失败',
@@ -949,6 +947,15 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '无法打开 Skill',
       openFallback: '无法打开 Skill，请稍后重试。',
+      openLocationFailedTitle: '无法打开技能位置',
+      openLocationFallback: '无法打开技能位置，请稍后重试。',
+      openLocationFailures: {
+        unknown_location: '这个技能位置无效。',
+        missing: '目录不存在。',
+        blocked_path: '技能位置不在允许范围内，已阻止打开。',
+        create_failed: '无法创建技能目录，请检查文件权限。',
+        open_failed: '系统打开目录失败。',
+      },
       openFailures: {
         invalid_id: 'Skill 名称不在允许范围内。',
         missing: '没有找到对应的 SKILL.md。',
@@ -1422,6 +1429,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: '重新整理技能失敗',
       refreshSkillsFallback: '重新整理技能失敗，請稍後重試。',
+      refreshLocationsFailedTitle: '重新整理技能位置失敗',
+      refreshLocationsFallback: '重新整理技能位置失敗，請稍後重試。',
       refreshSourcesFailedTitle: '重新整理來源庫失敗',
       refreshSourcesFallback: '重新整理來源庫失敗，請稍後重試。',
       refreshBundledFailedTitle: '重新整理內建技能失敗',
@@ -1456,6 +1465,15 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '無法開啟 Skill',
       openFallback: '無法開啟 Skill，請稍後重試。',
+      openLocationFailedTitle: '無法開啟技能位置',
+      openLocationFallback: '無法開啟技能位置，請稍後重試。',
+      openLocationFailures: {
+        unknown_location: '這個技能位置無效。',
+        missing: '目錄不存在。',
+        blocked_path: '技能位置不在允許範圍內，已阻止開啟。',
+        create_failed: '無法建立技能目錄，請檢查檔案權限。',
+        open_failed: '系統無法開啟目錄。',
+      },
       openFailures: {
         invalid_id: 'Skill 名稱不在允許範圍內。',
         missing: '沒有找到對應的 SKILL.md。',
@@ -1934,6 +1952,8 @@ const SHELL_COPY_BY_LOCALE = {
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',
       refreshSkillsFallback: 'Skills could not be refreshed. Try again later.',
+      refreshLocationsFailedTitle: 'Could not refresh Skill locations',
+      refreshLocationsFallback: 'Skill locations could not be refreshed. Try again later.',
       refreshSourcesFailedTitle: 'Could not refresh Skill sources',
       refreshSourcesFallback: 'Skill sources could not be refreshed. Try again later.',
       refreshBundledFailedTitle: 'Could not refresh built-in Skills',
@@ -1968,6 +1988,15 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} was removed.`,
       openFailedTitle: 'Could not open Skill',
       openFallback: 'The Skill could not be opened. Try again later.',
+      openLocationFailedTitle: 'Could not open Skill location',
+      openLocationFallback: 'The Skill location could not be opened. Try again later.',
+      openLocationFailures: {
+        unknown_location: 'This Skill location is invalid.',
+        missing: 'The folder does not exist.',
+        blocked_path: 'The Skill location is outside the allowed paths, so opening was blocked.',
+        create_failed: 'The Skill folder could not be created. Check file permissions.',
+        open_failed: 'The system could not open the folder.',
+      },
       openFailures: {
         invalid_id: 'The Skill name is not allowed.',
         missing: 'The matching SKILL.md was not found.',
