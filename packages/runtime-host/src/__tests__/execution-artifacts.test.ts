@@ -27,7 +27,13 @@ import {
 } from '@maka/core/model-projection-transition';
 import { buildLedgerArchivedToolResultPlaceholder } from '@maka/runtime/tool-result-archive';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import { parseToolResultArchiveResourceRef } from '@maka/runtime/tool-result-archive-resource';
+import {
+  parseToolResultArchiveResourceRef,
+  readToolResultArchiveResource,
+} from '@maka/runtime/tool-result-archive-resource';
+import { shapeTerminalResult } from '@maka/runtime/shell-tools';
+import { readPageSchema, READ_PAGE_MAX_CHARS } from '@maka/runtime/read-page';
+import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-archive-evidence';
 import { mkdir, mkdtemp, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,7 +43,10 @@ import {
   openInteractiveArtifactStoreForWrite,
   createReadImageSnapshotPlanner,
 } from '@maka/storage/artifact-stores';
-import { encodeDurableToolResultOutputWithArtifacts } from '@maka/runtime/durable-tool-result-projection';
+import {
+  encodeDurableToolResultOutput,
+  encodeDurableToolResultOutputWithArtifacts,
+} from '@maka/runtime/durable-tool-result-projection';
 import { durableProjectionToToolResultOutput } from '@maka/runtime/durable-tool-result-projection';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -45,8 +54,10 @@ import { createHostExecutionArtifactServices } from '../server/execution-artifac
 import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
-for (const largeImage of [false, true]) {
-  test(`production archives survive reopen (large raw MCP image: ${largeImage})`, async () => {
+for (const scenario of ['text', 'large raw MCP image', 'executor-sized Bash'] as const) {
+  test(`production archives survive reopen (${scenario})`, async () => {
+    const largeImage = scenario === 'large raw MCP image';
+    const largeBash = scenario === 'executor-sized Bash';
     const root = await mkdtemp(join(tmpdir(), 'maka-ledger-archive-host-'));
     const owner = await tryAcquireInteractiveRootOwner(
       await resolveStorageRoot({ path: root, kind: 'interactive' }),
@@ -56,19 +67,35 @@ for (const largeImage of [false, true]) {
     let evidence = await openToolResultArchiveEvidenceReader(owner.lease);
     const db = new DatabaseSync(join(root, 'runtime.sqlite'));
     try {
-      const projection: DurableToolResultProjection = largeImage
-        ? {
-            version: 1,
-            kind: 'content',
-            parts: [
-              {
-                kind: 'artifact',
-                mediaType: 'image/png',
-                ref: { kind: 'session_file', sessionId: 'session', relativePath: 'mcp-image' },
-              },
-            ],
-          }
-        : { version: 1, kind: 'text', text: 'durable ledger body' };
+      // Control characters exercise JSON's worst-case six-byte escaping.
+      const stream = `${'\u0001'.repeat(127)}\n`.repeat(8191);
+      const bash = largeBash
+        ? shapeTerminalResult({
+            cwd: root,
+            command: 'synthetic bounded output',
+            result: {
+              stdout: `FRONT\n${stream}TAIL`,
+              stderr: `ERROR_FRONT\n${stream}ERROR_TAIL`,
+              exitCode: 7,
+              stdoutTruncated: true,
+            },
+          })
+        : undefined;
+      const projection: DurableToolResultProjection = bash
+        ? encodeDurableToolResultOutput({ type: 'json', value: bash as never }, 'session')
+        : largeImage
+          ? {
+              version: 1,
+              kind: 'content',
+              parts: [
+                {
+                  kind: 'artifact',
+                  mediaType: 'image/png',
+                  ref: { kind: 'session_file', sessionId: 'session', relativePath: 'mcp-image' },
+                },
+              ],
+            }
+          : { version: 1, kind: 'text', text: 'durable ledger body' };
       const output = durableProjectionToToolResultOutput(projection);
       assert.ok('value' in output);
       const serializedResult = JSON.stringify(output.value);
@@ -86,18 +113,20 @@ for (const largeImage of [false, true]) {
         content: {
           kind: 'function_response',
           id: 'call',
-          name: 'Read',
-          result: largeImage
-            ? {
-                content: [
-                  {
-                    type: 'image',
-                    mimeType: 'image/png',
-                    data: Buffer.alloc(2 * 1024 * 1024).toString('base64'),
-                  },
-                ],
-              }
-            : 'raw execution body',
+          name: bash ? 'Bash' : 'Read',
+          result:
+            bash ??
+            (largeImage
+              ? {
+                  content: [
+                    {
+                      type: 'image',
+                      mimeType: 'image/png',
+                      data: Buffer.alloc(2 * 1024 * 1024).toString('base64'),
+                    },
+                  ],
+                }
+              : 'raw execution body'),
           modelProjection: projection,
         },
       };
@@ -119,28 +148,32 @@ for (const largeImage of [false, true]) {
         runtimeEventId: 'response',
       });
       assert.ok(projectedEvidence.ok);
-      assert.ok(projectedEvidence.storedBytes! < 4096);
+      assert.ok(projectedEvidence.storedBytes! < TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES);
+      if (bash) assert.ok(projectedEvidence.storedBytes! > 12_000_000);
+      else assert.ok(projectedEvidence.storedBytes! < 4096);
       assert.equal(
         projectedEvidence.event.content?.kind === 'function_response'
           ? projectedEvidence.event.content.result
           : undefined,
         null,
       );
-      const old = await artifacts.create({
-        id: 'legacy-archive',
-        sessionId: 'session',
-        turnId: 'turn',
-        name: 'legacy.json',
-        kind: 'file',
-        content: serializedResult,
-        source: 'tool_result_archive',
-      });
+      const old = bash
+        ? undefined
+        : await artifacts.create({
+            id: 'legacy-archive',
+            sessionId: 'session',
+            turnId: 'turn',
+            name: 'legacy.json',
+            kind: 'file',
+            content: serializedResult,
+            source: 'tool_result_archive',
+          });
       const input = {
         sessionId: 'session',
         runtimeEventId: 'response',
         turnId: 'turn',
         toolCallId: 'call',
-        toolName: 'Read',
+        toolName: bash ? 'Bash' : 'Read',
         serializedResult,
         bodySha256,
         originalBytes: Buffer.byteLength(serializedResult),
@@ -161,7 +194,10 @@ for (const largeImage of [false, true]) {
       const prepared = await services.toolResultArchive.services.archiveToolResult(input);
       assert.ok(prepared?.ledger);
       assert.equal(typeof prepared.commitTransition, 'function');
-      assert.equal((await artifacts.listPage('session', { offset: 0, limit: 10 })).total, 1);
+      assert.equal(
+        (await artifacts.listPage('session', { offset: 0, limit: 10 })).total,
+        bash ? 0 : 1,
+      );
       const placeholder = buildLedgerArchivedToolResultPlaceholder({ ...input, storage: 'ledger' });
       const transition = buildModelProjectionTransition({
         sessionId: 'session',
@@ -169,7 +205,7 @@ for (const largeImage of [false, true]) {
           runtimeEventId: 'response',
           part: 'tool_result',
           toolCallId: 'call',
-          toolName: 'Read',
+          toolName: bash ? 'Bash' : 'Read',
         },
         sourceProjection: projection,
         replacement: { version: 1, kind: 'json', value: placeholder as never },
@@ -237,16 +273,37 @@ for (const largeImage of [false, true]) {
         }),
         { ok: true, serializedResult },
       );
-      assert.deepEqual(
-        await services.toolResultArchive.services.readArchivedToolResultResource({
-          artifactId: old.id,
-          bodySha256,
-          originalBytes: input.originalBytes,
-          sessionId: 'session',
-          maxBytes: input.originalBytes,
-        }),
-        { ok: true, serializedResult },
-      );
+      if (bash) {
+        const read = async (offset: number) => {
+          const page = readPageSchema.parse(
+            await readToolResultArchiveResource(services.toolResultArchive.services, 'session', {
+              path: 'maka://runtime/tool-results/response',
+              offset,
+              limit: 1,
+            }),
+          );
+          assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+          assert.equal(page.metadata?.exitCode, 7);
+          assert.equal(page.metadata?.status, 'failed');
+          assert.equal(page.metadata?.stdoutTruncated, true);
+          return page.content;
+        };
+        assert.equal(await read(0), 'FRONT');
+        assert.equal(await read(8192), 'TAIL');
+        assert.equal(await read(8193), 'ERROR_FRONT');
+        assert.equal(await read(16385), 'ERROR_TAIL');
+      }
+      if (old)
+        assert.deepEqual(
+          await services.toolResultArchive.services.readArchivedToolResultResource({
+            artifactId: old.id,
+            bodySha256,
+            originalBytes: input.originalBytes,
+            sessionId: 'session',
+            maxBytes: input.originalBytes,
+          }),
+          { ok: true, serializedResult },
+        );
     } finally {
       db.close();
       evidence.close();

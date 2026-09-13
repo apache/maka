@@ -18,11 +18,12 @@
  */
 
 import type { ToolResultArchiveReadResult } from './tool-result-archive.js';
+import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-archive-evidence';
 import { readToolResultPage, resolveReadInput, type ReadInput } from './read-page.js';
 
 export const TOOL_RESULT_ARCHIVE_RESOURCE_PROTOCOL = 'maka:';
 export const TOOL_RESULT_ARCHIVE_RESOURCE_HOST = 'archive';
-export const TOOL_RESULT_ARCHIVE_MAX_BYTES = 4 * 1024 * 1024;
+export const TOOL_RESULT_ARCHIVE_MAX_BYTES = TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES;
 const ARCHIVE_ARTIFACT_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
 
 export interface LegacyArchiveResourceIdentity {

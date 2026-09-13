@@ -18,6 +18,7 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
@@ -57,14 +58,16 @@ const EVENT_SEQUENCE_STRIDE = 8;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
+// One RuntimeEvent can carry both the raw Tool Result and its durable model projection.
+const TRANSCRIPT_SOURCE_MAX_BYTES = DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES * 2 + 256 * 1024;
 const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 /**
- * What one durable page may read of a Turn, matching the bound the live
- * overlay already holds for a run. A Turn past it is refused rather than
- * half-projected: a prefix of a Turn is not a smaller transcript of it.
+ * What one durable page may read of a Turn, matching the source bound used to
+ * build a live overlay. A Turn past it is refused rather than half-projected:
+ * a prefix of a Turn is not a smaller transcript of it.
  */
 const DURABLE_TRANSCRIPT_TURN_MAX_EVENTS = ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS;
-const DURABLE_TRANSCRIPT_TURN_MAX_BYTES = ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES;
+const DURABLE_TRANSCRIPT_TURN_MAX_BYTES = TRANSCRIPT_SOURCE_MAX_BYTES;
 /** Turns per storage round trip: one, so a page loads no Turn it cannot use. */
 const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
 /**
@@ -623,11 +626,11 @@ async function readActiveRuntimeEvents(
     runId,
     {
       maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
-      maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxRecordBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
       maxImmutableRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxImmutableBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxImmutableBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
       maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
-      maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxPartialBytes: TRANSCRIPT_SOURCE_MAX_BYTES,
     },
     (batch) => {
       for (const event of batch) {
@@ -636,7 +639,7 @@ async function readActiveRuntimeEvents(
         if (budget.events > ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS) {
           throw new Error('Active RuntimeEvent transcript exceeds its event limit');
         }
-        if (budget.bytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+        if (budget.bytes > TRANSCRIPT_SOURCE_MAX_BYTES) {
           throw new Error('Active RuntimeEvent transcript exceeds its byte limit');
         }
       }

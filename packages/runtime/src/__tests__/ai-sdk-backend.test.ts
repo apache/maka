@@ -87,6 +87,7 @@ import { RunTrace } from '../run-trace.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
+import { buildForegroundBashTool } from '../shell-tools.js';
 import {
   createTestAiSdkBackend,
   projectedTranscriptOf,
@@ -9056,17 +9057,30 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageCheckpoints[0]?.costUsd, undefined);
   });
 
-  test('a pruned tool result is readable again through the tool its placeholder names', async () => {
-    // The whole loop through real dispatch (#2026): the budget prunes an
-    // oversized result, the runtime mints a placeholder naming `ArchiveRead`,
-    // the model calls it with the ref that placeholder carried, and the body
-    // lands back in the conversation. Advertising the decoder is only half the
-    // invariant; the other half is that calling it works from inside the turn.
-    const durable = durableTurnHarness('turn-1', 'read the big file');
-    const largeBody = 'x'.repeat(9_000) + 'ARCHIVED_BODY_SENTINEL';
+  test('a pruned Bash result retains durable output and is readable without rerunning', async () => {
+    const durable = durableTurnHarness('turn-1', 'run the verbose command');
+    const stdoutLines = [
+      'FRONT_SENTINEL',
+      ...Array.from(
+        { length: 4_000 },
+        (_, index) => `line-${String(index).padStart(4, '0')}-${'x'.repeat(36)}`,
+      ),
+      'TAIL_SENTINEL',
+    ];
+    const stdout = stdoutLines.join('\n');
+    const stderr = 'ERR_SENTINEL';
     const store = new Map<string, string>();
     const prompts: unknown[] = [];
+    let executeCalls = 0;
     let streamCalls = 0;
+    const findArchive = (value: any): any => {
+      if (value?.kind === 'maka.archived_tool_result') return value;
+      if (value && typeof value === 'object')
+        for (const child of Object.values(value)) {
+          const found = findArchive(child);
+          if (found) return found;
+        }
+    };
     const model = new MockLanguageModelV4({
       doStream: async ({ prompt }) => {
         streamCalls += 1;
@@ -9084,29 +9098,18 @@ describe('AiSdkBackend usage telemetry', () => {
               },
             },
           ] as LanguageModelV4StreamPart[];
+        const archive = findArchive(prompt);
         const chunks: LanguageModelV4StreamPart[] =
           streamCalls === 1
-            ? call('tool-1', 'Read', { path: 'big.md' })
-            : // The newest completed step is never pruned, so a second call is
-              // what makes the Read result stale enough to be archived.
-              streamCalls === 2
-              ? call('tool-2', 'Bash', { cmd: 'continue' })
+            ? call('tool-1', 'Bash', { command: 'verbose-command' })
+            : streamCalls === 2
+              ? call('tool-2', 'Read', { path: archive.resourceRef, limit: 1 })
               : streamCalls === 3
-                ? call(
-                    'tool-3',
-                    'Read',
-                    (() => {
-                      const findNext = (value: any): any => {
-                        if (value?.kind === 'maka.archived_tool_result') return value.page.next;
-                        if (value && typeof value === 'object')
-                          for (const child of Object.values(value)) {
-                            const found = findNext(child);
-                            if (found) return found;
-                          }
-                      };
-                      return findNext(prompt);
-                    })(),
-                  )
+                ? call('tool-3', 'Read', {
+                    path: archive.resourceRef,
+                    offset: stdoutLines.length,
+                    limit: 1,
+                  })
                 : [
                     { type: 'stream-start', warnings: [] },
                     {
@@ -9128,18 +9131,13 @@ describe('AiSdkBackend usage telemetry', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [
-        {
-          name: 'Read',
-          description: 'Read description',
-          parameters: z.object({ path: z.string() }),
-          impl: async () => ({ content: largeBody }),
-        },
-        {
-          name: 'Bash',
-          description: 'Bash description',
-          parameters: z.object({ cmd: z.string() }),
-          impl: async () => ({ body: 'small' }),
-        },
+        buildForegroundBashTool({
+          description: 'Run a foreground command.',
+          execute: async () => {
+            executeCalls += 1;
+            return { stdout, stderr, exitCode: 7 };
+          },
+        }),
       ],
       contextBudget: {
         toolResultPrune: { enabled: true },
@@ -9163,19 +9161,58 @@ describe('AiSdkBackend usage telemetry', () => {
 
     for await (const event of backend.send(durable.input())) durable.record(event);
 
-    assert.match(
-      [...store.values()][0] ?? '',
-      /ARCHIVED_BODY_SENTINEL/,
-      'the oversized Read result must have been archived',
+    const durableResult = durable.ledger.find(
+      (event) =>
+        event.content?.kind === 'function_response' &&
+        event.content.name === 'Bash' &&
+        event.content.id === 'tool-1',
     );
-    const thirdPrompt = JSON.stringify(prompts[2]);
-    assert.doesNotMatch(thirdPrompt, /ARCHIVED_BODY_SENTINEL/);
-    assert.match(thirdPrompt, /maka:\/\/runtime\/tool-results\//);
-    assert.match(
-      JSON.stringify(prompts[3]),
-      /ARCHIVED_BODY_SENTINEL/,
-      'the ArchiveRead result must carry the archived body back into the conversation',
-    );
+    assert.ok(durableResult?.content?.kind === 'function_response');
+    const terminal = durableResult.content.result as {
+      exitCode: number;
+      status: string;
+      output: { stdout: string; stderr: string; redacted: boolean };
+    };
+    assert.equal(terminal.exitCode, 7);
+    assert.equal(terminal.status, 'failed');
+    assert.ok(terminal.output.stdout.length > 180_000);
+    assert.match(terminal.output.stdout, /^FRONT_SENTINEL/);
+    assert.match(terminal.output.stdout, /TAIL_SENTINEL$/);
+    assert.equal(terminal.output.stdout, stdout);
+    assert.equal(terminal.output.stderr, stderr);
+    assert.equal(terminal.output.redacted, false);
+
+    const secondPrompt = prompts[1];
+    const archive = findArchive(secondPrompt);
+    assert.ok(archive);
+    assert.match(archive.resourceRef, /^maka:\/\/runtime\/tool-results\//);
+    assert.match(archive.page.content, /^FRONT_SENTINEL/);
+    assert.ok(archive.page.content.length < terminal.output.stdout.length);
+    assert.ok(archive.page.next);
+    assert.equal(archive.page.metadata.status, 'failed');
+    assert.equal(archive.page.metadata.exitCode, 7);
+    assert.equal(archive.page.metadata.redacted, false);
+    assert.doesNotMatch(JSON.stringify(secondPrompt), /TAIL_SENTINEL/);
+
+    const findToolResult = (value: any, toolCallId: string): any => {
+      if (value?.toolCallId === toolCallId && value.output !== undefined) return value;
+      if (value && typeof value === 'object')
+        for (const child of Object.values(value)) {
+          const found = findToolResult(child, toolCallId);
+          if (found) return found;
+        }
+    };
+    const frontRead = findToolResult(prompts[2], 'tool-2');
+    assert.ok(frontRead);
+    assert.match(JSON.stringify(frontRead.output), /FRONT_SENTINEL/);
+    assert.match(JSON.stringify(frontRead.output), /"exitCode":7/);
+    const stderrRead = findToolResult(prompts[3], 'tool-3');
+    assert.ok(stderrRead);
+    assert.match(JSON.stringify(stderrRead.output), /ERR_SENTINEL/);
+    assert.match(JSON.stringify(stderrRead.output), /"exitCode":7/);
+    assert.equal(executeCalls, 1);
+    const archived = [...store.values()][0] ?? '';
+    assert.match(archived, /TAIL_SENTINEL/);
   });
 
   test('accumulates pruning across provider steps once in persisted and live usage', async () => {

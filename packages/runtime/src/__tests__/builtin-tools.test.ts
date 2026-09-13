@@ -65,6 +65,7 @@ import {
   type WorkspaceExecutorFacts,
 } from '../workspace-executor.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { BASH_MAX_RETAINED_CHARS } from '../shell-exec.js';
 
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
@@ -1913,7 +1914,10 @@ describe('builtin Bash streaming output', () => {
     if (!bash) throw new Error('Bash tool missing');
 
     const result = (await bash.impl(
-      { command: 'awk \'BEGIN{for(i=1;i<=5000;i++)print "line"i}\'', timeout_ms: 10_000 },
+      {
+        command: 'perl -e \'print "HEAD\\n", "x" x 2000000, "\\nTAIL\\n"\'',
+        timeout_ms: 10_000,
+      },
       {
         sessionId: 'session-1',
         turnId: 'turn-1',
@@ -1924,32 +1928,11 @@ describe('builtin Bash streaming output', () => {
       },
     )) as { exitCode: number; output: { stdout: string; stdoutTruncated: boolean } };
 
-    assert.strictEqual(result.exitCode, 0); // no reject — the old code threw away everything past the cap
-    assert.strictEqual(result.output.stdout.includes('line5000'), true); // tail preserved
-    assert.strictEqual(result.output.stdout.includes('truncated'), true); // truncation marker present
-    assert.strictEqual(result.output.stdout.includes('line1\n'), false); // head dropped, not the whole output
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.output.stdout.endsWith('\nTAIL\n'), true);
+    assert.strictEqual(result.output.stdout.includes('HEAD\n'), false);
+    assert.ok(result.output.stdout.length <= BASH_MAX_RETAINED_CHARS);
     assert.strictEqual(result.output.stdoutTruncated, true);
-  });
-
-  test('foreground Bash marks retained-tail truncation even when model shaping does not truncate again', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-'));
-    const bash = buildBuiltinTools().find((tool) => tool.name === 'Bash');
-    if (!bash) throw new Error('Bash tool missing');
-
-    const result = (await bash.impl(
-      { command: 'perl -e \'print "x" x 2000000\'', timeout_ms: 10_000 },
-      {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        cwd,
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-      },
-    )) as { output: { stdout: string; stdoutTruncated: boolean } };
-
-    assert.strictEqual(result.output.stdoutTruncated, true);
-    assert.ok(result.output.stdout.includes('omitted for safety'));
   });
 
   test('a failing command surfaces stdout/stderr on the rejection error', async () => {

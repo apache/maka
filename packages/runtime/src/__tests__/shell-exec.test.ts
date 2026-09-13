@@ -82,7 +82,7 @@ describe('runShellWithBoundedTail', () => {
     assert.equal(result.stdout, 'legacy-stdin-ready\n');
   });
 
-  test('keeps only the bounded, line-aligned TAIL of large output (never killed by size)', async () => {
+  test('keeps only the bounded tail of large output (never killed by size)', async () => {
     const r = await runShellWithBoundedTail(
       "printf 'HEADMARK\\n'; seq 1 50; printf 'TAILMARK\\n'",
       base({ maxRetainedChars: 12 }),
@@ -240,21 +240,14 @@ describe('runShellWithBoundedTail', () => {
     }
   });
 
-  test('surfaces a safety marker (not bare empty) when an oversized no-newline line is dropped', async () => {
-    // One 500-char line with no newline, cap 50: BashTailBuffer drops it whole
-    // (no safe truncation boundary), so without a marker the result would look
-    // like the command produced nothing.
+  test('keeps the bounded tail of oversized output without a newline', async () => {
     const r = await runShellWithBoundedTail(
       "head -c 500 /dev/zero | tr '\\0' x",
       base({ maxRetainedChars: 50 }),
     );
     assert.equal(r.exitCode, 0);
-    assert.ok(!r.stdout.includes('xxxx'), 'dropped content is not leaked');
-    assert.ok(r.stdout.includes('omitted for safety'), 'a recoverable safety marker is present');
+    assert.equal(r.stdout, 'x'.repeat(50));
     assert.equal(r.stdoutTruncated, true);
-    // Shares the recovery hint with truncateToolOutput: re-run only when safe.
-    assert.ok(r.stdout.includes('safe to re-run'), 'recovery guidance is conditioned on safety');
-    assert.ok(r.stdout.includes('side effects'), 'warns about repeating side effects');
   });
 
   test('spawns a detected PowerShell explicitly with non-interactive flags (not via shell:true)', async () => {

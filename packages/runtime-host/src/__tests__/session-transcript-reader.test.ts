@@ -31,6 +31,9 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
+import { encodeDurableToolResultOutput } from '@maka/runtime/durable-tool-result-projection';
+import { shapeTerminalResult } from '@maka/runtime/shell-tools';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import {
@@ -38,7 +41,10 @@ import {
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
+import {
+  ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+  createSessionTranscriptReader,
+} from '../server/session-transcript-reader.js';
 
 for (const coordination of [false, true])
   test(`keeps ${coordination ? 'WorkHub' : 'ordinary'} durable history separate from the canonical active overlay`, async () => {
@@ -233,6 +239,59 @@ for (const coordination of [false, true])
           refs: { providerEventId: 'assistant-2' },
         }),
       );
+      let largeBash: ReturnType<typeof shapeTerminalResult> | undefined;
+      if (!coordination) {
+        const stream = `${'\u0001'.repeat(127)}\n`.repeat(8_191);
+        largeBash = shapeTerminalResult({
+          cwd: capability.canonicalPath,
+          command: 'synthetic bounded output',
+          result: {
+            stdout: `FRONT\n${stream}TAIL`,
+            stderr: `ERROR_FRONT\n${stream}ERROR_TAIL`,
+            exitCode: 7,
+          },
+        });
+        const modelProjection = encodeDurableToolResultOutput(
+          { type: 'json', value: largeBash as never },
+          session.id,
+        );
+        assert.equal(modelProjection.kind, 'json');
+        await stores.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          'run-1',
+          runtimeEvent(session.id, {
+            id: 'large-bash-call',
+            ts: 11,
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'large-bash',
+              name: 'Bash',
+              args: { command: 'synthetic bounded output' },
+            },
+            refs: { toolCallId: 'large-bash' },
+          }),
+        );
+        const resultEvent = runtimeEvent(session.id, {
+          id: 'large-bash-result',
+          ts: 12,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'large-bash',
+            name: 'Bash',
+            result: largeBash,
+            modelProjection,
+          },
+          refs: { toolCallId: 'large-bash' },
+        });
+        const resultEventBytes = Buffer.byteLength(JSON.stringify(resultEvent), 'utf8');
+        assert.ok(resultEventBytes > DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES);
+        assert.ok(resultEventBytes > 23 * 1024 * 1024);
+        await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'run-1', resultEvent);
+      }
 
       const read = createSessionTranscriptReader({
         stores,
@@ -246,7 +305,7 @@ for (const coordination of [false, true])
       });
 
       assert.deepEqual(
-        messages.map((message) => ({ type: message.type, id: message.id })),
+        messages.slice(0, 4).map((message) => ({ type: message.type, id: message.id })),
         [
           { type: 'user', id: 'user-1' },
           { type: 'assistant', id: 'assistant-1' },
@@ -254,21 +313,24 @@ for (const coordination of [false, true])
           { type: 'assistant', id: 'assistant-3' },
         ],
       );
-      const firstAssistant = messages.at(-3);
+      assert.equal(messages.length, coordination ? 4 : 6);
+      const firstAssistant = messages[1];
       assert.equal(firstAssistant?.type, 'assistant');
       if (firstAssistant?.type === 'assistant') {
         assert.equal(firstAssistant.text, 'still streaming');
         assert.equal(firstAssistant.thinking?.text, 'deep thought');
       }
-      const thinkingOnly = messages.at(-2);
+      const thinkingOnly = messages[2];
       assert.equal(thinkingOnly?.type, 'assistant');
       if (thinkingOnly?.type === 'assistant') {
         assert.equal(thinkingOnly.text, '');
         assert.equal(thinkingOnly.thinking?.text, 'still reasoning');
       }
-      const completed = messages.at(-1);
-      assert.equal(completed?.type, 'assistant');
-      if (completed?.type === 'assistant') assert.equal(completed.text, 'final text');
+      const completedAssistant = messages[3];
+      assert.equal(completedAssistant?.type, 'assistant');
+      if (completedAssistant?.type === 'assistant')
+        assert.equal(completedAssistant.text, 'final text');
+      if (largeBash) assertLargeBashResult(messages, largeBash);
 
       const durable = await read.readDurablePage(session.id, {
         direction: 'older',
@@ -287,6 +349,27 @@ for (const coordination of [false, true])
           { type: 'user', id: 'user-0' },
         ],
       );
+      if (largeBash) {
+        await stores.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          'run-1',
+          runtimeEvent(session.id, {
+            id: 'terminal-1',
+            ts: 13,
+            status: 'failed',
+            actions: { endInvocation: true },
+          }),
+        );
+        const recovered = await read.readDurableRecords(session.id, {
+          direction: 'older',
+          maxStoredBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+          maxMessages: 16,
+        });
+        assertLargeBashResult(
+          recovered.records.map(({ message }) => message),
+          largeBash,
+        );
+      }
     } finally {
       await owner.close();
       await rm(base, { recursive: true, force: true });
@@ -784,6 +867,26 @@ function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): Runt
     author: 'system',
     ...overrides,
   };
+}
+
+function assertLargeBashResult(
+  messages: readonly StoredMessage[],
+  expected: ReturnType<typeof shapeTerminalResult>,
+): void {
+  const result = messages.find(
+    (message) => message.type === 'tool_result' && message.toolUseId === 'large-bash',
+  );
+  assert.ok(result?.type === 'tool_result');
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(result), 'utf8') < ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+  );
+  assert.ok(result.content.kind === 'terminal');
+  assert.equal(result.content.status, 'failed');
+  assert.equal(result.content.exitCode, 7);
+  assert.ok(result.content.output.mode === 'pipes');
+  assert.ok(expected.output.mode === 'pipes');
+  assert.equal(result.content.output.stdout, expected.output.stdout);
+  assert.equal(result.content.output.stderr, expected.output.stderr);
 }
 
 function testInvocation(sessionId: string): RuntimeInvocationRecord {

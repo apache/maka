@@ -950,7 +950,7 @@ export class ShellRunProcessManager
       sourceToolCallId: input.sourceToolCallId,
       ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
       cwd: input.cwd,
-      command: redactSecrets(input.command),
+      command: input.command,
       status: 'starting',
       startedAt,
       updatedAt: startedAt,
