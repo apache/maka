@@ -197,8 +197,12 @@ export function useChatScroll(input: {
     const check = (): void => {
       if (!root.isConnected || bandCheck.current !== check) return;
       const screen = Math.max(320, root.clientHeight);
-      const above = root.scrollTop;
-      const below = root.scrollHeight - root.clientHeight - root.scrollTop;
+      // Experiment: request from the mounted edges, not from the remembered
+      // extent. Otherwise a preserved spacer would prevent reloading its rows.
+      const before = Number(root.querySelector('[data-known-before]')?.getAttribute('data-known-before') ?? 0);
+      const after = Number(root.querySelector('[data-known-after]')?.getAttribute('data-known-after') ?? 0);
+      const above = Math.max(0, root.scrollTop - before);
+      const below = Math.max(0, root.scrollHeight - root.clientHeight - root.scrollTop - after);
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
       // Source pages may have arrived without entering the DOM yet. Its old

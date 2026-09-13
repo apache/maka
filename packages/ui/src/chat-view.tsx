@@ -46,6 +46,7 @@ import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
+import { useTranscriptKnownSpace } from './use-transcript-known-space.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
@@ -549,6 +550,8 @@ export function ChatView(props: {
     inlineTransientMessagesByTurn.set(turn.turnId, messages);
     inlineTransientMessageIds.add(message.id);
   }
+  const knownSpace = useTranscriptKnownSpace(scrollRef, props.activeSession?.id,
+    turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow));
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -754,6 +757,8 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
+              {knownSpace.before > 0 && <div data-known-before={knownSpace.before}
+                aria-hidden="true" style={{ height: knownSpace.beforeHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {turns.map((turn) => {
                 return (
                   <div
@@ -840,6 +845,8 @@ export function ChatView(props: {
                   </LocalizedChatMessage>
                 </section>
               )}
+              {knownSpace.after > 0 && <div data-known-after={knownSpace.after}
+                aria-hidden="true" style={{ height: knownSpace.afterHeight, flexShrink: 0, overflowAnchor: 'none' }} />}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}
