@@ -181,8 +181,7 @@ export function createAppShellRevisionActions(deps: {
     const { originalQuotes, originalAttachments } = RevisionStaged.stageRevisionSourceContext(
       staged,
       sessionId,
-      userMessage.quotes,
-      userMessage.attachments,
+      userMessage,
     );
     commitRevisionDraft({
       sourceSessionId: sessionId,
@@ -278,14 +277,7 @@ export function createAppShellRevisionActions(deps: {
     // source turn verbatim; a send mixing user-staged context into the
     // restored set cannot carry it truthfully. Both stop here, toasting.
     const staged = stagedContext();
-    const gate = RevisionStaged.revisionSendGate(
-      draft,
-      draft.originalText,
-      text,
-      staged.quotes,
-      staged.attachments,
-      hasPendingAttachments(),
-    );
+    const gate = RevisionStaged.revisionSendGate(draft, draft.originalText, text, staged, hasPendingAttachments());
     if (gate !== 'pass') {
       toastApi.info(
         copy.revisionReadyTitle,

@@ -128,11 +128,10 @@ export function revisionStagedContextHasAdditions(
 export function stageRevisionSourceContext(
   staged: RevisionStagedContext,
   ownerKey: string,
-  quotes: readonly QuoteRef[] | undefined,
-  attachments: readonly AttachmentRef[] | undefined,
+  message: { quotes?: readonly QuoteRef[]; attachments?: readonly AttachmentRef[] },
 ): RevisionStagedSource {
-  const sourceQuotes = [...(quotes ?? [])];
-  const sourceAttachments = [...(attachments ?? [])];
+  const sourceQuotes = [...(message.quotes ?? [])];
+  const sourceAttachments = [...(message.attachments ?? [])];
   if (sourceQuotes.length > 0) staged.restoreQuotes(ownerKey, sourceQuotes);
   if (sourceAttachments.length > 0) staged.restoreAttachments(ownerKey, sourceAttachments);
   return { originalQuotes: sourceQuotes, originalAttachments: sourceAttachments };
@@ -173,17 +172,16 @@ export function revisionSendGate(
   source: RevisionStagedSource,
   originalText: string,
   text: string,
-  stagedQuotes: readonly QuoteRef[],
-  stagedAttachments: readonly PendingAttachment[],
+  staged: Pick<RevisionStagedContext, 'quotes' | 'attachments'>,
   pendingContext: boolean,
 ): 'pass' | 'unchanged' | 'conflict' {
-  if (revisionStagedContextUnchanged(source, originalText, text, stagedQuotes, stagedAttachments)) {
+  if (revisionStagedContextUnchanged(source, originalText, text, staged.quotes, staged.attachments)) {
     return 'unchanged';
   }
   if (
-    stagedQuotes.length > source.originalQuotes.length ||
-    stagedAttachments.length > source.originalAttachments.length ||
-    (pendingContext && stagedAttachments.length === 0)
+    staged.quotes.length > source.originalQuotes.length ||
+    staged.attachments.length > source.originalAttachments.length ||
+    (pendingContext && staged.attachments.length === 0)
   ) {
     return 'conflict';
   }
