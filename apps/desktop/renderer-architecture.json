@@ -5,7 +5,6 @@
     "src/renderer/agent-graph-panel.tsx",
     "src/renderer/agent-graph-refresh.ts",
     "src/renderer/app-shell-chat-actions.ts",
-    "src/renderer/app-shell-chrome-actions.tsx",
     "src/renderer/app-shell-command-actions.ts",
     "src/renderer/app-shell-context-compaction.ts",
     "src/renderer/app-shell-copy.ts",
@@ -323,26 +322,6 @@
         },
         "importSpecifiers": 10,
         "nonTriviaTokens": 3618
-      },
-      "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 4,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy": 1,
-          "@astryxdesign/core/Icon": 1,
-          "@astryxdesign/core/Tooltip": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1
-        },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 408
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 5,
@@ -698,7 +677,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 68,
+        "importDeclarations": 67,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -772,7 +751,6 @@
         "dependencyPaths": {
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
-          "./app-shell-chrome-actions": 1,
           "./app-shell-context-compaction": 1,
           "./app-shell-detail-panel": 1,
           "./app-shell-e2e-fixture": 1,
@@ -823,6 +801,7 @@
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
+          "./shell/topbar-actions": 1,
           "./stale-sessions": 1,
           "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
@@ -853,7 +832,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 104,
+        "importSpecifiers": 103,
         "nonTriviaTokens": 13386
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
@@ -4564,7 +4543,6 @@
       "capability": "shell-root-and-frame",
       "targetZone": "shell",
       "legacyPaths": [
-        "src/renderer/app-shell-chrome-actions.tsx",
         "src/renderer/app-shell-detail-panel.tsx"
       ]
     },

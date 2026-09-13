@@ -49,6 +49,10 @@
       "tests": 2,
       "electron": "Code Mode reads back Host settings through IPC; opening Settings commits a pending title rename to the Host, with workbar hide/restore asserted in that same Session."
     },
+    "sidebar-layout.spec.ts": {
+      "tests": 2,
+      "electron": "native Electron keyboard input must reach titlebar search and the new-task composer, including focus handoff from the separate WorkHub WebContentsView, and resize the remounted sidebar handle after drag-collapse"
+    },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"

@@ -143,7 +143,7 @@ import {
   createContextCompactionPresentation,
   presentContextCompactionResult,
 } from './app-shell-context-compaction';
-import { AppShellTopbarActions } from './app-shell-chrome-actions';
+import { AppShellTopbarActions } from './shell/topbar-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
@@ -1177,7 +1177,7 @@ function AppShellContent({
     sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
       void moduleHubCommands.refreshProjectSkills();
-      if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
+      if (ownerSessionId && activeIdRef.current === ownerSessionId) void createSession();
     },
     toastApi,
   });
@@ -1239,7 +1239,8 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
   });
-  const openNewTaskSurface = useCallback(() => {
+  const createSession = useCallback(async () => {
+    setWorkHubActive(false);
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
@@ -1252,18 +1253,13 @@ function AppShellContent({
     window.requestAnimationFrame(() => composerRef.current?.focus());
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
-  const createSession = useCallback(async () => {
-    openNewTaskSurface();
-  }, [openNewTaskSurface]);
-
   // Stable, because the rail's Project rows carry it: a fresh identity here
   // rebuilt the whole list on every AppShell commit (#4109).
   const createSessionInProject = useCallback(
     async (projectId: string) => {
-      if (!selectLocalProject(projectId)) return;
-      openNewTaskSurface();
+      if (selectLocalProject(projectId)) return createSession();
     },
-    [openNewTaskSurface, selectLocalProject],
+    [createSession, selectLocalProject],
   );
 
   // Sidebar Project groups are Local. Their catalog mutations remain on the
@@ -2317,9 +2313,11 @@ function AppShellContent({
         {!settingsOpen && (
           <>
             <AppShellTopbarActions
+              copy={getShellCopy(uiLocale).chrome}
               sidebarCollapsed={sessionListCollapsed}
               onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
               onOpenSearchModal={() => setSearchModalOpen(true)}
+              onNewTask={createSession}
             />
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
@@ -2737,7 +2735,7 @@ function AppShellContent({
                 onTaskReadinessAction={
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
-                      ? openNewTaskSurface
+                      ? createSession
                       : taskEntry.selectors.canAddProject
                         ? taskEntry.commands.addProject
                         : undefined
@@ -2846,7 +2844,7 @@ function AppShellContent({
         }}
         onRemoteHostAdded={(profileId) => {
           closeSettings();
-          openNewTaskSurface();
+          void createSession();
           void taskEntry.commands.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
         onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
