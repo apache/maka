@@ -39,9 +39,11 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Fetch exact experiment sources
         run: git fetch --depth=1 origin 839d14535a541ef0da29ea4d6626a2e3d0e32a8e 0039a230754a4bd832653f481194fb40516464db
-      - name: Paired A-B-B-A-A-B real Host scroll measurements
+      - name: Paired page admission ablation on real Host
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
+          MAKA_PERF_VARIANTS: A,F,F,A,A,F
+          MAKA_PERF_TARGET_TURN: '60'
         run: xvfb-run -a node scripts/perf/scroll-paired.mjs
       - name: Upload raw measurements and diagnostics
         if: always()

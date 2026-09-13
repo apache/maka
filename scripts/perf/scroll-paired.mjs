@@ -24,18 +24,64 @@ import path from 'node:path';
 const refs = {
   A: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
   B: '0039a230754a4bd832653f481194fb40516464db',
+  C: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
+  D: '0039a230754a4bd832653f481194fb40516464db',
+  E: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
+  F: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
 };
-const files = ['packages/ui/src/chat-view.tsx', 'packages/ui/src/use-chat-scroll.ts'];
+const files = [
+  'packages/ui/src/chat-view.tsx',
+  'packages/ui/src/use-chat-scroll.ts',
+  'packages/ui/src/transcript-scroll-authority.tsx',
+  'apps/desktop/src/renderer/platform/desktop/desktop-transcript-range-store.ts',
+];
 const original = files.map((file) => readFileSync(file));
 const output = path.resolve(process.env.MAKA_PERF_OUTPUT ?? 'perf-results');
 const run = (command, args, options = {}) =>
   execFileSync(command, args, { stdio: 'inherit', ...options });
-const order = ['A', 'B', 'B', 'A', 'A', 'B'];
+const order =
+  process.env.MAKA_PERF_VARIANTS?.split(',') ??
+  (process.env.MAKA_PERF_DIAGNOSE === '1' ? ['A', 'B'] : ['A', 'B', 'B', 'A', 'A', 'B']);
+if (order.some((variant) => !(variant in refs))) throw new Error('Unknown scroll variant');
 mkdirSync(output, { recursive: true });
 try {
   for (const [index, variant] of order.entries()) {
     for (const file of files)
       writeFileSync(file, execFileSync('git', ['show', refs[variant] + ':' + file]));
+    {
+      const file = files[3];
+      let source = readFileSync(file, 'utf8');
+      source = source.replace(
+        'const task = command(false,',
+        "performance.mark('perf:transcript-request', { detail: { edge, anchor: at.anchor, maxBytes } });\n    const task = command(false,",
+      );
+      source = source.replace(
+        'if (installed) this.#window = installed;',
+        "performance.mark('perf:transcript-answer', { detail: { kind: answer.kind, rows: answer.rows.size, beforeRows: window.order.length, afterRows: installed?.order.length } });\n    if (installed) this.#window = installed;",
+      );
+      if (variant === 'F') {
+        // Diagnostic only: byte budget is not a render-work or viewport budget.
+        source = source
+          .replace(
+            'loadBefore(maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES)',
+            'loadBefore(maxBytes = 8192)',
+          )
+          .replace(
+            'loadAfter(maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES)',
+            'loadAfter(maxBytes = 8192)',
+          );
+      }
+      writeFileSync(file, source);
+    }
+    if (variant === 'C' || variant === 'D') {
+      const file = files[2];
+      const source = readFileSync(file, 'utf8');
+      const needle = "pinned ? 'none' : 'auto'";
+      if (source.split(needle).length !== 3) throw new Error('Anchor ablation source changed');
+      // Diagnostic only: retain manual compensation, freeze native anchoring off.
+      // Async content resizing is not covered by this ablation's acceptance.
+      writeFileSync(file, source.replaceAll(needle, "'none'"));
+    }
     run('npm', ['--workspace', '@maka/ui', 'run', 'build']);
     run('npm', ['--workspace', '@maka/desktop', 'run', 'build:renderer']);
     // The only source delta between the two refs is the measured-space experiment.
@@ -45,6 +91,7 @@ try {
       MAKA_PERF_PAIRED: '1',
       MAKA_PERF_VARIANT: variant,
       MAKA_PERF_SOURCE_COMMIT: refs[variant],
+      MAKA_PERF_NO_HAS: variant === 'E' ? '1' : '',
       MAKA_PERF_OUTPUT: path.join(output, index + '-' + variant),
     };
     run(
