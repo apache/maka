@@ -117,6 +117,26 @@ try {
       }
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        window.__scrollWrites = [];
+        const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+        Object.defineProperty(Element.prototype, 'scrollTop', {
+          ...descriptor,
+          set(value) {
+            const before = descriptor.get.call(this);
+            descriptor.set.call(this, value);
+            if (this.matches('[data-chat-scroll-container]')) {
+              window.__scrollWrites.push({
+                ms: performance.now(),
+                before,
+                requested: value,
+                after: descriptor.get.call(this),
+                stack: new Error().stack,
+              });
+            }
+          },
+        });
+      });
       await page.goto(
         `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--${scene}&viewMode=story`,
       );
@@ -131,6 +151,7 @@ try {
           events: [],
           tasks: [],
           longAnimationFrames: [],
+          scrollWrites: window.__scrollWrites,
           running: true,
           phase: 'start',
         });
