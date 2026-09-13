@@ -78,13 +78,15 @@ public final class SegmentStore {
 
     /// Applies the supplied policy before writing. Suppressed interactions are
     /// counted instead; suppressed session boundaries retain only their identity.
-    public func append(_ event: HistoryEvent, policy: ObservationPolicy) throws {
+    @discardableResult
+    public func append(_ event: HistoryEvent, policy: ObservationPolicy) throws -> Bool {
         guard let projected = policy.eventForPersistence(event) else {
             try appendSuppressed(event)
-            return
+            return false
         }
         try write(projected, to: eventsHandle)
         eventCount += 1
+        return true
     }
 
     /// Counts an event rejected by the producer. Optional debug output contains

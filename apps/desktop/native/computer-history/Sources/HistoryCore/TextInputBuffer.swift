@@ -28,6 +28,11 @@ public struct TextInputSource {
     public let processIdentifier: Int32
     public let windowIdentifier: UInt32?
     public let focusIdentifier: UInt?
+    public let sourceId: String?
+    public let contentState: HistoryEvent.ContentState?
+    public let contentDomains: [String]?
+    public let sourcePath: [AnyHashable]?
+    public let documentURLs: [String]?
 
     public init(
         app: EventStreamApp,
@@ -35,7 +40,12 @@ public struct TextInputSource {
         element: EventStreamAXElement?,
         processIdentifier: Int32,
         windowIdentifier: UInt32?,
-        focusIdentifier: UInt?
+        focusIdentifier: UInt?,
+        sourceId: String? = nil,
+        contentState: HistoryEvent.ContentState? = nil,
+        contentDomains: [String]? = nil,
+        sourcePath: [AnyHashable]? = nil,
+        documentURLs: [String]? = nil
     ) {
         self.app = app
         self.window = window
@@ -43,9 +53,14 @@ public struct TextInputSource {
         self.processIdentifier = processIdentifier
         self.windowIdentifier = windowIdentifier
         self.focusIdentifier = focusIdentifier
+        self.sourceId = sourceId
+        self.contentState = contentState
+        self.contentDomains = contentDomains
+        self.sourcePath = sourcePath
+        self.documentURLs = documentURLs
     }
 
-    func matches(_ other: Self) -> Bool {
+    public func matches(_ other: Self) -> Bool {
         app == other.app && window == other.window &&
             processIdentifier == other.processIdentifier &&
             windowIdentifier == other.windowIdentifier &&
@@ -53,7 +68,10 @@ public struct TextInputSource {
             element?.role == other.element?.role &&
             element?.subrole == other.element?.subrole &&
             element?.identifier == other.element?.identifier &&
-            element?.title == other.element?.title
+            element?.title == other.element?.title &&
+            sourceId == other.sourceId && contentState == other.contentState &&
+            contentDomains == other.contentDomains &&
+            sourcePath == other.sourcePath && documentURLs == other.documentURLs
     }
 }
 
@@ -70,13 +88,19 @@ public struct BufferedTextInput {
             window: source.window,
             keyboard: EventStreamKeyboardInteraction(
                 text: text, keyEquivalent: nil, modifiers: [], target: source.element
-            )
+            ),
+            sourceId: source.sourceId,
+            contentState: source.contentState,
+            contentDomains: source.contentDomains
         )
     }
 }
 
 public struct TextInputBuffer {
     private var pending: BufferedTextInput?
+    private var startedAt: TimeInterval?
+    public static let maximumBytes = 8_192
+    public static let maximumAge: TimeInterval = 2
 
     public init() {}
 
@@ -85,35 +109,46 @@ public struct TextInputBuffer {
     public mutating func append(
         characters: () -> String,
         source: TextInputSource?,
-        policy: ObservationPolicy
+        policy: ObservationPolicy,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> BufferedTextInput? {
-        guard let source, policy.allowsObservation(
+        guard let source, source.contentState != .unavailable,
+              (source.contentDomains ?? []).allSatisfy({ policy.allowsDomain($0) }),
+              policy.allowsObservation(
             app: source.app, window: source.window, element: source.element
         ) else {
             discard()
             return nil
         }
+        let captureText = policy.captureText && source.contentState != .metadataOnly
+        let text = captureText ? boundedText(characters(), bytes: Self.maximumBytes) ?? "" : ""
         let completed = pending.map {
-            !$0.source.matches(source) || ($0.text != nil) != policy.captureText
+            !$0.source.matches(source) || ($0.text != nil) != captureText ||
+                now - (startedAt ?? now) >= Self.maximumAge ||
+                ($0.text?.utf8.count ?? 0) + text.utf8.count > Self.maximumBytes
         } == true ? drain() : nil
-        if policy.captureText {
-            let text = characters()
+        if captureText {
             if !text.isEmpty {
-                if pending == nil { pending = BufferedTextInput(source: source, text: "") }
+                if pending == nil {
+                    pending = BufferedTextInput(source: source, text: "")
+                    startedAt = now
+                }
                 pending?.text?.append(text)
             }
         } else if pending == nil {
             pending = BufferedTextInput(source: source, text: nil)
+            startedAt = now
         }
         return completed
     }
 
     public mutating func drain() -> BufferedTextInput? {
-        defer { pending = nil }
+        defer { discard() }
         return pending
     }
 
     public mutating func discard() {
         pending = nil
+        startedAt = nil
     }
 }

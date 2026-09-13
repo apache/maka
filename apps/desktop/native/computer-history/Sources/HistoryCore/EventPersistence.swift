@@ -42,6 +42,7 @@ extension ObservationPolicy {
             + endpoints.compactMap(\.element)
             + (event.selection?.selectedItems ?? [])
         let suppressed = suppressesContext(app: event.app, window: event.window)
+            || (event.contentDomains ?? []).contains { !allowsDomain($0) }
             || endpoints.contains {
                 suppressesContext(app: $0.app ?? event.app, window: $0.window)
             }
@@ -53,7 +54,7 @@ extension ObservationPolicy {
                 ? event.persistenceIdentity
                 : nil
         }
-        guard !captureText else {
+        guard !captureText || event.contentState == .metadataOnly || event.contentState == .unavailable else {
             return event
         }
 
@@ -88,7 +89,9 @@ extension ObservationPolicy {
                     selectedRange: $0.selectedRange,
                     selectedItems: $0.selectedItems.map(Self.metadataElement)
                 )
-            }
+            },
+            sourceId: event.sourceId,
+            contentState: event.contentState == .unavailable ? .unavailable : .metadataOnly
         )
     }
 

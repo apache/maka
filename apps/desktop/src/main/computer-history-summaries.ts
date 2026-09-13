@@ -26,6 +26,7 @@ import type {
   ComputerHistorySummaryInput,
   ComputerHistorySummaryLevel,
 } from '@maka/core/computer-history';
+import { isUiLocale, type UiLocale } from '@maka/core/ui-locale';
 import {
   decodeComputerHistorySummaryContent,
   decodeComputerHistorySummaryInput,
@@ -34,8 +35,12 @@ import {
 export interface ComputerHistorySummaryEvent {
   readonly timestamp: string;
   readonly kind: string;
+  /** Opaque main-owned source identity; never passed to the model as a path. */
+  readonly sourceKey?: string;
+  /** Caller-validated, consent-gated text, including only self-contained AX snapshots. */
+  readonly content?: string;
   readonly app?: { readonly name?: string; readonly bundleIdentifier?: string };
-  readonly window?: { readonly title?: string };
+  readonly window?: { readonly title?: string; readonly urlDomain?: string };
 }
 
 export interface StoredComputerHistorySummary {
@@ -48,26 +53,60 @@ export interface StoredComputerHistorySummary {
   readonly eventCount: number;
   readonly content: ComputerHistorySummaryContent;
   readonly sourceIds: readonly string[];
+  readonly generation?: {
+    readonly version: number;
+    readonly locale?: UiLocale;
+    readonly sourceRevision: string;
+    readonly includesText: boolean;
+    readonly scopeKey?: string;
+    /** Required from v3; absent in older generations whose prior dependencies are unknown. */
+    readonly priorContextIds?: readonly string[];
+    /** Required from v4: immutable transitive raw-window coverage, including this summary's inputs. */
+    readonly rawEvidenceRanges?: readonly EvidenceRange[];
+  };
 }
+
+type EvidenceRange = readonly [start: number, end: number];
 
 const TEN_MINUTES = 10 * 60_000;
 const SIX_HOURS = 6 * 60 * 60_000;
 const RAW_HORIZON = 48 * 60 * 60_000;
 const MAX_PER_RUN = 6;
-const MAX_EVIDENCE = 96;
-const MAX_EVIDENCE_BYTES = 56 * 1024;
+const MAX_EVIDENCE = 256;
+const MAX_EVIDENCE_BYTES = 224 * 1024;
+const MAX_ITEM_BYTES = 32 * 1024;
+const GENERATION_VERSION = 4;
+const MAX_EVIDENCE_RANGES = 256;
+// The earliest representable timestamp denotes unknown ancestry in pre-v4 generations.
+const EARLIEST_TIME = -8_640_000_000_000_000;
+const SAMPLE_TIME_BINS = 16;
+const SAMPLE_SOURCES = 16;
 const MAX_FILE_BYTES = 128 * 1024;
 const MAX_APPLICATIONS = 64;
 
 type Evidence = ComputerHistorySummaryInput['evidence'][number];
+type SummaryEvents = Iterable<ComputerHistorySummaryEvent> | AsyncIterable<ComputerHistorySummaryEvent>;
+type RunOptions = { locale?: UiLocale; includeText?: boolean; scopeKey?: string };
+type Observation = {
+  id: string;
+  timestamp: string;
+  source: string;
+  signature: string;
+  metadata: string;
+  content?: string;
+};
 type Window = {
   start: number;
   eventCount: number;
   applications: Set<string>;
-  evidence: Map<string, Evidence & { timestamp: string }>;
+  revision: bigint;
+  timeSamples: Map<number, { first: Observation; last: Observation }>;
+  sourceSamples: Map<string, Observation>;
+  contentSamples: Map<number, Observation>;
 };
 type PendingSummary = Omit<StoredComputerHistorySummary, 'content'> & {
   evidence: readonly Evidence[];
+  priorContext?: readonly Evidence[];
 };
 
 /** One main-process owner per home. Scheduling, consent and retry policy belong to the caller. */
@@ -99,12 +138,15 @@ export class ComputerHistorySummaries {
   }
 
   /** Concurrent calls join the active run; inputs arriving during maintenance are not queued. */
-  run(events: readonly ComputerHistorySummaryEvent[]): Promise<void> {
+  run(
+    events: SummaryEvents,
+    options: RunOptions = {},
+  ): Promise<void> {
     if (this.#closed) return Promise.resolve();
     if (this.#maintenance) return this.#maintenance;
     if (this.#active) return this.#active.promise;
     const controller = new AbortController();
-    const promise = this.#run(events, controller.signal, this.#epoch).finally(() => {
+    const promise = this.#run(events, controller.signal, this.#epoch, options).finally(() => {
       if (this.#active?.promise === promise) this.#active = undefined;
     });
     this.#active = { controller, promise };
@@ -117,11 +159,22 @@ export class ComputerHistorySummaries {
     return this.#read();
   }
 
+  /** Canonical document lookup, independent of visibility and unrelated corrupt summaries. */
+  async get(id: string): Promise<StoredComputerHistorySummary | null> {
+    validateSummaryId(id);
+    await this.#maintenance;
+    if (!(await this.#directoryExists())) return null;
+    try {
+      return await this.#readFile(`${id}.md`);
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+  }
+
   /** Main-only reveal of a validated persisted document, independent of timeline filtering. */
   async reveal(id: string, showItemInFolder: (path: string) => void): Promise<void> {
-    if (typeof id !== 'string' || id.length > 23 || !isOwnedSummaryFilename(`${id}.md`)) {
-      throw invalidSummary();
-    }
+    validateSummaryId(id);
     await this.#maintenance;
     if (!(await this.#directoryExists())) throw invalidSummary();
     await this.#readFile(`${id}.md`, showItemInFolder);
@@ -142,18 +195,18 @@ export class ComputerHistorySummaries {
     });
   }
 
-  /** Delete summaries overlapping [start, end), or containing a single point when equal. */
+  /**
+   * Delete overlapping summaries and their transitive dependants, including for a single point.
+   * Pre-v4 generations lack immutable ancestry: conservatively delete later ones regardless of scope.
+   */
   clearInterval(start: number, end: number): Promise<void> {
     if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
       return Promise.reject(new Error('Invalid history clear interval'));
     }
     return this.#interrupt(async () => {
-      for (const summary of await this.#read()) {
-        const from = Date.parse(summary.start);
-        const to = Date.parse(summary.end);
-        if (to > start && (start === end ? from <= start : from < end)) {
-          await removeIfPresent(join(this.#directory, `${summary.id}.md`));
-        }
+      for (const id of deletionIds(await this.#read(), start, end).reverse()) {
+        // Delete consumers before their persisted inputs, including when an unlink fails partway.
+        await removeIfPresent(join(this.#directory, `${id}.md`));
       }
     });
   }
@@ -186,25 +239,32 @@ export class ComputerHistorySummaries {
   }
 
   async #run(
-    events: readonly ComputerHistorySummaryEvent[],
+    events: SummaryEvents,
     signal: AbortSignal,
     epoch: number,
+    options: RunOptions,
   ): Promise<void> {
     const now = this.#now();
     if (!Number.isFinite(now) || !Number.isFinite(new Date(now).getTime())) {
       throw new Error('Invalid history summary clock');
     }
-    const windows = rawWindows(events, now);
-    const stored = new Map((await this.#read()).map((summary) => [summary.id, summary]));
+    const { locale, includeText = false, scopeKey } = options;
+    if (locale !== undefined && !isUiLocale(locale)) throw invalidSummary();
+    if (scopeKey !== undefined) validText(scopeKey, 256);
     const current = () => !signal.aborted && epoch === this.#epoch;
+    const windows = await rawWindows(events, now, includeText, current);
+    if (!current()) return;
+    const stored = new Map((await this.#read()).map((summary) => [summary.id, summary]));
     for (let count = 0; count < MAX_PER_RUN && current(); count++) {
-      const pending = nextSummary(windows, stored, now);
+      const pending = nextSummary(windows, stored, now, { locale, includeText, scopeKey });
       if (!pending) return;
       const input = decodeComputerHistorySummaryInput({
         level: pending.level,
         start: pending.start,
         end: pending.end,
         evidence: pending.evidence.map(({ id, text }) => ({ id, text })),
+        ...(locale ? { locale } : {}),
+        ...(pending.priorContext ? { priorContext: pending.priorContext } : {}),
       });
       let generated: unknown;
       try {
@@ -214,13 +274,18 @@ export class ComputerHistorySummaries {
         throw error;
       }
       if (!current()) return;
-      const { evidence: _evidence, ...provenance } = pending;
+      const { evidence: _evidence, priorContext: _priorContext, ...provenance } = pending;
       const summary = { ...provenance, content: decodeComputerHistorySummaryContent(generated) };
       const parentId = summary.level === '10min'
         ? summaryId('6h', Math.floor(Date.parse(summary.start) / SIX_HOURS) * SIX_HOURS)
         : undefined;
-      await this.#write(summary, current, parentId && stored.has(parentId) ? parentId : undefined);
-      if (parentId) stored.delete(parentId);
+      const parent = parentId ? stored.get(parentId) : undefined;
+      // Preserve policy-ineligible archives for reading; they remain excluded from model requests.
+      const invalidatedParent = parent && parent.generation?.scopeKey === scopeKey &&
+        (includeText || !parent.generation?.includesText)
+        ? parent.id : undefined;
+      await this.#write(summary, current, invalidatedParent);
+      if (invalidatedParent) stored.delete(invalidatedParent);
       stored.set(summary.id, summary);
     }
   }
@@ -353,6 +418,7 @@ export function serializeComputerHistorySummary(summary: StoredComputerHistorySu
     applications: summary.applications,
     eventCount: summary.eventCount,
     sourceIds: summary.sourceIds,
+    ...(summary.generation ? { generation: summary.generation } : {}),
     content,
   };
   const text = `---\n${JSON.stringify(header)}\n---\n${body}\n`;
@@ -360,30 +426,30 @@ export function serializeComputerHistorySummary(summary: StoredComputerHistorySu
   return text;
 }
 
-function rawWindows(events: readonly ComputerHistorySummaryEvent[], now: number): Window[] {
+async function rawWindows(
+  events: SummaryEvents,
+  now: number,
+  includeText: boolean,
+  current: () => boolean,
+): Promise<Window[]> {
   const windows = new Map<number, Window>();
-  for (const event of events) {
+  for await (const event of events) {
+    if (!current()) break;
     const time = Date.parse(event.timestamp);
     if (!Number.isFinite(time) || time < now - RAW_HORIZON || time >= now) continue;
     const start = Math.floor(time / TEN_MINUTES) * TEN_MINUTES;
     if (start + TEN_MINUTES > now) continue;
-    const kind = observedText(event.kind, 64);
-    if (!kind) continue;
+    const observation = projectObservation(event, includeText);
+    if (!observation) continue;
     const name = observedText(event.app?.name, 128);
     const bundleIdentifier = observedText(event.app?.bundleIdentifier, 128);
-    const title = observedText(event.window?.title, 256);
-    const timestamp = new Date(time).toISOString();
-    // Never serialize the collector object: it may also contain keyboard text, AX or file paths.
-    const text = JSON.stringify({
-      timestamp,
-      kind,
-      ...(name || bundleIdentifier ? { app: { name, bundleIdentifier } } : {}),
-      ...(title ? { window: { title } } : {}),
-    });
-    const id = `event-${createHash('sha256').update(text).digest('hex')}`;
+    const { id, source, content, ...withoutContent } = observation;
     let window = windows.get(start);
     if (!window) {
-      window = { start, eventCount: 0, applications: new Set(), evidence: new Map() };
+      window = {
+        start, eventCount: 0, applications: new Set(), revision: 0n,
+        timeSamples: new Map(), sourceSamples: new Map(), contentSamples: new Map(),
+      };
       windows.set(start, window);
     }
     window.eventCount++;
@@ -394,10 +460,26 @@ function rawWindows(events: readonly ComputerHistorySummaryEvent[], now: number)
         window.applications.delete([...window.applications].sort().at(-1)!);
       }
     }
-    window.evidence.set(id, { id, text, timestamp });
-    if (window.evidence.size > MAX_EVIDENCE) {
-      const latest = [...window.evidence.values()].sort(compareEvidence).at(-1)!;
-      window.evidence.delete(latest.id);
+    // An order-independent digest includes even unsampled input without retaining its content.
+    window.revision = (window.revision + BigInt(`0x${id.slice(6)}`)) % (1n << 256n);
+    const metadataOnly = { ...withoutContent, id, source };
+    const endpoint = content ? { ...metadataOnly, content: clipText(content, 1024) } : metadataOnly;
+    const slot = Math.floor((time - start) / (TEN_MINUTES / SAMPLE_TIME_BINS));
+    const endpoints = window.timeSamples.get(slot);
+    window.timeSamples.set(slot, {
+      first: !endpoints || compareEvidence(endpoint, endpoints.first) < 0 ? endpoint : endpoints.first,
+      last: !endpoints || compareEvidence(endpoint, endpoints.last) > 0 ? endpoint : endpoints.last,
+    });
+    const enriched = content ? { ...metadataOnly, content: clipText(content, 7 * 1024) } : metadataOnly;
+    if (content && preferObservation(enriched, window.contentSamples.get(slot))) {
+      window.contentSamples.set(slot, enriched);
+    }
+    const sourceSample = content ? { ...metadataOnly, content: clipText(content, 3 * 1024) } : metadataOnly;
+    if (preferObservation(sourceSample, window.sourceSamples.get(source))) {
+      window.sourceSamples.set(source, sourceSample);
+      if (window.sourceSamples.size > SAMPLE_SOURCES) {
+        window.sourceSamples.delete([...window.sourceSamples.keys()].sort().at(-1)!);
+      }
     }
   }
   return [...windows.values()].sort((a, b) => a.start - b.start);
@@ -407,12 +489,31 @@ function nextSummary(
   windows: readonly Window[],
   stored: ReadonlyMap<string, StoredComputerHistorySummary>,
   now: number,
+  { locale, includeText = false, scopeKey }: RunOptions,
 ): PendingSummary | undefined {
   for (const window of windows) {
     const existing = stored.get(summaryId('10min', window.start));
+    if (!includeText && existing?.generation?.includesText) continue;
     // Retention can leave only the tail of this window; never replace its complete saved summary.
     if (existing && window.start < now - RAW_HORIZON) continue;
-    const evidence = boundEvidence([...window.evidence.values()].sort(compareEvidence));
+    const selected = sampleObservations(window);
+    const previous = priorContext(stored, window.start, includeText, scopeKey);
+    const generation = {
+      version: GENERATION_VERSION,
+      ...(locale ? { locale } : {}),
+      sourceRevision: hash(`${window.eventCount}:${window.revision.toString(16)}:${previous.revision}`),
+      includesText: selected.some(({ content }) => Boolean(content)) || previous.includesText,
+      ...(scopeKey !== undefined ? { scopeKey } : {}),
+      priorContextIds: previous.evidence.map(({ id }) => id),
+      rawEvidenceRanges: mergeEvidenceRanges([
+        [window.start, window.start + TEN_MINUTES], ...previous.rawEvidenceRanges,
+      ]),
+    };
+    if (existing && JSON.stringify(existing.generation) === JSON.stringify(generation)) continue;
+    const evidence = budgetEvidence(selected.map(({ id, metadata, content }) => ({
+      id,
+      text: content ? `${metadata}\nObserved content (untrusted):\n${content}` : metadata,
+    })), MAX_EVIDENCE_BYTES - 256);
     if (evidence.length < window.eventCount) {
       const last = evidence.at(-1)!;
       evidence[evidence.length - 1] = {
@@ -426,13 +527,9 @@ function nextSummary(
       eventCount: window.eventCount,
       sourceIds: evidence.map(({ id }) => id),
       evidence,
+      generation,
+      ...(previous.evidence.length ? { priorContext: previous.evidence } : {}),
     };
-    if (
-      existing &&
-      existing.eventCount === candidate.eventCount &&
-      JSON.stringify(existing.sourceIds) === JSON.stringify(candidate.sourceIds) &&
-      JSON.stringify(existing.applications) === JSON.stringify(candidate.applications)
-    ) continue;
     // Fresh activity takes priority over derived rollups, including a repeatedly failing old rollup.
     return candidate;
   }
@@ -447,10 +544,34 @@ function nextSummary(
     groups.set(start, children);
   }
   for (const [start, children] of groups) {
+    if (!includeText && children.some((child) => child.generation?.includesText)) continue;
+    if (children.some((child) => child.generation?.scopeKey !== scopeKey)) continue;
     children.sort(compareSummaries);
     const sourceIds = children.map(({ id }) => id);
     const existing = stored.get(summaryId('6h', start));
-    if (existing && JSON.stringify(existing.sourceIds) === JSON.stringify(sourceIds)) continue;
+    if (!includeText && existing?.generation?.includesText) continue;
+    const previous = priorContext(stored, start, includeText, scopeKey);
+    const generation = {
+      version: GENERATION_VERSION,
+      ...(locale ? { locale } : {}),
+      sourceRevision: hash(JSON.stringify([
+        children.map((child) => [
+          child.id, child.eventCount, child.applications, child.content, child.generation,
+        ]),
+        previous.revision,
+      ])),
+      includesText: children.some((child) => child.generation?.includesText) || previous.includesText,
+      ...(scopeKey !== undefined ? { scopeKey } : {}),
+      priorContextIds: previous.evidence.map(({ id }) => id),
+      rawEvidenceRanges: mergeEvidenceRanges([
+        ...children.flatMap(summaryCoverage), ...previous.rawEvidenceRanges,
+      ]),
+    };
+    if (existing && (
+      JSON.stringify(existing.generation) === JSON.stringify(generation) ||
+      (start < now - RAW_HORIZON && existing.generation?.scopeKey === scopeKey &&
+        JSON.stringify(existing.sourceIds) === JSON.stringify(sourceIds))
+    )) continue;
     pending.push({
       ...range('6h', start),
       applications: [...new Set(children.flatMap((child) => child.applications))]
@@ -458,15 +579,12 @@ function nextSummary(
         .slice(0, MAX_APPLICATIONS),
       eventCount: children.reduce((count, child) => count + child.eventCount, 0),
       sourceIds,
-      evidence: children.map((child) => ({
+      generation,
+      ...(previous.evidence.length ? { priorContext: previous.evidence } : {}),
+      evidence: budgetEvidence(children.map((child) => ({
         id: child.id,
-        text:
-          `${child.start} to ${child.end}; ${child.eventCount} events\n` +
-          observedText(
-            `${child.content.title}\n${child.content.description}\n${child.content.body}`,
-            650,
-          ),
-      })),
+        text: summaryEvidence(child),
+      })), MAX_EVIDENCE_BYTES),
     });
   }
   return pending.sort(
@@ -474,15 +592,131 @@ function nextSummary(
   )[0];
 }
 
-function boundEvidence(items: readonly Evidence[]): Evidence[] {
-  const result: Evidence[] = [];
-  let size = 0;
-  for (const { id, text } of items) {
-    size += Buffer.byteLength(JSON.stringify({ id, text })) + 1;
-    if (size > MAX_EVIDENCE_BYTES || result.length === MAX_EVIDENCE) break;
-    result.push({ id, text });
+function preferObservation(candidate: Observation, previous?: Observation): boolean {
+  if (!previous) return true;
+  const contentSize = (candidate.content?.length ?? 0) - (previous.content?.length ?? 0);
+  return contentSize > 0 || (contentSize === 0 && compareEvidence(candidate, previous) > 0);
+}
+
+function sampleObservations(window: Window): Observation[] {
+  const candidates = new Map<string, Observation>();
+  for (const item of [
+    ...[...window.timeSamples.values()].flatMap(({ first, last }) => [first, last]),
+    ...window.sourceSamples.values(), ...window.contentSamples.values(),
+  ]) {
+    if (preferObservation(item, candidates.get(item.id))) candidates.set(item.id, item);
   }
-  return result;
+  const chronological = [...candidates.values()].sort(compareEvidence);
+  const selected = new Map<string, Observation>();
+  // Collapse repeated metadata/content while keeping both observed time endpoints.
+  for (const item of chronological) {
+    if (preferObservation(item, selected.get(item.signature))) selected.set(item.signature, item);
+  }
+  const result = new Map([...selected.values()].map((item) => [item.id, item]));
+  result.set(chronological[0]!.id, chronological[0]!);
+  result.set(chronological.at(-1)!.id, chronological.at(-1)!);
+  return [...result.values()].sort(compareEvidence);
+}
+
+/** Share encoded-byte space fairly; short items release their unused share to richer items. */
+function budgetEvidence(items: readonly Evidence[], budget: number): Evidence[] {
+  const result = new Map<string, Evidence>();
+  const bySize = [...items].sort((a, b) => encodedSize(a) - encodedSize(b) || a.id.localeCompare(b.id));
+  for (const [index, item] of bySize.entries()) {
+    const allowance = Math.floor(budget / (items.length - index));
+    let text = clipText(item.text, MAX_ITEM_BYTES - 128);
+    if (encodedSize({ id: item.id, text }) > allowance) {
+      let low = 0;
+      let high = Buffer.byteLength(text);
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (encodedSize({ id: item.id, text: clipText(text, middle) }) <= allowance) low = middle;
+        else high = middle - 1;
+      }
+      text = clipText(text, low);
+    }
+    const evidence = { id: item.id, text };
+    budget -= encodedSize(evidence);
+    result.set(item.id, evidence);
+  }
+  return items.map(({ id }) => result.get(id)!);
+}
+
+function encodedSize(item: Evidence): number {
+  return Buffer.byteLength(JSON.stringify(item)) + 1;
+}
+
+function summaryEvidence(summary: StoredComputerHistorySummary): string {
+  return `Summary interval: ${summary.start} to ${summary.end}; ${summary.eventCount} events\n` +
+    `Title: ${summary.content.title}\nDescription: ${summary.content.description}\n` +
+    `Body:\n${summary.content.body}`;
+}
+
+function priorContext(
+  stored: ReadonlyMap<string, StoredComputerHistorySummary>,
+  start: number,
+  includeText: boolean,
+  scopeKey?: string,
+): { evidence: readonly Evidence[]; includesText: boolean; revision: string; rawEvidenceRanges: readonly EvidenceRange[] } {
+  const previous = [...stored.values()]
+    .filter((summary) => Date.parse(summary.end) <= start && Date.parse(summary.end) > start - SIX_HOURS &&
+      (includeText || !summary.generation?.includesText))
+    .filter((summary) => summary.generation?.scopeKey === scopeKey)
+    .sort((a, b) => Date.parse(b.end) - Date.parse(a.end) || Date.parse(b.start) - Date.parse(a.start));
+  const selected: StoredComputerHistorySummary[] = [];
+  for (const summary of previous) {
+    if (selected.some((other) => Date.parse(summary.end) > Date.parse(other.start))) continue;
+    selected.push(summary);
+    if (selected.length === 2) break;
+  }
+  return {
+    includesText: selected.some((summary) => summary.generation?.includesText),
+    rawEvidenceRanges: mergeEvidenceRanges(selected.flatMap(summaryCoverage)),
+    revision: hash(JSON.stringify(selected.map((summary) => [
+      summary.id, summary.eventCount, summary.content, summary.generation,
+    ]))),
+    evidence: budgetEvidence(selected.reverse().map((summary) => ({
+      id: summary.id,
+      text: summaryEvidence(summary),
+    })), 8 * 1024),
+  };
+}
+
+function hash(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** Match persisted sample IDs using the same gated projection; invalid events have no identity. */
+export function summaryEventId(
+  event: ComputerHistorySummaryEvent,
+  { includeText = false }: { includeText?: boolean } = {},
+): string | null {
+  return projectObservation(event, includeText)?.id ?? null;
+}
+
+function projectObservation(event: ComputerHistorySummaryEvent, includeText: boolean): Observation | null {
+  const time = Date.parse(event.timestamp);
+  const kind = observedText(event.kind, 64);
+  if (!Number.isFinite(time) || !kind) return null;
+  const timestamp = new Date(time).toISOString();
+  const name = observedText(event.app?.name, 128);
+  const bundleIdentifier = observedText(event.app?.bundleIdentifier, 128);
+  const title = observedText(event.window?.title, 256);
+  const urlDomain = observedText(event.window?.urlDomain, 256);
+  // Content is an explicit caller projection, never a traversal of raw keyboard/AX objects.
+  const context = {
+    kind,
+    ...(name || bundleIdentifier ? { app: { name, bundleIdentifier } } : {}),
+    ...(title || urlDomain ? { window: { ...(title ? { title } : {}), ...(urlDomain ? { urlDomain } : {}) } } : {}),
+  };
+  const metadata = JSON.stringify({ timestamp, ...context });
+  const source = hash(event.sourceKey ?? JSON.stringify([
+    event.app?.bundleIdentifier || event.app?.name, event.window?.title, event.window?.urlDomain,
+  ]));
+  const content = includeText && event.content?.trim() ? event.content : undefined;
+  const signature = hash(JSON.stringify([source, context, content]));
+  const id = `event-${hash(JSON.stringify([timestamp, signature, metadata]))}`;
+  return { id, timestamp, source, signature, metadata, content };
 }
 
 function range(level: ComputerHistorySummaryLevel, start: number) {
@@ -498,6 +732,47 @@ function summaryId(level: ComputerHistorySummaryLevel, start: number): string {
   return `${level}-${start}`;
 }
 
+function summaryRange(id: string) {
+  validateSummaryId(id);
+  const level = id.startsWith('10min-') ? '10min' : '6h';
+  return range(level, Number(id.slice(level.length + 1)));
+}
+
+function summaryCoverage(summary: StoredComputerHistorySummary): readonly EvidenceRange[] {
+  return summary.generation?.rawEvidenceRanges ?? [
+    // Old dependency IDs cannot recover overwritten input versions. Nongeneration records predate prior context.
+    [summary.generation ? EARLIEST_TIME : Date.parse(summary.start), Date.parse(summary.end)],
+  ];
+}
+
+function mergeEvidenceRanges(ranges: readonly EvidenceRange[]): EvidenceRange[] {
+  const merged: EvidenceRange[] = [];
+  for (const [start, end] of [...ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    const previous = merged.at(-1);
+    if (previous && start <= previous[1]) {
+      merged[merged.length - 1] = [previous[0], Math.max(previous[1], end)];
+    } else {
+      merged.push([start, end]);
+    }
+  }
+  if (merged.length > MAX_EVIDENCE_RANGES) {
+    // Bound storage without losing ancestry: only the oldest excess gaps become conservative coverage.
+    const excess = merged.length - MAX_EVIDENCE_RANGES;
+    merged.splice(0, excess + 1, [merged[0]![0], merged[excess]![1]]);
+  }
+  return merged;
+}
+
+function deletionIds(summaries: readonly StoredComputerHistorySummary[], start: number, end: number): string[] {
+  const overlaps = ([from, to]: EvidenceRange) => to > start && (start === end ? from <= start : from < end);
+  // Preserve consumer-first unlink order without following IDs whose content may have been replaced.
+  return [...summaries]
+    .sort((a, b) => Date.parse(a.end) - Date.parse(b.end) || Date.parse(b.start) - Date.parse(a.start))
+    .filter((summary) => overlaps([Date.parse(summary.start), Date.parse(summary.end)]) ||
+      summaryCoverage(summary).some(overlaps))
+    .map(({ id }) => id);
+}
+
 function isOwnedSummaryFilename(name: string): boolean {
   const match = /^(10min|6h)-(-?\d+)\.md$/u.exec(name);
   if (!match) return false;
@@ -510,6 +785,10 @@ function isOwnedSummaryFilename(name: string): boolean {
   );
 }
 
+function validateSummaryId(id: string): void {
+  if (typeof id !== 'string' || id.length > 23 || !isOwnedSummaryFilename(`${id}.md`)) throw invalidSummary();
+}
+
 function compareSummaries(
   a: Pick<StoredComputerHistorySummary, 'start' | 'id'>,
   b: Pick<StoredComputerHistorySummary, 'start' | 'id'>,
@@ -518,8 +797,8 @@ function compareSummaries(
 }
 
 function compareEvidence(
-  a: Evidence & { timestamp: string },
-  b: Evidence & { timestamp: string },
+  a: { id: string; timestamp: string },
+  b: { id: string; timestamp: string },
 ): number {
   return a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id);
 }
@@ -556,6 +835,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
     'applications',
     'eventCount',
     'sourceIds',
+    'generation',
     'content',
   ]);
   if (data.version !== 1 || (data.level !== '10min' && data.level !== '6h')) throw invalidSummary();
@@ -597,11 +877,64 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
     }
   }
   const headerContent = record(data.content, ['title', 'description', 'suggestion']);
+  let generation: StoredComputerHistorySummary['generation'];
+  if (data.generation !== undefined) {
+    const value = record(data.generation, ['version', 'locale', 'sourceRevision', 'includesText', 'scopeKey', 'priorContextIds', 'rawEvidenceRanges']);
+    if (!Number.isSafeInteger(value.version) || (value.version as number) < 1 ||
+        (value.locale !== undefined && !isUiLocale(value.locale)) ||
+        typeof value.includesText !== 'boolean' ||
+        typeof value.sourceRevision !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sourceRevision)) throw invalidSummary();
+    let priorContextIds: string[] | undefined;
+    if ((value.version as number) >= 3 || value.priorContextIds !== undefined) {
+      priorContextIds = stringArray(value.priorContextIds, 2, 23);
+      for (const id of priorContextIds) {
+        const priorEnd = Date.parse(summaryRange(id).end);
+        if (priorEnd > start || priorEnd <= start - SIX_HOURS) throw invalidSummary();
+      }
+    }
+    let rawEvidenceRanges: EvidenceRange[] | undefined;
+    if ((value.version as number) >= 4) {
+      if (!Array.isArray(value.rawEvidenceRanges) || value.rawEvidenceRanges.length === 0 ||
+          value.rawEvidenceRanges.length > MAX_EVIDENCE_RANGES) throw invalidSummary();
+      rawEvidenceRanges = [];
+      for (const item of value.rawEvidenceRanges) {
+        if (!Array.isArray(item) || item.length !== 2) throw invalidSummary();
+        const [from, to] = item;
+        if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < EARLIEST_TIME ||
+            from % TEN_MINUTES !== 0 || to % TEN_MINUTES !== 0 || from >= to ||
+            to > start + duration || (rawEvidenceRanges.length > 0 && from <= rawEvidenceRanges.at(-1)![1])) {
+          throw invalidSummary();
+        }
+        rawEvidenceRanges.push([from, to]);
+      }
+      const ownRanges: EvidenceRange[] = data.level === '10min'
+        ? [[start, start + duration]]
+        : sourceIds.map((id) => {
+          const child = summaryRange(id);
+          return [Date.parse(child.start), Date.parse(child.end)];
+        });
+      if (ownRanges.some(([from, to]) => !rawEvidenceRanges!.some(([a, b]) => a <= from && b >= to))) {
+        throw invalidSummary();
+      }
+    } else if (value.rawEvidenceRanges !== undefined) {
+      throw invalidSummary();
+    }
+    generation = {
+      version: value.version as number,
+      ...(value.locale !== undefined ? { locale: value.locale as UiLocale } : {}),
+      sourceRevision: value.sourceRevision,
+      includesText: value.includesText === true,
+      ...(value.scopeKey !== undefined ? { scopeKey: validText(value.scopeKey, 256) } : {}),
+      ...(priorContextIds !== undefined ? { priorContextIds } : {}),
+      ...(rawEvidenceRanges !== undefined ? { rawEvidenceRanges } : {}),
+    };
+  }
   return {
     ...expected,
     applications,
     eventCount: data.eventCount as number,
     sourceIds,
+    ...(generation ? { generation } : {}),
     content: decodeComputerHistorySummaryContent({
       ...headerContent,
       body: text.slice(delimiter + 5, -1),

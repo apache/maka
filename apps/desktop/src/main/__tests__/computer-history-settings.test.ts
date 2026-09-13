@@ -32,7 +32,7 @@ const STATUS: ComputerHistoryStatus = {
   platformSupported: true, helperAvailable: true, state: 'needs_permission',
   accessibilityGranted: false, inputMonitoringGranted: false,
   eventCount: 0, suppressedEventCount: 0, segmentCount: 0,
-  settings: { enabled: false, captureText: false, summariesEnabled: false, blockedApplications: [], blockedDomains: [] },
+  settings: { enabled: false, captureText: false, summariesEnabled: false, summaryTextEnabled: false, blockedApplications: [], blockedDomains: [] },
 };
 
 function services(overrides: Partial<ModuleHubServices['computerHistory']> = {}): ModuleHubServices {

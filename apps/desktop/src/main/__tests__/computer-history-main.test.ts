@@ -20,8 +20,8 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
-import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rm, stat, utimes, watch, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -749,6 +749,7 @@ test('missing settings default to no collection or model calls on initialization
     enabled: false,
     captureText: false,
     summariesEnabled: false,
+    summaryTextEnabled: false,
     blockedApplications: ['com.apple.keychainaccess'],
     blockedDomains: [],
   });
@@ -799,6 +800,105 @@ test('separate summary consent processes closed intervals without summarizing ti
   assert.equal(after.entries[1]!.summaryLevel, '10min');
   assert.equal(after.entries[1]!.title, SUMMARY.title);
   assert.equal(after.status.summaryState, 'idle');
+});
+
+test('eligible text crosses only the explicitly consented summary boundary with a trusted locale', async (t) => {
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { service, home, segment } = await fixture(t, {
+    resolveLocale: () => 'zh-CN',
+    generateSummary: async (input) => { inputs.push(input); return SUMMARY; },
+  });
+  const raw = {
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: 'Fixture', bundleIdentifier: 'org.example.fixture' },
+    window: { title: 'Task' },
+    ax: { mode: 'fullTree', text: 'TASK_CONTENT_CANARY: endpoint fix verified' },
+  };
+  await writeFile(join(segment, 'events.jsonl'), `${JSON.stringify(raw)}\n`);
+  await service.initialize();
+  await service.updateSettings({ captureText: true, summariesEnabled: true });
+  assert.equal((await service.settings()).summaryTextEnabled, false);
+  await service.summarize();
+  assert.equal(inputs[0]!.locale, 'zh-CN');
+  assert.doesNotMatch(JSON.stringify(inputs), /TASK_CONTENT_CANARY/);
+  assert.doesNotMatch(JSON.stringify(await service.timeline()), /TASK_CONTENT_CANARY/);
+
+  await service.updateSettings({ summaryTextEnabled: true });
+  const metadataDetail = await service.detail((await service.timeline()).entries[0]!.id);
+  assert.equal(metadataDetail!.events[0]!.usedInSummary, true, 'stored metadata sample remains resolvable when text is now enabled');
+  await service.summarize();
+  assert.match(JSON.stringify(inputs.at(-1)), /TASK_CONTENT_CANARY/);
+  const detail = await service.detail((await service.timeline()).entries[0]!.id);
+  assert.equal(detail!.events[0]!.usedInSummary, true);
+  assert.doesNotMatch(JSON.stringify(detail!.events), /TASK_CONTENT_CANARY/);
+  assert.equal(detail!.document!.body, SUMMARY.body);
+
+  const stored = JSON.parse(await readFile(join(home, 'maka-settings.json'), 'utf8'));
+  assert.equal(stored.captureText, true);
+  assert.equal(stored.summaryTextEnabled, true);
+  await service.updateSettings({ summaryTextEnabled: false });
+  const count = inputs.length;
+  await service.summarize();
+  assert.equal(inputs.length, count, 'revoking content consent preserves the saved rich document');
+});
+
+test('summary detail identifies sampled evidence and reports omitted retained events below the response cap', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  const start = Date.parse('2026-08-15T10:01:00.000Z');
+  await writeFile(join(segment, 'events.jsonl'), Array.from({ length: 80 }, (_, index) =>
+    event(new Date(start + index * 1_000).toISOString(), 'mouse.click', 'Same task'),
+  ).join('\n') + '\n');
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+
+  const entry = (await service.timeline()).entries.find(({ summaryLevel }) => summaryLevel)!;
+  const detail = (await service.detail(entry.id))!;
+  assert.equal(detail.eventTotal, 80);
+  assert.ok(detail.events.length >= 2 && detail.events.length < 80);
+  assert.ok(detail.events.every(({ usedInSummary }) => usedInSummary));
+  assert.equal(detail.truncated, true);
+  assert.equal(detail.events.at(-1)!.timestamp, new Date(start).toISOString());
+  assert.equal(detail.events[0]!.timestamp, new Date(start + 79_000).toISOString());
+});
+
+test('summary projection rechecks excluded sources including contributing frame domains', async (t) => {
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { service, segment } = await fixture(t, {
+    generateSummary: async (input) => { inputs.push(input); return SUMMARY; },
+  });
+  const base = {
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a', contentState: 'available',
+    app: { name: 'Fixture', bundleIdentifier: 'org.example.fixture' },
+    window: { title: 'Retained document', url: 'https://work.example' },
+  };
+  await writeFile(join(segment, 'events.jsonl'), [
+    JSON.stringify({ ...base, contentDomains: ['private.example'], ax: { mode: 'fullTree', text: 'BLOCKED_FRAME_CANARY' } }),
+    JSON.stringify({ ...base, timestamp: '2026-08-15T10:02:00.000Z', contentDomains: ['work.example'], ax: { mode: 'fullTree', text: 'ALLOWED_TASK_CANARY' } }),
+  ].join('\n') + '\n');
+  await service.initialize();
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true, blockedDomains: ['private.example'] });
+  await service.summarize();
+  assert.match(JSON.stringify(inputs), /ALLOWED_TASK_CANARY/);
+  assert.doesNotMatch(JSON.stringify(inputs), /BLOCKED_FRAME_CANARY/);
+  assert.equal((await service.status()).eventCount, 2, 'exclusions do not delete existing history');
+});
+
+test('same-title windows retain independent identity while one renamed window stays coherent', async (t) => {
+  const { service, segment } = await fixture(t);
+  const first = { ...JSON.parse(event('2026-08-15T10:00:00.000Z', 'window.changed')), sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a' };
+  const second = { ...JSON.parse(event('2026-08-15T10:00:01.000Z', 'window.changed')), sourceId: '02ceee08-6e88-4ced-b204-2a18ad9436f8' };
+  await writeFile(join(segment, 'events.jsonl'), [
+    JSON.stringify(first), JSON.stringify(second),
+    JSON.stringify({ ...second, timestamp: '2026-08-15T10:00:02.000Z', window: { title: 'Renamed' } }),
+  ].join('\n') + '\n');
+  await service.initialize();
+  const entries = (await service.timeline()).entries;
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]!.eventCount, 2);
+  assert.doesNotMatch(JSON.stringify(entries), /250ed63d|02ceee08/);
 });
 
 test('interval clear removes recent summaries and events while preserving older history', async (t) => {
@@ -925,6 +1025,65 @@ test('concurrent settings patches preserve earlier changes in storage and collec
   ]);
 });
 
+for (const analysisAvailable of [false, true]) {
+  test(`analysis opt-outs persist repeatedly without a helper (analysis available: ${analysisAvailable})`, async (t) => {
+    const { service, home, segment } = await fixture(t, {
+      platform: 'darwin',
+      ...(analysisAvailable ? { generateSummary: async () => SUMMARY } : {}),
+    });
+    const settingsPath = join(home, 'maka-settings.json');
+    const initial = {
+      ...await service.settings(), enabled: true, captureText: true,
+      summariesEnabled: true, summaryTextEnabled: true,
+    };
+    await writeFile(settingsPath, JSON.stringify(initial));
+    await seedClosedInterval(segment);
+    const raw = await readFile(join(segment, 'events.jsonl'), 'utf8');
+    await assert.rejects(service.initialize(), /helper is unavailable/);
+    const initializationError = (await service.status()).error;
+
+    for (const key of ['summaryTextEnabled', 'summariesEnabled'] as const) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const saved = await service.updateSettings({ [key]: false });
+        assert.equal(saved[key], false);
+        assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')), saved);
+        assert.equal(saved.enabled, true);
+        assert.equal(saved.captureText, true);
+        assert.equal((await service.status()).error, initializationError, 'opt-out does not repair initialization');
+      }
+    }
+    const saved = await readFile(settingsPath, 'utf8');
+    for (const patch of [
+      { captureText: false },
+      { enabled: false },
+      { blockedDomains: ['example.com'] },
+      { summaryTextEnabled: false, captureText: false },
+    ]) {
+      await assert.rejects(service.updateSettings(patch), /helper is unavailable/);
+      assert.equal(await readFile(settingsPath, 'utf8'), saved, 'collector-affecting patches still require admission');
+    }
+    await assert.rejects(service.clear('all'), /helper is unavailable/);
+    assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), raw);
+    await assert.rejects(readFile(join(home, 'config.json')), { code: 'ENOENT' });
+  });
+}
+
+test('analysis opt-out write errors preserve consent and allow a repeated retry', async (t) => {
+  const { service, home } = await fixture(t, { platform: 'darwin' });
+  const settingsPath = join(home, 'maka-settings.json');
+  const initial = { ...await service.settings(), summariesEnabled: true, summaryTextEnabled: true };
+  await writeFile(settingsPath, JSON.stringify(initial));
+  const temporary = `${settingsPath}.tmp-${process.pid}`;
+  await mkdir(temporary);
+  await assert.rejects(service.updateSettings({ summaryTextEnabled: false }), { code: 'EISDIR' });
+  assert.deepEqual(await service.settings(), initial);
+  await rm(temporary, { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await service.updateSettings({ summaryTextEnabled: false })).summaryTextEnabled, false);
+    assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).summaryTextEnabled, false);
+  }
+});
+
 test('corrupted settings fail instead of silently resetting or overwriting them', async (t) => {
   const { service, home } = await fixture(t);
   const settingsPath = join(home, 'maka-settings.json');
@@ -934,6 +1093,7 @@ test('corrupted settings fail instead of silently resetting or overwriting them'
     ['[]', /Invalid Computer History settings/],
     ['{"enabled":"true"}', /Invalid Computer History setting/],
     ['{"summariesEnabled":"false"}', /Invalid Computer History setting/],
+    ['{"summaryTextEnabled":"false"}', /Invalid Computer History setting/],
     ['{"blockedDomains":"example.com"}', /Invalid Computer History setting/],
   ] as const;
   for (const [broken, error] of invalidSettings) {
@@ -946,6 +1106,7 @@ test('corrupted settings fail instead of silently resetting or overwriting them'
     assert.equal(status.settings.enabled, false);
     assert.equal(status.settings.captureText, false);
     await assert.rejects(service.updateSettings({ captureText: true }), error);
+    await assert.rejects(service.updateSettings({ summaryTextEnabled: false }), error);
     assert.equal(await readFile(settingsPath, 'utf8'), broken);
     await assert.rejects(readFile(join(home, 'config.json')), { code: 'ENOENT' });
   }
@@ -1148,9 +1309,9 @@ test('summary detail preserves the stored Markdown document through raw expiry a
   assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), '');
 });
 
-test('summary detail bounds document content and the existing 30-day lookup without deleting older files', async (t) => {
+test('summary detail bounds complete documents and resolves archived IDs beyond the timeline horizon', async (t) => {
   let now = NOW;
-  const body = '# Notes\n\n' + 'x'.repeat(8 * 1024 - '# Notes\n\n'.length);
+  const body = '# Notes\n\n' + 'x'.repeat(48 * 1024 - '# Notes\n\n'.length);
   const { service, home, segment } = await fixture(t, {
     now: () => now, generateSummary: async () => ({ ...SUMMARY, body }),
   });
@@ -1170,8 +1331,73 @@ test('summary detail bounds document content and the existing 30-day lookup with
   await assert.rejects(service.detail(selected.id), /Invalid computer history summary/);
   await writeFile(file, saved);
   now += 31 * 24 * 60 * 60_000;
-  assert.equal(await service.detail(selected.id), null);
+  assert.deepEqual((await service.detail(selected.id))!.document, document);
+  assert.deepEqual((await service.timeline()).entries, []);
   assert.equal(await readFile(file, 'utf8'), saved);
+});
+
+test('unrelated raw corruption preserves saved documents and discloses unavailable provenance until recovery', async (t) => {
+  let now = NOW;
+  const { service, home, segment } = await fixture(t, { now: () => now, generateSummary: async () => SUMMARY });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const selected = (await service.timeline()).entries[0]!;
+  const initial = (await service.detail(selected.id))!;
+  const unrelated = join(home, 'segments', 'unrelated');
+  await mkdir(unrelated);
+  await writeFile(join(unrelated, 'events.jsonl'), 'x'.repeat(32 * 1024 * 1024 + 1));
+  for (const elapsed of [0, 49 * 60 * 60_000]) {
+    now = NOW + elapsed;
+    const detail = (await service.detail(selected.id))!;
+    assert.deepEqual(detail.document, initial.document);
+    assert.deepEqual(detail.events, []);
+    assert.equal(detail.rawAvailable, false);
+    assert.equal(detail.truncated, true, 'unreadable provenance is not a complete empty sample');
+    const status = await service.status();
+    assert.equal(status.state, 'error');
+    assert.match(status.error!, /provenance is unavailable/);
+    assert.doesNotMatch(status.error!, /events\.jsonl|unrelated|x{10}/);
+  }
+  await rm(unrelated, { recursive: true });
+  now = NOW;
+  assert.deepEqual(await service.detail(selected.id), initial);
+  assert.equal((await service.status()).error, undefined);
+  await mkdir(unrelated);
+  await writeFile(join(unrelated, 'events.jsonl'), 'x'.repeat(32 * 1024 * 1024 + 1));
+  await service.detail(selected.id);
+  assert.equal((await service.clear('all')).error, undefined, 'successful clear also resolves provenance errors');
+});
+
+test('a provenance read failure after inventory discards partial samples and recovers on retry', async (t) => {
+  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const selected = (await service.timeline()).entries[0]!;
+  const initial = (await service.detail(selected.id))!;
+  const path = join(segment, 'events.jsonl');
+  const raw = await readFile(path, 'utf8');
+  const settings = await service.settings();
+  const readSettings = t.mock.method(service, 'settings', async () => {
+    // Model input reads follow inventory; simulate a segment changing between them.
+    await writeFile(path, raw.replace('\n', `\n${'x'.repeat(32 * 1024 * 1024 + 1)}\n`));
+    return settings;
+  });
+  try {
+    const detail = (await service.detail(selected.id))!;
+    assert.deepEqual(detail.document, initial.document);
+    assert.equal(detail.eventTotal, 2);
+    assert.deepEqual(detail.events, [], 'do not return the sample read before the failure or metadata fallback');
+    assert.equal(detail.truncated, true);
+    assert.equal(detail.rawAvailable, false);
+  } finally {
+    readSettings.mock.restore();
+  }
+  assert.match((await service.status()).error!, /provenance is unavailable/);
+  await writeFile(path, raw);
+  assert.deepEqual(await service.detail(selected.id), initial);
+  assert.equal((await service.status()).error, undefined);
 });
 
 test('summary context includes workflow suggestion fields inside the untrusted envelope', async (t) => {
@@ -1205,20 +1431,39 @@ test('summary context includes workflow suggestion fields inside the untrusted e
   }
 });
 
-test('deleting a summary uses a half-open raw interval and preserves the adjacent summary', async (t) => {
-  const { service, segment } = await fixture(t, { generateSummary: async () => SUMMARY });
-  await seedClosedInterval(segment, [event('2026-08-15T10:10:00.000Z', 'mouse.click')]);
+test('deleting a summary preserves adjacent raw evidence but regenerates its dependent summary without deleted context', async (t) => {
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { service, segment } = await fixture(t, {
+    generateSummary: async (input) => {
+      inputs.push(input);
+      return { ...SUMMARY, body: input.start === '2026-08-15T10:00:00.000Z' ? 'DELETED_SOURCE_CANARY' : SUMMARY.body };
+    },
+  });
+  const boundary = event('2026-08-15T10:10:00.000Z', 'mouse.click', 'Adjacent retained source');
+  await seedClosedInterval(segment, [boundary]);
   await service.updateSettings({ summariesEnabled: true });
   await service.summarize();
   const entries = (await service.timeline()).entries;
   const selected = entries.find(({ start }) => start === '2026-08-15T10:00:00.000Z')!;
   const adjacent = entries.find(({ start }) => start === '2026-08-15T10:10:00.000Z')!;
   assert.equal((await service.detail(selected.id))!.eventTotal, 2);
+  assert.ok(inputs.find(({ start }) => start === adjacent.start)!.priorContext?.some(({ id }) => id === selected.id));
 
   await service.deleteEntry(selected.id);
 
-  assert.deepEqual((await service.timeline()).entries, [adjacent]);
+  assert.equal(await service.detail(selected.id), null);
+  assert.equal(await service.detail(adjacent.id), null, 'dependent document must be invalidated');
+  assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), `${boundary}\n`);
   assert.equal((await service.status()).eventCount, 1);
+  inputs.length = 0;
+  await service.retrySummary();
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]!.start, adjacent.start);
+  assert.ok(!inputs[0]!.priorContext?.length);
+  assert.doesNotMatch(JSON.stringify(inputs[0]), /DELETED_SOURCE_CANARY|Synthetic workflow/);
+  assert.match(JSON.stringify(inputs[0]!.evidence), /Adjacent retained source/);
+  assert.equal(await service.detail(selected.id), null);
+  assert.equal((await service.detail(adjacent.id))!.eventTotal, 1);
 });
 
 test('entry deletion cancels an in-flight summary before it can republish deleted evidence', async (t) => {
@@ -1483,32 +1728,72 @@ test('queued retry observes revoked consent and closed services without starting
   assert.equal(generateSummary.mock.callCount(), 0);
 });
 
-test('cancelled retry drains late provider rejection without restoring a stale analysis error', async (t) => {
+for (const key of ['summariesEnabled', 'summaryTextEnabled'] as const) {
+test(`${key} revocation persists before provider drain without stopping collection or admitting another request`, { timeout: 5_000 }, async (t) => {
+  let tick: (() => Promise<unknown> | undefined) | undefined;
+  let trackReschedule = false;
+  const rescheduled = deferred<void>();
+  const schedule = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback: () => Promise<unknown> | undefined, delay: number) => {
+    if (delay === 60_000) {
+      tick = callback;
+      if (trackReschedule) rescheduled.resolve();
+    }
+    return schedule(callback, delay);
+  });
   const collector = fakeCollector();
   const entered = deferred<AbortSignal>();
   const result = deferred<ComputerHistorySummaryContent>();
-  const { service, segment } = await fixture(t, {
+  let modelCalls = 0;
+  const { service, home, segment } = await fixture(t, {
     platform: 'darwin', helperPath: process.execPath, spawn: collector.spawn,
-    generateSummary: async (_input, signal) => { entered.resolve(signal); return result.promise; },
+    generateSummary: async (_input, signal) => { modelCalls++; entered.resolve(signal); return result.promise; },
   });
   await seedClosedInterval(segment);
   await service.initialize();
-  await service.updateSettings({ enabled: true, summariesEnabled: true });
+  await service.updateSettings({ enabled: true, summariesEnabled: true, summaryTextEnabled: true });
   const retry = service.retrySummary();
   const signal = await entered.promise;
-  const disabling = service.updateSettings({ summariesEnabled: false });
+  const settingsPath = join(home, 'maka-settings.json');
+  let consentAtAbort: boolean | undefined;
+  signal.addEventListener('abort', () => {
+    consentAtAbort = JSON.parse(readFileSync(settingsPath, 'utf8'))[key];
+  }, { once: true });
+  const watcher = new AbortController();
+  const persisted = (async () => {
+    for await (const change of watch(home, { signal: watcher.signal })) {
+      if (change.filename === 'maka-settings.json') return JSON.parse(await readFile(settingsPath, 'utf8'));
+    }
+    assert.fail('Settings watcher stopped before persistence');
+  })();
+  const calls = [...collector.calls];
+  const config = await readFile(join(home, 'config.json'), 'utf8');
+  let settled = false;
+  trackReschedule = true;
+  const disabling = service.updateSettings({ [key]: false }).finally(() => { settled = true; });
   try {
-    await collector.stopped.promise;
+    assert.equal((await persisted)[key], false);
+    if (key === 'summaryTextEnabled') await rescheduled.promise;
+    await tick!();
+    assert.equal(modelCalls, 1, 'neither a queued nor a rescheduled tick admits work during cancellation');
     assert.equal(signal.aborted, true);
+    assert.equal(consentAtAbort, true, 'cancellation starts before the persisted opt-out');
+    assert.equal(settled, false, 'the mutation still waits for provider acknowledgement');
+    assert.equal(collector.active, true);
+    assert.deepEqual(collector.calls, calls);
+    assert.equal(await readFile(join(home, 'config.json'), 'utf8'), config);
   } finally {
+    watcher.abort();
     result.reject(new Error('late provider-private failure'));
     await Promise.all([retry, disabling]);
   }
+  await service.updateSettings({ [key]: false });
   const status = await service.status();
-  assert.equal(status.summaryState, 'disabled');
+  assert.equal(status.summaryState, key === 'summariesEnabled' ? 'disabled' : 'idle');
   assert.equal(status.summaryError, undefined);
   assert.equal((await service.timeline()).entries.some(({ summaryLevel }) => summaryLevel), false);
 });
+}
 
 test('reveal uses only a validated stored summary without disturbing the active recorder', async (t) => {
   const collector = fakeCollector();
@@ -1707,7 +1992,7 @@ function deferred<T>() {
 
 type FixtureOptions = Partial<Pick<
   ConstructorParameters<typeof ComputerHistoryService>[0],
-  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn' | 'showItemInFolder'
+  'generateSummary' | 'now' | 'platform' | 'helperPath' | 'spawn' | 'showItemInFolder' | 'resolveLocale'
 >>;
 
 async function fixture(t: TestContext, options: FixtureOptions = {}) {

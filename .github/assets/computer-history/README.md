@@ -126,3 +126,72 @@ fixture does not establish mobile support for the full Desktop shell; the
 isolated reader and empty states have no page-level horizontal overflow.
 The actual desktop trial was checked separately at 1240 x 820, without
 publishing private activity screenshots or generated documents.
+
+## Independent Text Consent
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `text-consent-before.png` | 1240 x 820 | Existing three controls |
+| `text-consent-after.png` | 1240 x 820 | Independent recorded-text transmission control |
+| `text-consent-after-narrow.png` | 390 x 844 | Scrolled content/analysis section |
+| `text-consent-after-dark.png` | 1240 x 820 | Dark settings surface |
+
+Captured from production `SettingsModal` and `ComputerHistorySettingsPage`,
+using synthetic services: recording enabled, local text capture off, summaries
+on, recorded-text transmission off, model `coproxy::gpt-6-astra`, `zh-CN`,
+Asia/Shanghai, DPR 1 and 100% zoom. The matched desktop pair has identical
+viewport, initial state, content and scroll position. The narrow image is
+supplemental, scrolled to expose all analysis controls. The before component
+is frozen from the pre-consent implementation, not a redrawn mockup.
+
+The production browser matrix passed 29 records with no failures. It covers
+exact independent patches, no writes on mount, controlled pending state,
+provider/model-required admission, failed-write recovery, disabled-model
+revocation, light/dark themes and narrow geometry. Synthetic services did
+not collect activity, contact a model, or read private history. Files are
+copied unchanged from the ignored production QA captures; no retouching or
+compositing was applied. The GitHub CLI still lacks native attachments, so
+these images reuse the existing feature-branch asset convention.
+
+## Dependent Summary Deletion Warning
+
+Captured on September 14, 2026 (Asia/Shanghai). This copy-only follow-up
+discloses deletion of dependent later summaries and possible deletion of
+later legacy documents whose dependencies are unknown.
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `deletion-scope-before.png` | 1240 x 820 | Previous deletion warning |
+| `deletion-scope-after.png` | 1240 x 820 | Dependency-aware deletion warning |
+| `deletion-scope-before-narrow.png` | 390 x 844 | Previous warning, narrow |
+| `deletion-scope-after-narrow.png` | 390 x 844 | Dependency-aware warning, narrow |
+
+Both pairs use the existing `separated.html` synthetic-service preview,
+the same six invented activities, first activity selected, reader scroll
+position 0, paused recording, text/model consent off, light theme, `zh-CN`,
+Asia/Shanghai, DPR 1, 100% zoom, and fixed clock
+`2026-09-13T12:30:00+08:00`. The history page and deletion dialog are actual
+production components. The surrounding sidebar and preview header are
+prototype scaffolding, not the production Desktop shell.
+
+Before and after are isolated Vite production bundles served by the existing
+local QA preview. The baseline freezes the worktree immediately before this
+copy follow-up, based on HEAD `09d48337ddbdf3490c30f5999e8183c1fbdd346b`;
+it is not an unmodified HEAD build. Only the three locale
+`removeDescription` values differ between the frozen copy sources.
+
+All four captures passed settled-dialog geometry, complete visible copy and
+buttons, no page overflow, loaded images, cancel-without-deletion, focus
+restoration, and synthetic confirmation checks. All three locale copy checks
+passed; the page-state, settings and controller source-bundled tests passed
+36/36. The source story also passed an isolated bundle build; its Storybook
+play functions were not rerun for this copy-only follow-up.
+
+Screenshots were written directly by local Playwright and visually inspected.
+No private history, real Electron session, native recorder, permissions,
+clipboard, or model service was accessed. Only local GET requests were
+allowed, with no unexpected requests or page errors. The preview's in-memory
+deletion removes one fixture row; this UI check does not claim to validate
+backend dependency invalidation. No compositing, retouching or post-capture
+blurring was applied; the background blur is the production dialog backdrop.
+These assets retain the existing authorized feature-branch convention.

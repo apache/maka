@@ -39,7 +39,7 @@ const STATUS: ComputerHistoryStatus = {
   platformSupported: true, helperAvailable: true, state: 'paused',
   accessibilityGranted: true, inputMonitoringGranted: true,
   eventCount: 2, suppressedEventCount: 0, segmentCount: 1,
-  settings: { enabled: true, captureText: false, summariesEnabled: false, blockedApplications: [], blockedDomains: [] },
+  settings: { enabled: true, captureText: false, summariesEnabled: false, summaryTextEnabled: false, blockedApplications: [], blockedDomains: [] },
 };
 
 function entry(id: string): ComputerHistoryTimelineEntry {

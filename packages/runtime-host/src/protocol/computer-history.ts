@@ -21,6 +21,7 @@ import type {
   ComputerHistorySummaryContent,
   ComputerHistorySummaryInput,
 } from '@maka/core/computer-history';
+import { isUiLocale } from '@maka/core/ui-locale';
 import {
   requireEncodedByteLimit,
   requireExactRecord,
@@ -30,10 +31,12 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
-export const COMPUTER_HISTORY_INPUT_MAX_BYTES = 64 * 1024;
+export const COMPUTER_HISTORY_INPUT_MAX_BYTES = 256 * 1024;
 export const COMPUTER_HISTORY_EVIDENCE_MAX_ITEMS = 256;
-export const COMPUTER_HISTORY_EVIDENCE_TEXT_MAX_BYTES = 8 * 1024;
-export const COMPUTER_HISTORY_RESULT_MAX_BYTES = 16 * 1024;
+export const COMPUTER_HISTORY_EVIDENCE_TEXT_MAX_BYTES = 32 * 1024;
+export const COMPUTER_HISTORY_PRIOR_CONTEXT_MAX_ITEMS = 2;
+export const COMPUTER_HISTORY_RESULT_MAX_BYTES = 64 * 1024;
+export const COMPUTER_HISTORY_BODY_MAX_BYTES = 48 * 1024;
 
 export const COMPUTER_HISTORY_OPERATION_SPECS = {
   'computer-history.summarize': defineOperation<
@@ -67,14 +70,17 @@ export const COMPUTER_HISTORY_OPERATION_SPECS = {
 } as const;
 
 export function decodeComputerHistorySummaryInput(value: unknown): ComputerHistorySummaryInput {
-  const input = requireExactRecord(value, 'Computer History summary input', [
-    'level',
-    'start',
-    'end',
-    'evidence',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Computer History summary input',
+    ['level', 'start', 'end', 'evidence'],
+    ['locale', 'priorContext'],
+  );
   if (input.level !== '10min' && input.level !== '6h') {
     throw invalidProtocolFrame('Invalid Computer History summary level');
+  }
+  if (input.locale !== undefined && !isUiLocale(input.locale)) {
+    throw invalidProtocolFrame('Invalid Computer History summary locale');
   }
   const start = requireTimestamp(input.start);
   const end = requireTimestamp(input.end);
@@ -96,7 +102,7 @@ export function decodeComputerHistorySummaryInput(value: unknown): ComputerHisto
     COMPUTER_HISTORY_INPUT_MAX_BYTES,
   );
   const ids = new Set<string>();
-  const evidence = input.evidence.map((value) => {
+  const decodeEvidence = (value: unknown) => {
     const entry = requireExactRecord(value, 'Computer History evidence', ['id', 'text']);
     const id = requireText(entry.id, 'Computer History evidence id', 128);
     if (ids.has(id)) throw invalidProtocolFrame('Duplicate Computer History evidence id');
@@ -109,8 +115,26 @@ export function decodeComputerHistorySummaryInput(value: unknown): ComputerHisto
         COMPUTER_HISTORY_EVIDENCE_TEXT_MAX_BYTES,
       ),
     };
-  });
-  return { level: input.level, start, end, evidence };
+  };
+  const evidence = input.evidence.map(decodeEvidence);
+  let priorContext: ComputerHistorySummaryInput['priorContext'];
+  if (input.priorContext !== undefined) {
+    if (
+      !Array.isArray(input.priorContext) ||
+      input.priorContext.length > COMPUTER_HISTORY_PRIOR_CONTEXT_MAX_ITEMS
+    ) {
+      throw invalidProtocolFrame('Invalid Computer History prior context count');
+    }
+    priorContext = input.priorContext.map(decodeEvidence);
+  }
+  return {
+    level: input.level,
+    start,
+    end,
+    evidence,
+    ...(input.locale === undefined ? {} : { locale: input.locale }),
+    ...(priorContext === undefined ? {} : { priorContext }),
+  };
 }
 
 export function decodeComputerHistorySummaryContent(value: unknown): ComputerHistorySummaryContent {
@@ -128,7 +152,11 @@ export function decodeComputerHistorySummaryContent(value: unknown): ComputerHis
   const content = {
     title: requireText(output.title, 'Computer History summary title', 512),
     description: requireText(output.description, 'Computer History summary description', 2 * 1024),
-    body: requireText(output.body, 'Computer History summary body', 8 * 1024),
+    body: requireText(
+      output.body,
+      'Computer History summary body',
+      COMPUTER_HISTORY_BODY_MAX_BYTES,
+    ),
   };
   if (output.suggestion === undefined) return content;
   const suggestion = requireExactRecord(output.suggestion, 'Computer History suggestion', [

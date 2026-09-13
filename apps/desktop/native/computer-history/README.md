@@ -33,7 +33,7 @@ the MIT license copied to `apps/desktop/resources/licenses/open-computer-history
 
 ## Source attribution
 
-The following 16 files contain upstream material and retain MIT attribution,
+The following 13 files contain upstream material and retain MIT attribution,
 the pinned source path/revision and a Maka modification notice. They must not
 receive a whole-file ASF header or be covered by a blanket directory exemption.
 Paths below are relative to this directory; the upstream path is `collector/`
@@ -41,17 +41,14 @@ followed by the same relative path.
 
 ```text
 Package.swift
-Sources/HistoryCore/AXTreeRevision.swift
 Sources/HistoryCore/HistoryMaintenance.swift
 Sources/HistoryCore/Models.swift
 Sources/HistoryCore/Policy.swift
 Sources/HistoryCore/RuntimeControl.swift
 Sources/HistoryCore/Store.swift
-Sources/OpenHistory/AXTreeCapture.swift
 Sources/OpenHistory/AccessibilitySnapshot.swift
 Sources/OpenHistory/HistoryRecorder.swift
 Sources/OpenHistory/main.swift
-Tests/HistoryCoreTests/AXTreeRevisionTests.swift
 Tests/HistoryCoreTests/EventSchemaTests.swift
 Tests/HistoryCoreTests/HistoryMaintenanceTests.swift
 Tests/HistoryCoreTests/PolicyTests.swift
@@ -59,7 +56,8 @@ Tests/HistoryCoreTests/SegmentStoreTests.swift
 ```
 
 Other source/test files, including `EventPersistence.swift`, `RecorderLifecycle.swift`,
-`RecorderOwnership.swift`, `TextInputBuffer.swift`, `ApplicationIcons.swift` and
+`RecorderOwnership.swift`, `TextInputBuffer.swift`, `ObservationCapture.swift`,
+`ObservationDelivery.swift`, `ApplicationIcons.swift` and
 their tests, are Maka-authored additions with the repository's standard ASF
 header, not part of the vendored source exemption. This README is also Maka-authored.
 
@@ -173,12 +171,44 @@ selected items. Session boundaries in suppressed contexts retain only ID, time
 and kind. Suppressed events are counted; even when the optional debug
 `suppressed.jsonl` is enabled it contains only those three fields.
 
-AX trees are opaque text at the store boundary. With text enabled their producer
-must omit secure nodes and descendants before rendering; `AXTreeCapture` does
-so using `ObservationPolicy.isSecureRole`. Private-window detection depends on
+New content-bearing events carry an opaque window-lifetime `sourceId`,
+`contentState: available`, and `contentDomains` naming every contributing
+admitted web document, including embedded frames. Non-web documents use an empty
+domain list. Unknown ownership produces metadata only, without borrowing a URL
+from a link or another window. Denied source contexts suppress the event.
+Capture uses the owning AX document and rechecks source, security, and domain
+after blocking AX reads. A detached, changed, or denied subtree contributes no
+text. Native source identities are hashed again before model projection.
+
+Non-browser applications may contribute explicit local `file:` WebAreas
+(empty host or `localhost`). The verified `app:` WebArea scheme is admitted
+only for the Codex bundle. The exact local document identity is kept in memory
+for revalidation and typing attribution, never persisted as a window URL.
+HTTP(S) descendants still require admitted domains; local/custom documents
+nested beneath a remote WebArea cannot inherit native-app authority. Missing
+URLs, unsupported schemes, and remote file hosts remain unavailable.
+
+AX trees are self-contained bounded snapshots (32 KiB, 256 nodes, depth 14),
+not deltas requiring an unavailable baseline. The decoder retains support for
+older deltas, but Desktop never sends those deltas to the analysis model.
+With text enabled the producer omits secure nodes and descendants before
+rendering. Private-window detection depends on
 the supported browser bundle IDs and title markers, and secure detection depends
 on the AX flags/roles supplied by the application. Unmarked secrets in ordinary
 document content cannot be identified by this policy.
+
+An empty children array can make the ranged AX API return `illegalArgument`.
+Only a successful zero child count resolves that case to a leaf; messaging
+errors remain unreadable. Cancelling pending sensitive content preserves
+retained metadata deduplication, so an unavailable snapshot does not create
+a new identical window-change event every three seconds.
+
+Local persistence and model transmission are independent permissions. Desktop's
+`summaryTextEnabled` setting defaults off and is not a native capture permission.
+Only the main-process evidence projector may send admitted recorded text to the
+analysis provider. It rechecks current source exclusions and requires the new
+content/source/domain markers, so legacy unclassified content is not upgraded
+merely by enabling text analysis.
 
 Run `swift test` here for synthetic persistence tests. The tests do not start the
 collector or request Accessibility/Input Monitoring permissions.

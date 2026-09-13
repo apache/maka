@@ -260,6 +260,7 @@ export interface RuntimeHostConnection {
   /**
    * Signals require an explicitly cancellable operation. Queued aborts never
    * dispatch; dispatched aborts await terminal response, timeout, or disconnect.
+   * Request deadlines allow up to 120 seconds, or 190 seconds for Computer History.
    */
   request<K extends DirectRequestOperationKey>(
     operation: K,
@@ -503,7 +504,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     signal?: AbortSignal,
   ): Promise<Result> {
     const boundedTimeoutMs =
-      timeoutMs === undefined ? undefined : requireTimeout(timeoutMs, 'timeoutMs');
+      timeoutMs === undefined
+        ? undefined
+        : requireTimeout(
+            timeoutMs,
+            'timeoutMs',
+            operation === 'computer-history.summarize' ? 190_000 : 120_000,
+          );
     const spec = HOST_OPERATION_SPECS[operation] as OperationSpec<
       OperationInput<K>,
       OperationOutput<K>,
@@ -1803,9 +1810,9 @@ function openTransport(
   });
 }
 
-function requireTimeout(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 120_000) {
-    throw new RangeError(`${label} must be an integer between 1 and 120000`);
+function requireTimeout(value: number, label: string, maxMs = 120_000): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maxMs) {
+    throw new RangeError(`${label} must be an integer between 1 and ${maxMs}`);
   }
   return value;
 }

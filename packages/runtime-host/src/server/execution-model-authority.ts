@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { ComputerHistorySummaryLevel } from '@maka/core/computer-history';
 import {
   authorizeConnectionModel,
   effectiveBaseUrl,
@@ -187,13 +188,25 @@ export type HostDailyReviewModelResult =
     };
 
 export interface HostDailyReviewModel {
-  generate(input: {
-    readonly source?: 'daily_review' | 'computer_history';
-    readonly modelKey: string;
-    readonly prompt: string;
-    readonly abortSignal: AbortSignal;
-  }): Promise<HostDailyReviewModelResult>;
+  generate(
+    input: (
+      | {
+          readonly source?: 'daily_review';
+          readonly level?: never;
+        }
+      | {
+          readonly source: 'computer_history';
+          readonly level: ComputerHistorySummaryLevel;
+        }
+    ) & {
+      readonly modelKey: string;
+      readonly prompt: string;
+      readonly abortSignal: AbortSignal;
+    },
+  ): Promise<HostDailyReviewModelResult>;
 }
+
+export const COMPUTER_HISTORY_MODEL_TIMEOUT_MS = 180_000;
 
 export interface HostMemoryExtractionModel {
   generate(input: {
@@ -358,11 +371,17 @@ export function createHostDailyReviewModel(
   return Object.freeze({
     generate: async ({
       source = 'daily_review',
+      level,
       modelKey,
       prompt,
       abortSignal,
     }: Parameters<HostDailyReviewModel['generate']>[0]) => {
-      const effectiveAbortSignal = AbortSignal.any([abortSignal, AbortSignal.timeout(60_000)]);
+      const effectiveAbortSignal = AbortSignal.any([
+        abortSignal,
+        AbortSignal.timeout(
+          source === 'computer_history' ? COMPUTER_HISTORY_MODEL_TIMEOUT_MS : 60_000,
+        ),
+      ]);
       try {
         const header = await readAuxiliaryPreflight(authority, effectiveAbortSignal, () =>
           readDuringBackendCreation(
@@ -377,8 +396,15 @@ export function createHostDailyReviewModel(
           callKind: source,
           callId: `${source}_${callId}`,
           abortSignal: effectiveAbortSignal,
-          buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
+          buildRequest: () => ({
+            prompt,
+            maxOutputTokens:
+              source === 'computer_history' ? (level === '6h' ? 10_000 : 6_000) : 2_048,
+          }),
         });
+        if (source === 'computer_history' && result.finishReason === 'length') {
+          return { ok: false as const, errorClass: 'provider' as const };
+        }
         return {
           ok: true as const,
           text: result.text,

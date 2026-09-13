@@ -34,7 +34,7 @@ const STATUS: ComputerHistoryStatus = {
   platformSupported: true, helperAvailable: true, state: 'stopped',
   accessibilityGranted: true, inputMonitoringGranted: true,
   eventCount: 2, suppressedEventCount: 0, segmentCount: 1,
-  settings: { enabled: false, captureText: false, summariesEnabled: false, blockedApplications: [], blockedDomains: [] },
+  settings: { enabled: false, captureText: false, summariesEnabled: false, summaryTextEnabled: false, blockedApplications: [], blockedDomains: [] },
 };
 const entry = (id: string): ComputerHistoryTimelineEntry => ({
   id, title: `Activity ${id}`, description: 'Observed metadata',

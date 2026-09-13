@@ -199,6 +199,7 @@ const STATUS: ComputerHistoryStatus = {
     enabled: true,
     captureText: false,
     summariesEnabled: false,
+    summaryTextEnabled: false,
     blockedApplications: [],
     blockedDomains: [],
   },

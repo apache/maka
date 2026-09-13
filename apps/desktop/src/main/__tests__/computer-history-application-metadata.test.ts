@@ -178,7 +178,7 @@ test('native batch failure preserves history and resolved icons; manual refresh 
     platformSupported: true, helperAvailable: true, state: 'paused',
     accessibilityGranted: true, inputMonitoringGranted: true,
     eventCount: 1, suppressedEventCount: 0, segmentCount: 1,
-    settings: { enabled: true, captureText: false, summariesEnabled: false, blockedApplications: [], blockedDomains: [] },
+    settings: { enabled: true, captureText: false, summariesEnabled: false, summaryTextEnabled: false, blockedApplications: [], blockedDomains: [] },
   };
   const entry = {
     id: 'activity', title: 'Edited a document', description: 'Local history',

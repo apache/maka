@@ -32,6 +32,7 @@ import { historyAppName } from './computer-history-copy.js';
 import { computerHistorySettingsCopy, normalizeHistoryExclusion } from './computer-history-settings-copy.js';
 
 type SourceType = 'applications' | 'websites';
+type ConsentKey = 'enabled' | 'captureText' | 'summariesEnabled' | 'summaryTextEnabled';
 
 export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }: {
   onConfigureModel: () => void;
@@ -67,8 +68,8 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
     return saved;
   }
 
-  function saveConsent(key: 'enabled' | 'captureText' | 'summariesEnabled', value: boolean) {
-    if (disabled || (key === 'summariesEnabled' && value && !hasModel)) return;
+  function saveConsent(key: ConsentKey, value: boolean) {
+    if (disabled || ((key === 'summariesEnabled' || key === 'summaryTextEnabled') && value && !hasModel)) return;
     void confirm(() => controller.update({ [key]: value }, key));
   }
 
@@ -91,21 +92,24 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
     void confirm(() => controller.update({ [field]: sources.filter((entry) => entry !== value) }, 'exclusions'));
   }
 
-  const consent = (key: 'enabled' | 'captureText' | 'summariesEnabled', label: string, description: string) => (
-    <SettingsRow
-      label={label}
-      description={description}
-      end={<Switch
+  const consent = (key: ConsentKey, label: string, description: string) => {
+    const modelConsent = key === 'summariesEnabled' || key === 'summaryTextEnabled';
+    return (
+      <SettingsRow
         label={label}
-        isLabelHidden
-        value={status?.settings[key] ?? false}
-        isLoading={pending === key}
-        isDisabled={disabled || (!status?.settings[key] && (key === 'summariesEnabled' ? !hasModel : Boolean(unavailable)))}
-        disabledMessage={key === 'summariesEnabled' && !hasModel ? copy.modelRequired : unavailable || undefined}
-        onChange={(value) => saveConsent(key, value)}
-      />}
-    />
-  );
+        description={description}
+        end={<Switch
+          label={label}
+          isLabelHidden
+          value={status?.settings[key] ?? false}
+          isLoading={pending === key}
+          isDisabled={disabled || (!status?.settings[key] && (modelConsent ? !hasModel : Boolean(unavailable)))}
+          disabledMessage={modelConsent && !hasModel ? copy.modelRequired : unavailable || undefined}
+          onChange={(value) => saveConsent(key, value)}
+        />}
+      />
+    );
+  };
 
   return (
     <SettingsPage as="section" aria-label={copy.title} className="computer-history-settings">
@@ -132,6 +136,7 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
       <SettingsSection title={copy.contentGroup}>
         {consent('captureText', copy.text, copy.textHelp)}
         {consent('summariesEnabled', copy.analysis, copy.analysisHelp)}
+        {consent('summaryTextEnabled', copy.summaryText, copy.summaryTextHelp.replace('{model}', hasModel ? controller.modelLabel! : copy.modelMissing))}
         <SettingsRow
           label={copy.model}
           description={<>{copy.modelAuthority}{controller.modelError ? <span role="alert" className="computer-history-settings-error"> {copy.modelReadFailed} {controller.modelError}</span> : null}</>}

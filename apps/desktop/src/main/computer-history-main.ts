@@ -44,10 +44,14 @@ import type {
   ComputerHistorySummaryInput,
   ComputerHistorySummaryContent,
 } from '@maka/core/computer-history';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { ComputerHistoryApplications } from './computer-history-applications.js';
+import { projectHistorySummaryEvent, summaryScopeKey } from './computer-history-evidence.js';
 import {
   ComputerHistorySummaries,
+  summaryEventId,
   serializeComputerHistorySummary,
+  type ComputerHistorySummaryEvent,
   type StoredComputerHistorySummary,
 } from './computer-history-summaries.js';
 
@@ -69,6 +73,7 @@ type ResolvedHistoryEntry = {
   entry: ComputerHistoryTimelineEntry;
   events: readonly HistoryEvent[];
   summary?: StoredComputerHistorySummary;
+  rawIncomplete?: boolean;
 };
 
 type HelperStatus = {
@@ -91,6 +96,7 @@ const DEFAULT_SETTINGS: ComputerHistorySettings = {
   enabled: false,
   captureText: false,
   summariesEnabled: false,
+  summaryTextEnabled: false,
   blockedApplications: ['com.apple.keychainaccess'],
   blockedDomains: [],
 };
@@ -113,11 +119,13 @@ export class ComputerHistoryService {
   readonly #summaries?: ComputerHistorySummaries;
   readonly #applications: ComputerHistoryApplications;
   readonly #showItemInFolder?: (path: string) => void;
+  readonly #resolveLocale: () => UiLocale | Promise<UiLocale>;
   #recorder?: ChildProcess;
   #recorderEpoch = 0;
   #lastError?: string;
   #initializationError?: string;
   #retentionError?: string;
+  #evidenceError?: string;
   #summaryError?: string;
   #summaryTask?: Promise<void>;
   #summaryTimer?: ReturnType<typeof setInterval>;
@@ -137,6 +145,7 @@ export class ComputerHistoryService {
     now?: () => number;
     spawn?: typeof spawn;
     showItemInFolder?: (path: string) => void;
+    resolveLocale?: () => UiLocale | Promise<UiLocale>;
     generateSummary?: (
       input: ComputerHistorySummaryInput,
       signal: AbortSignal,
@@ -148,6 +157,7 @@ export class ComputerHistoryService {
     this.#now = input.now ?? Date.now;
     this.#spawn = input.spawn ?? spawn;
     this.#showItemInFolder = input.showItemInFolder;
+    this.#resolveLocale = input.resolveLocale ?? (() => 'en');
     this.#applications = new ComputerHistoryApplications({
       helperPath: this.#helperPath, platform: this.#platform, spawn: this.#spawn, now: this.#now,
     });
@@ -225,18 +235,26 @@ export class ComputerHistoryService {
   async updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings> {
     return this.#mutate(async () => {
       const next = normalizeSettings({ ...(await this.settings()), ...patch });
-      if (next.summariesEnabled && !this.#summaries) {
+      const analysisOptOut = Object.keys(patch).length > 0 && Object.entries(patch).every(
+        ([key, value]) => (key === 'summariesEnabled' || key === 'summaryTextEnabled') && value === false,
+      );
+      if (!analysisOptOut && next.summariesEnabled && !this.#summaries) {
         throw new Error('Computer History analysis is unavailable');
       }
       const results = await Promise.allSettled([
         this.#pauseSummaries(),
         (async () => {
-          await this.#withStorageMaintenance(async () => {
+          // Cancellation starts above; main-owned opt-outs do not need collector admission.
+          if (analysisOptOut) {
             await writeJsonAtomic(this.#settingsPath(), next);
-            await this.#writeCollectorConfig(next);
-          });
-          if (next.enabled && !this.#disposed) await this.start();
-          this.#initializationError = undefined;
+          } else {
+            await this.#withStorageMaintenance(async () => {
+              await writeJsonAtomic(this.#settingsPath(), next);
+              await this.#writeCollectorConfig(next);
+            });
+            if (next.enabled && !this.#disposed) await this.start();
+            this.#initializationError = undefined;
+          }
           this.#summaryError = undefined;
           this.#nextSummaryAttempt = 0;
           this.#reconcileSummaryTimer(next);
@@ -352,7 +370,7 @@ export class ComputerHistoryService {
     const helper = helperAvailable ? await this.#helperStatus() : undefined;
     const inventory = await this.#inventory();
     const ownershipError = !this.#recorder && !this.#storageLockHeld && helper && recorderActive(helper) ? RECORDER_OCCUPIED : undefined;
-    const error = readError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError;
+    const error = readError ?? this.#evidenceError ?? inventory.error ?? ownershipError ?? this.#initializationError ?? this.#retentionError ?? this.#lastError;
     const permissionsReady = Boolean(helper?.accessibility && helper.inputMonitoring);
     const state: ComputerHistoryStatus['state'] = error
       ? 'error'
@@ -406,9 +424,37 @@ export class ComputerHistoryService {
   async detail(id: string): Promise<ComputerHistoryDetail | null> {
     requireEntryId(id);
     return this.#mutate(async () => {
-      const resolved = (await this.#entries(30)).find(({ entry }) => entry.id === id);
+      const resolved = await this.#resolveEntry(id);
       if (!resolved) return null;
+      const { summary } = resolved;
       const events = [...resolved.events].sort((a, b) => eventTime(b) - eventTime(a));
+      const sampled: ComputerHistoryEventEvidence[] = [];
+      let evidenceUnavailable = resolved.rawIncomplete === true;
+      if (summary?.level === '10min' && !evidenceUnavailable) {
+        try {
+          const settings = await this.settings();
+          if (!summary.generation?.includesText || settings.summaryTextEnabled) {
+            const ids = new Set(summary.sourceIds);
+            for await (const event of this.#summaryEvents(settings, summary)) {
+              const evidenceId = summaryEventId(event, { includeText: summary.generation?.includesText === true });
+              if (!evidenceId || !ids.delete(evidenceId)) continue;
+              sampled.push({ ...eventEvidence(event, 0), id: evidenceId, usedInSummary: true });
+              if (!ids.size || sampled.length === MAX_DETAIL_EVENTS) break;
+            }
+          }
+        } catch {
+          // Optional provenance must not hide a valid document or expose raw filesystem errors.
+          evidenceUnavailable = true;
+        }
+      }
+      if (summary) {
+        this.#evidenceError = evidenceUnavailable
+          ? 'Computer History summary provenance is unavailable. Raw evidence could not be verified; the saved document is unchanged.'
+          : undefined;
+      }
+      const detailEvents = evidenceUnavailable ? []
+        : sampled.length ? sampled.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+        : events.slice(0, MAX_DETAIL_EVENTS).map(eventEvidence);
       return {
         entry: resolved.entry,
         ...(resolved.summary ? {
@@ -418,10 +464,10 @@ export class ComputerHistoryService {
             body: resolved.summary.content.body,
           },
         } : {}),
-        events: events.slice(0, MAX_DETAIL_EVENTS).map(eventEvidence),
+        events: detailEvents,
         eventTotal: events.length,
-        truncated: events.length > MAX_DETAIL_EVENTS,
-        rawAvailable: events.length > 0,
+        truncated: evidenceUnavailable || events.length > detailEvents.length,
+        rawAvailable: !evidenceUnavailable && events.length > 0,
       };
     }, false);
   }
@@ -444,7 +490,7 @@ export class ComputerHistoryService {
   async deleteEntry(id: string): Promise<ComputerHistoryStatus> {
     requireEntryId(id);
     return this.#mutate(async () => {
-      const selected = (await this.#entries(30)).find(({ entry }) => entry.id === id);
+      const selected = await this.#resolveEntry(id);
       if (!selected) throw new Error('Computer History entry is unavailable');
       const { entry } = selected;
       const start = Date.parse(entry.start);
@@ -474,8 +520,24 @@ export class ComputerHistoryService {
         }
       }, true);
       if (errors.length) throw new AggregateError(errors, 'Computer History entry deletion failed');
+      this.#evidenceError = undefined;
       return this.status();
     });
+  }
+
+  async #resolveEntry(id: string): Promise<ResolvedHistoryEntry | undefined> {
+    if (!/^(?:10min|6h)-/u.test(id)) {
+      return (await this.#entries(30)).find(({ entry }) => entry.id === id);
+    }
+    const summary = await this.#summaries?.get(id);
+    if (!summary) return undefined;
+    const inventory = await this.#inventory();
+    return {
+      summary,
+      entry: summaryEntry(summary),
+      events: inventory.events.filter((event) => inInterval(eventTime(event), summary)),
+      rawIncomplete: Boolean(inventory.error),
+    };
   }
 
   async #entries(days: number): Promise<ResolvedHistoryEntry[]> {
@@ -569,6 +631,7 @@ export class ComputerHistoryService {
     this.#reconcileSummaryTimer(await this.settings());
     this.#initializationError = undefined;
     this.#retentionError = undefined;
+    this.#evidenceError = undefined;
     return this.status();
   }
 
@@ -654,15 +717,33 @@ export class ComputerHistoryService {
     const settings = await this.settings();
     if (!settings.summariesEnabled || !current()) return;
     if (await this.#analysisPaused()) return;
-    const inventory = await this.#inventory();
-    if (inventory.error) throw new Error(inventory.error);
+    const locale = await this.#resolveLocale();
     if (!current()) return;
-    await this.#summaries!.run(inventory.events.flatMap((event) =>
-      event.timestamp && event.kind && Number.isFinite(eventTime(event))
-        ? [{ timestamp: event.timestamp, kind: event.kind, app: event.app, window: event.window }]
-        : [],
-    ));
+    await this.#summaries!.run(this.#summaryEvents(settings), {
+      locale,
+      includeText: settings.summaryTextEnabled,
+      scopeKey: summaryScopeKey(settings),
+    });
     if (current()) this.#summaryError = undefined;
+  }
+
+  async *#summaryEvents(
+    settings: ComputerHistorySettings,
+    interval?: { start: string; end: string },
+  ): AsyncGenerator<ComputerHistorySummaryEvent> {
+    const cutoff = this.#now() - RAW_HORIZON_MS;
+    let count = 0;
+    for (const path of await segmentFiles(join(this.#home, 'segments'), ['events.jsonl'])) {
+      for await (const line of readEventLines(path)) {
+        const time = rawEventTime(line);
+        if (time === undefined || time < cutoff || (interval && !inInterval(time, interval))) continue;
+        if (++count > MAX_INVENTORY_EVENTS) {
+          throw new Error('Too many retained events to analyze; original files preserved.');
+        }
+        const event = projectHistorySummaryEvent(line, settings);
+        if (event) yield event;
+      }
+    }
   }
 
   #reconcileSummaryTimer(settings: ComputerHistorySettings): void {
@@ -949,7 +1030,7 @@ export function registerComputerHistoryIpc(input: {
 
 function normalizeSettings(value: Partial<ComputerHistorySettings>): ComputerHistorySettings {
   if (!isRecord(value)) throw new Error('Invalid Computer History settings');
-  for (const key of ['enabled', 'captureText', 'summariesEnabled'] as const) {
+  for (const key of ['enabled', 'captureText', 'summariesEnabled', 'summaryTextEnabled'] as const) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') {
       throw new Error(`Invalid Computer History setting: ${key}`);
     }
@@ -965,6 +1046,7 @@ function normalizeSettings(value: Partial<ComputerHistorySettings>): ComputerHis
     enabled: value.enabled === true,
     captureText: value.captureText === true,
     summariesEnabled: value.summariesEnabled === true,
+    summaryTextEnabled: value.summaryTextEnabled === true,
     blockedApplications: value.blockedApplications === undefined
       ? DEFAULT_SETTINGS.blockedApplications
       : strings(value.blockedApplications),
@@ -1009,7 +1091,7 @@ function matchesEntry(event: HistoryEvent, selected: ResolvedHistoryEntry): bool
   return event.sourceKey === first.sourceKey;
 }
 
-function eventEvidence(event: HistoryEvent, index: number): ComputerHistoryEventEvidence {
+function eventEvidence(event: Omit<HistoryEvent, 'sourceKey'>, index: number): ComputerHistoryEventEvidence {
   const evidence = {
     timestamp: new Date(eventTime(event)).toISOString(),
     kind: event.kind || 'activity',
@@ -1209,7 +1291,8 @@ function parseEvent(line: string): HistoryEvent | null {
         typeof app.bundleIdentifier === 'string' && app.bundleIdentifier
           ? app.bundleIdentifier
           : typeof app.name === 'string' ? app.name : '',
-        typeof window.title === 'string' ? window.title : '',
+        typeof candidate.sourceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(candidate.sourceId)
+          ? candidate.sourceId : typeof window.title === 'string' ? window.title : '',
       ])).digest('hex'),
       timestamp: candidate.timestamp,
       kind: observedText(candidate.kind, 80),
@@ -1236,12 +1319,12 @@ function rawEventTime(line: string): number | undefined {
   }
 }
 
-function eventTime(event: HistoryEvent): number {
+function eventTime(event: { timestamp?: string }): number {
   const value = typeof event.timestamp === 'string' ? Date.parse(event.timestamp) : Number.NaN;
   return Number.isFinite(value) ? value : 0;
 }
 
-function appKey(event: HistoryEvent): string {
+function appKey(event: { app?: { name?: string; bundleIdentifier?: string } }): string {
   return event.app?.bundleIdentifier || event.app?.name || '';
 }
 
@@ -1258,6 +1341,7 @@ function humanKind(kind: string): string {
     'keyboard.submit': 'submits',
     'selection.changed': 'selections',
     'terminal.value_changed': 'terminal updates',
+    'ui.changed': 'content updates',
     'window.changed': 'window changes',
   };
   return labels[kind] ?? kind.replaceAll('.', ' ');

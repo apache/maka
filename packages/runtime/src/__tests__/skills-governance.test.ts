@@ -38,6 +38,34 @@ import {
 } from '../skills.js';
 
 describe('shared bundled skill catalog', () => {
+  it('preserves installed Computer History trust without trusting a modified installed body', () => {
+    const source = getBundledSkillSource('computer-history');
+    assert.ok(source);
+    const previousHash = 'sha256:bf62abc274b5716470c5db7eae36b7efe514018ace429578cf343af62aac3eca';
+    const lock = {
+      schemaVersion: 1,
+      id: source.id,
+      sourceType: 'bundled',
+      sourceName: source.sourceName,
+      sourceVersion: source.sourceVersion,
+      contentSha256: previousHash,
+    };
+    const installed = validateSkillLock({
+      lock,
+      skillId: source.id,
+      currentContentSha256: previousHash,
+    });
+    assert.equal(installed.validationStatus, 'ok');
+    assert.equal(installed.userModified, false);
+    const edited = validateSkillLock({
+      lock,
+      skillId: source.id,
+      currentContentSha256: `sha256:${'0'.repeat(64)}`,
+    });
+    assert.equal(edited.validationStatus, 'modified');
+    assert.equal(edited.userModified, true);
+  });
+
   it('trusts the Computer Use lock shipped immediately before the current bundled body', () => {
     const source = getBundledSkillSource('computer-use');
     assert.ok(source);

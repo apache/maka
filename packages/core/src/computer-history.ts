@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiLocale } from './ui-locale.js';
+
 export type ComputerHistoryRuntimeState =
   | 'unsupported'
   | 'stopped'
@@ -29,8 +31,10 @@ export type ComputerHistoryRuntimeState =
 export interface ComputerHistorySettings {
   readonly enabled: boolean;
   readonly captureText: boolean;
-  /** Separate consent to send reduced activity evidence to the configured analysis model. */
+  /** Consent to send bounded activity evidence to the analysis model; eligible UI text also requires summaryTextEnabled. */
   readonly summariesEnabled: boolean;
+  /** Explicit consent to send previously captured eligible UI text; captureText alone does not authorize transmission. */
+  readonly summaryTextEnabled: boolean;
   readonly blockedApplications: readonly string[];
   readonly blockedDomains: readonly string[];
 }
@@ -68,13 +72,15 @@ export interface ComputerHistoryTimelineEntry {
 }
 
 export interface ComputerHistoryEventEvidence {
-  /** Opaque identity for this response; never a raw record path or native identifier. */
+  /** Opaque stable hash aligned with summary evidence when available; never a raw path or native identifier. */
   readonly id: string;
   readonly timestamp: string;
   readonly kind: string;
   readonly application: string;
   readonly applicationName: string;
   readonly windowTitle?: string;
+  /** Whether this event was sampled into the summary; omitted when provenance is unavailable. */
+  readonly usedInSummary?: boolean;
 }
 
 /** Requested local application metadata; no executable paths or native process identifiers. */
@@ -94,10 +100,10 @@ export interface ComputerHistoryDetail {
     readonly name: string;
     /** Persisted serialization including JSON frontmatter and body, at most 128 KiB. */
     readonly markdown: string;
-    /** Validated model-authored Markdown body, unescaped and at most 8 KiB. */
+    /** Validated model-authored Markdown body, unescaped and at most 48 KiB. */
     readonly body: string;
   };
-  /** At most 100 latest matching, retained events, newest first. */
+  /** At most 100 matching retained events, sampled evidence first; metadata only, never model-input UI text. */
   readonly events: readonly ComputerHistoryEventEvidence[];
   /** Matching raw events within the entry interval and 48-hour horizon, before the response cap. */
   readonly eventTotal: number;
@@ -114,12 +120,16 @@ export interface ComputerHistorySuggestion {
   readonly description: string;
 }
 
-/** Only bounded, privacy-reduced evidence crosses the local model authority boundary. */
+/** Bounded evidence, optionally including independently authorized eligible UI text, crosses the model authority boundary. */
 export interface ComputerHistorySummaryInput {
   readonly level: ComputerHistorySummaryLevel;
+  /** Trusted application-selected output language. Older callers may omit it. */
+  readonly locale?: UiLocale;
   readonly start: string;
   readonly end: string;
   readonly evidence: readonly { readonly id: string; readonly text: string }[];
+  /** At most two earlier summaries, untrusted context rather than evidence of current actions. */
+  readonly priorContext?: readonly { readonly id: string; readonly text: string }[];
 }
 
 export interface ComputerHistorySummaryContent {

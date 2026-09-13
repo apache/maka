@@ -3850,7 +3850,7 @@ test('WorkHub routing reuses the saved Session model and calls Intent before bou
 
 test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 20_000,
-}, async () => {
+}, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
   const provider = await startProvider();
   const capability = await resolveStorageRoot({
@@ -3975,6 +3975,11 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const timeoutBudgets: number[] = [];
+    const timeoutSpy = t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+      timeoutBudgets.push(milliseconds);
+      return new AbortController().signal;
+    });
     const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
@@ -3996,11 +4001,15 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
     assert.ok(dailyReviewRequest);
     assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
+    assert.equal(dailyReviewRequest.body.max_tokens, 2_048);
+    assert.equal(timeoutBudgets[0], 60_000);
 
     const computerHistoryRequestsBefore = provider.requests.length;
+    const historyTimeoutOffset = timeoutBudgets.length;
     assert.deepEqual(
       await dailyReview.generate({
         source: 'computer_history',
+        level: '10min',
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
         prompt: 'Summarize bounded Computer History observations.',
         abortSignal: new AbortController().signal,
@@ -4021,6 +4030,119 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(computerHistoryRequest);
     assert.equal(computerHistoryRequest.sessionHeader, dailyReviewRequest.sessionHeader);
     assert.deepEqual(toolNames(computerHistoryRequest.body), []);
+    assert.equal(computerHistoryRequest.body.max_tokens, 6_000);
+    assert.equal(timeoutBudgets[historyTimeoutOffset], 180_000);
+    const rollupRequestsBefore = provider.requests.length;
+    const rollupTimeoutOffset = timeoutBudgets.length;
+    assert.equal(
+      (
+        await dailyReview.generate({
+          source: 'computer_history',
+          level: '6h',
+          modelKey: `goal-evaluator-provider::${MODEL_ID}`,
+          prompt: 'Summarize six hours of synthetic child summaries.',
+          abortSignal: new AbortController().signal,
+        })
+      ).ok,
+      true,
+    );
+    assert.equal(provider.requests[rollupRequestsBefore]!.body.max_tokens, 10_000);
+    assert.deepEqual(toolNames(provider.requests[rollupRequestsBefore]!.body), []);
+    assert.equal(timeoutBudgets[rollupTimeoutOffset], 180_000);
+    timeoutSpy.mock.restore();
+
+    const truncatedContent = {
+      title: 'Synthetic review',
+      description: 'You reviewed a synthetic document.',
+      body: '## Review\nThe document was visible; no publication was observed.',
+    };
+    const truncatedModel = createHostDailyReviewModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Truncated provider output must not drain the Host'),
+      newId: () => 'truncated-summary',
+      createFetchTransport: () => ({
+        fetch: async () =>
+          Response.json({
+            id: 'truncated',
+            object: 'chat.completion',
+            created: 0,
+            model: MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: JSON.stringify(truncatedContent) },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+          }),
+        close: async () => {},
+      }),
+    });
+    const commonInput = {
+      modelKey: `goal-evaluator-provider::${MODEL_ID}`,
+      prompt: 'Synthetic truncation response.',
+      abortSignal: new AbortController().signal,
+    };
+    assert.deepEqual(
+      await truncatedModel.generate({
+        ...commonInput,
+        source: 'computer_history',
+        level: '6h',
+      }),
+      { ok: false, errorClass: 'provider' },
+    );
+    assert.equal((await truncatedModel.generate(commonInput)).ok, true);
+
+    for (const reason of ['AbortError', 'TimeoutError'] as const) {
+      const dispatched = deferred<void>();
+      let providerSignal: AbortSignal | undefined;
+      let transportCloses = 0;
+      const stalledHistory = createHostDailyReviewModel({
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        usage,
+        requestDrain: () => assert.fail('Cancelled history must not drain the Host'),
+        newId: () => `history-${reason}`,
+        createFetchTransport: () => ({
+          fetch: async (_request, init) => {
+            providerSignal = init?.signal ?? undefined;
+            dispatched.resolve();
+            return new Promise<Response>(() => {});
+          },
+          close: async () => {
+            transportCloses++;
+          },
+        }),
+      });
+      const abort = new AbortController();
+      const pending = stalledHistory.generate({
+        ...commonInput,
+        source: 'computer_history',
+        level: '10min',
+        abortSignal: abort.signal,
+      });
+      await settleWithin(dispatched.promise);
+      abort.abort(new DOMException('Synthetic summary cancellation', reason));
+      assert.deepEqual(await settleWithin(pending), {
+        ok: false,
+        errorClass: reason === 'AbortError' ? 'aborted' : 'timeout',
+      });
+      assert.equal(providerSignal?.aborted, true);
+      assert.equal(transportCloses, 1);
+      const cancellationLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.ok(
+        cancellationLogs.rows.some(
+          (row) =>
+            row.callKind === 'computer_history' &&
+            row.callId === `computer_history_history-${reason}` &&
+            row.status === 'aborted' &&
+            row.sessionId === undefined,
+        ),
+      );
+    }
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,

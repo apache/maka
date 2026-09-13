@@ -22,7 +22,8 @@
 ## Product decision
 
 Maka treats Computer History as a user-controlled source of recent computer
-activity. It records interaction metadata and produces optional text summaries.
+activity. It records interaction metadata, optionally captures admitted text,
+and produces optional model summaries.
 It does not record screenshots, video, or audio.
 
 The integration has five boundaries:
@@ -106,7 +107,9 @@ fallback for missing or unreadable images. This requires no capture permission,
 application launch, network icon service, or bundled third-party brand assets.
 The settings exclusions picker shows names and icons from retained history,
 with a Bundle ID input for sources absent from that list. Exclusions change
-future collection policy without deleting previously retained evidence.
+future collection policy and eligibility for new analysis without deleting
+previously retained evidence or summaries. Derived prior context and rollups
+must match the current exclusion-policy scope.
 
 The page uses Module Hub's services and draft ownership. Adding a draft
 selects the local target, preserves existing Composer text, and never sends a
@@ -142,7 +145,7 @@ background analysis consent described below.
 
 - The feature is disabled by default.
 - Typed-text persistence is disabled by default.
-- Model processing is separately disabled by default.
+- Model processing and sending recorded text are separately disabled by default.
 - Secure input flags and secure element roles suppress affected events.
 - Detected private-browsing contexts are suppressed.
 - Keychain Access is blocked by default.
@@ -155,8 +158,11 @@ background analysis consent described below.
   buffered writes. Cleanup after an application shutdown resumes at next
   startup; summaries persist until cleared.
 - Suppressed event bodies are not stored; only a count is retained.
-- Renderer and model-facing projections omit keyboard text, selection text,
-  accessibility values, raw paths, and process identifiers.
+- Raw event projections exposed to the renderer omit keyboard text, selection
+  text, accessibility values, raw paths, and process identifiers.
+- With `summaryTextEnabled` off, model evidence is metadata only. With it on,
+  main may additionally send admitted typed/selected text and self-contained
+  accessibility snapshots. Saved model documents can contain derived detail.
 
 The persistence boundary projects every native event, including nested drag
 endpoints and selection targets. With text capture off, it removes text-bearing
@@ -170,8 +176,17 @@ the Composer, control characters and tag delimiters are escaped and the
 projection is wrapped in an `untrusted-observed-ui` envelope that explicitly
 instructs the model to treat the contents as data rather than commands.
 Summaries retain this untrusted status. Enabling model processing sends bounded
-application, window, interaction, and prior-summary evidence to the configured
-model provider and consumes model tokens; it is not wholly local processing.
+application, window, interaction, and eligible prior-summary evidence to the
+configured model provider and consumes model tokens; it is not wholly local
+processing. Recording text locally (`captureText`) and allowing existing
+admitted text into summaries (`summaryTextEnabled`) are independent controls.
+Disabling local capture affects future writes. Disabling text analysis excludes
+rich prior context and any rollup containing rich children, while preserving
+existing readable documents. Cancellation cannot retract an earlier request.
+Revoking either model permission persists through the main-process settings
+authority even when the native helper or model authority is unavailable. It
+cancels active analysis without stopping the collector or requiring its storage
+lock. Collector-affecting changes still require native maintenance admission.
 
 ## Summary lifecycle
 
@@ -179,17 +194,43 @@ The main process schedules closed UTC ten-minute windows and six-hour rollups.
 Each pass processes at most six items, using a 48-hour raw evidence horizon.
 Persisted deterministic identities and evidence provenance prevent unchanged
 summaries from regenerating across restarts. Within complete retained windows,
-changed sampled source IDs, event counts, or application sets refresh the
-ten-minute summary in place. Once retention cuts into a saved window, its
+an order-independent revision of all eligible evidence refreshes the ten-minute
+summary when content changes, even outside the selected samples. Locale and
+analysis/exclusion scope participate in generation provenance. Once retention
+cuts into a saved window, its
 complete summary is preserved instead of being replaced with the retained tail.
 Pending ten-minute summaries take priority over derived rollups, so a failed
 older rollup does not block newer activity on the next admitted pass. The
 existing error backoff still applies.
 Six-hour summaries derive from the available ten-minute summaries; they do not
 assert that every moment of the interval was observed.
+Streaming sampling spans the whole interval using temporal endpoints, source
+representatives, and content-bearing observations within fixed memory and wire
+budgets. It does not stop after the first dense burst. A failed/incomplete raw
+scan dispatches no model request. Six-hour input divides a shared text budget
+across children rather than clipping each document to a fixed short preview.
+Up to two earlier, policy-compatible summaries provide explicitly labelled
+context; they are not counted as evidence of activity in the current interval.
+
+The tool-free prompt asks for a task-oriented title, a second-person description,
+and Markdown covering observations, task progress, outcomes, blockers, and
+evidence gaps. Source IDs remain in stored provenance, not the model-written
+body. Trusted UI locale is separate from untrusted content.
+Metadata-only evidence cannot establish what a document says or that an action
+succeeded. The model must state those gaps instead of inventing task detail.
+Computer History uses a 180-second model deadline and level-specific output
+budgets (6,000 tokens for ten minutes, 10,000 for six hours). Desktop passes a
+190-second operation-specific request deadline; other request and connection
+timer limits remain unchanged. Cancellation targets the original request.
+If the Host does not acknowledge completion, the deadline ends the caller's
+wait while retaining the transport slot until a terminal response or connection
+failure. A timeout does not prove provider termination. Daily Review keeps its
+existing limits.
 A new or refreshed child invalidates its saved parent immediately before
-publication. If rebuilding that parent fails, the child remains available and
-the parent is retried on a later admitted pass; stale rollup content is not
+publication when the parent is eligible under the current text consent and
+exclusion scope. Ineligible archives remain readable but cannot be sent as
+context or rollup evidence. If rebuilding an eligible parent fails, the child
+remains available and the parent is retried on a later admitted pass; stale rollup content is not
 reused after restart.
 
 Markdown summary files contain versioned JSON frontmatter, bounded model
@@ -200,10 +241,51 @@ analysis and fence late output before persistence.
 Summary details include a document named `<summary-id>.md`, its canonical
 serialization including JSON frontmatter, and the validated, unescaped Markdown
 body. Storage and detail projection share one serializer. Raw entries have no
-document. The body is bounded to 8 KiB and the serialized file to 128 KiB; readers
+document. The body is bounded to 48 KiB and the serialized file to 128 KiB; readers
 must render it as untrusted Markdown. This does not alter the escaped Composer
-context or the existing 30-day detail lookup. Summary application identities
+context. Canonical summary IDs remain readable after leaving the 30-day feed
+and while hidden by a parent rollup. Details return at most 100 reduced events,
+preferring retained evidence IDs actually selected for that summary; expired or
+ineligible evidence falls back to interval metadata without claiming provenance.
+An unreadable evidence scan preserves access to the saved document, reports
+unavailable provenance in status, and returns no partial event sample. A
+successful detail retry or history deletion clears that diagnostic.
+Summary application identities
 prefer native bundle IDs, with name-only fallbacks when no ID was observed.
+
+Generation metadata requires an explicit `includesText` Boolean. Version 3
+introduced exact prior-context summary IDs; these remain available for linkage.
+Version 4 additionally stores `rawEvidenceRanges`: sorted, disjoint half-open
+`[startMs, endMs)` intervals covering transitive raw ten-minute windows. Main
+captures the union of each child's and prior summary's coverage before model
+execution, plus the current raw window for a ten-minute summary. These ranges
+are not model input. Each consumer retains its own immutable ancestry even when
+an intermediate summary is rewritten under the same ID or disappears.
+
+Interval deletion removes overlapping documents and any consumer whose stored
+raw coverage intersects the selection, including after raw expiry. It unlinks
+consumers before inputs without traversing mutable summary IDs. Sparse gaps in
+raw coverage do not invalidate downstream consumers merely because an enclosing
+rollup overlaps the gap. Coverage is precise at ten-minute-window granularity,
+not at individual-event granularity.
+
+Adjacent or overlapping ranges merge. At most 256 ranges are retained within
+the existing 128 KiB file limit; overflow coalesces the oldest excess ranges
+into one enclosing interval. This can conservatively delete consumers for old
+gaps, but never discards ancestry; newer gaps remain separate. Decoding rejects
+missing, empty, oversized, unordered, overlapping, non-aligned or future ranges
+and coverage that omits the summary's own raw inputs.
+
+Generation versions 1 through 3 cannot prove immutable ancestry, even when
+prior IDs exist. They conservatively cover all supported time before their end,
+using `-8640000000000000` as the earliest timestamp. New consumers inherit that
+coverage rather than guessing lineage from current files. Consequently, an
+interval deletion can remove later legacy-derived summaries across scopes.
+Baseline files without generation metadata predate prior context: they remain
+readable and eligible under the existing policy gates, contribute their own
+interval, and can generate rollups after raw expiry. Regeneration from complete
+eligible raw input produces v4 provenance; ineligible rich archives are never
+rewritten just to migrate their provenance.
 
 The reveal operation accepts only a summary entry ID. Main resolves and
 validates the owned persisted Markdown before asking the operating system to
@@ -249,6 +331,7 @@ Cancellation cannot retract evidence already transmitted to a provider.
 - Native collector: `apps/desktop/native/computer-history`
 - Helper build: `apps/desktop/scripts/build-computer-history-helper.mjs`
 - Main authority and IPC: `apps/desktop/src/main/computer-history-main.ts`
+- Main-only content projection: `apps/desktop/src/main/computer-history-evidence.ts`
 - Summary persistence: `apps/desktop/src/main/computer-history-summaries.ts`
 - Model coordinator: `packages/runtime-host/src/server/computer-history-coordinator.ts`
 - Model protocol: `packages/runtime-host/src/protocol/computer-history.ts`

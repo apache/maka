@@ -210,7 +210,7 @@ public struct ObservationPolicy: Codable, Equatable, Sendable {
         }
     }
 
-    private static let browserBundleIdentifiers = Set([
+    public static let browserBundleIdentifiers = Set([
         "com.google.Chrome",
         "com.google.Chrome.beta",
         "com.google.Chrome.canary",
@@ -224,5 +224,9 @@ public struct ObservationPolicy: Codable, Equatable, Sendable {
         "org.mozilla.firefox",
         "org.mozilla.firefoxdeveloperedition",
         "org.mozilla.nightly",
+        "company.thebrowser.Browser",
+        "com.brave.Browser",
+        "com.operasoftware.Opera",
+        "com.vivaldi.Vivaldi",
     ])
 }

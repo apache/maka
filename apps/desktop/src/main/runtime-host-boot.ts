@@ -355,6 +355,11 @@ function activeRuntimeHostRef(): DesktopTargetScope | undefined {
 }
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const e2eFixture = resolveDesktopE2eFixture();
+const revealMode = resolveWindowRevealMode(
+  Boolean(e2eFixture) || isIsolatedE2e,
+  process.env.MAKA_E2E_SHOW_WINDOW === "1",
+  app.isPackaged,
+);
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const workspaceRoot = join(
   userDataDir,
@@ -496,11 +501,6 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
-const revealMode = resolveWindowRevealMode(
-  Boolean(e2eFixture) || isIsolatedE2e,
-  process.env.MAKA_E2E_SHOW_WINDOW === "1",
-  app.isPackaged,
-);
 let onMainWindowClose = (): void => {};
 let onMainWindowClosed = (): void => {};
 const mainWindowController = createMainWindowController({
@@ -544,6 +544,7 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
 });
 const computerHistoryService = new ComputerHistoryService({
   home: join(userDataDir, "computer-history"),
+  resolveLocale: () => desktopLocale.resolve(),
   showItemInFolder: (path) => shell.showItemInFolder(path),
   helperPath: app.isPackaged
     ? join(process.resourcesPath, "bin", "open-history")
@@ -553,10 +554,11 @@ const computerHistoryService = new ComputerHistoryService({
     // Activity belongs to this Mac, even while the selected task uses a remote Host.
     const client = runtimeHostManager?.current('local')?.candidate?.client;
     if (!client) throw new Error('Local analysis Host is unavailable');
+    // Bound acknowledgement time beyond the Host's 180-second model deadline.
     const result = await client.request(
       'computer-history.summarize',
       input,
-      75_000,
+      190_000,
       signal,
     );
     signal.throwIfAborted();

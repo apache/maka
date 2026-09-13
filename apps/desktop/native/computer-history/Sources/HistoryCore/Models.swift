@@ -19,6 +19,7 @@ public enum HistoryEventKind: String, Codable, CaseIterable, Sendable {
     case keyboardShortcut = "keyboard.shortcut"
     case terminalValueChanged = "terminal.value_changed"
     case selectionChanged = "selection.changed"
+    case uiChanged = "ui.changed"
     case debugError = "debug.error"
 }
 
@@ -336,10 +337,12 @@ public struct EventStreamAXTree: Codable, Equatable, Sendable {
 
     public let mode: Mode
     public let text: String
+    public let truncated: Bool?
 
-    public init(mode: Mode, text: String) {
+    public init(mode: Mode, text: String, truncated: Bool? = nil) {
         self.mode = mode
         self.text = text
+        self.truncated = truncated
     }
 }
 
@@ -352,6 +355,9 @@ public struct EventStreamDiagnostic: Codable, Equatable, Sendable {
 }
 
 public struct HistoryEvent: Codable, Equatable, Identifiable, Sendable {
+    public enum ContentState: String, Codable, Sendable {
+        case available, metadataOnly, unavailable
+    }
     public let id: Int
     public let timestamp: Date
     public let kind: HistoryEventKind
@@ -362,6 +368,9 @@ public struct HistoryEvent: Codable, Equatable, Identifiable, Sendable {
     public let selection: EventStreamSelection?
     public let ax: EventStreamAXTree?
     public let diagnostic: EventStreamDiagnostic?
+    public let sourceId: String?
+    public let contentState: ContentState?
+    public let contentDomains: [String]?
 
     public init(
         id: Int,
@@ -373,7 +382,10 @@ public struct HistoryEvent: Codable, Equatable, Identifiable, Sendable {
         keyboard: EventStreamKeyboardInteraction? = nil,
         selection: EventStreamSelection? = nil,
         ax: EventStreamAXTree? = nil,
-        diagnostic: EventStreamDiagnostic? = nil
+        diagnostic: EventStreamDiagnostic? = nil,
+        sourceId: String? = nil,
+        contentState: ContentState? = nil,
+        contentDomains: [String]? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -385,6 +397,9 @@ public struct HistoryEvent: Codable, Equatable, Identifiable, Sendable {
         self.selection = selection
         self.ax = ax
         self.diagnostic = diagnostic
+        self.sourceId = sourceId
+        self.contentState = contentState
+        self.contentDomains = contentDomains
     }
 }
 

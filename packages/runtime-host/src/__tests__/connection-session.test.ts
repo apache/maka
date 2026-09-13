@@ -353,6 +353,147 @@ test('summary timeout cancels Host work and retires its eventual response withou
   );
 });
 
+for (const callerCancels of [false, true]) {
+  test(`summary has a 190-second terminal bound when Host ignores ${callerCancels ? 'caller cancellation' : 'the deadline'}`, {
+    timeout: 10_000,
+  }, async (t) => {
+    const entered = deferred();
+    const cancelled = deferred();
+    const finish = deferred();
+    const saturated = deferred();
+    const release = deferred();
+    let queries = 0;
+    let queuedEntered = false;
+    let hostSignal: AbortSignal | undefined;
+    await withRuntimeHost(
+      async (input) => {
+        if (input.turnId === 'queued') {
+          queuedEntered = true;
+        } else {
+          if (++queries === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 2) saturated.resolve();
+          await release.promise;
+        }
+        return { ok: true, result: runningSnapshot(input.sessionId, input.turnId) };
+      },
+      async ({ connectClient }) => {
+        const client = await connectClient();
+        const abort = new AbortController();
+        const blockers: Promise<unknown>[] = [];
+        let queued: Promise<unknown> | undefined;
+        let settlements = 0;
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const summary = client
+          .request('computer-history.summarize', HISTORY_INPUT, 190_000, abort.signal)
+          .finally(() => {
+            settlements++;
+          });
+        const rejected = assert.rejects(
+          summary,
+          (error: unknown) =>
+            error instanceof RuntimeHostRequestInterruptedError &&
+            error.dispatch === 'dispatched' &&
+            error.reason === 'timeout',
+        );
+        try {
+          await entered.promise;
+          t.mock.timers.tick(125_000);
+          await Promise.resolve();
+          assert.equal(settlements, 0);
+          assert.equal(hostSignal?.aborted, false);
+          if (callerCancels) {
+            abort.abort();
+            await cancelled.promise;
+            assert.equal(settlements, 0);
+          }
+          t.mock.timers.tick(64_999);
+          await Promise.resolve();
+          assert.equal(settlements, 0);
+          t.mock.timers.tick(1);
+          await rejected;
+          t.mock.timers.reset();
+          await withTimeout(cancelled.promise, 1_000, 'deadline did not cancel Host work');
+          assert.equal(settlements, 1);
+          assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
+
+          for (let i = 0; i < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 2; i++) {
+            blockers.push(
+              client.request('turn.query', { sessionId: 'session', turnId: `block-${i}` }),
+            );
+          }
+          await withTimeout(saturated.promise, 1_000, 'domain requests did not saturate');
+          queued = client.request('turn.query', { sessionId: 'session', turnId: 'queued' });
+          // Status bypasses domain slots and proves that the connection is still usable.
+          assert.equal((await client.status()).state, 'ready');
+          assert.equal(queuedEntered, false, 'retirement must retain the unacknowledged slot');
+          finish.resolve();
+          await withTimeout(queued, 1_000, 'late summary response did not release its slot');
+          assert.equal(queuedEntered, true);
+          assert.equal(settlements, 1);
+          release.resolve();
+          await Promise.all(blockers);
+          assert.equal((await client.status()).state, 'ready');
+        } finally {
+          t.mock.timers.reset();
+          finish.resolve();
+          release.resolve();
+          abort.abort();
+          await Promise.allSettled([rejected, ...blockers, ...(queued ? [queued] : [])]);
+        }
+      },
+      {
+        'computer-history.summarize': async (_input, context) => {
+          hostSignal = context.requestAbortSignal;
+          assert.ok(hostSignal);
+          hostSignal.addEventListener('abort', () => cancelled.resolve(), { once: true });
+          entered.resolve();
+          await finish.promise;
+          return { ok: true, result: HISTORY_RESULT };
+        },
+      },
+    );
+  });
+}
+
+test('only Computer History requests may exceed the 120-second timeout cap', async () => {
+  await withRuntimeHost(
+    async (input) => ({ ok: true, result: runningSnapshot(input.sessionId, input.turnId) }),
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      for (const timeout of [0, -1, 190_001, 190_000.5, NaN, Infinity]) {
+        assert.throws(
+          () => client.request('computer-history.summarize', HISTORY_INPUT, timeout),
+          RangeError,
+        );
+      }
+      assert.throws(
+        () => client.request('turn.query', { sessionId: 'session', turnId: 'invalid' }, 120_001),
+        RangeError,
+      );
+      await assert.rejects(client.status(120_001), RangeError);
+      assert.equal(
+        (await client.request('turn.query', { sessionId: 'session', turnId: 'valid' }, 120_000))
+          .status,
+        'running',
+      );
+      assert.deepEqual(
+        await client.request('computer-history.summarize', HISTORY_INPUT, 190_000),
+        HISTORY_RESULT,
+      );
+    },
+    { 'computer-history.summarize': async () => ({ ok: true, result: HISTORY_RESULT }) },
+  );
+  for (const option of ['connectTimeoutMs', 'handshakeTimeoutMs', 'livenessIntervalMs'] as const) {
+    await assert.rejects(
+      connectRuntimeHost({
+        rootPath: '/unused-invalid-timeout',
+        protocol: CURRENT_PROTOCOL,
+        [option]: 120_001,
+      }),
+      RangeError,
+    );
+  }
+});
+
 test('late cancellation of more than 256 completed requests cannot exhaust admission cancellation', async () => {
   const pair = await openTransportPair();
   const admissionEntered = deferred();

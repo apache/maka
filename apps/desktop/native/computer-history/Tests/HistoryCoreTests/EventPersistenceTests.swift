@@ -186,6 +186,34 @@ final class EventPersistenceTests: XCTestCase {
         XCTAssertFalse(result.jsonl.contains("CONTENT_"))
     }
 
+    func testRichMarkersAndContributingDomainsSurviveOnlyPermittedContentPersistence() throws {
+        for state in [HistoryEvent.ContentState.available, .metadataOnly, .unavailable] {
+            let event = HistoryEvent(id: 1, timestamp: timestamp, kind: .uiChanged,
+                app: .init(name: "Editor", secureInput: false, processIdentifier: nil, bundleIdentifier: "test.editor"),
+                ax: .init(mode: .fullTree, text: "CONTENT_WEBVIEW", truncated: true),
+                sourceId: UUID().uuidString.lowercased(), contentState: state,
+                contentDomains: ["embedded.example", "owner.example"])
+            let allowed = try persist([event], policy: .init(captureText: true))
+            if state == .available {
+                XCTAssertEqual(allowed.events, [event])
+            } else {
+                XCTAssertNil(allowed.events.first?.ax)
+                XCTAssertNil(allowed.events.first?.contentDomains)
+                XCTAssertFalse(allowed.jsonl.contains("CONTENT_"))
+            }
+            let textOff = try persist([event], policy: .init(captureText: false))
+            XCTAssertEqual(textOff.events.first?.sourceId, event.sourceId)
+            XCTAssertNil(textOff.events.first?.contentDomains)
+            XCTAssertNil(textOff.events.first?.ax)
+            let blocked = try persist([event], policy: .init(observation: .init(
+                blocklist: [.init(scope: .url, urlDomain: "embedded.example")]), captureText: true))
+            XCTAssertTrue(blocked.events.isEmpty)
+            assertOnlyIdentity(blocked.suppressed, from: [event])
+            XCTAssertFalse(blocked.jsonl.contains("embedded.example"))
+            XCTAssertFalse(blocked.jsonl.contains("CONTENT_"))
+        }
+    }
+
     private func assertOnlyIdentity(
         _ stored: [HistoryEvent],
         from originals: [HistoryEvent],
