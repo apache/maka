@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useSearchServices } from './services-context.js';
 
 type OpenSessionInChat = (sessionId: string, turnId?: string, sequence?: number) => void;
 
@@ -51,10 +52,7 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
     setSearchModalOpen(false);
   }
 
-  const searchModalDeps = useMemo(
-    () => ({ searchThread: (request: Parameters<typeof window.maka.search.thread>[0]) => window.maka.search.thread(request) }),
-    [],
-  );
+  const searchModalDeps = useSearchServices();
 
   const searchModalOnNavigate = useCallback((sessionId: string, turnId?: string, sequence?: number) => {
     openSessionInChatRef.current(sessionId, turnId, sequence);
