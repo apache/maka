@@ -1167,7 +1167,6 @@ function AppShellContent({
     restoreProject,
     openProjectFolder,
     openWorkspaceFolder,
-    openSkillsFolder,
   } = useAppShellProjectContext({
     uiLocale,
     rendererMountedRef,
@@ -2203,7 +2202,6 @@ function AppShellContent({
     openSideConversation: () => commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
-    openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
     copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
@@ -2240,7 +2238,7 @@ function AppShellContent({
     <ModuleHub.ModuleHubProvider
       selection={navSelection}
       selectModule={setNavSelection}
-      openSkillsFolder={projectCapabilities.viewClientPath ? openSkillsFolder : undefined}
+      clientPathsAccessible={projectCapabilities.viewClientPath}
       useSkillInChat={useSkillInChat}
       openSession={openSessionInChat}
       appendComposerText={(text) => composerRef.current?.appendText(text)}

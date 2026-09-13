@@ -3864,6 +3864,14 @@ const makaBridge = {
         return invokeSelectedRuntimeHost(host, 'skills:sources:importLocalFile');
       },
     },
+    locations: {
+      list(host?: DesktopRuntimeHostRef) {
+        return invokeSelectedRuntimeHost(host, 'skills:locations:list');
+      },
+      open(ref: import('@maka/ui').SkillLocationRef, options: import('../shared/skill-locations.js').OpenSkillLocationOptions, host?: DesktopRuntimeHostRef) {
+        return invokeSelectedRuntimeHost(host, 'skills:locations:open', ref, options);
+      },
+    },
     installManaged(sourceId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' }

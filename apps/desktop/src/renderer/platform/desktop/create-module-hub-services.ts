@@ -67,6 +67,7 @@ export function createDesktopModuleHubServices(
     },
     skills: {
       list: (host) => bridge.skills.list(host),
+      listLocations: (host) => bridge.skills.locations.list(host),
       listManagedSources: (host) => bridge.skills.sources.list(host),
       listBundledCatalog: (host) => bridge.skills.catalog.list(host),
       importManagedSource: (host) => bridge.skills.sources.importLocalFile(host),
@@ -83,6 +84,7 @@ export function createDesktopModuleHubServices(
         bridge.skills.setPinned(skillRef, pinned, host),
       delete: (skillRef, host) => bridge.skills.delete(skillRef, host),
       open: (skillId, target, host) => bridge.skills.open(skillId, target, host),
+      openLocation: (ref, options, host) => bridge.skills.locations.open(ref, options, host),
     },
     scheduledTasks: bridge.scheduledTasks,
     clientSettings: {

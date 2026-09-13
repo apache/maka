@@ -24,8 +24,11 @@ import type {
   ManagedSkillSourceEntry,
   ManagedSkillUpdatePreview,
   SkillEntry,
+  SkillLocation,
+  SkillLocationRef,
   ToastApi,
 } from "@maka/ui";
+import type { SkillLocationsSnapshot } from "../../../../shared/skill-locations.js";
 import {
   getShellCopy,
   localizedShellErrorMessage,
@@ -48,12 +51,16 @@ type RefreshOptions = {
 
 export interface SkillsHostModel {
   skills: SkillEntry[];
+  skillLocations: SkillLocation[];
   managedSkillSources: ManagedSkillSourceEntry[];
   bundledSkillCatalog: BundledSkillCatalogEntry[];
   onRefreshSkills(): Promise<void>;
   onOpenSkill?: (skillId: string) => Promise<void>;
   onUseSkill(skillId: string, skillName: string): void;
-  onOpenSkillsFolder?: () => void | Promise<void>;
+  onOpenSkillLocation?: (
+    ref: SkillLocationRef,
+    createIfMissing: boolean,
+  ) => Promise<void>;
   onRefreshManagedSkillSources(): Promise<void>;
   onImportManagedSkillSource?: () => Promise<void>;
   onInstallManagedSkill(sourceId: string): Promise<void>;
@@ -88,18 +95,28 @@ export interface UseSkillsControllerInput {
   active: boolean;
   toastApi: SkillsToastApi;
   useSkillInChat(skillId: string, skillName: string): void;
-  openSkillsFolder?: () => void | Promise<void>;
+  clientPathsAccessible: boolean;
 }
 
 type SkillsProjection =
-  "skills" | "managedSkillSources" | "bundledSkillCatalog";
+  | "skills"
+  | "skillLocations"
+  | "managedSkillSources"
+  | "bundledSkillCatalog";
 
-/** Owns the three Skills projections, their Host fences, and every Skills mutation. */
+type SkillLocationsProjection = SkillLocationsSnapshot & {
+  readonly host: ModuleHubRuntimeHostRef;
+  readonly generation: number;
+};
+
+/** Owns the Skills projections, their Host fences, and every Skills mutation. */
 export function useSkillsController(
   input: UseSkillsControllerInput,
 ): SkillsController {
   const services = useModuleHubServices();
   const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const [skillLocationSnapshot, setSkillLocationSnapshot] =
+    useState<SkillLocationsProjection | null>(null);
   const [revision, setRevision] = useState(0);
   const [managedSkillSources, setManagedSkillSources] = useState<
     ManagedSkillSourceEntry[]
@@ -109,6 +126,7 @@ export function useSkillsController(
   >([]);
   const generationsRef = useRef<Record<SkillsProjection, number>>({
     skills: 0,
+    skillLocations: 0,
     managedSkillSources: 0,
     bundledSkillCatalog: 0,
   });
@@ -121,6 +139,7 @@ export function useSkillsController(
     return () => {
       mountedRef.current = false;
       generationsRef.current.skills += 1;
+      generationsRef.current.skillLocations += 1;
       generationsRef.current.managedSkillSources += 1;
       generationsRef.current.bundledSkillCatalog += 1;
     };
@@ -260,6 +279,61 @@ export function useSkillsController(
     },
     [
       isOperationHostCurrent,
+      reportRuntimeHostError,
+      services.runtimeHosts,
+      services.skills,
+      shouldReportRefreshError,
+    ],
+  );
+
+  const refreshSkillLocations = useCallback(
+    async (options: RefreshOptions = {}): Promise<void> => {
+      const generation = ++generationsRef.current.skillLocations;
+      setSkillLocationSnapshot(null);
+      const copy = getShellCopy(inputRef.current.uiLocale).skillActions;
+      try {
+        const next = await runOnDefaultRuntimeHost(
+          services.runtimeHosts,
+          (host) => services.skills.listLocations(host),
+        );
+        await runIfDefaultRuntimeHostCurrent(
+          services.runtimeHosts,
+          next.host,
+          () => {
+            if (
+              mountedRef.current &&
+              generation === generationsRef.current.skillLocations
+            ) {
+              setSkillLocationSnapshot({
+                ...next.value,
+                host: next.host,
+                generation,
+              });
+            }
+          },
+        );
+      } catch (error) {
+        if (
+          !mountedRef.current ||
+          generation !== generationsRef.current.skillLocations
+        ) {
+          return;
+        }
+        const shouldReport = await shouldReportRefreshError(options, error);
+        if (
+          mountedRef.current &&
+          generation === generationsRef.current.skillLocations &&
+          shouldReport
+        ) {
+          reportRuntimeHostError(
+            copy.refreshLocationsFailedTitle,
+            copy.refreshLocationsFallback,
+            error,
+          );
+        }
+      }
+    },
+    [
       reportRuntimeHostError,
       services.runtimeHosts,
       services.skills,
@@ -412,6 +486,7 @@ export function useSkillsController(
           return;
         }
         await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
+        await refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
         await refreshManagedSkillSources({
           shouldShowError: isSkillsSurfaceActive,
         });
@@ -434,6 +509,7 @@ export function useSkillsController(
     [
       isSkillsSurfaceActive,
       refreshManagedSkillSources,
+      refreshSkillLocations,
       refreshSkills,
       reportRuntimeHostError,
       services.runtimeHosts,
@@ -463,6 +539,7 @@ export function useSkillsController(
           return;
         }
         await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
+        await refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
         await refreshBundledSkillCatalog({
           shouldShowError: isSkillsSurfaceActive,
         });
@@ -485,6 +562,7 @@ export function useSkillsController(
     [
       isSkillsSurfaceActive,
       refreshBundledSkillCatalog,
+      refreshSkillLocations,
       refreshSkills,
       reportRuntimeHostError,
       services.runtimeHosts,
@@ -707,6 +785,7 @@ export function useSkillsController(
           return;
         }
         await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
+        await refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
         await refreshBundledSkillCatalog({
           shouldShowError: isSkillsSurfaceActive,
         });
@@ -730,6 +809,7 @@ export function useSkillsController(
     [
       isSkillsSurfaceActive,
       refreshBundledSkillCatalog,
+      refreshSkillLocations,
       refreshSkills,
       reportRuntimeHostError,
       services.runtimeHosts,
@@ -775,25 +855,93 @@ export function useSkillsController(
     ],
   );
 
+  const openSkillLocation = useCallback(
+    async (
+      ref: SkillLocationRef,
+      createIfMissing: boolean,
+    ): Promise<void> => {
+      const contextId = skillLocationSnapshot?.contextId;
+      if (!contextId) return;
+      const isCurrent = () =>
+        isSkillsSurfaceActive() &&
+        inputRef.current.clientPathsAccessible &&
+        skillLocationSnapshot.generation === generationsRef.current.skillLocations;
+      if (!isCurrent()) return;
+      const copy = getShellCopy(inputRef.current.uiLocale).skillActions;
+      try {
+        const next = await runOnDefaultRuntimeHost(
+          services.runtimeHosts,
+          async (host) => {
+            if (
+              !isCurrent() ||
+              host.profileId !== skillLocationSnapshot.host.profileId ||
+              host.hostId !== skillLocationSnapshot.host.hostId
+            ) return null;
+            return services.skills.openLocation(ref, { contextId, createIfMissing }, host);
+          },
+        );
+        if (!next.value || !isCurrent()) return;
+        if (!next.value.ok) {
+          if ((await shouldReportMutation(next.host)) && isCurrent()) {
+            inputRef.current.toastApi.error(
+              copy.openLocationFailedTitle,
+              copy.openLocationFailures[next.value.reason],
+              undefined,
+              next.diagnosticTarget,
+            );
+          }
+          return;
+        }
+        if (createIfMissing) {
+          await refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
+        }
+      } catch (error) {
+        if ((await shouldReportOperationError(error)) && isCurrent()) {
+          reportRuntimeHostError(
+            copy.openLocationFailedTitle,
+            copy.openLocationFallback,
+            error,
+          );
+        }
+      }
+    },
+    [
+      isSkillsSurfaceActive,
+      refreshSkillLocations,
+      reportRuntimeHostError,
+      skillLocationSnapshot,
+      services.runtimeHosts,
+      services.skills,
+      shouldReportOperationError,
+      shouldReportMutation,
+    ],
+  );
+
   const refreshProjectSkills = useCallback(async (): Promise<void> => {
     await Promise.all([
       refreshSkills(),
+      refreshSkillLocations(),
       refreshManagedSkillSources(),
       refreshBundledSkillCatalog(),
     ]);
-  }, [refreshBundledSkillCatalog, refreshManagedSkillSources, refreshSkills]);
+  }, [refreshBundledSkillCatalog, refreshManagedSkillSources, refreshSkillLocations, refreshSkills]);
 
   const host = useMemo<SkillsHostModel>(
     () => ({
       skills,
+      skillLocations: skillLocationSnapshot?.locations ?? [],
       managedSkillSources,
       bundledSkillCatalog,
-      onRefreshSkills: refreshSkills,
+      onRefreshSkills: async () => {
+        await Promise.all([refreshSkills(), refreshSkillLocations()]);
+      },
       onUseSkill: input.useSkillInChat,
-      ...(input.openSkillsFolder
+      ...(input.clientPathsAccessible
         ? {
             onOpenSkill: openSkill,
-            onOpenSkillsFolder: input.openSkillsFolder,
+            ...(skillLocationSnapshot?.contextId
+              ? { onOpenSkillLocation: openSkillLocation }
+              : {}),
             onImportManagedSkillSource: importManagedSkillSource,
           }
         : {}),
@@ -811,15 +959,18 @@ export function useSkillsController(
       bundledSkillCatalog,
       deleteSkill,
       importManagedSkillSource,
-      input.openSkillsFolder,
+      input.clientPathsAccessible,
       input.useSkillInChat,
       installBundledSkill,
       installManagedSkill,
       managedSkillSources,
       openSkill,
+      openSkillLocation,
       previewManagedSkillUpdate,
       refreshBundledSkillCatalog,
+      refreshSkillLocations,
       refreshManagedSkillSources,
+      skillLocationSnapshot,
       refreshSkills,
       setSkillEnabled,
       setSkillPinned,
