@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allocateWorkHubHues } from '../../renderer/features/workhub/model/identity-colors.js';
+import { allocateWorkHubHues } from '../../renderer/features/workhub/testing.js';
 
 test('cycles through six retained bands in order, then starts the next cycle', () => {
   const ids = Array.from({ length: 14 }, (_, index) => `work-${String(index).padStart(2, '0')}`);
