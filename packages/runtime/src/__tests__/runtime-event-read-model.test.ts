@@ -37,6 +37,7 @@ import {
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { RuntimeReadModel } from '../runtime-read-model.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 import { testInvocationOpening } from './invocation-fixture.js';
@@ -486,7 +487,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     });
   });
 
-  test('bounds local terminal transcript output to a recoverable tail preview', () => {
+  test('bounds local terminal transcript output to a recoverable tail preview', async () => {
     const event = ev({
       id: 'evt-terminal/result',
       role: 'tool',
@@ -530,6 +531,21 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.match(projected.output.stdout, /stdout-30$/);
     assert.doesNotMatch(projected.output.stdout, /stdout-1\n/);
     assert.match(projected.output.stderr, /maka:\/\/runtime\/tool-results\/evt-terminal%2Fresult/);
+
+    const sourceEvent = {
+      ...event,
+      content: { ...event.content!, result: terminal },
+    } as RuntimeEvent;
+    const view = await new RuntimeReadModel({
+      runtimeEventStore: {
+        listSessionInvocations: async () => [{ ...invocation, terminalEvent: undefined }],
+        readSessionRuntimeEventEntries: async () => [],
+        readRuntimeEvents: async () => [sourceEvent],
+      } as never,
+    }).getSessionView(sessionId);
+    const result = view.messages.find((message) => message.type === 'tool_result');
+    assert.deepEqual(result?.content, projected);
+    assert.deepEqual(view.events[0]?.content, sourceEvent.content);
 
     assert.strictEqual(
       projectTranscriptToolResult(
