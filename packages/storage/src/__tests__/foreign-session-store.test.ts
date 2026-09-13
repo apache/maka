@@ -923,6 +923,59 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
     );
     assert.equal(digest.userMessages.length, 1, 'the prompt read before the cut survives');
   });
+
+  it('keeps synthetic user parts out of the opencode digest (#5125 review)', async () => {
+    const home = await tempHome();
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_syn', directory: '/repo', title: 'syn', timeUpdated: NOW },
+      {
+        messages: [
+          { id: 'msg_u1', timeCreated: 1, data: { role: 'user', time: { created: 1 } } },
+          {
+            id: 'msg_a1',
+            timeCreated: 2,
+            data: { role: 'assistant', time: { created: 2 }, finish: 'stop', modelID: 'm' },
+          },
+          { id: 'msg_u2', timeCreated: 3, data: { role: 'user', time: { created: 3 } } },
+        ],
+        parts: [
+          // The human prompt.
+          {
+            id: 'p_u1',
+            messageId: 'msg_u1',
+            timeCreated: 1,
+            data: { type: 'text', text: '帮我修复解析器' },
+          },
+          // opencode 1.18 writes the automatic task-summary instruction as a
+          // synthetic user text part on the same message...
+          {
+            id: 'p_u2',
+            messageId: 'msg_u1',
+            timeCreated: 2,
+            data: {
+              type: 'text',
+              text: 'Summarize the task tool output above and continue with your task.',
+              synthetic: true,
+            },
+          },
+          // ...and MCP `readResource` answers land as synthetic user parts of
+          // a follow-up user message. Both are system text, not prompts.
+          {
+            id: 'p_u3',
+            messageId: 'msg_u2',
+            timeCreated: 3,
+            data: { type: 'text', text: '{"contents":"resource body"}', synthetic: true },
+          },
+        ],
+      },
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.deepEqual(digest.userMessages, ['帮我修复解析器']);
+  });
 });
 
 describe('foreign session store — digest', () => {

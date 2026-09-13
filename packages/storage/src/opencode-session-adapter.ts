@@ -140,7 +140,11 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
    * session blocks the synchronous SQLite caller while materializing
    * megabytes that a capped digest throws away. Reads stop once
    * `maxReadBytes` of raw row payload have been consumed and the
-   * truncation is reported to the caller (#5125 review).
+   * truncation is reported to the caller (#5125 review). This is also a
+   * restricted projection: parts the writer marked `synthetic` (task-summary
+   * instructions, MCP resource results) are dropped while their provenance
+   * still exists, so the digest never reads system text as a human prompt.
+   * The full-session import keeps them.
    */
   async readSessionBounded(
     sessionId: string,
@@ -302,7 +306,15 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         messages: fitMessages.rows.map((row, index) =>
           requireRow(toMessageRow(row), 'message', index),
         ),
-        parts: fitParts.rows.map((row, index) => requireRow(toPartRow(row), 'part', index)),
+        parts: fitParts.rows
+          .map((row, index) => requireRow(toPartRow(row), 'part', index))
+          // This restricted projection feeds the digest, so parts the writer
+          // marked `synthetic` — the automatic task-summary instruction and
+          // MCP resource results, both written as user text parts — are
+          // dropped here, before conversion erases the marker and the digest
+          // reads system text as a human prompt (#5053, #5125 review). The
+          // full-session import keeps them.
+          .filter((part) => part.data.synthetic !== true),
         truncated: fitMessages.truncated || fitParts.truncated,
       };
     });
