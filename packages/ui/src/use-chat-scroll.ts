@@ -205,9 +205,10 @@ export function useChatScroll(input: {
       const below = Math.max(0, root.scrollHeight - root.clientHeight - root.scrollTop - after);
       if (canLoad('up') && above < screen * 2) requestHistory('up');
       if (canLoad('down') && below < screen * 2) requestHistory('down');
-      // Source pages may have arrived without entering the DOM yet. Its old
-      // IDs cannot trim that source; settled rechecks after publication.
-      if (authority.isInputActive()) return;
+      // A read owns its pending range until publication finishes. Input may
+      // settle first; trimming from the old DOM then discards incoming rows.
+      // The read completion rechecks this band against the published window.
+      if (authority.isInputActive() || inFlight.up || inFlight.down) return;
       if (above <= screen * 6 && below <= screen * 6) return;
       const rect = root.getBoundingClientRect();
       const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];

@@ -523,7 +523,8 @@ for (const hasOlder of [false, true]) {
   });
 }
 
-test('a fill publishes during input while eviction still waits for the reader to settle', async () => {
+for (const settlesBeforePublication of [false, true]) {
+test(`a fill publishes before eviction when input settles ${settlesBeforePublication ? 'before' : 'after'} publication`, async () => {
   const navigation = createTranscriptViewportNavigation();
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const { frames } = installScrollTestEnvironment(document, window);
@@ -578,15 +579,24 @@ test('a fill publishes during input while eviction still waits for the reader to
     transcript.scroller.dispatchEvent(new window.Event('scroll'));
   });
   assert.equal(requests, 1);
+  if (settlesBeforePublication) {
+    await act(() => document.dispatchEvent(new window.Event('pointerup')));
+    await frame(); await frame();
+    assert.equal(authority.isInputActive(), false);
+    assert.deepEqual(retained, [], 'an unfinished read cannot be trimmed using the old window');
+  }
   await act(() => finishRead());
   assert.equal(publications, 1);
-  assert.deepEqual(retained, [], 'active input still prevents eviction');
-  assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');
-  await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  if (!settlesBeforePublication) {
+    assert.deepEqual(retained, [], 'active input still prevents eviction');
+    assert.equal(requests, 1, 'the fill does not eagerly chain while input is active');
+    await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  }
   await frame(); await frame();
   assert.equal(publications, 1);
   assert.equal(retained.at(-1), 'turn--2', 'the new published band includes the older page');
 });
+}
 
 test('a transcript change re-reads the band while the reader stays at the tail', async () => {
   const { document, window } = parseHTML(
