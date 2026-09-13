@@ -52,7 +52,6 @@ import type {
 } from '@maka/core/external-session';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  resolveTranscriptLineage,
   TranscriptLineageIndexer,
   type TranscriptRecord,
 } from './claude-code-transcript-lineage.js';
@@ -615,38 +614,6 @@ interface TurnAccumulator {
   failed?: boolean;
   /** Set by an interrupt notice; the turn ends `aborted`. */
   aborted?: boolean;
-}
-
-/**
- * Which records are the conversation, decided before any of them becomes a
- * message. See `claude-code-transcript-lineage` for what the transcript's own
- * fields say about rewind branches, compaction boundaries, and fragmented
- * responses; this file only converts what that returns.
- */
-export function convertTranscript(
-  sessionId: string,
-  rawRecords: readonly TranscriptRecord[],
-): readonly StoredMessage[] {
-  const records = resolveTranscriptLineage(rawRecords).records;
-  // Every fragment of one assistant response, keyed by `message.id`. A
-  // response is emitted once, from all of its fragments, at the position of
-  // the first — so a later fragment's text is part of the reply rather than
-  // something the first fragment's absence of text can suppress.
-  const responseFragments = new Map<string, TranscriptRecord[]>();
-  for (const record of records) {
-    if (record.type !== 'assistant') continue;
-    const responseId = stringOf(asMessageRecord(record)?.id);
-    if (responseId === undefined) continue;
-    const existing = responseFragments.get(responseId);
-    if (existing) existing.push(record);
-    else responseFragments.set(responseId, [record]);
-  }
-  const converter = new ClaudeTranscriptConverter(sessionId, responseFragments, {
-    maxConvertedBytes: Number.MAX_SAFE_INTEGER,
-    maxMessages: Number.MAX_SAFE_INTEGER,
-  });
-  for (const record of records) converter.accept(record);
-  return converter.finish();
 }
 
 class ClaudeResponseCollector {
