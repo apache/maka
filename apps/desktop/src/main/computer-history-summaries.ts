@@ -216,7 +216,11 @@ export class ComputerHistorySummaries {
       if (!current()) return;
       const { evidence: _evidence, ...provenance } = pending;
       const summary = { ...provenance, content: decodeComputerHistorySummaryContent(generated) };
-      await this.#write(summary, current);
+      const parentId = summary.level === '10min'
+        ? summaryId('6h', Math.floor(Date.parse(summary.start) / SIX_HOURS) * SIX_HOURS)
+        : undefined;
+      await this.#write(summary, current, parentId && stored.has(parentId) ? parentId : undefined);
+      if (parentId) stored.delete(parentId);
       stored.set(summary.id, summary);
     }
   }
@@ -310,7 +314,7 @@ export class ComputerHistorySummaries {
     }
   }
 
-  async #write(summary: StoredComputerHistorySummary, current: () => boolean): Promise<void> {
+  async #write(summary: StoredComputerHistorySummary, current: () => boolean, parentId?: string): Promise<void> {
     const text = serializeComputerHistorySummary(summary);
     await this.#directoryExists(true);
     if (!current()) return;
@@ -325,6 +329,9 @@ export class ComputerHistorySummaries {
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
+      if (!current()) return;
+      // Invalidate before publishing a child so restart cannot reuse a stale same-ID rollup.
+      if (parentId) await removeIfPresent(join(this.#directory, `${parentId}.md`));
       if (!current()) return;
       await rename(temporary, target);
       if (!current()) await removeIfPresent(target);
@@ -401,9 +408,10 @@ function nextSummary(
   stored: ReadonlyMap<string, StoredComputerHistorySummary>,
   now: number,
 ): PendingSummary | undefined {
-  const pending: PendingSummary[] = [];
   for (const window of windows) {
-    if (stored.has(summaryId('10min', window.start))) continue;
+    const existing = stored.get(summaryId('10min', window.start));
+    // Retention can leave only the tail of this window; never replace its complete saved summary.
+    if (existing && window.start < now - RAW_HORIZON) continue;
     const evidence = boundEvidence([...window.evidence.values()].sort(compareEvidence));
     if (evidence.length < window.eventCount) {
       const last = evidence.at(-1)!;
@@ -412,14 +420,23 @@ function nextSummary(
         text: `${last.text}\n[Evidence sample: ${evidence.length} of ${window.eventCount} events]`,
       };
     }
-    pending.push({
+    const candidate: PendingSummary = {
       ...range('10min', window.start),
       applications: [...window.applications].sort(),
       eventCount: window.eventCount,
       sourceIds: evidence.map(({ id }) => id),
       evidence,
-    });
+    };
+    if (
+      existing &&
+      existing.eventCount === candidate.eventCount &&
+      JSON.stringify(existing.sourceIds) === JSON.stringify(candidate.sourceIds) &&
+      JSON.stringify(existing.applications) === JSON.stringify(candidate.applications)
+    ) continue;
+    // Fresh activity takes priority over derived rollups, including a repeatedly failing old rollup.
+    return candidate;
   }
+  const pending: PendingSummary[] = [];
   const groups = new Map<number, StoredComputerHistorySummary[]>();
   for (const summary of stored.values()) {
     if (summary.level !== '10min') continue;
@@ -430,17 +447,6 @@ function nextSummary(
     groups.set(start, children);
   }
   for (const [start, children] of groups) {
-    // A bounded catch-up must not finalize a rollup before its known raw windows are processed.
-    if (
-      pending.some(
-        (summary) =>
-          summary.level === '10min' &&
-          Date.parse(summary.start) >= start &&
-          Date.parse(summary.start) < start + SIX_HOURS,
-      )
-    ) {
-      continue;
-    }
     children.sort(compareSummaries);
     const sourceIds = children.map(({ id }) => id);
     const existing = stored.get(summaryId('6h', start));

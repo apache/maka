@@ -227,6 +227,171 @@ test('a late new child refreshes a partial rollup without duplicating its identi
   assert.equal(rollups[0]!.eventCount, 2);
 });
 
+test('late evidence refreshes the existing leaf and rollup without changing their identities', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => {
+      inputs.push(input);
+      return { ...CONTENT, body: input.evidence.map(({ text }) => text).join('\n') };
+    },
+  });
+  const first = event(BASE + MINUTE);
+  await summaries.run([first]);
+  const original = await summaries.list();
+  const appended = [first, event(BASE + 2 * MINUTE, 'Late evidence')];
+  await summaries.run(appended);
+  const updated = await summaries.list();
+  assert.deepEqual(updated.map(({ id }) => id), original.map(({ id }) => id));
+  assert.deepEqual(updated.map(({ eventCount }) => eventCount), [2, 2]);
+  assert.ok(updated.every(({ content }) => content.body.includes('Late evidence')));
+
+  const replaced = [first, event(BASE + 2 * MINUTE, 'Corrected evidence')];
+  await summaries.run(replaced);
+  const corrected = await summaries.list();
+  assert.deepEqual(corrected.map(({ eventCount }) => eventCount), [2, 2]);
+  assert.ok(corrected.every(({ content }) => content.body.includes('Corrected evidence')));
+  assert.ok(corrected.every(({ content }) => !content.body.includes('Late evidence')));
+  assert.deepEqual(inputs.map(({ level }) => level), ['10min', '6h', '10min', '6h', '10min', '6h']);
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async () => assert.fail('unchanged evidence must not regenerate after restart'),
+  });
+  await reopened.run([...replaced].reverse());
+  assert.deepEqual(await reopened.list(), corrected);
+});
+
+test('late events beyond the bounded sample still refresh the total and its rollup', async (t) => {
+  const home = await fixture(t);
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => { inputs.push(input); return CONTENT; },
+  });
+  const events = Array.from({ length: 96 }, (_, index) => event(BASE + index));
+  await summaries.run(events);
+  const original = (await summaries.list()).find(({ level }) => level === '10min')!;
+  await summaries.run([...events, event(BASE + MINUTE)]);
+  const updated = await summaries.list();
+  assert.deepEqual(updated.find(({ level }) => level === '10min')!.sourceIds, original.sourceIds);
+  assert.deepEqual(updated.map(({ eventCount }) => eventCount), [97, 97]);
+  assert.match(inputs[2]!.evidence.at(-1)!.text, /Evidence sample: 96 of 97 events/);
+  assert.equal(inputs.length, 4);
+});
+
+for (const lateMinute of [2, 21]) test(`a late event at minute ${lateMinute} invalidates its rollup across failed rebuild and restart`, async (t) => {
+  const home = await fixture(t);
+  let failRollup = false;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => {
+      if (failRollup && input.level === '6h') throw new Error('Synthetic rollup failure');
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE)];
+  await summaries.run(events);
+  failRollup = true;
+  events.push(event(BASE + lateMinute * MINUTE));
+  await assert.rejects(summaries.run(events), /Synthetic rollup failure/);
+  const leaves = await summaries.list();
+  assert.ok(leaves.every(({ level }) => level === '10min'));
+  assert.equal(leaves.reduce((total, { eventCount }) => total + eventCount, 0), 2);
+  const rebuilt: ComputerHistorySummaryInput[] = [];
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => { rebuilt.push(input); return CONTENT; },
+  });
+  await reopened.run(events);
+  assert.deepEqual(rebuilt.map(({ level }) => level), ['6h']);
+  assert.equal((await reopened.list()).find(({ level }) => level === '6h')!.eventCount, 2);
+  await reopened.run(events);
+  assert.equal(rebuilt.length, 1);
+});
+
+test('failed, invalid and cancelled leaf refreshes preserve saved leaf and rollup bytes', async (t) => {
+  const home = await fixture(t);
+  let mode: 'success' | 'failure' | 'invalid' | 'held' = 'success';
+  const started = deferred<AbortSignal>();
+  const result = deferred<ComputerHistorySummaryContent>();
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (_input, signal) => {
+      if (mode === 'failure') throw new Error('Synthetic leaf failure');
+      if (mode === 'invalid') return { ...CONTENT, body: '' };
+      if (mode === 'held') { started.resolve(signal); return result.promise; }
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE)];
+  await summaries.run(events);
+  const original = await summaries.list();
+  const paths = original.map(({ id }) => join(home, 'summaries', `${id}.md`));
+  const bytes = await Promise.all(paths.map((path) => readFile(path)));
+  events.push(event(BASE + 2 * MINUTE));
+  for (const failure of ['failure', 'invalid'] as const) {
+    mode = failure;
+    await assert.rejects(summaries.run(events));
+    assert.deepEqual(await Promise.all(paths.map((path) => readFile(path))), bytes);
+  }
+  mode = 'held';
+  const running = summaries.run(events);
+  const signal = await started.promise;
+  const cancelling = summaries.cancel();
+  assert.equal(signal.aborted, true);
+  result.resolve(CONTENT);
+  await Promise.all([running, cancelling]);
+  assert.deepEqual(await Promise.all(paths.map((path) => readFile(path))), bytes);
+  mode = 'success';
+  await summaries.run(events);
+  assert.deepEqual((await summaries.list()).map(({ eventCount }) => eventCount), [2, 2]);
+});
+
+test('retention crossing a window never replaces its complete saved evidence with the retained tail', async (t) => {
+  const home = await fixture(t);
+  let now = BASE + SIX_HOURS;
+  let calls = 0;
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async () => { calls++; return CONTENT; },
+  });
+  const events = [event(BASE + MINUTE), event(BASE + 8 * MINUTE)];
+  await summaries.run(events);
+  const original = await summaries.list();
+  now = BASE + 48 * 60 * MINUTE + 5 * MINUTE;
+  await summaries.run([events[1]!]);
+  assert.equal(calls, 2);
+  assert.deepEqual(await summaries.list(), original);
+});
+
+test('repeated failures of an old rollup do not prevent newer closed leaves from being saved', async (t) => {
+  const home = await fixture(t);
+  let now = BASE + TEN_MINUTES;
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => now,
+    generate: async (input) => {
+      inputs.push(input);
+      if (input.level === '6h') throw new Error('Synthetic rollup failure');
+      return CONTENT;
+    },
+  });
+  const events = [event(BASE + MINUTE)];
+  await summaries.run(events);
+  for (let window = 0; window < 2; window++) {
+    const start = BASE + SIX_HOURS + window * TEN_MINUTES;
+    now = start + TEN_MINUTES;
+    events.push(event(start + MINUTE));
+    await assert.rejects(summaries.run(events), /Synthetic rollup failure/);
+    assert.ok((await summaries.list()).some((summary) =>
+      summary.level === '10min' && summary.start === new Date(start).toISOString(),
+    ));
+  }
+  assert.deepEqual(inputs.map(({ level }) => level), ['10min', '10min', '6h', '10min', '6h']);
+  assert.equal((await summaries.list()).length, 3);
+});
+
 test('empty, future, open and expired windows never produce fake summaries', async (t) => {
   const home = await fixture(t);
   const summaries = new ComputerHistorySummaries({

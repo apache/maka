@@ -177,9 +177,20 @@ model provider and consumes model tokens; it is not wholly local processing.
 
 The main process schedules closed UTC ten-minute windows and six-hour rollups.
 Each pass processes at most six items, using a 48-hour raw evidence horizon.
-Persisted deterministic identities prevent regeneration across restarts.
+Persisted deterministic identities and evidence provenance prevent unchanged
+summaries from regenerating across restarts. Within complete retained windows,
+changed sampled source IDs, event counts, or application sets refresh the
+ten-minute summary in place. Once retention cuts into a saved window, its
+complete summary is preserved instead of being replaced with the retained tail.
+Pending ten-minute summaries take priority over derived rollups, so a failed
+older rollup does not block newer activity on the next admitted pass. The
+existing error backoff still applies.
 Six-hour summaries derive from the available ten-minute summaries; they do not
 assert that every moment of the interval was observed.
+A new or refreshed child invalidates its saved parent immediately before
+publication. If rebuilding that parent fails, the child remains available and
+the parent is retried on a later admitted pass; stale rollup content is not
+reused after restart.
 
 Markdown summary files contain versioned JSON frontmatter, bounded model
 content, and application/source identifiers computed outside the model.

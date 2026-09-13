@@ -82,6 +82,15 @@ signature seal. Write access to this repository is therefore a deliberate trust
 assumption of the development workflow — a separate matter from who may claim
 the bundle's identity.
 
+For a trial window loaded from `dist-renderer/index.html`, do validation builds
+in a separate output directory or worktree. `build:renderer` replaces the hashed
+assets in `dist-renderer`; an already-open window still references the previous
+build and can fail when opening a lazy-loaded page such as Settings. After an
+intentional renderer update, reload the window and verify the Settings
+roundtrip before returning the trial to the user. Main-process changes require
+quitting and relaunching the owning app as well. Preserve the trial's existing
+profile and `.maka-dev/dev-env.json` when relaunching.
+
 The default profile is `~/Library/Application Support/Maka Dev`, which keeps
 development isolated from the packaged Maka profile and is shared by the plain
 dev build and the TCC dev build; an explicit `--user-data-dir` takes
