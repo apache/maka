@@ -26,9 +26,13 @@ import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event
 import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
+import type { CanonicalPermissionOutcomeRecord } from '../interaction-authority.js';
 import {
+  activePresentationRuntimeEvents,
+  createRuntimeEventStoredMessageProjector,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
+  projectTranscriptToolResult,
   projectRuntimeEventsToStoredMessages,
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
@@ -289,6 +293,256 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('streaming projection is equivalent to the batch read model', () => {
+    const events = baseEvents();
+    const streamed = createRuntimeEventStoredMessageProjector({ invocations: [invocation] });
+    for (const event of events) streamed.push(event);
+
+    assert.deepStrictEqual(
+      streamed.finish(),
+      projectRuntimeEventsToStoredMessages(events, { invocations: [invocation] }),
+    );
+  });
+
+  test('active streaming projection settles model partials and inserts thinking-only rows in source order', () => {
+    const events = [
+      ev({
+        id: 'evt-thinking-partial',
+        ts: ts + 1,
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'thinking', text: 'still thinking' },
+        refs: { providerEventId: 'step-thinking-only' },
+      }),
+      ev({
+        id: 'evt-later-user',
+        ts: ts + 2,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'steer' },
+      }),
+    ];
+    const streamed = createRuntimeEventStoredMessageProjector({
+      invocations: [invocation],
+      active: true,
+    });
+    for (const event of events) streamed.push(event);
+
+    assert.deepStrictEqual(
+      streamed.finish(),
+      projectRuntimeEventsToStoredMessages(activePresentationRuntimeEvents(events), {
+        invocations: [invocation],
+      }),
+    );
+  });
+
+  test('loads canonical permission outcomes after the streaming scan and preserves acceptance order', () => {
+    const request = ev({
+      id: 'evt-canonical-request',
+      ts: ts + 1,
+      actions: {
+        permissionRequest: {
+          kind: 'tool_permission',
+          requestId: 'req-canonical',
+          toolUseId: 'tool-canonical',
+          toolName: 'Read',
+          category: 'read',
+          reason: 'custom',
+          args: { path: '/tmp/a.txt' },
+          rememberForTurnAllowed: true,
+          hint: 'read it',
+        },
+      },
+      refs: { toolCallId: 'tool-canonical' },
+    });
+    const accepted = ev({
+      id: 'evt-canonical-accepted',
+      ts: ts + 2,
+      status: 'completed',
+      role: 'tool',
+      author: 'user',
+      content: {
+        kind: 'function_response',
+        id: 'tool-canonical',
+        name: 'Read',
+        result: { kind: 'text', text: 'result before permission' },
+      },
+      actions: {
+        permissionAnswerAccepted: { requestId: 'req-canonical' },
+        tokenUsage: { input: 10, output: 5 },
+        endInvocation: true,
+      },
+      refs: { toolCallId: 'tool-canonical' },
+    });
+    const later = ev({
+      id: 'evt-after-permission',
+      ts: ts + 3,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'after' },
+    });
+    const options: Parameters<typeof createRuntimeEventStoredMessageProjector>[0] = {
+      invocations: [invocation],
+    };
+    const projector = createRuntimeEventStoredMessageProjector(options);
+    projector.push(request);
+    projector.push(accepted);
+    // A later malformed duplicate must not rewrite the request identity that
+    // was paired when the acceptance entered the ledger.
+    projector.push(
+      ev({
+        id: 'evt-duplicate-request',
+        actions: {
+          permissionRequest: {
+            kind: 'tool_permission',
+            requestId: 'req-canonical',
+            toolUseId: 'different-tool',
+            toolName: 'Write',
+            category: 'file_write',
+            reason: 'custom',
+            args: { path: '/tmp/other.txt' },
+            rememberForTurnAllowed: true,
+          },
+        },
+      }),
+    );
+    projector.push(later);
+    assert.deepStrictEqual(projector.permissionRequestIds, ['req-canonical']);
+
+    const canonical: CanonicalPermissionOutcomeRecord = {
+      sessionId,
+      runId,
+      turnId,
+      requestId: 'req-canonical',
+      request: {
+        kind: 'permission',
+        toolUseId: 'tool-canonical',
+        prompt: {
+          kind: 'tool_permission',
+          toolName: 'Read',
+          category: 'read',
+          reason: 'custom',
+          review: { kind: 'path', operation: 'read', path: '/tmp/a.txt' },
+          rememberForTurnAllowed: true,
+        },
+      },
+      outcome: {
+        kind: 'permission_answer',
+        decision: 'allow',
+        rememberForTurn: false,
+        reviewer: 'user',
+        committedAt: ts + 2,
+      },
+    };
+    options.canonicalPermissionOutcomes = new Map([['req-canonical', canonical]]);
+
+    const out = projector.finish();
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.type),
+      ['tool_result', 'permission_decision', 'token_usage', 'turn_state', 'user'],
+    );
+    assert.deepStrictEqual(out.sourceEventIds, [
+      accepted.id,
+      accepted.id,
+      accepted.id,
+      accepted.id,
+      later.id,
+    ]);
+    assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  test('projects decoded tool results during push and reports emitted messages', () => {
+    const emitted: Array<{ type: StoredMessage['type']; sourceEventId: string }> = [];
+    const projector = createRuntimeEventStoredMessageProjector({
+      invocations: [invocation],
+      projectToolResult: (_event, decoded) =>
+        decoded.kind === 'text' ? { kind: 'text', text: decoded.text.slice(0, 4) } : decoded,
+      onMessage: (message, sourceEventId) => emitted.push({ type: message.type, sourceEventId }),
+    });
+    const event = ev({
+      id: 'evt-large-result',
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'tool-large',
+        name: 'Bash',
+        result: { kind: 'text', text: 'large result' },
+      },
+      refs: { toolCallId: 'tool-large' },
+    });
+    projector.push(event);
+
+    assert.deepStrictEqual(emitted, [{ type: 'tool_result', sourceEventId: event.id }]);
+    assert.deepStrictEqual(projector.finish().messages[0], {
+      type: 'tool_result',
+      id: event.id,
+      turnId,
+      ts,
+      toolUseId: 'tool-large',
+      isError: false,
+      content: { kind: 'text', text: 'larg' },
+    });
+  });
+
+  test('bounds local terminal transcript output to a recoverable tail preview', () => {
+    const event = ev({
+      id: 'evt-terminal/result',
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'tool-terminal',
+        name: 'Bash',
+        result: { kind: 'text', text: 'provider-facing result' },
+        modelProjection: { version: 1, kind: 'json', value: { kind: 'terminal' } },
+      },
+      refs: { toolCallId: 'tool-terminal' },
+    });
+    const terminal = {
+      kind: 'terminal' as const,
+      cwd: '/workspace',
+      cmd: 'large-command',
+      status: 'failed' as const,
+      exitCode: 7,
+      failureMessage: 'failed',
+      output: {
+        mode: 'pipes' as const,
+        stdout: Array.from({ length: 30 }, (_, index) => `stdout-${index + 1}`).join('\n'),
+        stderr: 'x'.repeat(2048),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    };
+
+    const projected = projectTranscriptToolResult(event, terminal);
+    assert.equal(projected.kind, 'terminal');
+    if (projected.kind !== 'terminal' || projected.output.mode !== 'pipes') return;
+    assert.equal(projected.cwd, terminal.cwd);
+    assert.equal(projected.cmd, terminal.cmd);
+    assert.equal(projected.status, terminal.status);
+    assert.equal(projected.exitCode, terminal.exitCode);
+    assert.equal(projected.failureMessage, terminal.failureMessage);
+    assert.equal(projected.output.stdoutTruncated, true);
+    assert.equal(projected.output.stderrTruncated, true);
+    assert.match(projected.output.stdout, /stdout-30$/);
+    assert.doesNotMatch(projected.output.stdout, /stdout-1\n/);
+    assert.match(projected.output.stderr, /maka:\/\/runtime\/tool-results\/evt-terminal%2Fresult/);
+
+    assert.strictEqual(
+      projectTranscriptToolResult(
+        {
+          ...event,
+          content: { ...event.content!, providerExecuted: true } as RuntimeEvent['content'],
+        },
+        terminal,
+      ),
+      terminal,
+    );
+  });
+
   test('exposes a session image ref as a Markdown image source to the model', () => {
     const replay = buildRuntimeEventModelReplayPlan([
       ev({

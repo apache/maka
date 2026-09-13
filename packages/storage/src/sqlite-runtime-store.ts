@@ -84,10 +84,12 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
+  buildImmutableRuntimePrefixProof,
   continuationStartEventMatchesClaim,
   decodeContinuationClaim,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
+  type ImmutableRuntimePrefixProofV1,
   type RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
 import {
@@ -133,7 +135,7 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 import {
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptInvocation,
+  type RuntimeTranscriptInvocationHeader,
   type RuntimeTranscriptInvocationRequest,
   type RuntimeTranscriptLandmark,
 } from './runtime-transcript-query.js';
@@ -145,10 +147,26 @@ export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
 
+export interface ImmutableRuntimePrefixProofReadBudget {
+  readonly maxEvents: number;
+  readonly maxBytes: number;
+  readonly maxRecordBytes: number;
+}
+
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error(`Invalid RuntimeEvent scan ${name}`);
+    }
+  }
+}
+
+function assertImmutableRuntimePrefixProofReadBudget(
+  budget: ImmutableRuntimePrefixProofReadBudget,
+): void {
+  for (const [name, value] of Object.entries(budget)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Invalid immutable RuntimeEvent prefix proof ${name}`);
     }
   }
 }
@@ -561,13 +579,19 @@ export class SqliteRuntimeStore
     return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
   }
 
-  async readTranscriptInvocations(
+  async readTranscriptInvocations<T>(
     sessionId: string,
     request: RuntimeTranscriptInvocationRequest,
-  ): Promise<RuntimeTranscriptInvocation[]> {
+    project: (
+      turn: RuntimeTranscriptInvocationHeader,
+      events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
+    ) => T,
+  ): Promise<T[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     assertInvocationSearchLimit(request.limit);
-    return this.readTransaction(() => this.transcriptQuery().invocations(sessionId, request));
+    return this.readTransaction(() =>
+      this.transcriptQuery().invocations(sessionId, request, project),
+    );
   }
 
   async readTranscriptLandmarks(
@@ -1171,6 +1195,76 @@ export class SqliteRuntimeStore
       },
       decoded,
     );
+  }
+
+  async readImmutableRuntimePrefixProof(
+    input: { sessionId: string; runId: string; upToEventSeq?: number },
+    budget: ImmutableRuntimePrefixProofReadBudget,
+  ): Promise<ImmutableRuntimePrefixProofV1> {
+    assertImmutableRuntimePrefixProofReadBudget(budget);
+    if (
+      input.upToEventSeq !== undefined &&
+      (!Number.isSafeInteger(input.upToEventSeq) || input.upToEventSeq <= 0)
+    ) {
+      throw new Error('Invalid immutable RuntimeEvent prefix high-water');
+    }
+    const highWater = input.upToEventSeq ?? null;
+    const cursor = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+          length(CAST(payload_json AS BLOB)) AS stored_bytes,
+          CASE WHEN length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END AS payload_json
+        FROM runtime_events
+        WHERE session_id = ? AND run_id = ?
+          AND (? IS NULL OR event_seq <= ?)
+        ORDER BY event_seq ASC
+      `)
+      .iterate(budget.maxRecordBytes, input.sessionId, input.runId, highWater, highWater)
+      [Symbol.iterator]() as Iterator<RuntimeEventPrefixProofStorageRow>;
+    const firstRow = cursor.next();
+    if (firstRow.done) throw new Error('immutable RuntimeEvent prefix is empty');
+    let count = 0;
+    let bytes = 0;
+    let lastEventSeq = 0;
+    const decode = function* (): Iterable<{ eventSeq: number; event: RuntimeEvent }> {
+      let step: IteratorResult<RuntimeEventPrefixProofStorageRow> = firstRow;
+      while (!step.done) {
+        const row = step.value;
+        count += 1;
+        if (count > budget.maxEvents) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its event limit');
+        }
+        const payloadJson = row.payload_json;
+        if (payloadJson === null) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its record byte limit');
+        }
+        bytes += requireRuntimeEventScanCount(row.stored_bytes);
+        if (bytes > budget.maxBytes) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its byte limit');
+        }
+        lastEventSeq = requireRuntimeEventScanCount(row.event_seq);
+        yield {
+          eventSeq: lastEventSeq,
+          event: decodeRuntimeEventStorageRow({ ...row, payload_json: payloadJson }),
+        };
+        step = cursor.next();
+      }
+    };
+    const proof = buildImmutableRuntimePrefixProof(
+      {
+        sessionId: firstRow.value.session_id,
+        invocationId: firstRow.value.invocation_id,
+        runId: firstRow.value.run_id,
+        turnId: firstRow.value.turn_id,
+      },
+      decode(),
+    );
+    if (input.upToEventSeq !== undefined && lastEventSeq !== input.upToEventSeq) {
+      throw new Error(
+        `immutable RuntimeEvent prefix high-water ${input.upToEventSeq} is unavailable`,
+      );
+    }
+    return proof;
   }
 
   async claimContinuation(input: { claim: ContinuationClaimV1 }): Promise<ContinuationClaimResult> {
@@ -4748,6 +4842,11 @@ function compareWorkspaceHeadRow(
 interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
   event_seq: number;
 }
+
+type RuntimeEventPrefixProofStorageRow = Omit<RuntimeEventPrefixStorageRow, 'payload_json'> & {
+  stored_bytes: number;
+  payload_json: string | null;
+};
 
 interface ContinuationClaimStorageRow {
   claim_id: string;

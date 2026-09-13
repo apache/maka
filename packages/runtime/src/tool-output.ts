@@ -40,6 +40,8 @@ export interface TruncateToolOutputOptions {
    * summary is usually last).
    */
   direction?: 'head' | 'tail';
+  /** Recovery address when the retained source can be read without re-executing. */
+  recoveryHint?: string;
 }
 
 export interface TruncatedToolOutput {
@@ -179,7 +181,7 @@ export function truncateToolOutput(
   }
   const unit: 'lines' | 'bytes' = hitBytes ? 'bytes' : 'lines';
   const marker =
-    `...${removed} ${unit} truncated. ${OUTPUT_RECOVERY_HINT} ` +
+    `...${removed} ${unit} truncated. ${options.recoveryHint ?? OUTPUT_RECOVERY_HINT} ` +
     'Otherwise work from the kept output above.';
 
   const content = direction === 'head' ? `${preview}\n\n${marker}` : `${marker}\n\n${preview}`;
