@@ -181,6 +181,7 @@ test('canceling a search closes its transcript and stops reading further session
   assert.deepEqual(opened, ['a']);
   assert.equal(closed, 1);
   assert.equal(sender.listenerCount('destroyed'), 0);
+  assert.equal(sender.listenerCount('render-process-gone'), 0);
 });
 
 test('a canceled search is not replayed on a replacement Host candidate', async (t) => {
@@ -232,12 +233,48 @@ test('a canceled search is not replayed on a replacement Host candidate', async 
   assert.equal(outcome.reason, 'aborted');
 });
 
-test('a renderer disappearing stops its pending search before opening another transcript', async () => {
+for (const lifecycleEvent of ['destroyed', 'render-process-gone'] as const) {
+  test(`${lifecycleEvent} stops a pending search before reading its opening transcript`, async () => {
+    const handlers = new Map<string, IpcHandler>();
+    const opening = deferred<never>();
+    const started = deferred<void>();
+    const opened: string[] = [];
+    let closed = 0;
+    let read = 0;
+    registerRuntimeHostSearchIpc({
+      ipcMain: {
+        handle: (channel, listener) => { handlers.set(channel, listener); },
+        handleReconnectableRead: (channel, listener) => { handlers.set(channel, listener); },
+      },
+      client: searchClient({
+        listSessions: async () => [catalogSession('a', 'First'), catalogSession('b', 'Second')],
+        openSession: async (id) => { opened.push(id); started.resolve(); return opening.promise; },
+      }),
+    });
+    const sender = new EventEmitter();
+    const task = handlers.get('search:thread')!({ sender } as Parameters<IpcHandler>[0],
+      { source: 'thread', query: 'missing', limit: 10 }, 'request');
+    await started.promise;
+    sender.emit(lifecycleEvent, {}, { reason: 'crashed', exitCode: 1 });
+    opening.resolve({
+      loadTranscript: async () => { read += 1; return []; },
+      close: async () => { closed += 1; },
+    } as never);
+    assert.equal((await task).reason, 'aborted');
+    assert.deepEqual(opened, ['a']);
+    assert.equal(read, 0);
+    assert.equal(closed, 1);
+    assert.equal(sender.listenerCount('destroyed'), 0);
+    assert.equal(sender.listenerCount('render-process-gone'), 0);
+  });
+}
+
+test('renderer crash closes an in-flight search and allows a new search on the same WebContents', async () => {
   const handlers = new Map<string, IpcHandler>();
-  const opening = deferred<never>();
   const started = deferred<void>();
-  let closed = 0;
-  let read = 0;
+  const transcript = deferred<StoredMessage[]>();
+  const opened: string[] = [];
+  const closed: string[] = [];
   registerRuntimeHostSearchIpc({
     ipcMain: {
       handle: (channel, listener) => { handlers.set(channel, listener); },
@@ -245,21 +282,43 @@ test('a renderer disappearing stops its pending search before opening another tr
     },
     client: searchClient({
       listSessions: async () => [catalogSession('a', 'First'), catalogSession('b', 'Second')],
-      openSession: async () => { started.resolve(); return opening.promise; },
+      openSession: async (id) => {
+        opened.push(id);
+        const abandoned = opened.length === 1;
+        return {
+          loadTranscript: async () => {
+            if (abandoned) { started.resolve(); return transcript.promise; }
+            return [{ type: 'user', id: 'message', turnId: 'turn', ts: 1, text: 'latest match' }];
+          },
+          close: async () => { closed.push(id); },
+        } as never;
+      },
     }),
   });
   const sender = new EventEmitter();
-  const task = handlers.get('search:thread')!({ sender } as Parameters<IpcHandler>[0],
-    { source: 'thread', query: 'missing', limit: 10 }, 'request');
+  const event = { sender } as Parameters<IpcHandler>[0];
+  const search = handlers.get('search:thread')!;
+  const abandoned = search(event, { source: 'thread', query: 'missing', limit: 10 }, 'old');
   await started.promise;
+  sender.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+  assert.deepEqual(closed, ['a'], 'a crash closes the transcript before its pending reply arrives');
+  assert.equal(sender.listenerCount('destroyed'), 0);
+  assert.equal(sender.listenerCount('render-process-gone'), 0);
+
+  // Recovery reloads the same WebContents while the abandoned read is pending.
+  const latest = await search(event, { source: 'thread', query: 'latest', limit: 10 }, 'new');
+  assert.equal(expectResults(latest).length, 2);
+  assert.deepEqual(opened, ['a', 'a', 'b']);
+  assert.deepEqual(closed, ['a', 'a', 'b']);
+  assert.equal(sender.listenerCount('destroyed'), 0);
+  assert.equal(sender.listenerCount('render-process-gone'), 0);
+
+  transcript.resolve([]);
+  assert.equal((await abandoned).reason, 'aborted');
+  assert.deepEqual(opened, ['a', 'a', 'b'], 'a late reply must not resume the abandoned scan');
+  assert.deepEqual(closed, ['a', 'a', 'b'], 'each search handle closes exactly once');
   sender.emit('destroyed');
-  opening.resolve({
-    loadTranscript: async () => { read += 1; return []; },
-    close: async () => { closed += 1; },
-  } as never);
-  assert.equal((await task).reason, 'aborted');
-  assert.equal(read, 0);
-  assert.equal(closed, 1);
+  assert.deepEqual(closed, ['a', 'a', 'b']);
 });
 
 test('rapid replacement and dismissal stop each old scan while the latest query still completes', async () => {
@@ -314,6 +373,7 @@ test('rapid replacement and dismissal stop each old scan while the latest query 
     if (!Array.isArray(outcome)) assert.equal(outcome.reason, 'aborted');
     assert.equal(scans[index]!.closed, 1, 'cancellation closes a read even before its reply arrives');
     assert.equal(sender.listenerCount('destroyed'), 0, 'canceled reads release window listeners immediately');
+    assert.equal(sender.listenerCount('render-process-gone'), 0, 'canceled reads release crash listeners immediately');
   }
   assert.equal(scans.length, 10, 'each old query stops at its first transcript');
 
@@ -329,6 +389,7 @@ test('rapid replacement and dismissal stop each old scan while the latest query 
   assert.equal(scans.length, 12);
   assert.ok(scans.every((scan) => scan.closed === 1));
   assert.equal(sender.listenerCount('destroyed'), 0);
+  assert.equal(sender.listenerCount('render-process-gone'), 0);
 });
 
 function expectResults(outcome: unknown): Array<{

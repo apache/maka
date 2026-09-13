@@ -48,6 +48,7 @@ export function registerRuntimeHostSearchIpc(
     const controller = new AbortController();
     const release = () => {
       event.sender?.removeListener('destroyed', abort);
+      event.sender?.removeListener('render-process-gone', abort);
       if (typeof requestId === 'string') {
         const requests = pending.get(event.sender);
         if (requests?.get(requestId) === controller) requests.delete(requestId);
@@ -65,6 +66,8 @@ export function registerRuntimeHostSearchIpc(
     }
     controller.signal.addEventListener('abort', release, { once: true });
     event.sender?.once('destroyed', abort);
+    // Crash recovery reloads the same WebContents without destroying it.
+    event.sender?.once('render-process-gone', abort);
     try {
       const result = await runThreadSearch(request, {
         listSessions: async () =>
