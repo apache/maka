@@ -44,18 +44,27 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import { chromium } from '@playwright/test';
+          import { mkdir, writeFile } from 'node:fs/promises';
           import { startStaticServer, smokeStory } from './scripts/storybook-visual-smoke.mjs';
           const server = await startStaticServer('apps/desktop/storybook-static');
           const browser = await chromium.launch();
+          const page = await browser.newPage();
+          await mkdir('perf-results', { recursive: true });
           try {
-            const page = await browser.newPage();
             await smokeStory(page, server.baseUrl, {
               storyId: 'product-shell-official-appshell--virtual-history-continuity',
               colorScheme: 'light', palette: 'default',
             });
-          } finally { await browser.close(); await server.close(); }
+          } catch (error) {
+            await writeFile('perf-results/continuity-error.txt', String(error));
+            throw error;
+          } finally {
+            await page.screenshot({ path: 'perf-results/continuity.png' });
+            await browser.close(); await server.close();
+          }
           JS
       - name: Paired viewport mounting on real Host
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
           MAKA_PERF_VARIANTS: A,V,V,A,A,V

@@ -2591,7 +2591,7 @@ export const VirtualHistoryContinuity: Story = {
 
     const traverse = async (direction: -1 | 1) => {
       for (let step = 0; step < 160; step++) {
-        scrollAsReader(root, root.scrollTop + direction * root.clientHeight / 2);
+        scrollAsReader(root, root.scrollTop + direction * root.clientHeight);
         await painted(5);
         if (direction < 0 ? root.scrollTop <= 1 : root.scrollHeight - root.clientHeight - root.scrollTop <= 1) return;
       }
@@ -2615,7 +2615,9 @@ export const VirtualHistoryContinuity: Story = {
     selection.addRange(range);
     const text = selection.toString();
     expect(text.length).toBeGreaterThan(0);
-    await traverse(-1);
+    scrollAsReader(root, 0);
+    await waitFor(() => expect(root.scrollTop).toBeLessThan(knownHeight / 2));
+    await painted(8);
     expect(selected.isConnected, 'an active selection must survive leaving the viewport').toBe(true);
     expect(selection.toString()).toBe(text);
     selection.removeAllRanges();
