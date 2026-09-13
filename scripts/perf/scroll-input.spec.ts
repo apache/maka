@@ -17,8 +17,8 @@
  * under the License.
  */
 
-// Measures real Host page delivery through preload while the Renderer holds
-// publication. A callback-only Storybook fixture cannot exercise that path.
+// Measures real Host page delivery and publication during native input.
+// A callback-only Storybook fixture cannot exercise that path.
 import { test, expect } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -244,7 +244,7 @@ test('dense upward input with real Host history', async () => {
           publicationsAfterInput: changes.filter((frame: any) => frame.ms >= releasedAt).length,
           firstPublicationAfterReleaseMs: firstReleased ? firstReleased.ms - releasedAt : -1,
         };
-        if (process.env.MAKA_PERF_VARIANT === 'V') {
+        if (['V', 'W'].includes(process.env.MAKA_PERF_VARIANT ?? '')) {
           expect(
             row.maxMounted,
             'a fetched page must not mount all of its Turn bodies',
