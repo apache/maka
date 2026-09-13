@@ -50,15 +50,22 @@ export const readParameters = z.object({
     ),
 });
 export type ReadInput = z.infer<typeof readParameters>;
-export interface ReadPage {
-  content: string;
-  offset: number;
-  returnedLines: number;
-  totalLines: number;
-  partialLine?: true;
-  next: ReadInput | null;
-  metadata?: Record<string, unknown>;
-}
+export const readPageSchema = z.object({
+  content: z.string(),
+  offset: z.number().int().nonnegative(),
+  returnedLines: z.number().int().nonnegative(),
+  totalLines: z.number().int().nonnegative(),
+  partialLine: z.literal(true).optional(),
+  next: readParameters.nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type ReadPage = z.infer<typeof readPageSchema>;
+export const readContinuationSchema = z
+  .object({
+    position: z.number().int().nonnegative(),
+    digest: z.string().regex(/^[a-f0-9]{32}$/),
+  })
+  .strict();
 
 const CONTINUATION_PREFIX = 'maka://read/';
 
@@ -98,8 +105,9 @@ export function readPage(
   content: string,
   input: ReadInput,
   maxChars = READ_PAGE_MAX_CHARS,
+  continuation?: z.infer<typeof readContinuationSchema>,
 ): ReadPage {
-  const resolved = resolveReadInput(input);
+  const resolved = continuation ? { path: input.path, ...continuation } : resolveReadInput(input);
   if (resolved.digest && digestText(content) !== resolved.digest) {
     throw new Error(
       'The content changed since the previous page. This continuation cannot be used. Read the original path again to start from the current content.',
@@ -241,7 +249,9 @@ export function readToolResultPage(
     if (value?.kind === 'terminal' || value?.kind === 'shell_run') {
       metadata = Object.fromEntries(
         Object.entries(value).filter(([key]) =>
-          ['kind', 'status', 'exitCode', 'signal', 'revision', 'mode'].includes(key),
+          ['kind', 'status', 'exitCode', 'signal', 'revision', 'mode', 'failureMessage'].includes(
+            key,
+          ),
         ),
       );
       if (value.output && typeof value.output === 'object')

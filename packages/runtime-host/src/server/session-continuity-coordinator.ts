@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
+import { resolveReadInput } from '@maka/runtime/read-page';
 import {
   decodeRuntimeResourceRef,
   encodeProtocolMessage,
@@ -2251,11 +2252,13 @@ function toolStartShellRunRef(
   if (event.toolName !== 'Read' && event.toolName !== 'StopBackgroundTask') return undefined;
   const ref =
     event.args !== null && typeof event.args === 'object'
-      ? (event.args as { ref?: unknown }).ref
+      ? event.toolName === 'Read'
+        ? (event.args as { path?: unknown }).path
+        : (event.args as { ref?: unknown }).ref
       : undefined;
   if (typeof ref !== 'string') return undefined;
   try {
-    return decodeRuntimeResourceRef(ref);
+    return decodeRuntimeResourceRef(resolveReadInput({ path: ref }).path);
   } catch {
     return undefined;
   }

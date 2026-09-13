@@ -50,6 +50,7 @@ import {
   mergeContextBudgetDiagnostic,
   mergeContextBudgetDiagnosticPatches,
   type ContextBudgetPolicy,
+  type ToolResultPruneStats,
 } from './context-budget.js';
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
@@ -591,7 +592,10 @@ export class AiSdkCompaction {
   public async pruneToolResults(
     runtimeContext: readonly RuntimeEvent[],
     turnId: string,
-  ): Promise<{ events: RuntimeEvent[]; diagnosticPatch?: Partial<ContextBudgetDiagnostic> }> {
+  ): Promise<{
+    events: RuntimeEvent[];
+    stats?: ToolResultPruneStats;
+  }> {
     const policy = this.input.contextBudget;
     const loaded = await this.loadModelProjectionTransitions();
     let transitions = loaded.transitions;
@@ -601,7 +605,7 @@ export class AiSdkCompaction {
       loaded.unreadableTargets,
     );
     if (!policy) return { events: effective.events };
-    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
+    let stats: ToolResultPruneStats | undefined;
 
     // A chain this reader cannot see in full is a chain it must not extend: a
     // successor built on a partly known state would name the wrong predecessor
@@ -656,26 +660,16 @@ export class AiSdkCompaction {
         );
       }
       if (committed.length > 0 || archiveFailures > 0) {
-        diagnosticPatch = {
-          ...(committed.length > 0
-            ? {
-                prunedToolResults: committed.length,
-                prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
-                prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
-                archivePlaceholders: committed.length,
-                archivePlaceholderReasonCounts: {
-                  tool_result_pruned: committed.length,
-                },
-              }
-            : {}),
-          ...(archiveFailures > 0
-            ? { archiveWriteFailures: archiveFailures, unarchivedToolResults: archiveFailures }
-            : {}),
+        stats = {
+          prunedToolResults: committed.length,
+          prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
+          prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
+          archiveWriteFailures: archiveFailures,
         };
       }
     }
 
-    return { events: effective.events, ...(diagnosticPatch ? { diagnosticPatch } : {}) };
+    return { events: effective.events, ...(stats ? { stats } : {}) };
   }
 
   public async prepareContextBudgetPolicy(
@@ -691,7 +685,7 @@ export class AiSdkCompaction {
     const effective = { events: prepared.events };
     if (!policy) return { policy, events: effective.events };
     let nextPolicy = policy;
-    let diagnosticPatch = prepared.diagnosticPatch;
+    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined = prepared.stats;
 
     let loadedCheckpoint: HistoryCompactCheckpoint | undefined;
     try {

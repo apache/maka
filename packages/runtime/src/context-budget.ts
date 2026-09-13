@@ -196,6 +196,34 @@ export function mergeContextBudgetDiagnostic(
     ...mergeCompactionDecisionDiagnostics(base.compactionDecisions, patch.compactionDecisions),
   };
 }
+
+/** Counts from one pruning pass, not a diagnostic snapshot to overlay repeatedly. */
+export type ToolResultPruneStats = Required<
+  Pick<
+    ContextBudgetDiagnostic,
+    | 'prunedToolResults'
+    | 'archiveWriteFailures'
+    | 'prunedToolResultEstimatedTokensBefore'
+    | 'prunedToolResultEstimatedTokensAfter'
+  >
+>;
+
+export function addToolResultPruneStats(
+  snapshot: ContextBudgetDiagnostic,
+  delta: ToolResultPruneStats,
+): ContextBudgetDiagnostic {
+  return {
+    ...snapshot,
+    prunedToolResults: (snapshot.prunedToolResults ?? 0) + delta.prunedToolResults,
+    archiveWriteFailures: (snapshot.archiveWriteFailures ?? 0) + delta.archiveWriteFailures,
+    prunedToolResultEstimatedTokensBefore:
+      (snapshot.prunedToolResultEstimatedTokensBefore ?? 0) +
+      delta.prunedToolResultEstimatedTokensBefore,
+    prunedToolResultEstimatedTokensAfter:
+      (snapshot.prunedToolResultEstimatedTokensAfter ?? 0) +
+      delta.prunedToolResultEstimatedTokensAfter,
+  };
+}
 export function mergeContextBudgetDiagnosticPatches(
   left: Partial<ContextBudgetDiagnostic> | undefined,
   right: Partial<ContextBudgetDiagnostic> | undefined,

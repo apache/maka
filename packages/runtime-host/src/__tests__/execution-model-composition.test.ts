@@ -5775,7 +5775,7 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 6) {
     flow.ptyReadCount = 1;
     respondProviderToolCall(response, streamRequestIndex, 'Read', {
-      ref: requireRuntimeResourceRef(body),
+      path: requireRuntimeResourceRef(body),
     });
     return;
   }
@@ -5793,7 +5793,7 @@ async function handleProviderRequest(
         );
         flow.ptyReadCount += 1;
         respondProviderToolCall(response, streamRequestIndex, 'Read', {
-          ref: requireRuntimeResourceRef(body),
+          path: requireRuntimeResourceRef(body),
         });
         return;
       }

@@ -110,6 +110,25 @@ function envelope(transition: ReturnType<typeof buildModelProjectionTransition>)
   };
 }
 
+test('an event address resolves and verifies against one evidence snapshot', async () => {
+  const f = fixture();
+  let reads = 0;
+  const reader = createLedgerArchiveResourceReader({
+    read: async () => {
+      if (++reads > 1) throw new Error('second observation is not the same snapshot');
+      return { ok: true, event: f.event, transitions: f.records };
+    },
+  });
+  const result = await reader({
+    storage: 'event',
+    sessionId: 'session',
+    runtimeEventId: f.event.id,
+    maxBytes: 10_000,
+  });
+  assert.deepEqual(result, { ok: true, serializedResult: f.body });
+  assert.equal(reads, 1);
+});
+
 test('reads committed SQLite evidence after reopen without any Artifact payload', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ledger-archive-'));
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });

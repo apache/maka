@@ -183,11 +183,8 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
     emitOutput() {},
   };
   assert.deepEqual(await read.impl({ path: 'maka://runtime/attachments/attachment-1' }, context), {
-    content: 'attachment contents',
-    offset: 0,
-    returnedLines: 1,
-    totalLines: 1,
-    next: null,
+    kind: 'text',
+    text: 'attachment contents',
   });
   assert.deepEqual(reads, [{ sessionId: 'workhub', artifactId: 'attachment-1' }]);
   for (const input of [

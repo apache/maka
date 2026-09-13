@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { readContinuationSchema, readPageSchema } from '../read-page.js';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
 // v6 adds the captured target identity (opaque decimal-string dev/ino) to
@@ -25,7 +26,7 @@ import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 // inode that was authorised at lock acquisition instead of only the path
 // string. The identity is carried as strings because bigint cannot cross the
 // JSON protocol boundary.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 8 as const;
 
 /** The single authority on which operation kinds are writes. Shared by the
  * client (permission/identity decisions) and the worker (operation guards) so
@@ -109,6 +110,7 @@ export const FilesystemWorkerOperationSchema = z.union([
       path,
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
+      continuation: readContinuationSchema.optional(),
     })
     .strict(),
   z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
@@ -173,7 +175,7 @@ export const FilesystemWorkerRequestSchema = z
   .strict();
 
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('read'), content: z.string() }).strict(),
+  readPageSchema.extend({ kind: z.literal('read') }).strict(),
   z
     .object({
       kind: z.literal('read_image'),

@@ -28,6 +28,9 @@ import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
 import { buildBuiltinTools } from '../builtin-tools.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
+import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../filesystem-worker/protocol.js';
+import { READ_PAGE_MAX_CHARS, type ReadInput, type ReadPage } from '../read-page.js';
 
 const cleanup: string[] = [];
 
@@ -36,6 +39,52 @@ afterEach(async () => {
 });
 
 describe('builtin file tools use the sandboxed worker', () => {
+  test('pages large files before the worker response boundary, including long-line continuations', async () => {
+    const cwd = await temporaryDirectory('maka-read-large-');
+    const path = join(cwd, 'large.txt');
+    await writeFile(path, 'first\n' + '😀'.repeat(2_200_000) + '\nlast');
+    const tools = buildBuiltinTools({
+      filesystemWorker: {
+        execute: async (input) => {
+          const response = await executeFilesystemWorkerRequest({
+            version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+            requestId: 'read-large',
+            operation: { ...input.operation, cwd: input.cwd },
+            operationBoundary: {
+              filesystem: { entries: [{ path: cwd, access: 'read', scope: 'subtree' }] },
+            },
+            expectedTarget: {
+              enforcementPath: path,
+              access: 'read',
+              scope: 'exact',
+              targetType: 'file',
+              identity: 'unchecked',
+            },
+          });
+          assert.ok(Buffer.byteLength(JSON.stringify(response)) < 8 * 1024 * 1024);
+          if (!response.ok) throw new Error(response.error.message);
+          return response.result;
+        },
+      },
+    });
+    const read = async (input: ReadInput) => {
+      const page = (await runTool(tools, 'Read', input, cwd)) as ReadPage;
+      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      return page;
+    };
+    const first = await read({ path });
+    assert.equal(first.content, 'first');
+    assert.deepEqual(first.next, { path, offset: 1 });
+    const long = await read(first.next!);
+    assert.equal(long.partialLine, true);
+    const continuation = await read(long.next!);
+    assert.ok(continuation.content.startsWith('😀'));
+    assert.notDeepEqual(continuation.next, long.next);
+    assert.equal((await read({ path, offset: 2, limit: 1 })).content, 'last');
+    assert.equal((await read({ path, limit: 1 })).next, null);
+    await writeFile(path, 'changed');
+    await assert.rejects(read(long.next!), /content changed/);
+  });
   test('fails closed for managed file operations when the worker is unavailable', async () => {
     const cwd = await temporaryDirectory('maka-file-worker-unavailable-');
     const tools = buildBuiltinTools();
@@ -94,7 +143,14 @@ describe('builtin file tools use the sandboxed worker', () => {
           calls.push(input);
           switch (input.operation.kind) {
             case 'read':
-              return { kind: 'read', content: 'worker-content' };
+              return {
+                kind: 'read',
+                content: 'worker-content',
+                offset: 0,
+                returnedLines: 1,
+                totalLines: 1,
+                next: null,
+              };
             case 'write':
               return { kind: 'write', ok: true, path: input.operation.path, bytes: 7 };
             case 'apply_patch':
@@ -191,7 +247,7 @@ describe('builtin file tools use the sandboxed worker', () => {
     await runTool(tools, 'Read', { path: 'image.png', offset: 1, limit: 1 }, cwd);
 
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png' });
+    assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
     assert.equal(snapshotOwnerId, 'toolop-Read');
   });
 

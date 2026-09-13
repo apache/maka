@@ -158,7 +158,7 @@ import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
   mergeContextBudgetDiagnostic,
-  mergeContextBudgetDiagnosticPatches,
+  addToolResultPruneStats,
   minimalContextBudgetDiagnostic,
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
@@ -1133,7 +1133,6 @@ export class AiSdkTurn {
       return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
     };
     let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
-    let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
@@ -1299,12 +1298,11 @@ export class AiSdkTurn {
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
           const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
-          if (pruned.diagnosticPatch) {
-            if ((pruned.diagnosticPatch.prunedToolResults ?? 0) > 0)
-              pruneAppliedAtStep = runtimeSteps;
-            midTurnCompactDiagnosticPatch = mergeContextBudgetDiagnosticPatches(
-              midTurnCompactDiagnosticPatch,
-              pruned.diagnosticPatch,
+          if (pruned.stats) {
+            if (pruned.stats.prunedToolResults > 0) pruneAppliedAtStep = runtimeSteps;
+            contextBudgetForTelemetry = addToolResultPruneStats(
+              contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
+              pruned.stats,
             );
           }
           const projectionCheckpoint = midTurnState?.projectionCheckpoint;
@@ -1403,8 +1401,8 @@ export class AiSdkTurn {
         });
 
         const onMidTurnDiagnosticPatch = (patch: Partial<ContextBudgetDiagnostic>): void => {
-          midTurnCompactDiagnosticPatch = mergeContextBudgetDiagnosticPatches(
-            midTurnCompactDiagnosticPatch,
+          contextBudgetForTelemetry = mergeContextBudgetDiagnostic(
+            contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
             patch,
           );
         };
@@ -2445,10 +2443,7 @@ export class AiSdkTurn {
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
-            const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
-              contextBudgetForTelemetry,
-              midTurnCompactDiagnosticPatch,
-            );
+            const contextBudgetForUsage = contextBudgetForTelemetry;
             // Persisted alongside the live event so transcript rebuilds from
             // stored messages keep the TUI ctx segment instead of degrading to
             // `?/<window>` (#4019). Computed once; both writers share it.
@@ -2615,10 +2610,6 @@ export class AiSdkTurn {
       } finally {
         watchdogState.current?.stop();
         if (this.watchdog === watchdogState.current) this.watchdog = null;
-        contextBudgetForTelemetry = contextBudgetWithRequestProjectionDiagnostics(
-          contextBudgetForTelemetry,
-          midTurnCompactDiagnosticPatch,
-        );
         // `tokenUsage` still backfills from the completed steps when the send
         // ended without a final `usage`: the terminal outcome and the
         // `token_usage` SessionEvent below both read it. An unusable sample in
@@ -3199,15 +3190,6 @@ function mergeNormalizedUsage(
     ...(next.rawFinishReason !== undefined ? { rawFinishReason: next.rawFinishReason } : {}),
     cachedInputTokens: cacheHitInputTokens,
   };
-}
-
-function contextBudgetWithRequestProjectionDiagnostics(
-  base: ContextBudgetDiagnostic | undefined,
-  compactionPatch: Partial<ContextBudgetDiagnostic> | undefined,
-): ContextBudgetDiagnostic | undefined {
-  const mergedPatch = compactionPatch;
-  if (!mergedPatch) return base;
-  return mergeContextBudgetDiagnostic(base ?? minimalContextBudgetDiagnostic(), mergedPatch);
 }
 
 function projectMemoryConversationPrefix(

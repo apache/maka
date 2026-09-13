@@ -70,12 +70,14 @@ test('archive Read decodes content lines and retains terminal execution metadata
     JSON.stringify({
       kind: 'terminal',
       exitCode: 2,
+      failureMessage: 'command failed',
       output: { stdout: 'one\ntwo', stderr: 'error' },
     }),
     { path: 'maka://runtime/tool-results/e' },
   );
   assert.equal(page.content, 'one\ntwo\nerror');
   assert.equal(page.metadata?.exitCode, 2);
+  assert.equal(page.metadata?.failureMessage, 'command failed');
   assert.equal(page.next, null);
   assert.deepEqual(readPage('', { path: 'empty', offset: 3 }), {
     content: '',

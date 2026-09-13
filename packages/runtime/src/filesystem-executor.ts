@@ -29,6 +29,7 @@
 // "full access" stricter than ask mode, which grants :slash_tmp outright (#2083).
 
 import { Buffer } from 'node:buffer';
+import { readPage } from './read-page.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
@@ -390,13 +391,14 @@ function createWorkspaceFilesystemExecutor(
           const result = await workspace.readFile({
             cwd,
             path,
-            ...(operation.offset !== undefined ? { offset: operation.offset } : {}),
-            ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
           });
           if ('bytes' in result) {
             return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };
           }
-          return { kind: 'read', content: result.content };
+          return {
+            kind: 'read',
+            ...readPage(result.content, operation, undefined, operation.continuation),
+          };
         }
         case 'write': {
           const { path } = await workspace.resolveWritablePath({

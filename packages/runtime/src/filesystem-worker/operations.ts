@@ -31,7 +31,7 @@ import {
 } from '../apply-patch-file.js';
 
 import { computeEditedSource } from '../edit-replace.js';
-import { readTextLineWindow } from '../text-line-window.js';
+import { readPage } from '../read-page.js';
 import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
@@ -153,10 +153,16 @@ export async function executeFilesystemOperation(
         }
       }
       const content = await fs.readFile(path, 'utf8');
-      return {
-        kind: 'read',
-        content: readTextLineWindow(content, operation.offset, operation.limit),
-      };
+      try {
+        return { kind: 'read', ...readPage(content, operation, undefined, operation.continuation) };
+      } catch (error) {
+        throw operationError(
+          'invalid_request',
+          error instanceof Error
+            ? error.message
+            : 'Read pagination failed. Use the original path again.',
+        );
+      }
     }
     case 'write': {
       const path = await resolveWritableAllowed(

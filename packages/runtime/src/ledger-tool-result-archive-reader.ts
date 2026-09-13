@@ -31,6 +31,8 @@ import {
 import {
   isArchivedToolResultPlaceholder,
   type ToolResultArchiveReader,
+  type ToolResultArchiveReadResult,
+  type ToolResultArchiveReaderInput,
 } from './tool-result-archive.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 import type { LedgerArchiveResourceIdentity } from './tool-result-archive-resource.js';
@@ -49,142 +51,134 @@ export function createLedgerToolResultArchiveReader(
   evidence: ToolResultArchiveEvidenceReader,
 ): ToolResultArchiveReader {
   return async (input) => {
-    const request = { ...input };
-    if (
-      !isArchivedToolResultPlaceholder(request) ||
-      !/^[a-f0-9]{64}$/.test(request.bodySha256) ||
-      !Number.isSafeInteger(request.originalBytes) ||
-      request.originalBytes < 1
-    ) {
+    if (!isArchivedToolResultPlaceholder(input)) {
       return { ok: false, reason: 'corrupt' };
     }
-    const maxBytes = request.maxBytes ?? request.originalBytes;
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < request.originalBytes)
-      return { ok: false, reason: 'too_large' };
-    try {
-      const loaded = await evidence.read({
-        sessionId: request.sessionId,
-        runtimeEventId: request.runtimeEventId,
-      });
-      if (!loaded.ok)
-        return {
-          ok: false,
-          reason: loaded.reason === 'unavailable' ? 'read_failed' : loaded.reason,
-        };
-      const { event } = loaded;
-      const content = event.content;
-      if (event.sessionId !== request.sessionId) return { ok: false, reason: 'session_mismatch' };
-      if (
-        event.id !== request.runtimeEventId ||
-        content?.kind !== 'function_response' ||
-        content.id !== request.toolCallId ||
-        content.name !== request.toolName ||
-        content.providerExecuted ||
-        !content.modelProjection
-      )
-        return { ok: false, reason: 'source_mismatch' };
-      let source = decodeDurableToolResultProjection(content.modelProjection);
-      const byId = new Map<string, ModelProjectionTransition>();
-      for (const record of loaded.transitions) {
-        const transition = decodeLedgerTransition(record, request.sessionId);
-        if (
-          !transition ||
-          record.sessionId !== request.sessionId ||
-          transition.target.runtimeEventId !== event.id
-        )
-          return { ok: false, reason: 'corrupt' };
-        const previous = byId.get(transition.transitionId);
-        if (
-          previous &&
-          JSON.stringify({ ...previous, createdAt: 0 }) !==
-            JSON.stringify({ ...transition, createdAt: 0 })
-        ) {
-          return { ok: false, reason: 'corrupt' };
-        }
-        byId.set(transition.transitionId, transition);
-      }
-      const reduction = reduceEffectiveModelProjections([event], [...byId.values()]);
-      for (const transition of reduction.applied) {
-        const replacement = transition.replacement;
-        const placeholder = replacement.kind === 'json' ? replacement.value : undefined;
-        if (
-          isArchivedToolResultPlaceholder(placeholder) &&
-          ((placeholder.rewriteVersion === 1 &&
-            request.rewriteVersion === 1 &&
-            placeholder.artifactId === request.artifactId) ||
-            (placeholder.rewriteVersion === 2 &&
-              request.rewriteVersion === 2 &&
-              placeholder.sourceProjectionDigest === request.sourceProjectionDigest &&
-              placeholder.previousTransitionId === request.previousTransitionId))
-        ) {
-          if (
-            placeholder.runtimeEventId !== request.runtimeEventId ||
-            placeholder.toolCallId !== request.toolCallId ||
-            placeholder.toolName !== request.toolName ||
-            placeholder.bodySha256 !== request.bodySha256 ||
-            placeholder.originalBytes !== request.originalBytes ||
-            placeholder.rewriteVersion !== request.rewriteVersion
-          )
-            return { ok: false, reason: 'source_mismatch' };
-          if (
-            placeholder.rewriteVersion === 2 &&
-            (placeholder.sourceProjectionDigest !== transition.sourceProjectionDigest ||
-              placeholder.previousTransitionId !== transition.previousTransitionId)
-          )
-            return { ok: false, reason: 'corrupt' };
-          const serializedResult = serializeToolResultProjectionV1(source);
-          if (Buffer.byteLength(serializedResult, 'utf8') !== request.originalBytes)
-            return { ok: false, reason: 'size_mismatch' };
-          if (createHash('sha256').update(serializedResult).digest('hex') !== request.bodySha256)
-            return { ok: false, reason: 'corrupt' };
-          return { ok: true, serializedResult };
-        }
-        source = transition.replacement;
-      }
-      return { ok: false, reason: 'not_found' };
-    } catch {
-      return { ok: false, reason: 'corrupt' };
-    }
+    return readLedgerArchive(evidence, {
+      ...input,
+      maxBytes: input.maxBytes ?? input.originalBytes,
+    });
   };
 }
 
+async function readLedgerArchive(
+  evidence: ToolResultArchiveEvidenceReader,
+  request: (
+    | ToolResultArchiveReaderInput
+    | LedgerArchiveResourceIdentity
+    | { storage: 'event'; runtimeEventId: string }
+  ) & { sessionId: string; maxBytes: number },
+): Promise<ToolResultArchiveReadResult> {
+  const identity = 'bodySha256' in request ? request : undefined;
+  if (
+    identity &&
+    (!/^[a-f0-9]{64}$/.test(identity.bodySha256) ||
+      !Number.isSafeInteger(identity.originalBytes) ||
+      identity.originalBytes < 1)
+  )
+    return { ok: false, reason: 'corrupt' };
+  if (
+    !Number.isSafeInteger(request.maxBytes) ||
+    (identity && request.maxBytes < identity.originalBytes)
+  )
+    return { ok: false, reason: 'too_large' };
+  try {
+    const loaded = await evidence.read({
+      sessionId: request.sessionId,
+      runtimeEventId: request.runtimeEventId,
+    });
+    if (!loaded.ok)
+      return {
+        ok: false,
+        reason: loaded.reason === 'unavailable' ? 'read_failed' : loaded.reason,
+      };
+    const { event } = loaded;
+    const content = event.content;
+    if (event.sessionId !== request.sessionId) return { ok: false, reason: 'session_mismatch' };
+    if (
+      event.id !== request.runtimeEventId ||
+      content?.kind !== 'function_response' ||
+      (identity && (content.id !== identity.toolCallId || content.name !== identity.toolName)) ||
+      content.providerExecuted ||
+      !content.modelProjection
+    )
+      return { ok: false, reason: 'source_mismatch' };
+    let source = decodeDurableToolResultProjection(content.modelProjection);
+    const byId = new Map<string, ModelProjectionTransition>();
+    for (const record of loaded.transitions) {
+      const transition = decodeLedgerTransition(record, request.sessionId);
+      if (
+        !transition ||
+        record.sessionId !== request.sessionId ||
+        transition.target.runtimeEventId !== event.id
+      )
+        return { ok: false, reason: 'corrupt' };
+      const previous = byId.get(transition.transitionId);
+      if (
+        previous &&
+        JSON.stringify({ ...previous, createdAt: 0 }) !==
+          JSON.stringify({ ...transition, createdAt: 0 })
+      ) {
+        return { ok: false, reason: 'corrupt' };
+      }
+      byId.set(transition.transitionId, transition);
+    }
+    const reduction = reduceEffectiveModelProjections([event], [...byId.values()]);
+    for (const transition of reduction.applied) {
+      const replacement = transition.replacement;
+      const placeholder = replacement.kind === 'json' ? replacement.value : undefined;
+      if (
+        isArchivedToolResultPlaceholder(placeholder) &&
+        ((!identity && transition === reduction.applied.at(-1)) ||
+          (placeholder.rewriteVersion === 1 &&
+            identity &&
+            !('storage' in identity) &&
+            placeholder.artifactId === identity.artifactId) ||
+          (placeholder.rewriteVersion === 2 &&
+            identity &&
+            'storage' in identity &&
+            identity.storage === 'ledger' &&
+            placeholder.sourceProjectionDigest === identity.sourceProjectionDigest &&
+            placeholder.previousTransitionId === identity.previousTransitionId))
+      ) {
+        if (
+          placeholder.runtimeEventId !== event.id ||
+          placeholder.toolCallId !== content.id ||
+          placeholder.toolName !== content.name ||
+          (identity &&
+            (placeholder.bodySha256 !== identity.bodySha256 ||
+              placeholder.originalBytes !== identity.originalBytes))
+        )
+          return { ok: false, reason: 'source_mismatch' };
+        if (
+          placeholder.rewriteVersion === 2 &&
+          (placeholder.sourceProjectionDigest !== transition.sourceProjectionDigest ||
+            placeholder.previousTransitionId !== transition.previousTransitionId)
+        )
+          return { ok: false, reason: 'corrupt' };
+        const serializedResult = serializeToolResultProjectionV1(source);
+        if (placeholder.originalBytes > request.maxBytes) return { ok: false, reason: 'too_large' };
+        if (Buffer.byteLength(serializedResult, 'utf8') !== placeholder.originalBytes)
+          return { ok: false, reason: 'size_mismatch' };
+        if (createHash('sha256').update(serializedResult).digest('hex') !== placeholder.bodySha256)
+          return { ok: false, reason: 'corrupt' };
+        return { ok: true, serializedResult };
+      }
+      source = transition.replacement;
+    }
+    return { ok: false, reason: 'not_found' };
+  } catch {
+    return { ok: false, reason: 'corrupt' };
+  }
+}
+
 export function createLedgerArchiveResourceReader(evidence: ToolResultArchiveEvidenceReader) {
-  const reader = createLedgerToolResultArchiveReader(evidence);
-  return async (
+  return (
     input: (LedgerArchiveResourceIdentity | { storage: 'event'; runtimeEventId: string }) & {
       sessionId: string;
       maxBytes: number;
     },
-  ) => {
-    if (input.storage === 'event') {
-      const loaded = await evidence.read({
-        sessionId: input.sessionId,
-        runtimeEventId: input.runtimeEventId,
-      });
-      if (!loaded.ok) return { ok: false as const, reason: 'not_found' as const };
-      const transitions = loaded.transitions.map((record) =>
-        decodeLedgerTransition(record, input.sessionId),
-      );
-      if (transitions.some((transition) => !transition))
-        return { ok: false as const, reason: 'corrupt' as const };
-      const reduction = reduceEffectiveModelProjections(
-        [loaded.event],
-        transitions as ModelProjectionTransition[],
-      );
-      const replacement = reduction.applied.at(-1)?.replacement;
-      const placeholder: unknown = replacement?.kind === 'json' ? replacement.value : undefined;
-      if (!isArchivedToolResultPlaceholder(placeholder))
-        return { ok: false as const, reason: 'not_found' as const };
-      return reader({ ...placeholder, sessionId: input.sessionId, maxBytes: input.maxBytes });
-    }
-    return reader({
-      ...input,
-      kind: 'maka.archived_tool_result',
-      rewriteVersion: 2,
-      originalEstimatedTokens: 1,
-      reason: 'stale_tool_result_pruned_before_compact',
-    });
-  };
+  ) => readLedgerArchive(evidence, input);
 }
 
 /** Verify reconstructibility before committing a replacement; does not write any payload. */

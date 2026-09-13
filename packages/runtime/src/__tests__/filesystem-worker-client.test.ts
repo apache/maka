@@ -247,7 +247,14 @@ describe('filesystem worker client permission snapshots', () => {
       expectedIdentity: 'unchecked',
     });
 
-    assert.deepEqual(result, { kind: 'read', content: 'worker-content' });
+    assert.deepEqual(result, {
+      kind: 'read',
+      content: 'worker-content',
+      offset: 0,
+      returnedLines: 1,
+      totalLines: 1,
+      next: null,
+    });
     assert.equal(requests.length, 1);
     assert.deepEqual(requests[0]?.operationBoundary.filesystem?.entries, [
       {
@@ -573,7 +580,14 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
     case 'read':
       return request.operation.path.endsWith('.png')
         ? { kind: 'read_image', base64: 'iVBORw==', mimeType: 'image/png' }
-        : { kind: 'read', content: 'worker-content' };
+        : {
+            kind: 'read',
+            content: 'worker-content',
+            offset: 0,
+            returnedLines: 1,
+            totalLines: 1,
+            next: null,
+          };
     case 'write':
       return {
         kind: 'write',

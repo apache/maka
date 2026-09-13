@@ -241,12 +241,12 @@ export interface MakaTool<P = any, R = unknown> {
     readonly sessionId: string;
     readonly operationId: string;
   }) => Promise<void> | void;
-  /** Optional synchronous provider-visible content mapping, used for screenshot image parts. */
+  /** Synchronous model mapping. Return undefined to use the canonical default projection. */
   toModelOutput?: (options: {
     toolCallId: string;
     input: unknown;
     output: unknown;
-  }) => ToolResultOutput;
+  }) => ToolResultOutput | undefined;
 }
 
 export interface MakaToolContext {
@@ -913,6 +913,8 @@ export class ToolRuntime {
         return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
       }
       const output = tool.toModelOutput({ toolCallId, input, output: result });
+      if (output === undefined)
+        return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
       // Projection is deliberately synchronous and total at the tool boundary.
       // Fail closed for untyped/plugin implementations that violate the
       // contract so a completed effect can never be stranded before T2.

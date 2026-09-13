@@ -2355,7 +2355,9 @@ describe('AiSdkBackend model history', () => {
     const text = parts.map((p) => p.text ?? '').join('\n');
     assert.ok(text.includes('describe this chart'), `expected original text in: ${text}`);
     assert.ok(
-      text.includes('<attachment>\nRead argument: {"ref":"maka://runtime/attachments/artifact-1"}'),
+      text.includes(
+        '<attachment>\nRead argument: {"path":"maka://runtime/attachments/artifact-1"}',
+      ),
       `expected attachment Read reference in: ${text}`,
     );
     assert.doesNotMatch(text, /does not support image input/);
@@ -9072,7 +9074,7 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
-  test('records active tool-result prune diagnostics in usage telemetry', async () => {
+  test('accumulates pruning across provider steps once in persisted and live usage', async () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
@@ -9173,7 +9175,7 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Bash',
           description: 'Bash description',
           parameters: z.object({ cmd: z.string() }),
-          impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE' }),
+          impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE'.repeat(600) }),
         },
       ],
       contextBudget: {
@@ -9188,7 +9190,41 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
     });
 
-    for await (const event of backend.send(durable.input())) {
+    const prior = [
+      runtimeTextEvent({
+        id: 'prior-user',
+        turnId: 'prior-turn',
+        role: 'user',
+        author: 'user',
+        text: 'read previous',
+      }),
+      runtimeEvent({
+        id: 'prior-call',
+        turnId: 'prior-turn',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'prior-tool',
+          name: 'Read',
+          args: { path: 'previous.txt' },
+        },
+      }),
+      runtimeEvent({
+        id: 'prior-result',
+        turnId: 'prior-turn',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'prior-tool',
+          name: 'Read',
+          result: { body: largeBody },
+          modelProjection: { version: 1, kind: 'json', value: { body: largeBody } },
+        },
+      }),
+    ];
+    for await (const event of backend.send(durable.input({ runtimeContext: prior }))) {
       durable.record(event);
       events.push(event);
     }
@@ -9217,10 +9253,10 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.match(fourthPrompt, /artifact-tool-1/);
     // Each result is archived once, no matter how many later steps rebuild the
     // Turn: the ledger, not a per-run memory, is what says it already happened.
-    assert.deepEqual(archivedToolCallIds, ['tool-1']);
+    assert.deepEqual(archivedToolCallIds, ['prior-tool', 'tool-1', 'tool-2', 'tool-3']);
     for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
-      assert.equal(contextBudget?.prunedToolResults, 1);
-      assert.equal(contextBudget?.archiveWriteFailures, undefined);
+      assert.equal(contextBudget?.prunedToolResults, 4);
+      assert.equal(contextBudget?.archiveWriteFailures, 0);
       assert.ok(
         ((contextBudget?.prunedToolResultEstimatedTokensBefore as number | undefined) ?? 0) > 0,
       );

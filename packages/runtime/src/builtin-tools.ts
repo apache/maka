@@ -26,9 +26,9 @@ import { z } from 'zod';
 import {
   READ_DESCRIPTION,
   readParameters,
-  readPage,
   readToolResultPage,
   resolveReadInput,
+  type ReadInput,
 } from './read-page.js';
 import {
   closeSync,
@@ -49,6 +49,7 @@ import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/cor
 import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
+import { toolResultOutput } from './tool-result-output.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
 import { executeApplyPatchOperations } from './apply-patch-batch.js';
@@ -290,6 +291,28 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       description: READ_DESCRIPTION,
       parameters: readParameters,
       executionFacts,
+      toModelOutput: ({ input, output }) => {
+        const args = input as ReadInput;
+        const { path } = resolveReadInput(args);
+        if (
+          classifyRuntimeResourceRef(path) !== 'runtime' ||
+          path.startsWith('maka://runtime/tool-results/')
+        )
+          return undefined;
+        if (output && typeof output === 'object' && 'kind' in output && output.kind === 'image')
+          return undefined;
+        try {
+          return toolResultOutput(readToolResultPage(JSON.stringify(output), args), false);
+        } catch (error) {
+          return {
+            type: 'error-text',
+            value:
+              error instanceof Error
+                ? error.message
+                : 'This Read page could not be generated. Read the original path again.',
+          };
+        }
+      },
       ...(options.releaseImageSnapshot
         ? {
             compensateDurableOutcomeCommitFailure: async (input: {
@@ -336,9 +359,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               attachment.artifactId,
               abortSignal,
             );
-            if (result && typeof result === 'object' && 'kind' in result && result.kind === 'image')
-              return result;
-            return readToolResultPage(JSON.stringify(result), input);
+            return result;
           }
           if (!options.runtimeResources)
             throw new Error('Runtime resources are not available in this toolset');
@@ -347,12 +368,19 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             path,
             abortSignal,
           );
-          return readToolResultPage(JSON.stringify(result), input);
+          return result;
         }
         const result = await filesystem.execute({
           operation: {
             kind: 'read',
             path,
+            ...(input.offset === undefined ? {} : { offset: input.offset }),
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+            ...(resolved.position === undefined
+              ? {}
+              : {
+                  continuation: { position: resolved.position, digest: resolved.digest! },
+                }),
           },
           ...filesystemCall(ctx),
         });
@@ -376,7 +404,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'no file content came back',
             'the file is empty or missing',
           );
-        return readPage(result.content, input);
+        const { kind: _kind, ...page } = result;
+        return page;
       },
     },
     ...(executor.applyPatch ? [applyPatchTool] : []),

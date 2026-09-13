@@ -19,6 +19,8 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { formatTextWithInlineRefs } from '../model-history.js';
+import { readParameters } from '../read-page.js';
 import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync } from 'node:fs';
 import {
@@ -1537,9 +1539,17 @@ describe('builtin Bash streaming output', () => {
     const result = (await read.impl(
       { path: 'maka://runtime/background-tasks/shell-run-1' },
       context,
-    )) as { content: string; metadata: { status: string } };
-    assert.equal(result.content, 'background task detail');
-    assert.equal(result.metadata.status, 'running');
+    )) as { kind: string; status: string };
+    assert.equal(result.kind, 'shell_run');
+    assert.equal(result.status, 'running');
+    const projected = read.toModelOutput!({
+      toolCallId: 'tool-1',
+      input: { path: 'maka://runtime/background-tasks/shell-run-1' },
+      output: result,
+    });
+    assert.equal(projected?.type, 'json');
+    if (projected?.type === 'json')
+      assert.equal((projected.value as { content: string }).content, 'background task detail');
     assert.deepStrictEqual(calls, [
       {
         sessionId: 'session-1',
@@ -1569,16 +1579,31 @@ describe('builtin Bash streaming output', () => {
       emitOutput: () => {},
     };
 
-    assert.deepEqual(
-      await read.impl({ path: 'maka://runtime/attachments/attachment-1' }, context),
-      {
+    const prompt = formatTextWithInlineRefs('read this', {
+      attachments: [
+        {
+          kind: 'doc',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          bytes: 17,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        },
+      ],
+    });
+    const args = readParameters.parse(JSON.parse(prompt.match(/Read argument: (.*)/)![1]!));
+    const result = await read.impl(args, context);
+    assert.deepEqual(result, { kind: 'text', text: 'attachment marker' });
+    const projection = read.toModelOutput!({ toolCallId: 'tool-1', input: args, output: result });
+    assert.deepEqual(projection, {
+      type: 'json',
+      value: {
         content: 'attachment marker',
         offset: 0,
         returnedLines: 1,
         totalLines: 1,
         next: null,
       },
-    );
+    });
     assert.deepEqual(calls, [{ sessionId: 'session-1', artifactId: 'attachment-1' }]);
   });
 
