@@ -71,7 +71,8 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   const [deleteTarget, setDeleteTarget] = useState<ComputerHistoryTimelineEntry | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const controller = useComputerHistoryController(detailOpen ? selectedId : null);
-  const { entries, status, service, run, busy, loading } = controller;
+  const { status, service, run, busy, loading } = controller;
+  const entries = useMemo(() => controller.entries.filter((entry) => entry.summaryLevel), [controller.entries]);
   const listRef = useRef<HTMLElement>(null);
   const detailRef = useRef<HTMLElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
@@ -113,6 +114,26 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   const groupLabel = (value: string) => value === today ? copy.today
     : value === shiftHistoryDay(today, -1) ? copy.yesterday : formatDay(value);
   const shownEvents = detail?.events.slice(0, expandedEvents ? 100 : 5) ?? [];
+  const hasFilters = Boolean(query || source || day);
+  const firstRun = status && !status.settings.enabled && !status.settings.summariesEnabled && status.eventCount === 0;
+  const summariesOff = status && !status.settings.summariesEnabled;
+  const recordingBlocked = status && !['running', 'stopped', 'paused'].includes(status.state);
+  const emptyTitle = hasFilters ? copy.noMatch
+    : status?.summaryError ? copy.summaryError
+      : recordingBlocked ? copy.states[status.state]
+        : firstRun ? copy.firstRun
+          : summariesOff ? copy.summaryOff
+            : status?.summaryState === 'running' ? copy.summaryRunning
+              : status?.state === 'paused' ? copy.states.paused
+                : status?.state === 'stopped' ? copy.states.stopped : copy.summaryWaiting;
+  const emptyHelp = hasFilters ? copy.noMatchHelp
+    : status?.summaryError ? copy.summaryErrorHelp
+      : recordingBlocked ? copy.summaryBlockedHelp
+        : firstRun ? copy.firstHelp
+          : summariesOff ? copy.summaryOffHelp
+            : status?.summaryState === 'running' ? copy.summaryWaitingHelp
+              : status?.state === 'paused' ? copy.summaryPausedHelp
+                : status?.state === 'stopped' ? copy.summaryStoppedHelp : copy.summaryWaitingHelp;
 
   useEffect(() => {
     if (wasObscured.current && !isObscured) {
@@ -189,6 +210,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
       {status?.summaryError ? (
         <div className="computer-history-error" role="alert"><span>{copy.summaryError}: {status.summaryError}</span><Button label={copy.retry} size="sm" variant="ghost" isDisabled={busy || !status.settings.summariesEnabled} onClick={() => void run(() => service.retrySummary(), { preserveDetail: true })} /></div>
       ) : null}
+      {entries.length > 0 && status?.summaryState === 'running' ? <div className="computer-history-notice" role="status">{copy.summaryRunning}</div> : null}
       {detail && controller.detailError ? (
         <div className="computer-history-error" role="alert"><span>{copy.detailFailed}: {controller.detailError}</span><Button label={copy.refresh} size="sm" variant="ghost" isDisabled={busy || loading} onClick={() => void controller.refresh()} /></div>
       ) : null}
@@ -225,11 +247,11 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
           </section>)}
           {!loading && filtered.length === 0 && !controller.error ? (
             <div className="computer-history-empty"><EmptyState headingLevel={2}
-              title={query || source || day ? copy.noMatch : status && !status.settings.enabled ? copy.firstRun : copy.empty}
-              description={query || source || day ? copy.noMatchHelp : status && !status.settings.enabled ? copy.firstHelp : copy.emptyHelp}
+              title={emptyTitle}
+              description={emptyHelp}
               icon={<History size={24} aria-hidden />}
-              actions={query || source || day ? <Button label={copy.reset} variant="ghost" size="sm" onClick={() => { setQuery(''); setSource(''); setDay(''); }} />
-                : status && !status.settings.enabled ? <Button label={copy.setup} icon={<Settings size={15} aria-hidden />} variant="primary" size="sm" onClick={onOpenSettings} /> : undefined} /></div>
+              actions={hasFilters ? <Button label={copy.reset} variant="ghost" size="sm" onClick={() => { setQuery(''); setSource(''); setDay(''); }} />
+                : !status?.summaryError && (firstRun || summariesOff || recordingBlocked || status?.state === 'stopped') ? <Button label={firstRun ? copy.setup : copy.settings} icon={<Settings size={15} aria-hidden />} variant="primary" size="sm" onClick={onOpenSettings} /> : undefined} /></div>
           ) : null}
         </aside>
 

@@ -235,6 +235,53 @@ test('a stale refresh cannot restore an activity after deletion refresh complete
   assert.deepEqual(h.controller().entries, []);
 });
 
+for (const deletionSucceeds of [true, false]) {
+  test(`deletion ${deletionSucceeds ? 'success invalidates cached entries even when readback fails' : 'failure retains cached entries without readback'}`, async () => {
+    const write = deferred<ComputerHistoryStatus>();
+    const readback = deferred<ComputerHistoryTimeline>();
+    let reads = 0;
+    const deletedIds: string[] = [];
+    const service = services({
+      timeline: async () => ++reads === 1
+        ? { status: STATUS, entries: [entry('a'), entry('b')] }
+        : readback.promise,
+      deleteEntry: async (id) => { deletedIds.push(id); return write.promise; },
+    });
+    const h = harness(service);
+    await act(async () => h.render(null));
+    let deletion!: Promise<boolean>;
+    await act(async () => { deletion = h.controller().run(() => service.computerHistory.deleteEntry('a')); });
+    assert.deepEqual(deletedIds, ['a']);
+    assert.equal(h.controller().busy, true);
+    assert.deepEqual(h.controller().entries.map(({ id }) => id), ['a', 'b'], 'pending deletion has not invalidated the cache');
+    if (deletionSucceeds) {
+      await act(async () => {
+        write.resolve(STATUS);
+        await write.promise;
+      });
+      assert.equal(reads, 2);
+      assert.equal(h.controller().busy, true);
+      assert.deepEqual(h.controller().entries, [], 'successful destructive changes invalidate entries before readback settles');
+      await act(async () => {
+        readback.reject(new Error('post-deletion archive unavailable'));
+        assert.equal(await deletion, true, 'the deletion succeeded even though refreshing failed');
+      });
+      assert.deepEqual(h.controller().entries, []);
+      assert.equal(h.controller().error, 'post-deletion archive unavailable');
+    } else {
+      await act(async () => {
+        write.reject(new Error('deletion denied'));
+        assert.equal(await deletion, false);
+      });
+      assert.equal(reads, 1, 'a failed mutation does not issue a post-deletion read');
+      assert.deepEqual(h.controller().entries.map(({ id }) => id), ['a', 'b']);
+      assert.equal(h.controller().error, 'deletion denied');
+    }
+    assert.equal(h.controller().busy, false);
+    assert.equal(h.controller().loading, false);
+  });
+}
+
 afterEach(() => cleanupFakeDom());
 
 test('background polling retains selected evidence without a skeleton and exposes a fresh read error', async (t) => {

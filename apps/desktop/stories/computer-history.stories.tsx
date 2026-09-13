@@ -166,6 +166,26 @@ function fixtureEntries(): readonly ComputerHistoryTimelineEntry[] {
   }));
 }
 
+function fixturePendingEntries(): ComputerHistoryTimelineEntry[] {
+  return [
+    {
+      id: 'pending-editor', start: '12:32:10', end: '12:32:42',
+      title: 'VS Code · computer-history-page.tsx',
+      description: '窗口切换、快捷键与鼠标点击，尚未生成活动摘要。',
+      applications: ['com.microsoft.VSCode'], eventCount: 4,
+    },
+    {
+      id: 'pending-preview', start: '12:31:05', end: '12:31:24',
+      title: 'Chrome · Computer History · 390px',
+      description: '打开本地页面预览并切换窗口，尚未生成活动摘要。',
+      applications: ['com.google.Chrome'], eventCount: 3,
+    },
+  ].map((entry) => ({
+    ...entry, start: at(entry.start), end: at(entry.end), suppressedEventCount: 0,
+    contextMarkdown: `<computer-history-context trust="untrusted-observed-ui">\n${entry.title}\n${entry.description}\n</computer-history-context>`,
+  }));
+}
+
 const STATUS: ComputerHistoryStatus = {
   platformSupported: true,
   helperAvailable: true,
@@ -280,7 +300,7 @@ function fixtureDetail(entry: ComputerHistoryTimelineEntry): ComputerHistoryDeta
   return { entry, document: fixtureDocument(entry), events, eventTotal: events.length, rawAvailable: true, truncated: false };
 }
 
-type Scenario = 'populated' | 'empty' | 'expired' | 'corrupt' | 'detail-error' | 'cached-detail-error' | 'unsupported' | 'missing-model' | 'raw' | 'settings-error' | 'multi-day' | 'delete-error';
+type Scenario = 'populated' | 'empty' | 'expired' | 'corrupt' | 'detail-error' | 'cached-detail-error' | 'unsupported' | 'missing-model' | 'settings-error' | 'multi-day' | 'delete-error' | 'mixed-pending' | 'pending-summaries' | 'pending-summaries-idle' | 'summaries-disabled' | 'summary-failed';
 
 type HistoryProbes = {
   onSettingsWrite(patch: Partial<ComputerHistorySettings>): void;
@@ -296,8 +316,22 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
     start: new Date(Date.parse(entry.start) - 86_400_000).toISOString(),
     end: new Date(Date.parse(entry.end) - 86_400_000).toISOString(),
   })));
-  if (scenario === 'raw') entries = entries.map(({ summaryLevel: _level, summaryText: _text, suggestion: _suggestion, ...entry }) => entry);
+  if (scenario === 'mixed-pending') entries = [...fixturePendingEntries(), ...entries];
+  const pendingOnly = ['pending-summaries', 'pending-summaries-idle', 'summaries-disabled', 'summary-failed'].includes(scenario);
+  if (pendingOnly) entries = fixturePendingEntries();
   let status = structuredClone(STATUS);
+  if (scenario === 'mixed-pending' || pendingOnly) {
+    status = {
+      ...status,
+      state: scenario === 'pending-summaries' || scenario === 'pending-summaries-idle' ? 'running' : status.state,
+      summaryState: scenario === 'summaries-disabled' ? 'disabled'
+        : scenario === 'summary-failed' ? 'error'
+          : scenario === 'pending-summaries-idle' ? 'idle' : 'running',
+      ...(scenario === 'summary-failed' ? { summaryError: 'Synthetic analysis provider is temporarily unavailable.' } : {}),
+      eventCount: entries.reduce((sum, entry) => sum + entry.eventCount, 0),
+      settings: { ...status.settings, summariesEnabled: scenario !== 'summaries-disabled' },
+    };
+  }
   let corrupt = scenario === 'corrupt';
   let detailError = scenario === 'detail-error';
   let detailReads = 0;
@@ -367,6 +401,7 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
     },
     retrySummary: async () => {
       detailError = false;
+      if (scenario === 'summary-failed') status = { ...status, summaryState: 'idle', summaryError: undefined };
       return structuredClone(status);
     },
     getAnalysisModel: async () => scenario === 'missing-model' ? null : 'Fixture provider / analysis-model',
@@ -469,6 +504,19 @@ async function closeReader(canvasElement: HTMLElement) {
   });
 }
 
+async function expectSummaryEmpty(canvasElement: HTMLElement, args: HistoryProbes, heading: RegExp) {
+  const canvas = within(canvasElement);
+  await canvas.findByRole('heading', { level: 2, name: heading });
+  expect(canvasElement.querySelectorAll('.computer-history-empty')).toHaveLength(1);
+  expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0);
+  expect(canvasElement.querySelector('.computer-history-detail')).toBeNull();
+  expect(canvasElement.querySelector('.computer-history-filters')).toBeNull();
+  expect(args.onDetailRead).not.toHaveBeenCalled();
+  expect(args.onSettingsWrite).not.toHaveBeenCalled();
+  expect(args.onPermissionRequest).not.toHaveBeenCalled();
+  return canvas;
+}
+
 function syntaxTokens(root: Element): string[] {
   const spans = [...root.querySelectorAll('[class*="astryx-token-"]')].map((token) => token.textContent ?? '');
   const highlights = (CSS as typeof CSS & { highlights?: Map<string, Iterable<Range>> }).highlights;
@@ -517,7 +565,7 @@ export const Populated: Story = {
       expect(next.scrollTop).toBe(0);
     });
     await closeReader(canvasElement);
-    const search = canvas.getByRole('textbox', { name: /搜索活动|搜尋活動|Search activities/ });
+    const search = canvas.getByRole('textbox', { name: /搜索摘要或应用|搜尋摘要或應用程式|Search summaries or apps/ });
     await userEvent.type(search, 'nothing-matches-this-fixture');
     await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0));
     await userEvent.click(canvas.getByRole('button', { name: /清除筛选|清除篩選|Clear filters/ }));
@@ -568,6 +616,28 @@ export const RecordedEvents: Story = {
 // Real path: global sidebar -> Computer History, keeping task history visible in the rail.
 export const GlobalSidebar: Story = {
   args: { withSidebar: true },
+};
+
+// Real path: sidebar -> Computer History with saved summaries and two newer unsummarized fragments.
+export const MixedPending: Story = {
+  args: { scenario: 'mixed-pending', withSidebar: true },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('button', { name: /检查电脑历史的独立页面布局/ });
+    expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6);
+    expect(canvas.queryByRole('button', { name: /VS Code · computer-history-page\.tsx|Chrome · Computer History · 390px/ })).toBeNull();
+    expect(canvas.getByRole('button', { name: /恢复记录|恢復記錄|Resume recording/ })).toBeVisible();
+    const search = canvas.getByRole('textbox', { name: /搜索摘要或应用|搜尋摘要或應用程式|Search summaries or apps/ });
+    await userEvent.type(search, 'computer-history-page.tsx');
+    await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0));
+    await userEvent.click(canvas.getByRole('button', { name: /清除筛选|清除篩選|Clear filters/ }));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6));
+    expect(search).toHaveValue('');
+    expect(canvasElement.querySelector('.computer-history-detail')).toBeNull();
+    expect(args.onDetailRead).not.toHaveBeenCalled();
+    expect(args.onSettingsWrite).not.toHaveBeenCalled();
+    expect(args.onPermissionRequest).not.toHaveBeenCalled();
+  },
 };
 
 // Real path: sidebar -> Computer History -> select activity -> Applications & windows.
@@ -750,13 +820,37 @@ export const ExpiredEvidence: Story = {
   },
 };
 
-// Real path: sidebar -> Computer History with raw activity groups before model summaries exist.
-export const RawActivity: Story = {
-  args: { scenario: 'raw' },
-  play: async ({ canvasElement }) => {
-    const canvas = await openFirstActivity(canvasElement, true);
-    expect(canvas.queryByRole('region', { name: /摘要文档|摘要文件|Summary document/ })).toBeNull();
-    expect(canvasElement.querySelectorAll('.computer-history-events li')).toHaveLength(5);
+// Real path: sidebar -> Computer History while the first recorded fragments are being summarized.
+export const PendingSummaries: Story = {
+  args: { scenario: 'pending-summaries' },
+  play: async ({ canvasElement, args }) => {
+    await expectSummaryEmpty(canvasElement, args, /正在生成摘要|正在產生摘要|Generating summary/);
+  },
+};
+
+// Real path: sidebar -> Computer History after recording, before the summary worker starts.
+export const PendingSummariesIdle: Story = {
+  args: { scenario: 'pending-summaries-idle' },
+  play: async ({ canvasElement, args }) => {
+    await expectSummaryEmpty(canvasElement, args, /等待活动摘要|等待活動摘要|Waiting for activity summaries/);
+  },
+};
+
+// Real path: sidebar -> Computer History with raw records retained and model-summary consent off.
+export const SummariesDisabled: Story = {
+  args: { scenario: 'summaries-disabled' },
+  play: async ({ canvasElement, args }) => {
+    await expectSummaryEmpty(canvasElement, args, /模型摘要已关闭|模型摘要已關閉|Model summaries off/);
+  },
+};
+
+// Real path: sidebar -> Computer History after the first summary attempt fails at the analysis provider.
+export const SummaryFailed: Story = {
+  args: { scenario: 'summary-failed' },
+  play: async ({ canvasElement, args }) => {
+    const canvas = await expectSummaryEmpty(canvasElement, args, /摘要生成失败|摘要產生失敗|Summary failed/);
+    expect(canvas.getByRole('alert')).toHaveTextContent('Synthetic analysis provider is temporarily unavailable.');
+    expect(canvas.getByRole('button', { name: /重试摘要|重試摘要|Retry summary/ })).toBeEnabled();
   },
 };
 

@@ -99,3 +99,30 @@ and source/scroll preservation. There were no page errors, downloads, action
 network requests or settings writes. The previous clipboard text was restored.
 Finder callbacks are synthetic here; these images do not establish native
 Finder behavior. No private history or real recorder was accessed.
+
+## Summary-Only Feed Follow-Up
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `summary-feed-before.png` | 1240 x 820 | Six summaries mixed with two newer raw fragments |
+| `summary-feed-after.png` | 1240 x 820 | Same fixture, six summaries and a generation notice |
+| `summary-reader-after.png` | 1240 x 820 | First summary selected with metadata and normalized headings |
+| `summary-waiting-narrow.png` | 390 x 844 | Raw records exist; first summary has not started |
+| `summary-failed-narrow.png` | 390 x 844 | First summary failed; explicit retry remains available |
+| `summary-reader-dark-narrow.png` | 390 x 844 | Scrolled preview with table, task list and highlighted code |
+
+The feed pair uses the `MixedPending` story with identical synthetic data,
+paused recording, running analysis, light theme, `zh-CN`, Asia/Shanghai,
+100% zoom, and no selected activity. It includes the real production sidebar.
+The before image was captured in Chrome; the after image was captured in the
+Codex in-app browser. A Chrome extension overlay is visible only in the
+baseline. Sidebar relative ages follow wall-clock time rather than a frozen
+clock. Images are unedited; these environment differences are not app changes.
+
+Narrow screenshots use the isolated production history surface. Resizing the
+global-sidebar fixture to 390px exposed its fixed-width rail taking most of
+the viewport, including when its navigation was collapsed. This existing
+fixture does not establish mobile support for the full Desktop shell; the
+isolated reader and empty states have no page-level horizontal overflow.
+The actual desktop trial was checked separately at 1240 x 820, without
+publishing private activity screenshots or generated documents.

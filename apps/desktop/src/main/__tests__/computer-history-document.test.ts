@@ -148,6 +148,21 @@ test('preview renders actual heading, lists, table, quote and code instead of a 
   assert.ok(!h.container.textContent.includes('"eventCount"'), 'frontmatter belongs only to Source');
 });
 
+test('preview normalizes generated heading hierarchy without treating fenced code as a heading', async (t) => {
+  const h = renderer(t);
+  await h.render(historyDocument([
+    '```markdown', '# not heading', '```', '',
+    '### Observed workflow', '', '- Reviewed source', '',
+    '#### Evidence', '', '- Opened the editor', '',
+    '##### Uncertainty', '', 'Outcome not recorded.',
+  ].join('\n')));
+  assert.deepEqual(
+    [...h.container.querySelectorAll('h1,h2,h3,h4,h5,h6')].map((node) => [node.tagName.toLowerCase(), node.textContent]),
+    [['h3', 'Observed workflow'], ['h4', 'Evidence'], ['h5', 'Uncertainty']],
+  );
+  assert.equal(h.container.querySelector('pre code')?.textContent, '# not heading');
+});
+
 test('observed links and images render as inert text with no navigation or remote media elements', async (t) => {
   const h = renderer(t);
   await h.render(historyDocument([
@@ -174,7 +189,8 @@ test('observed links and images render as inert text with no navigation or remot
 
 test('localized Source toggle shows frontmatter and copies exact raw bytes across view changes', async (t) => {
   const h = renderer(t);
-  const value = historyDocument('# Observed <window>\n\nLiteral `<tag attr="x">&value</tag>`.\n\n```text\n\tkeep trailing spaces  \n```');
+  const value = historyDocument('### Observed <window>\n\n#### Evidence\n\nLiteral `<tag attr="x">&value</tag>`.\n\n##### Uncertainty\n\n```text\n# not heading\n\tkeep trailing spaces  \n```');
+  const original = { ...value };
   const locales: readonly [UiLocale, string, string, string][] = [
     ['en', 'Preview', 'Source', 'Document view'],
     ['zh-CN', '\u9884\u89c8', '\u6e90\u7801', '\u6587\u6863\u89c6\u56fe'],
@@ -193,11 +209,20 @@ test('localized Source toggle shows frontmatter and copies exact raw bytes acros
     assert.ok(code);
     assert.ok(code.textContent.includes('"title": "Observed <window> & notes"'));
     assert.ok(code.textContent.includes('<tag attr="x">&value</tag>'));
+    assert.ok(code.textContent.includes('### Observed <window>'));
+    assert.ok(code.textContent.includes('#### Evidence'));
+    assert.ok(code.textContent.includes('##### Uncertainty'));
+    assert.ok(code.textContent.includes('# not heading'));
+    assert.ok(code.textContent.includes('\tkeep trailing spaces  '));
     assert.equal(code.querySelector('window, tag'), null, 'source angle brackets remain text');
     await h.click(h.button(fullCopyLabels[locale]));
     assert.deepEqual(Buffer.from(h.copied.at(-1) ?? ''), Buffer.from(value.markdown), `${locale}: copied source must preserve CRLF and trailing whitespace`);
     await h.click(h.radio(preview));
-    assert.ok(h.container.querySelector('h3'));
+    assert.deepEqual(
+      [...h.container.querySelectorAll('h1,h2,h3,h4,h5,h6')].map((node) => node.tagName.toLowerCase()),
+      ['h3', 'h4', 'h5'],
+    );
+    assert.deepEqual(value, original, 'preview normalization must not mutate the document body or serialized Markdown');
     await h.click(h.radio(source));
     await h.click(h.button(fullCopyLabels[locale]));
     assert.equal(h.copied.at(-1), value.markdown);

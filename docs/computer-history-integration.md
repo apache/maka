@@ -48,7 +48,13 @@ The selected navigation direction is a global left-sidebar entry opening an
 independent Computer History page. It is not scoped to the active task or the
 selected remote Host. It replaces the former Workbar integration.
 
-The page opens as a full-width chronological feed grouped by local date.
+The page opens as a full-width chronological summary feed grouped by local date.
+Raw app/window fragments do not appear as feed rows or contribute to its counts,
+search, date options, or application filters. Before the first summary, the page
+distinguishes waiting, active generation, paused/stopped recording, disabled analysis,
+and failure; it never enables model processing merely by being viewed.
+Saved summaries remain readable during generation and transient refresh errors.
+Recorded evidence remains available within summary details.
 Selecting an activity opens a side-by-side reader; closing it restores the
 feed. On narrow screens the reader replaces the feed and has a back action.
 List rows
@@ -56,8 +62,10 @@ show time, title, a short summary, and native application icons. The detail
 surface shows the title, description, interval, contributing applications, and
 the complete saved Markdown body. Rendered Markdown is the default, with
 headings, lists, tables, quotations, and syntax-highlighted code blocks. A source
-mode shows the complete serialization, including frontmatter. The document
-toolbar uses "Activity summary"; file information exposes the original stored
+mode shows the complete serialization, including frontmatter. The reader maps
+the shallowest parsed Markdown heading below the activity title,
+preserving relative heading depth without rewriting the saved or copied source.
+The document toolbar uses "Activity summary"; file information exposes the original stored
 filename, and copy actions retain the full Markdown or original filename.
 "Reveal in Finder" locates the existing saved file without exporting a copy or
 renaming it. Reading the document requires no file-manager handoff. Observed

@@ -60,8 +60,6 @@ export function useComputerHistoryController(selectedId: string | null) {
     if (timeline.status === 'fulfilled') {
       setEntries(timeline.value.entries);
       setStatus(timeline.value.status);
-    } else {
-      setEntries([]);
     }
     if (health.status === 'fulfilled') setStatus(health.value);
     const failed = [timeline, health].find((result) => result.status === 'rejected');
@@ -134,6 +132,7 @@ export function useComputerHistoryController(selectedId: string | null) {
     try {
       await operation();
       if (!isCurrent()) return false;
+      if (!preserveDetail) setEntries([]);
       await refresh();
       return isCurrent();
     } catch (error) {

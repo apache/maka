@@ -17,9 +17,10 @@
  * under the License.
  */
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
-import { Markdown, type MarkdownComponents } from '@astryxdesign/core/Markdown';
+import { Heading, type HeadingLevel } from '@astryxdesign/core/Heading';
+import { Markdown, parseMarkdown, type MarkdownComponents } from '@astryxdesign/core/Markdown';
 import { Popover } from '@astryxdesign/core/Popover';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import type { ComputerHistoryDetail } from '@maka/core/computer-history';
@@ -46,6 +47,19 @@ export function ComputerHistoryDocument({ document, onCopy, onReveal }: {
   const pendingRef = useRef(false);
   const mounted = useMountedRef();
   const toast = useToast();
+  const components = useMemo(() => {
+    const levels = parseMarkdown(document.body).flatMap((block) => block.type === 'heading' ? [block.level] : []);
+    const firstLevel = levels.length ? Math.min(...levels) : 1;
+    return {
+      ...OBSERVED_MARKDOWN_COMPONENTS,
+      // Fit saved document headings below the activity title without rewriting Markdown.
+      heading: ({ level, children, id }) => <Heading
+        className="computer-history-document-heading"
+        level={Math.min(6, 3 + Math.max(0, level - firstLevel)) as HeadingLevel}
+        id={id}
+      >{children}</Heading>,
+    } satisfies Partial<MarkdownComponents>;
+  }, [document.body]);
 
   async function run(action: DocumentAction) {
     if (pendingRef.current) return;
@@ -92,7 +106,7 @@ export function ComputerHistoryDocument({ document, onCopy, onReveal }: {
         </div>
       </div>
       {mode === 'rendered' ? (
-        <Markdown className="computer-history-document-body" headingLevelStart={3} contentWidth="100%" components={OBSERVED_MARKDOWN_COMPONENTS}>
+        <Markdown className="computer-history-document-body" contentWidth="100%" components={components}>
           {document.body}
         </Markdown>
       ) : (

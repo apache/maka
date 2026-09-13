@@ -111,6 +111,9 @@
 .computer-history-document-filename > code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: var(--maka-text-supporting); }
 .computer-history-document-filename > button { flex-shrink: 0; }
 .computer-history-document-body { min-height: 160px; }
+.computer-history-document-heading { margin-block: 24px 12px; }
+.computer-history-document-heading:first-child { margin-block-start: 0; }
+.computer-history-document-heading:last-child { margin-block-end: 0; }
 .computer-history-document-body .astryx-list,
 .computer-history-document-body .astryx-checkbox-list { margin-inline: 0; }
 .computer-history-evidence { margin-top: 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
