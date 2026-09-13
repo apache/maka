@@ -17,11 +17,13 @@
  * under the License.
  */
 
+import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -63,6 +65,33 @@ export type TurnRevisionDraft = {
   /** Composer text that was present before edit began; restored on cancel.
    *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
+  /**
+   * The selected message's own structured context, staged into the composer
+   * plates at edit time and compared against them to refuse no-op sends.
+   * Quotes are self-contained; the attachment refs are source-owned until the
+   * revision commit rewrites them, so the composer's copies are swapped for
+   * the copied message's target-owned refs right after the branch lands.
+   */
+  originalQuotes: readonly QuoteRef[];
+  originalAttachments: readonly AttachmentRef[];
+  /** Quote-plate content that predated the edit; restored on cancel. The
+   *  attachment plate needs no snapshot: the edit is refused while it holds
+   *  anything, so it is always empty here. */
+  previousQuotes: readonly QuoteRef[];
+};
+
+/**
+ * Snapshot of the composer's staged context, read fresh at every use: the
+ * staging hooks bind their mutators to the active session's draft key, which
+ * moves across the revision commit (source → branch child).
+ */
+export type RevisionStagedContext = {
+  quotes: readonly QuoteRef[];
+  attachments: readonly PendingAttachment[];
+  restoreQuotes(ownerKey: string, quotes: readonly QuoteRef[]): void;
+  restoreAttachments(ownerKey: string, attachments: readonly AttachmentRef[]): void;
+  removeQuote(index: number): void;
+  removeAttachment(index: number): void;
 };
 
 export interface AppShellRevisionActions {
@@ -81,10 +110,12 @@ export interface AppShellRevisionActions {
  *
  * If normal send fails after a revision was prepared, that version remains
  * active with the edited text and a second send retries there instead of
- * creating another version. Attachment-bearing source messages are rejected
- * until the revision draft can carry their target-owned references (#5109);
- * retained historical attachments are fine — the Host revision copier
- * rewrites their Session refs losslessly.
+ * creating another version. The selected message's quotes and attachments
+ * stage into the composer plates at edit time (#5109); after the revision
+ * commit the staged attachment refs are swapped for the copied message's
+ * target-owned refs, so the replacement submit never claims source-session
+ * files. Directory references have no client-side restage path and stay
+ * rejected.
  */
 export function createAppShellRevisionActions(deps: {
   uiLocale: UiLocale;
@@ -93,6 +124,7 @@ export function createAppShellRevisionActions(deps: {
   composerRef: RefBox<ComposerHandle | null>;
   messages: readonly StoredMessage[];
   hasPendingAttachments: () => boolean;
+  stagedContext(): RevisionStagedContext;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
@@ -107,6 +139,7 @@ export function createAppShellRevisionActions(deps: {
     composerRef,
     messages,
     hasPendingAttachments,
+    stagedContext,
     openSessionInChat,
     refreshSessions,
     setMessages,
@@ -155,13 +188,15 @@ export function createAppShellRevisionActions(deps: {
       return;
     }
 
-    if (userMessage.attachments && userMessage.attachments.length > 0) {
-      // Attachment references are session-owned and their rewritten targets
-      // are not exposed to clients yet, so those stay explicitly rejected.
-      // Quotes never reach this point: chat-turn's editDisabled gate excludes them.
-      toastApi.info(copy.revisionUnavailableTitle, copy.revisionAttachmentsUnsupported);
-      return;
-    }
+    const staged = stagedContext();
+    // Quotes and the selected message's own attachments restage into the
+    // composer plates (#5109): the plates make the carried context visible
+    // and explicitly removable, and the copy commit later rewrites the
+    // attachment refs (prepareRevisionSend swaps them in). The edit is only
+    // offered when the plates are empty of user-staged context, so the
+    // snapshots below are the whole pre-edit state.
+    const sourceQuotes = [...(userMessage.quotes ?? [])];
+    const sourceAttachments = [...(userMessage.attachments ?? [])];
     if (userMessage.displayText !== undefined && userMessage.displayText !== userMessage.text) {
       toastApi.info(copy.revisionUnavailableTitle, copy.revisionTransformedTextUnsupported);
       return;
@@ -172,6 +207,13 @@ export function createAppShellRevisionActions(deps: {
       revisionCopyKey(sessionId, turnId),
       turnId,
     );
+    const previousQuotes = staged.quotes.map((quote) => ({ ...quote }));
+    if (sourceQuotes.length > 0) {
+      staged.restoreQuotes(sessionId, sourceQuotes);
+    }
+    if (sourceAttachments.length > 0) {
+      staged.restoreAttachments(sessionId, sourceAttachments);
+    }
     commitRevisionDraft({
       sourceSessionId: sessionId,
       sourceTurnId: copyAttempt.sourceTurnId,
@@ -180,6 +222,9 @@ export function createAppShellRevisionActions(deps: {
       draftSessionId: sessionId,
       originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
+      originalQuotes: sourceQuotes,
+      originalAttachments: sourceAttachments,
+      previousQuotes,
     });
     composerRef.current?.setText(prompt);
     composerRef.current?.focus();
@@ -329,6 +374,25 @@ export function createAppShellRevisionActions(deps: {
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
+      // The copy rewrote the retained slice's attachment refs to the branch
+      // child. Swap the staged source-owned refs for the copied message's
+      // target-owned ones so the replacement submit claims files this Session
+      // owns. The branch child is the active surface here, so the staging
+      // mutators already bind to its draft key.
+      if (startedDraft.originalAttachments.length > 0) {
+        const copiedMessage = preparedMessages.find(
+          (message): message is Extract<StoredMessage, { type: 'user' }> =>
+            message.type === 'user' && message.turnId === startedDraft.sourceTurnId,
+        );
+        const rewritten = [...(copiedMessage?.attachments ?? [])];
+        const stagedNow = stagedContext();
+        for (let index = stagedNow.attachments.length - 1; index >= 0; index -= 1) {
+          stagedNow.removeAttachment(index);
+        }
+        if (rewritten.length > 0) {
+          stagedNow.restoreAttachments(newSession.id, rewritten);
+        }
+      }
       setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
@@ -371,6 +435,19 @@ export function createAppShellRevisionActions(deps: {
     if (cleanupSessionId) await abandonRevisionCopy(draft);
     else completeTurnRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
+    // Unstage everything the edit staged and restore what it displaced
+    // (#5109). The plates hold only the edit's items: beginEdit refuses when
+    // the user had own attachments staged, and snapshots the quote plate.
+    const staged = stagedContext();
+    for (let index = staged.attachments.length - 1; index >= 0; index -= 1) {
+      staged.removeAttachment(index);
+    }
+    for (let index = staged.quotes.length - 1; index >= 0; index -= 1) {
+      staged.removeQuote(index);
+    }
+    if (draft.previousQuotes.length > 0) {
+      staged.restoreQuotes(draft.sourceSessionId, draft.previousQuotes);
+    }
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
     if (draft.draftSessionId !== draft.sourceSessionId) {
       composerRef.current?.clearDraft(draft.draftSessionId);
@@ -400,6 +477,46 @@ export function completeTurnRevisionCopyAttempt(draft: TurnRevisionDraft): void 
     },
     draft.copyId,
   );
+}
+
+function quoteKey(quote: QuoteRef): string {
+  return JSON.stringify([quote.text, quote.label ?? null, quote.sourceTurnId ?? null]);
+}
+
+function attachmentKey(attachment: PendingAttachment): string {
+  return JSON.stringify(
+    attachment.source.type === 'retained' ? attachment.source.attachment : attachment.source,
+  );
+}
+
+/**
+ * A send whose text and staged context both match what the edit staged is a
+ * no-op retry: the replacement would duplicate the source turn verbatim.
+ * Compared in plate order — the pre-edit context first, the restaged source
+ * context after it — because that is the order the replacement carries.
+ */
+export function revisionContentUnchanged(
+  draft: TurnRevisionDraft,
+  text: string,
+  stagedQuotes: readonly QuoteRef[],
+  stagedAttachments: readonly PendingAttachment[],
+): boolean {
+  if (text.trim() !== draft.originalText.trim()) return false;
+  const expectedQuotes = [...draft.previousQuotes, ...draft.originalQuotes].map(quoteKey);
+  if (stagedQuotes.map(quoteKey).join('\n') !== expectedQuotes.join('\n')) return false;
+  const expectedAttachments = draft.originalAttachments.map(attachmentToPending).map(attachmentKey);
+  return stagedAttachments.map(attachmentKey).join('\n') === expectedAttachments.join('\n');
+}
+
+function attachmentToPending(attachment: AttachmentRef): PendingAttachment {
+  return {
+    stagingKey: `revision:${JSON.stringify(attachment)}`,
+    displayName: attachment.name,
+    mimeType: attachment.mimeType,
+    kind: attachment.kind,
+    size: attachment.bytes,
+    source: { type: 'retained', attachment },
+  };
 }
 
 export async function abandonTurnRevisionCopyAttempt(

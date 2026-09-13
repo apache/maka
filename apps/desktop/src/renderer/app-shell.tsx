@@ -165,6 +165,7 @@ import {
   abandonTurnRevisionCopyAttempt,
   completeTurnRevisionCopyAttempt,
   createAppShellRevisionActions,
+  revisionContentUnchanged,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
@@ -1520,6 +1521,14 @@ function AppShellContent({
     composerRef,
     messages,
     hasPendingAttachments: () => hasPendingContext,
+    stagedContext: () => ({
+      quotes: pendingQuotes,
+      attachments: submittableAttachments ?? [],
+      restoreQuotes,
+      restoreAttachments,
+      removeQuote,
+      removeAttachment,
+    }),
     openSessionInChat,
     refreshSessions,
     setMessages,
@@ -1612,8 +1621,12 @@ function AppShellContent({
     if (
       revisionSend &&
       revision &&
-      text.trim() === revision.originalText.trim() &&
-      !hasPendingContext
+      revisionContentUnchanged(
+        revision,
+        text,
+        pendingQuotes,
+        submittableAttachments ?? [],
+      )
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
@@ -1621,7 +1634,19 @@ function AppShellContent({
     }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (hasPendingContext) {
+      // The edit staged the source message's context itself; anything beyond
+      // that snapshot is user-staged mid-edit and cannot mix into the
+      // replacement. Pending directories have no staged snapshot to compare
+      // against, so any of them refuses.
+      const stagedAttachments = submittableAttachments ?? [];
+      const expectedAttachments =
+        revision.previousAttachments.length + revision.originalAttachments.length;
+      const expectedQuotes = revision.previousQuotes.length + revision.originalQuotes.length;
+      const mixesUserContext =
+        stagedAttachments.length > expectedAttachments ||
+        pendingQuotes.length > expectedQuotes ||
+        (hasPendingContext && stagedAttachments.length === 0);
+      if (mixesUserContext) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
