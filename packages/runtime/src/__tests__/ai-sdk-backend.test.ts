@@ -8207,6 +8207,109 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
+  for (const visibleText of [false, true]) {
+    test(`isolates undispatched local calls after truncation (visible text: ${visibleText})`, async () => {
+      const durable = durableTurnHarness('turn-local-truncated', 'do the work');
+      const executed: string[] = [];
+      const assistants: AssistantMessage[] = [];
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          const chunks: LanguageModelV4StreamPart[] = [{ type: 'stream-start', warnings: [] }];
+          if (calls === 2 && visibleText) {
+            chunks.push(
+              { type: 'text-start', id: 'partial' },
+              { type: 'text-delta', id: 'partial', delta: 'Partial answer' },
+            );
+          }
+          if (calls < 4) {
+            chunks.push({
+              type: 'tool-call',
+              toolCallId: `call-${calls}`,
+              toolName: 'Write',
+              input: JSON.stringify({ value: ['prior', 'discarded', 'fresh'][calls - 1] }),
+              providerExecuted: false,
+            });
+          } else {
+            chunks.push(
+              { type: 'text-start', id: 'final' },
+              { type: 'text-delta', id: 'final', delta: 'Done' },
+              { type: 'text-end', id: 'final' },
+            );
+          }
+          if (calls !== 2) {
+            chunks.push({
+              type: 'finish',
+              finishReason: { unified: calls < 4 ? 'tool-calls' : 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 3, text: 3, reasoning: 0 },
+              },
+            });
+          }
+          return {
+            stream: simulateReadableStream({
+              chunks,
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [
+          {
+            ...testTool('Write', z.object({ value: z.string() })),
+            impl: async (input) => {
+              executed.push((input as { value: string }).value);
+              return { ok: true };
+            },
+          },
+        ],
+        appendMessage: async (message) => {
+          if (message.type === 'assistant') assistants.push(message);
+        },
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        providerRetrySleep: async () => {},
+      });
+      const events = await drainDurably(backend.send(durable.input()), durable);
+      assert.equal(calls, visibleText ? 2 : 4);
+      assert.deepEqual(executed, visibleText ? ['prior'] : ['prior', 'fresh']);
+      assert.equal(
+        events.some(
+          (event) =>
+            (event.type === 'tool_start' || event.type === 'tool_result') &&
+            event.toolUseId === 'call-2',
+        ),
+        false,
+      );
+      assert.equal(JSON.stringify(durable.ledger).includes('discarded'), false);
+      assert.deepEqual(
+        assistants.map((message) => message.text),
+        [visibleText ? 'Partial answer' : 'Done'],
+      );
+      const error = events.find((event) => event.type === 'error');
+      if (visibleText) {
+        assert.deepEqual(error?.retry, { decision: 'declined', because: 'observable_output' });
+      } else {
+        assert.equal(error, undefined);
+        assert.equal(
+          events.some((event) => event.type === 'token_usage'),
+          false,
+        );
+        assert.equal(JSON.stringify(model.doStreamCalls.slice(2)).includes('discarded'), false);
+      }
+      assert.equal(
+        events.find((event) => event.type === 'complete')?.stopReason,
+        visibleText ? 'error' : 'end_turn',
+      );
+    });
+  }
+
   test('records exhaustion of output-free truncated stream recovery', async () => {
     const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
     let calls = 0;
@@ -10414,7 +10517,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  test('retries a retryable network failure after partial thinking by sealing it', async () => {
+  test('seals partial thinking and discards local tool intents after a retryable network failure', async () => {
     // Incident shape: the provider streamed thinking deltas, then the
     // connection reset mid-step (ECONNRESET after ~120s). Recovery safety
     // depends on what the attempt emitted, not on which side detected the
@@ -10452,6 +10555,13 @@ describe('AiSdkBackend RunTrace', () => {
             { type: 'stream-start', warnings: [] },
             { type: 'reasoning-start', id: 'reasoning-1' },
             { type: 'reasoning-delta', id: 'reasoning-1', delta: 'partial thought' },
+            {
+              type: 'tool-call',
+              toolCallId: 'discarded-call',
+              toolName: 'Write',
+              input: '{"value":"discarded"}',
+              providerExecuted: false,
+            },
           ],
           connectionResetFailure(),
         );
@@ -10466,7 +10576,7 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [testTool('Write', z.object({ value: z.string() }))],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       providerRetrySleep: async () => {},
     });
@@ -10511,6 +10621,11 @@ describe('AiSdkBackend RunTrace', () => {
     const retryPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
     assert.equal(retryPrompt.includes('partial thought'), false);
     assert.match(retryPrompt, /review the commits/);
+    assert.equal(
+      events.some((event) => event.type === 'tool_start' || event.type === 'tool_result'),
+      false,
+    );
+    assert.equal(JSON.stringify(durable.ledger).includes('discarded-call'), false);
   });
 
   test('retries a retryable network failure before any observable output', async () => {

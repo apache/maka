@@ -1542,6 +1542,9 @@ export class AiSdkTurn {
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
+            // Local calls are only admitted after a successful provider outcome.
+            // A new physical request must not inherit the failed one's intents.
+            returnedToolCalls.length = 0;
             providerRequestAbortController = new AbortController();
             watchdogTimeoutState.current = null;
             startWatchdog();
@@ -1945,9 +1948,9 @@ export class AiSdkTurn {
                 // work that the Runtime cannot observe or reconcile.
                 attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
-                attemptSawToolActivity = true;
                 recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
+                  attemptSawToolActivity = true;
                   providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
                   queue.push({
