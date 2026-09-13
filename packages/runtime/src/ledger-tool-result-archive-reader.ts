@@ -30,9 +30,7 @@ import {
 } from './model-projection-transition-ledger.js';
 import {
   isArchivedToolResultPlaceholder,
-  type ToolResultArchiveReader,
   type ToolResultArchiveReadResult,
-  type ToolResultArchiveReaderInput,
 } from './tool-result-archive.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 import type { LedgerArchiveResourceIdentity } from './tool-result-archive-resource.js';
@@ -42,32 +40,12 @@ import {
   TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_TRANSITIONS,
 } from '@maka/core/tool-result-archive-evidence';
 
-/**
- * Read-only v1 reconstruction. It never calls a live tool projector, reads an
- * Artifact, changes history, or authorizes access from a hash alone.
- * The evidence port is trusted to return the complete bounded target history.
- */
-export function createLedgerToolResultArchiveReader(
-  evidence: ToolResultArchiveEvidenceReader,
-): ToolResultArchiveReader {
-  return async (input) => {
-    if (!isArchivedToolResultPlaceholder(input)) {
-      return { ok: false, reason: 'corrupt' };
-    }
-    return readLedgerArchive(evidence, {
-      ...input,
-      maxBytes: input.maxBytes ?? input.originalBytes,
-    });
-  };
-}
-
 async function readLedgerArchive(
   evidence: ToolResultArchiveEvidenceReader,
-  request: (
-    | ToolResultArchiveReaderInput
-    | LedgerArchiveResourceIdentity
-    | { storage: 'event'; runtimeEventId: string }
-  ) & { sessionId: string; maxBytes: number },
+  request: (LedgerArchiveResourceIdentity | { storage: 'event'; runtimeEventId: string }) & {
+    sessionId: string;
+    maxBytes: number;
+  },
 ): Promise<ToolResultArchiveReadResult> {
   const identity = 'bodySha256' in request ? request : undefined;
   if (
@@ -130,14 +108,8 @@ async function readLedgerArchive(
       if (
         isArchivedToolResultPlaceholder(placeholder) &&
         ((!identity && transition === reduction.applied.at(-1)) ||
-          (placeholder.rewriteVersion === 1 &&
-            identity &&
-            !('storage' in identity) &&
-            placeholder.artifactId === identity.artifactId) ||
           (placeholder.rewriteVersion === 2 &&
             identity &&
-            'storage' in identity &&
-            identity.storage === 'ledger' &&
             placeholder.sourceProjectionDigest === identity.sourceProjectionDigest &&
             placeholder.previousTransitionId === identity.previousTransitionId))
       ) {

@@ -34,7 +34,6 @@ export {
 export type {
   ToolResultPrunePolicy,
   ToolResultArchiveCandidate,
-  ToolResultArchiveReader,
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadFailureReason,
   ToolResultArchiveReadResult,

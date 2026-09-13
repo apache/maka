@@ -127,10 +127,6 @@ export type ToolResultArchiveReadResult =
   | { ok: true; serializedResult: string }
   | { ok: false; reason: ToolResultArchiveReadFailureReason };
 
-export type ToolResultArchiveReader = (
-  input: ToolResultArchiveReaderInput,
-) => Promise<ToolResultArchiveReadResult> | ToolResultArchiveReadResult;
-
 export function stableToolResultArchiveArtifactId(event: {
   sessionId: string;
   runtimeEventId: string;

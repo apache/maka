@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { readToolResultPage } from '../read-page.js';
-import {
-  createLedgerToolResultArchiveReader,
-  createLedgerArchiveResourceReader,
-} from '../ledger-tool-result-archive-reader.js';
+import { createLedgerArchiveResourceReader } from '../ledger-tool-result-archive-reader.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3170,7 +3167,7 @@ for (const inspectFirst of [false, true]) {
         ),
       );
 
-      const read = createLedgerToolResultArchiveReader({
+      const resource = createLedgerArchiveResourceReader({
         read: async () => ({
           ok: true,
           event: target,
@@ -3181,7 +3178,12 @@ for (const inspectFirst of [false, true]) {
           ),
         }),
       });
-      const body = await read({ ...copiedPlaceholder, sessionId: 'session-target' });
+      const body = await resource({
+        storage: 'event',
+        runtimeEventId: target.id,
+        sessionId: 'session-target',
+        maxBytes: 4 * 1024 * 1024,
+      });
       assert.ok(body.ok);
       assert.match(body.serializedResult, /image-target/);
       assert.doesNotMatch(body.serializedResult, /image-source/);
@@ -3202,17 +3204,6 @@ for (const inspectFirst of [false, true]) {
             : undefined,
           output.ref,
         );
-        const resource = createLedgerArchiveResourceReader({
-          read: async () => ({
-            ok: true,
-            event: target,
-            transitions: records.filter(
-              (row) =>
-                row.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
-                row.data?.runtimeEventId === target.id,
-            ),
-          }),
-        });
         const reread = await readToolResultArchiveResource(
           {
             readArchivedToolResultResource: (input) =>
@@ -3229,7 +3220,7 @@ for (const inspectFirst of [false, true]) {
         )!;
         assert.ok(dependent?.replacement.kind === 'json');
         assert.ok(isArchivedToolResultPlaceholder(dependent.replacement.value));
-        const dependentReader = createLedgerToolResultArchiveReader({
+        const dependentReader = createLedgerArchiveResourceReader({
           read: async () => ({
             ok: true,
             event: response,
@@ -3241,8 +3232,10 @@ for (const inspectFirst of [false, true]) {
           }),
         });
         const dependentBody = await dependentReader({
-          ...(dependent.replacement.value as ArchivedToolResultPlaceholder),
+          storage: 'event',
+          runtimeEventId: response.id,
           sessionId: 'session-target',
+          maxBytes: 4 * 1024 * 1024,
         });
         assert.ok(dependentBody.ok);
         assert.equal(JSON.parse(dependentBody.serializedResult).ref, copiedPlaceholder.resourceRef);
