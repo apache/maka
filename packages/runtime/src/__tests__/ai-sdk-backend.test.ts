@@ -7954,14 +7954,14 @@ describe('AiSdkBackend error surfaces', () => {
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
 
-    // In-turn result now folds in a redacted, bounded tail of stderr/stdout so
+    // In-turn result folds in a bounded tail of stderr/stdout so
     // the model can see *why* the command failed (the full structured content
     // still goes to session history, asserted below).
     assert.deepEqual(result, {
       error: [
         '命令退出码 2',
         '--- stderr ---\nstderr before failure',
-        '--- stdout ---\nstdout before failure\nAuthorization: Bearer [redacted]',
+        '--- stdout ---\nstdout before failure\nAuthorization: Bearer sk-live-secret-token-value',
       ].join('\n\n'),
     });
     assert.equal(messages[0]?.isError, true);
@@ -7977,11 +7977,11 @@ describe('AiSdkBackend error surfaces', () => {
       exitCode: 2,
       output: {
         mode: 'pipes',
-        stdout: 'stdout before failure\nAuthorization: Bearer [redacted]',
+        stdout: 'stdout before failure\nAuthorization: Bearer sk-live-secret-token-value',
         stderr: 'stderr before failure',
         stdoutTruncated: false,
         stderrTruncated: false,
-        redacted: true,
+        redacted: false,
       },
     });
   });

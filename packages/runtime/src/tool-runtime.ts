@@ -3893,14 +3893,14 @@ function coerceTerminalFailure(
     args && typeof args === 'object' && typeof (args as { command?: unknown }).command === 'string'
       ? (args as { command: string }).command
       : '';
-  const stdout = redactSecrets(String(error.stdout ?? ''));
-  const stderr = redactSecrets(String(error.stderr ?? ''));
+  const stdout = String(error.stdout ?? '');
+  const stderr = String(error.stderr ?? '');
   const sandboxDenied = error.reason === 'sandbox_denial' && error.sandboxed === true;
   return {
     content: {
       kind: 'terminal',
       cwd,
-      cmd: redactSecrets(command),
+      cmd: command,
       status: error.code === 124 ? 'timed_out' : error.code === 130 ? 'cancelled' : 'failed',
       exitCode: error.code,
       output: {
@@ -3909,7 +3909,7 @@ function coerceTerminalFailure(
         stderr,
         stdoutTruncated: error.stdoutTruncated === true,
         stderrTruncated: error.stderrTruncated === true,
-        redacted: stdout !== String(error.stdout ?? '') || stderr !== String(error.stderr ?? ''),
+        redacted: false,
       },
       ...(sandboxDenied
         ? {
