@@ -18,7 +18,7 @@
  */
 
 import { buildWebFetchTool } from '@maka/runtime/web-fetch-tool';
-import { createLocalWebFetchExecutor } from '@maka/runtime/local-web-fetch';
+import { assertAllowedTarget, createLocalWebFetchExecutor } from '@maka/runtime/local-web-fetch';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -29,6 +29,7 @@ import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-po
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 interface HostWebFetchServiceInput {
+  readonly probeTimeoutMs?: number;
   readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
@@ -72,8 +73,8 @@ export function createHostWebFetchService(input: HostWebFetchServiceInput): Host
     },
     probe: async ({ url, abortSignal }) => {
       const parsed = new URL(url);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-        throw new Error('Health endpoint must use HTTP or HTTPS.');
+      assertAllowedTarget(parsed);
+      abortSignal.throwIfAborted();
       const resolved = await input.policy.resolveHostOutboundExecution();
       if (resolved.kind === 'privacy_mode')
         throw new Error('Endpoint health checks are disabled while privacy mode is active.');
@@ -83,18 +84,30 @@ export function createHostWebFetchService(input: HostWebFetchServiceInput): Host
         toRuntimePolicyProxy(resolved.networkProxy, resolved.secretMaterial.networkProxy?.secret),
       );
       const started = Date.now();
+      const timeout = new AbortController();
+      const timer = setTimeout(
+        () => timeout.abort(new Error('Endpoint health probe timed out.')),
+        input.probeTimeoutMs ?? 30_000,
+      );
+      const signal = AbortSignal.any([abortSignal, timeout.signal]);
       try {
-        const response = await transport.fetch(parsed, {
+        let response = await transport.fetch(parsed, {
           method: 'HEAD',
           redirect: 'manual',
-          signal: abortSignal,
+          signal,
         });
+        await response.body?.cancel();
+        if (response.status === 405 || response.status === 501) {
+          response = await transport.fetch(parsed, { method: 'GET', redirect: 'manual', signal });
+          await response.body?.cancel();
+        }
         return {
           status: response.status,
           ...(response.statusText ? { statusText: response.statusText } : {}),
           elapsedMs: Date.now() - started,
         };
       } finally {
+        clearTimeout(timer);
         await transport.close();
       }
     },

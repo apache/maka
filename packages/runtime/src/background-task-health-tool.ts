@@ -19,7 +19,7 @@
 
 import { z } from 'zod';
 import type { ToolResultContent } from '@maka/core/events';
-import type { MakaTool, MakaToolContext } from './tool-runtime.js';
+import type { MakaTool } from './tool-runtime.js';
 
 export interface BackgroundTaskHealthReader {
   readRuntimeResource(
@@ -50,10 +50,11 @@ export function buildBackgroundTaskHealthTool(
     displayName: 'Background task health',
     categoryHint: 'web_read',
     description:
-      'Check a tracked background task and, when given its HTTP endpoint, verify that the endpoint is reachable. Process tracking and endpoint readiness are reported separately.',
+      'Check a tracked background task and an optional HTTP endpoint. Uses HEAD with one GET fallback for 405/501; discards the body. Reports HTTP status only, not browser loading or ownership of the listener. Redirects are not followed. Logs are omitted by default; use Read(ref) for full logs.',
     parameters: z
       .object({
         ref: z.string().describe('The maka://runtime/background-tasks/<id> ref returned by Bash'),
+        include_logs: z.boolean().optional().describe('Include captured task logs in this report'),
         url: z
           .string()
           .url()
@@ -65,7 +66,7 @@ export function buildBackgroundTaskHealthTool(
           .describe('The HTTP or HTTPS endpoint to probe'),
       })
       .strict(),
-    impl: async ({ ref, url }, context) => {
+    impl: async ({ ref, url, include_logs }, context) => {
       const resource = await reader.readRuntimeResource(
         context.sessionId,
         ref,
@@ -88,7 +89,7 @@ export function buildBackgroundTaskHealthTool(
         ...(shell.pid !== undefined ? { pid: shell.pid } : {}),
         ...(shell.completedAt !== undefined ? { completedAt: shell.completedAt } : {}),
         ...(shell.failureMessage !== undefined ? { failureMessage: shell.failureMessage } : {}),
-        ...(shell.output
+        ...(include_logs && shell.output
           ? {
               logs:
                 shell.output.mode === 'pipes'
@@ -97,7 +98,7 @@ export function buildBackgroundTaskHealthTool(
             }
           : {}),
       };
-      if (!url) return JSON.stringify({ process, endpoint: { status: 'not_checked' } });
+      if (!url) return JSON.stringify({ process, endpoint: { state: 'not_checked' } });
       let endpoint;
       try {
         endpoint = await probe.probe({
@@ -106,11 +107,12 @@ export function buildBackgroundTaskHealthTool(
           abortSignal: context.abortSignal,
         });
       } catch (error) {
+        context.abortSignal.throwIfAborted();
         return JSON.stringify({
           process,
           endpoint: {
-            health: 'unknown',
-            target: new URL(url).origin,
+            state: 'unknown',
+            target: new URL(url).href,
             error: error instanceof Error ? error.message : String(error),
           },
         });
@@ -118,9 +120,16 @@ export function buildBackgroundTaskHealthTool(
       return JSON.stringify({
         process,
         endpoint: {
-          ...endpoint,
-          target: new URL(url).origin,
-          health: endpoint.status >= 200 && endpoint.status < 400 ? 'healthy' : 'unhealthy',
+          state: 'checked',
+          httpStatus: endpoint.status,
+          elapsedMs: endpoint.elapsedMs,
+          target: new URL(url).href,
+          health:
+            endpoint.status >= 200 && endpoint.status < 300
+              ? 'healthy'
+              : endpoint.status < 400
+                ? 'unknown'
+                : 'unhealthy',
         },
       });
     },

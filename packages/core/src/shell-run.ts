@@ -527,6 +527,7 @@ function isShellRunSandboxEscalation(value: unknown, execution: unknown): boolea
 
 function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
   return {
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     shellRunId: record.shellRunId,
     sessionId: record.sessionId,
     ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),

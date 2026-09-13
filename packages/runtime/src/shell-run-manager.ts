@@ -970,9 +970,10 @@ export class ShellRunProcessManager
   }
 
   private async markRunning(live: LiveShellRun): Promise<void> {
+    const pid = live.driver.pid;
     live.record = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
       status: 'running',
-      ...(live.driver.pid !== undefined ? { pid: live.driver.pid } : {}),
+      ...(pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
       output: (await this.snapshotAtCut(live, false)).output,
       updatedAt: this.input.now(),
     });

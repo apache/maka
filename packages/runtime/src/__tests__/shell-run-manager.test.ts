@@ -342,6 +342,7 @@ describe('ShellRunProcessManager', () => {
     assert.equal(initial.kind, 'shell_run');
     assert.equal(initial.mode, 'pipes');
     assert.equal(initial.output, undefined);
+    assert.ok(initial.pid === undefined || initial.pid > 0);
     assert.equal((await store.readShellRun('session-1', 'shell-run-1')).timeoutMs, undefined);
     await waitForShellRun(
       manager,
@@ -357,6 +358,7 @@ describe('ShellRunProcessManager', () => {
     assert.ok(runningUpdate);
     const running = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
     assertShellRun(running);
+    assert.ok(running.pid === undefined || running.pid > 0);
     assert.equal(running.output?.mode, 'pipes');
     if (running.output?.mode !== 'pipes') throw new Error('expected pipes output');
     assert.equal(running.output.stdout, 'start');

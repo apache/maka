@@ -54,7 +54,7 @@ test('reports process tracking separately when endpoint is not checked', async (
     JSON.parse(String(await tool.impl({ ref: 'maka://runtime/background-tasks/run-1' }, context))),
     {
       process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
-      endpoint: { status: 'not_checked' },
+      endpoint: { state: 'not_checked' },
     },
   );
 });
@@ -82,10 +82,10 @@ test('reports endpoint health only from the probe result', async () => {
     {
       process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
       endpoint: {
-        status: 204,
-        statusText: 'No Content',
+        state: 'checked',
+        httpStatus: 204,
         elapsedMs: 4,
-        target: 'http://127.0.0.1:8765',
+        target: 'http://127.0.0.1:8765/',
         health: 'healthy',
       },
     },
@@ -113,7 +113,7 @@ test('does not convert a failed probe into a ready claim', async () => {
     ),
     {
       process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
-      endpoint: { health: 'unknown', target: 'http://127.0.0.1:8765', error: 'connection refused' },
+      endpoint: { state: 'unknown', target: 'http://127.0.0.1:8765/', error: 'connection refused' },
     },
   );
 });
