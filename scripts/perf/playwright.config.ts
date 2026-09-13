@@ -26,5 +26,5 @@ export default defineConfig({
   timeout: 180000,
   captureGitInfo: { commit: false, diff: false },
   outputDir: '../../perf-results/playwright',
-  use: { trace: process.env.MAKA_PERF_PAIRED ? 'off' : 'on' },
+  use: { trace: 'on' },
 });

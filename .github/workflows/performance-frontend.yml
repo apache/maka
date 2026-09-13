@@ -38,8 +38,6 @@ jobs:
       - run: npm --workspace @maka/desktop run build-storybook
       - id: browsers
         run: npx playwright install --with-deps chromium
-      - name: Fetch exact experiment sources
-        run: git fetch --depth=1 origin 839d14535a541ef0da29ea4d6626a2e3d0e32a8e 0039a230754a4bd832653f481194fb40516464db b65a8c16476c61336c87b9838f161886df26c5e1 d79e310d592402b2859227bb1ff3cbcd828ea543
       - name: Virtual history continuity and selection
         run: |
           node --input-type=module <<'JS'
@@ -67,13 +65,18 @@ jobs:
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results/native-history
         run: node scripts/perf/scroll-window.mjs
-      - name: Paired publication during native input on real Host
+      - name: Electron and Host measurements
         if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        working-directory: apps/desktop
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
-          MAKA_PERF_VARIANTS: V,W
-          MAKA_PERF_TARGET_TURN: '60'
-        run: xvfb-run -a node scripts/perf/scroll-paired.mjs
+        run: xvfb-run -a npx playwright test --config ../../scripts/perf/playwright.config.ts
+      - name: Storybook measurements
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        run: xvfb-run -a node scripts/perf/storybook.mjs
+      - name: Fixed-range layout ablation
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        run: xvfb-run -a node scripts/perf/geometry-ablation.mjs
       - name: Upload raw measurements and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

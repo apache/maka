@@ -27,6 +27,7 @@ import { outputDir, report, summarize } from './report.mjs';
 
 test('dense upward input with real Host history', async () => {
   test.setTimeout(180_000);
+  const targetTurn = 60;
   const samples: Array<Record<string, number>> = [];
   await mkdir(outputDir, { recursive: true });
   await withE2eWindow(
@@ -41,32 +42,11 @@ test('dense upward input with real Host history', async () => {
       await page.setViewportSize({ width: 1352, height: 932 });
       const cdp = await page.context().newCDPSession(page);
       const browser = await cdp.send('Browser.getVersion');
-      const diagnose = process.env.MAKA_PERF_DIAGNOSE === '1';
-      for (let trial = 0; trial < (diagnose ? 1 : 3); trial++) {
+      for (let trial = 0; trial < 3; trial++) {
         await page.reload();
         await expect(page.locator('.maka-turn[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(
           1,
         );
-        if (process.env.MAKA_PERF_NO_HAS === '1') {
-          const removed = await page.evaluate(() => {
-            const removed: string[] = [];
-            const strip = (sheet: CSSStyleSheet | CSSGroupingRule) => {
-              for (let i = sheet.cssRules.length - 1; i >= 0; i--) {
-                const rule = sheet.cssRules[i];
-                if (rule instanceof CSSStyleRule && rule.selectorText.includes(':has(')) {
-                  removed.push(rule.cssText);
-                  sheet.deleteRule(i);
-                } else if (rule instanceof CSSGroupingRule) strip(rule);
-              }
-            };
-            for (const sheet of document.styleSheets) strip(sheet);
-            return removed;
-          });
-          await writeFile(
-            path.join(outputDir, `removed-has-${trial}.json`),
-            JSON.stringify(removed),
-          );
-        }
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
         await page.waitForTimeout(600);
@@ -78,18 +58,6 @@ test('dense upward input with real Host history', async () => {
           deltaX: 0,
           deltaY: -120,
         };
-        if (diagnose) {
-          await cdp.send('Tracing.start', {
-            categories:
-              'devtools.timeline,disabled-by-default-devtools.timeline.stack,v8.execute,blink.user_timing' +
-              (process.env.MAKA_PERF_INVALIDATIONS === '1'
-                ? ',disabled-by-default-devtools.timeline.invalidationTracking'
-                : ''),
-            transferMode: 'ReturnAsStream',
-          });
-          await cdp.send('Profiler.enable');
-          await cdp.send('Profiler.start');
-        }
         // Release follow through native input, then locate the existing top edge.
         // This setup is not counted as user travel or input latency.
         await cdp.send('Input.dispatchMouseEvent', input);
@@ -145,13 +113,12 @@ test('dense upward input with real Host history', async () => {
           };
           requestAnimationFrame(frame);
         });
-        const targetTurn = Number(process.env.MAKA_PERF_TARGET_TURN ?? 0);
         let reachedTurn = 120;
         let ticks = 0;
-        for (; ticks < (targetTurn ? 300 : 120); ticks++) {
+        for (; ticks < 300; ticks++) {
           await cdp.send('Input.dispatchMouseEvent', input);
           await page.waitForTimeout(16);
-          if (targetTurn && (ticks + 1) % 20 === 0) {
+          if ((ticks + 1) % 20 === 0) {
             reachedTurn = await page.evaluate(() => {
               const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
               const top = root.getBoundingClientRect().top;
@@ -166,10 +133,9 @@ test('dense upward input with real Host history', async () => {
             }
           }
         }
-        if (targetTurn)
-          expect(reachedTurn, 'same visible history landmark must be reached').toBeLessThanOrEqual(
-            targetTurn,
-          );
+        expect(reachedTurn, 'the visible history landmark must be reached').toBeLessThanOrEqual(
+          targetTurn,
+        );
         const releasedAt = await page.evaluate(() => {
           (window as any).__denseScroll.phase = 'released';
           return performance.now();
@@ -177,40 +143,8 @@ test('dense upward input with real Host history', async () => {
         await page.waitForTimeout(1200);
         const raw = await page.evaluate(() => {
           (window as any).__denseScroll.running = false;
-          return {
-            ...(window as any).__denseScroll,
-            marks: performance
-              .getEntriesByType('mark')
-              .filter((entry) => entry.name.startsWith('perf:transcript-'))
-              .map((entry) => ({
-                name: entry.name,
-                ms: entry.startTime,
-                detail: (entry as PerformanceMark).detail,
-              })),
-          };
+          return (window as any).__denseScroll;
         });
-        if (diagnose) {
-          const profile = await cdp.send('Profiler.stop');
-          await writeFile(
-            path.join(outputDir, 'scroll.cpuprofile'),
-            JSON.stringify(profile.profile),
-          );
-          const completed = new Promise<any>((resolve) =>
-            cdp.once('Tracing.tracingComplete', resolve),
-          );
-          await cdp.send('Tracing.end');
-          const { stream } = await completed;
-          let trace = '';
-          for (;;) {
-            const chunk = await cdp.send('IO.read', { handle: stream });
-            trace += chunk.base64Encoded
-              ? Buffer.from(chunk.data, 'base64').toString()
-              : chunk.data;
-            if (chunk.eof) break;
-          }
-          await cdp.send('IO.close', { handle: stream });
-          await writeFile(path.join(outputDir, 'scroll.timeline.json'), trace);
-        }
         const wheels = raw.events.filter((event: any) => event.type === 'wheel');
         expect(wheels.length, 'the measured gesture must reach the real scroller').toBeGreaterThan(
           20,
@@ -244,12 +178,9 @@ test('dense upward input with real Host history', async () => {
           publicationsAfterInput: changes.filter((frame: any) => frame.ms >= releasedAt).length,
           firstPublicationAfterReleaseMs: firstReleased ? firstReleased.ms - releasedAt : -1,
         };
-        if (['V', 'W'].includes(process.env.MAKA_PERF_VARIANT ?? '')) {
-          expect(
-            row.maxMounted,
-            'a fetched page must not mount all of its Turn bodies',
-          ).toBeLessThan(Math.max(...raw.ranges.map((frame: any) => frame.ids.length)) / 2);
-        }
+        expect(row.maxMounted, 'a fetched page must not mount all of its Turn bodies').toBeLessThan(
+          Math.max(...raw.ranges.map((frame: any) => frame.ids.length)) / 2,
+        );
         samples.push(row);
         console.log(JSON.stringify(row));
         await writeFile(
@@ -260,19 +191,12 @@ test('dense upward input with real Host history', async () => {
       await report(
         'frontend-scroll-input',
         {
-          variant: process.env.MAKA_PERF_VARIANT,
-          sourceCommit: process.env.MAKA_PERF_SOURCE_COMMIT,
           browser,
-          diagnose,
-          targetTurn: process.env.MAKA_PERF_TARGET_TURN,
-          invalidationTracking: process.env.MAKA_PERF_INVALIDATIONS === '1',
+          targetTurn,
           samples,
           viewport: '1352x932',
           conditions:
-            (diagnose
-              ? 'One diagnostic trial with CPU profile and browser timeline. '
-              : 'Three timing trials without profiler or trace. ') +
-            'Real Desktop + Host. Native CDP input at >=16ms driver spacing. 120 ticks, or up to 300 ticks to reach the requested visible Turn, checked every 20 ticks. Frame timestamps only; DOM ranges sampled on child-list mutation without layout reads. Landmark checks read layout equally on both variants.',
+            'Three trials on the current Desktop + Host build. Native CDP input at >=16ms driver spacing, up to 300 ticks to reach Turn 60, checked every 20 ticks. Frame timestamps only; DOM ranges sampled on child-list mutation without layout reads.',
           limits:
             'Actual wheel intervals recorded; not exact touchpad replay or end-to-end input latency. DOM range changes are observable, pending store rows are not counted. Mutation observer overhead remains. -1 means no post-release range publication was observed.',
         },
