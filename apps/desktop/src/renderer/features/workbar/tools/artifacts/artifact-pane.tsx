@@ -569,7 +569,7 @@ export function ArtifactPane(props: {
               onOpenChange={setMoreMenuOpen}
               items={[
                 {
-                  label: previewRecord.kind === 'html' ? copy.pane.open : copy.pane.openInFinder,
+                  label: previewRecord.kind === 'html' ? copy.pane.openInDefaultApp : copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(
                     `${previewRecord.id}:open`,
