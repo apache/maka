@@ -2386,8 +2386,8 @@ function HistoryHarness({ turns, bounded = false }: { turns: number; bounded?: b
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
-            from: current.from - HISTORY_BATCH,
-            count: current.count + HISTORY_BATCH,
+            from: Math.max(-HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE, current.from - HISTORY_BATCH),
+            count: current.count + Math.min(HISTORY_BATCH, current.from + HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE),
           })));
           await painted(2);
           return true;
