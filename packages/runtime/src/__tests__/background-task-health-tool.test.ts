@@ -92,3 +92,28 @@ test('reports endpoint health only from the probe result', async () => {
   );
   assert.equal(called, 1);
 });
+
+test('does not convert a failed probe into a ready claim', async () => {
+  const tool = buildBackgroundTaskHealthTool(
+    { readRuntimeResource: async () => shell('running', 1234) } as any,
+    {
+      probe: async () => {
+        throw new Error('connection refused');
+      },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(
+      String(
+        await tool.impl(
+          { ref: 'maka://runtime/background-tasks/run-1', url: 'http://127.0.0.1:8765/' },
+          context,
+        ),
+      ),
+    ),
+    {
+      process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
+      endpoint: { health: 'unknown', target: 'http://127.0.0.1:8765', error: 'connection refused' },
+    },
+  );
+});
