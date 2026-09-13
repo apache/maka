@@ -138,6 +138,12 @@ async function readLedgerArchive(
       }
       source = transition.replacement;
     }
+    if (!identity && reduction.rejected.length === 0) {
+      const serializedResult = serializeToolResultProjectionV1(source);
+      if (Buffer.byteLength(serializedResult, 'utf8') > request.maxBytes)
+        return { ok: false, reason: 'too_large' };
+      return { ok: true, serializedResult };
+    }
     return { ok: false, reason: 'not_found' };
   } catch {
     return { ok: false, reason: 'corrupt' };

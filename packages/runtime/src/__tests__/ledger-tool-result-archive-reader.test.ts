@@ -230,11 +230,58 @@ test('refuses missing projections instead of applying the legacy tool projector'
   });
 });
 
-test('cannot read an archive without a committed, applicable transition', async () => {
+test('an event address reads the current projection without weakening archive identity', async () => {
   const f = fixture();
   f.records.length = 0;
-  assert.equal((await f.reader(f.request)).ok, false);
-  f.records.push(envelope({ ...f.transition, sourceProjectionDigest: `sha256:${'a'.repeat(64)}` }));
+  assert.deepEqual(await f.reader(f.request), {
+    ok: true,
+    serializedResult: f.body,
+  });
+  assert.deepEqual(await f.reader({ ...f.request, maxBytes: Buffer.byteLength(f.body) - 1 }), {
+    ok: false,
+    reason: 'too_large',
+  });
+  assert.equal(
+    (
+      await f.reader({
+        storage: 'ledger',
+        runtimeEventId: f.event.id,
+        toolCallId: 'call',
+        toolName: 'Read',
+        sourceProjectionDigest: f.transition.sourceProjectionDigest,
+        bodySha256: f.placeholder.bodySha256,
+        originalBytes: f.placeholder.originalBytes,
+        sessionId: 'session',
+        maxBytes: 4 * 1024 * 1024,
+      })
+    ).ok,
+    false,
+  );
+  const current: DurableToolResultProjection = {
+    version: 1,
+    kind: 'text',
+    text: 'current effective output',
+  };
+  f.records.push(
+    envelope(
+      buildModelProjectionTransition({
+        sessionId: 'session',
+        target: f.transition.target,
+        sourceProjection: f.source,
+        replacement: current,
+        now: 2,
+      }),
+    ),
+  );
+  assert.deepEqual(await f.reader(f.request), {
+    ok: true,
+    serializedResult: serializeToolResultProjectionV1(current),
+  });
+  f.records.splice(
+    0,
+    f.records.length,
+    envelope({ ...f.transition, sourceProjectionDigest: `sha256:${'a'.repeat(64)}` }),
+  );
   assert.equal((await f.reader(f.request)).ok, false);
 });
 
