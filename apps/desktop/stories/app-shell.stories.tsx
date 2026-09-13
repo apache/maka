@@ -2352,7 +2352,7 @@ function SettledTranscriptHarness({
  * settled before its turns were laid out would be asked for the next page
  * against the geometry of the previous one.
  */
-function HistoryHarness({ turns }: { turns: number }) {
+function HistoryHarness({ turns, bounded = false }: { turns: number; bounded?: boolean }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
@@ -2364,7 +2364,25 @@ function HistoryHarness({ turns }: { turns: number }) {
         messages: transcriptTurns(range.from, range.count),
         viewportNavigation,
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
+        hasNewerHistory: bounded && range.from + range.count < turns,
+        onRetainWindow: bounded ? ({ firstTurnId, lastTurnId }) => {
+          // The real scroll hook chooses the retained band. This fixture only
+          // supplies the requested slice, standing in for the transcript store.
+          const from = Number(firstTurnId.replace('turn-scroll-', ''));
+          const last = Number(lastTurnId.replace('turn-scroll-', ''));
+          viewportNavigation.commitRange(activeSession!.id, () => setRange({
+            from, count: last - from + 1,
+          }));
+        } : undefined,
         onPrefetchHistory: async (edge) => {
+          if (bounded && edge === 'newer') {
+            viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
+              ...current,
+              count: Math.min(turns - current.from, current.count + HISTORY_BATCH),
+            })));
+            await painted(2);
+            return true;
+          }
           if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           viewportNavigation.commitRange(activeSession!.id, () => setRange((current) => ({
@@ -2545,6 +2563,13 @@ export const TailPrefetchesHistoryUntilTheBandIsFull: Story = {
     expect(historyLoads.length).toBeGreaterThan(0);
     expect(firstResidentTurnId()).not.toBe(before);
   },
+};
+
+// Real path: a reader traverses a long session; useChatScroll requests older
+// pages and trims distant Turns. Paging/storage is simulated at ChatView's
+// callbacks; the production scroll policy, publication bridge and frame run.
+export const HistoryWindowTraversal: Story = {
+  render: () => <HistoryHarness turns={40} bounded />,
 };
 
 // #4256: one Turn taller than several viewports, its reasoning / answer / tool
