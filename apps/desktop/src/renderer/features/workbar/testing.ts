@@ -19,8 +19,6 @@
 
 import type { WorkbarServices } from './ports.js';
 
-export { ArtifactPreview } from './tools/artifacts/artifact-preview.js';
-
 export { WorkbarServicesProvider } from './services-context.js';
 export type {
   WorkbarServices,
