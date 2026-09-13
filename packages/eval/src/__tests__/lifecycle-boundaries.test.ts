@@ -524,7 +524,10 @@ test('Maka framework termination is authoritative before stdout decoding', async
 });
 
 test('Maka forwards the configured Runtime Host settlement budget', async () => {
-  const makaCell = cell('maka', { ...makaConfig(), hostSettlementTimeoutMs: 120_000 });
+  const { thinkingLevel: _thinkingLevel, ...defaultConfig } = makaConfig();
+  const config = { ...defaultConfig, hostSettlementTimeoutMs: 120_000 };
+  const makaCell = cell('maka', config);
+  createMakaSubjectAdapter().validate?.(makaCell);
   let settlementBudget: unknown;
   const result = await createMakaSubjectAdapter().execute({
     cell: makaCell,
@@ -535,8 +538,9 @@ test('Maka forwards the configured Runtime Host settlement budget', async () => 
       execute: async (input) => {
         const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
           hostSettlementTimeoutMs?: unknown;
-          execution: { executionId: string };
+          execution: { executionId: string; session: Record<string, unknown> };
         };
+        assert.equal(Object.hasOwn(payload.execution.session, 'thinkingLevel'), false);
         settlementBudget = payload.hostSettlementTimeoutMs;
         return {
           termination: 'exited',
@@ -554,6 +558,11 @@ test('Maka forwards the configured Runtime Host settlement budget', async () => 
   });
   assert.equal(result.status, 'completed');
   assert.equal(settlementBudget, 120_000);
+  assert.throws(
+    () =>
+      createMakaSubjectAdapter().validate?.(cell('maka', { ...config, thinkingLevel: 'default' })),
+    /thinkingLevel/u,
+  );
   assert.throws(
     () =>
       createMakaSubjectAdapter().validate?.(

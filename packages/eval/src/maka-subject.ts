@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { isThinkingLevel } from '@maka/core/model-thinking';
 import { isSessionToolProfile, type SessionToolProfile } from '@maka/core/session';
 import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
 import type { RunHostedExecutionInput } from '@maka/runtime-host/client';
@@ -47,7 +48,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             connectionSlug: config.connectionSlug,
             model: config.model,
           },
-          thinkingLevel: config.thinkingLevel,
+          ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
           permissionMode: config.permissionMode,
           collaborationMode: config.collaborationMode,
           orchestrationMode: config.orchestrationMode,
@@ -266,7 +267,7 @@ interface MakaConfig {
   readonly baseUrl: string;
   readonly connectionSlug: string;
   readonly model: string;
-  readonly thinkingLevel: RunHostedExecutionInput['execution']['session']['thinkingLevel'];
+  readonly thinkingLevel?: RunHostedExecutionInput['execution']['session']['thinkingLevel'];
   readonly permissionMode: RunHostedExecutionInput['execution']['session']['permissionMode'];
   readonly collaborationMode: RunHostedExecutionInput['execution']['session']['collaborationMode'];
   readonly orchestrationMode: RunHostedExecutionInput['execution']['session']['orchestrationMode'];
@@ -281,7 +282,7 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'baseUrl',
     'connectionSlug',
     'model',
-    'thinkingLevel',
+    ...(Object.hasOwn(value, 'thinkingLevel') ? ['thinkingLevel'] : []),
     'permissionMode',
     'collaborationMode',
     'orchestrationMode',
@@ -289,6 +290,9 @@ function decodeConfig(value: JsonObject): MakaConfig {
     'toolProfile',
   ];
   const config = exact(value, fields);
+  if (config.thinkingLevel !== undefined && !isThinkingLevel(config.thinkingLevel)) {
+    throw new Error('Maka config.thinkingLevel is invalid');
+  }
   if (!URL.canParse(String(config.baseUrl))) throw new Error('Maka baseUrl is invalid');
   const hostSettlementTimeoutMs = positiveInteger(
     config.hostSettlementTimeoutMs,
