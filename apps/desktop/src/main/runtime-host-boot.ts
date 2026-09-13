@@ -182,9 +182,14 @@ import { createClientSettingsEffects } from "./client-settings-effects.js";
 import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
-import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
+import {
+  artifactPresentationRoot,
+  registerRuntimeHostArtifactsIpc,
+} from "./runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from './managed-artifact-preview.js';
 import { buildManagedArtifactPreviewTools } from './managed-artifact-preview-tools.js';
+import { buildPreviewPreflightTools } from "./preview-preflight.js";
+import { createPreviewPreflightAuthority } from "./preview-preflight-probes.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   DesktopRuntimeHostCandidateControls,
@@ -1068,6 +1073,32 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
             description:
               "Use durable Rive workflows through this Desktop client.",
             tools: [riveWorkflowTool],
+          },
+          // Deliberately NOT part of the Browser offer. Every tool published
+          // there is admitted against an Origin resolved from the view's
+          // current URL, so a capability check would need a page already
+          // loaded — and would fail with the very "requires an HTTP origin"
+          // error it exists to explain.
+          {
+            offerId: "desktop_preview",
+            label: "Local preview",
+            description:
+              "Report what this Desktop client can actually preview locally before a preview is attempted.",
+            tools: buildPreviewPreflightTools(
+              createPreviewPreflightAuthority({
+                // The generation-specific directory, resolved per call against
+                // the live target: reporting on any other path would describe a
+                // directory the Open action never touches. No live target means
+                // no staging root to report, which the probe states as such
+                // rather than inventing one.
+                stagingRoot: () => {
+                  if (!scope || !runtimeHostManager?.ownsScope(scope)) return undefined;
+                  const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
+                  if (!target?.isActive()) return undefined;
+                  return artifactPresentationRoot(target.client.hostEpoch);
+                },
+              }),
+            ),
           },
           // One offer per MCP server keeps grant contracts server-scoped: a
           // server change re-prompts only that server's tools.
