@@ -23,6 +23,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 
 const ONE_PIXEL_IMAGES = [
   [
@@ -280,7 +281,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
   test('reports a missing ripgrep as grep_unavailable with an install hint (#5167)', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-no-rg-'));
     const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-empty-path-'));
-    const executor = new LocalWorkspaceExecutor();
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [] });
 
     await withPath(emptyBin, () =>
       assert.rejects(
@@ -324,10 +325,64 @@ describe('LocalWorkspaceExecutor file operations', () => {
       }),
       (error: NodeJS.ErrnoException) => {
         assert.equal(error.code, 'ENOENT');
-        assert.doesNotMatch(error.message, /ripgrep/);
+        assert.notEqual(error.name, 'RipgrepUnavailableError');
         return true;
       },
     );
+  });
+
+  test('a bypass Grep finds ripgrep installed after Host startup outside its inherited PATH', {
+    skip: process.platform === 'win32' ? 'POSIX executable fixture' : false,
+  }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-grep-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-old-path-'));
+    const localAppData = await mkdtemp(join(tmpdir(), 'maka-workspace-bypass-local-app-data-'));
+    try {
+      const executable = join(localAppData, 'Microsoft', 'WinGet', 'Links', 'rg.exe');
+      const filesystem = createBoundaryFilesystemExecutor({
+        workspace: new LocalWorkspaceExecutor({
+          platform: 'win32',
+          hostEnv: { PATH: emptyBin, LOCALAPPDATA: localAppData },
+        }),
+      });
+      const request = {
+        operation: {
+          kind: 'grep' as const,
+          pattern: 'token',
+          path: cwd,
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 5_000,
+        },
+        cwd,
+        executionBoundary: { kind: 'bypass' as const, revision: 1 },
+      };
+
+      await withPath(emptyBin, async () => {
+        await assert.rejects(filesystem.execute(request), { code: 'grep_unavailable' });
+
+        await mkdir(join(localAppData, 'Microsoft', 'WinGet', 'Links'), { recursive: true });
+        await writeFile(
+          executable,
+          `#!/bin/sh\nprintf '%s\\n' '{"type":"summary","data":{"stats":{"matched_lines":0}}}'\n`,
+          'utf8',
+        );
+        await chmod(executable, 0o755);
+
+        assert.deepEqual(await filesystem.execute(request), {
+          kind: 'grep',
+          matches: [],
+          matchedLines: 0,
+          returnedLines: 0,
+          omittedLines: 0,
+          truncated: false,
+        });
+      });
+    } finally {
+      await Promise.all(
+        [cwd, emptyBin, localAppData].map((path) => rm(path, { recursive: true, force: true })),
+      );
+    }
   });
 
   test('leaves other spawn failures, such as a non-executable rg, untouched', {
@@ -337,7 +392,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const bin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-noexec-bin-'));
     await writeFile(join(bin, 'rg'), '#!/bin/sh\n', 'utf8');
     await chmod(join(bin, 'rg'), 0o644);
-    const executor = new LocalWorkspaceExecutor();
+    const executor = new LocalWorkspaceExecutor({ rgCandidates: [join(bin, 'rg')] });
 
     await withPath(bin, () =>
       assert.rejects(

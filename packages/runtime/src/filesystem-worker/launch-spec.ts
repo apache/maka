@@ -19,7 +19,7 @@
 
 import { constants } from 'node:fs';
 import { access, realpath } from 'node:fs/promises';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import {
   resolveFilesystemWorkerBundle,
@@ -34,6 +34,7 @@ import {
   formatRipgrepEnvironmentArg,
   type RipgrepEnvironment,
 } from '../ripgrep-guidance.js';
+import { defaultRipgrepCandidates, resolveRipgrepCandidates } from '../ripgrep-executable.js';
 
 export interface FilesystemWorkerLaunchSpec {
   program: string;
@@ -79,7 +80,7 @@ export function createFilesystemWorkerLaunchSpecProvider(
     if (!resolved.ok) return resolved;
     const grep =
       operation.kind === 'grep'
-        ? await resolveRipgrepExecutable(
+        ? await resolveWorkerRipgrep(
             input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
             platform,
             input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
@@ -246,18 +247,14 @@ function composeLaunchSpec(
   };
 }
 
-async function resolveRipgrepExecutable(
+async function resolveWorkerRipgrep(
   candidates: readonly string[],
   platform: NodeJS.Platform,
   inspectMacosExecutableDependencies: (
     executable: string,
   ) => Promise<MacosExecutableDependencyResolution>,
 ): Promise<RipgrepResolution | undefined> {
-  const inspected = new Set<string>();
-  for (const candidate of candidates) {
-    const executable = await resolveExecutable(candidate);
-    if (!executable || inspected.has(executable)) continue;
-    inspected.add(executable);
+  for await (const executable of resolveRipgrepCandidates(candidates)) {
     if (platform !== 'darwin') {
       return { executable, runtimeReadableRoots: [], executableRoots: [] };
     }
@@ -288,26 +285,6 @@ async function resolveReadableRoot(candidate: string): Promise<string | undefine
   } catch {
     return undefined;
   }
-}
-
-function defaultRipgrepCandidates(
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform,
-): readonly string[] {
-  const executableName = platform === 'win32' ? 'rg.exe' : 'rg';
-  return [
-    ...(env.PATH ?? '')
-      .split(delimiter)
-      .filter(Boolean)
-      .map((directory) => join(directory, executableName)),
-    ...(platform === 'win32' ? [] : ['/opt/homebrew/bin/rg', '/usr/local/bin/rg', '/usr/bin/rg']),
-    // winget links portable packages here and adds the directory to PATH for
-    // processes started afterwards; a running Host still has the old PATH, so
-    // look here too or "install, then retry" would not find the install.
-    ...(platform === 'win32' && env.LOCALAPPDATA
-      ? [join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', executableName)]
-      : []),
-  ];
 }
 
 async function resolveRuntimeDependencyRoots(program: string): Promise<readonly string[]> {

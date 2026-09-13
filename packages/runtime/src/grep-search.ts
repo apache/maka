@@ -149,7 +149,8 @@ export async function searchFiles(
 }
 
 async function runRipgrep(input: GrepRunInput): Promise<GrepRunResult> {
-  input.abortSignal?.throwIfAborted();
+  if (input.abortSignal?.aborted)
+    throw new GrepSearchError('Grep was cancelled; search totals are unknown.');
   return await new Promise((resolve, reject) => {
     const child = spawn(input.executable, [...input.args], {
       cwd: input.cwd,

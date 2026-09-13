@@ -47,6 +47,7 @@ import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
 import { readTextLineWindow } from './text-line-window.js';
 import { searchFiles, type GrepResult } from './grep-search.js';
+import { defaultRipgrepCandidates, resolveRipgrepExecutable } from './ripgrep-executable.js';
 
 const execAsync = promisify(exec);
 
@@ -296,8 +297,17 @@ export interface WorkspaceExecutor
     Partial<WorkspaceApplyPatchExecutor>,
     Partial<WorkspaceReadModifyWriteExecutor> {}
 
+/** @internal Test seams for deterministic executable-discovery coverage. */
+export interface LocalWorkspaceExecutorInput {
+  platform?: NodeJS.Platform;
+  hostEnv?: NodeJS.ProcessEnv;
+  rgCandidates?: readonly string[];
+}
+
 export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   readonly facts = LOCAL_WORKSPACE_EXECUTOR_FACTS;
+
+  constructor(private readonly input: LocalWorkspaceExecutorInput = {}) {}
 
   async exec(input: WorkspaceExecInput): Promise<WorkspaceExecResult> {
     const options = {
@@ -440,8 +450,15 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {
+    const executable = await resolveRipgrepExecutable(
+      this.input.rgCandidates ??
+        defaultRipgrepCandidates(
+          this.input.hostEnv ?? process.env,
+          this.input.platform ?? process.platform,
+        ),
+    );
     try {
-      return await searchFiles({ ...input, executable: 'rg' });
+      return await searchFiles({ ...input, executable: executable ?? 'rg' });
     } catch (error: any) {
       // Node reports a missing spawn cwd exactly like a missing executable
       // (both `spawn rg ENOENT`), so only blame ripgrep once the cwd exists.
