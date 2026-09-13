@@ -2059,7 +2059,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           executionArgs,
-          terminalResult,
+          terminalFailure.content,
         );
         const modelProjection = isPromiseLike(projected) ? await projected : projected;
         const durableOutcome = await durableAttempt?.commitOutcome(

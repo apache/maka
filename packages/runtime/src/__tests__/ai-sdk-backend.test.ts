@@ -9135,7 +9135,13 @@ describe('AiSdkBackend usage telemetry', () => {
           description: 'Run a foreground command.',
           execute: async () => {
             executeCalls += 1;
-            return { stdout, stderr, exitCode: 7 };
+            throw Object.assign(new Error('Command failed with exit code 7'), {
+              code: 7,
+              stdout,
+              stderr,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            });
           },
         }),
       ],
