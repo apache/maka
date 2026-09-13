@@ -61,6 +61,35 @@ class ArtifactEnvironment:
 
 
 class RelayArtifactTest(unittest.IsolatedAsyncioTestCase):
+    async def test_nonroot_setup_and_private_environment_keep_the_task_identity(self):
+        relay = load_relay()
+
+        class NonRootEnvironment(ArtifactEnvironment):
+            async def exec(self, command, cwd=None, timeout_sec=None, user=None):
+                if command.startswith('printf "%s:%s"'):
+                    self.assert_default_user = user is None
+                    return SimpleNamespace(return_code=0, stdout="10001:10001", stderr="")
+                if user != "root":
+                    return SimpleNamespace(return_code=1, stdout="", stderr="Permission denied")
+                self.commands.append(command)
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment = NonRootEnvironment(Path(directory))
+            environment.commands = []
+            agent = relay.RelayAgent(logs_dir=Path(directory), relay_host="127.0.0.1",
+                                     relay_port=1, relay_token="test", teardown_timeout_ms=1000)
+            await agent.setup(environment)
+            command = await relay._prepare_command(environment, {
+                "command": "/bin/true", "args": [], "credentials": {"API_KEY": "private"},
+                "resultToken": "0" * 32,
+            }, "test", "/logs/agent/test.pid", agent._subject_owner)
+            self.assertTrue(environment.assert_default_user)
+            self.assertIn("chown 10001:10001 /logs/agent /logs/artifacts", environment.commands[0])
+            self.assertIn("chmod 600 /tmp/maka-eval-test.env", environment.commands[1])
+            self.assertIn("chown 10001:10001", environment.commands[1])
+            self.assertNotIn("private", command)
+
     async def test_framed_transport_outputs_are_persisted_without_changing_the_carrier(self):
         relay = load_relay()
         with tempfile.TemporaryDirectory() as directory:
