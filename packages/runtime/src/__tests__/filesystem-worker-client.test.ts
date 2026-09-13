@@ -352,6 +352,13 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     );
     assert.equal(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${git.fd}`, git.path), false);
     assert.ok(argv.some((arg, index) => arg === '--dir' && argv[index + 1] === git.path));
+    const markerIndex = argv.findIndex(
+      (arg, index) => arg === '--dir' && argv[index + 1] === git.path,
+    );
+    const firstHostBind = argv.findIndex(
+      (arg) => arg === '--ro-bind' || arg === '--ro-bind-try' || arg === '--bind',
+    );
+    assert.ok(markerIndex < firstHostBind);
     for (const entry of pinned) assert.throws(() => fstatSync(entry.sourceFd), { code: 'EBADF' });
   });
 

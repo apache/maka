@@ -264,10 +264,6 @@ function buildBubblewrapArgvWithRoots(
     argv.push('--unshare-net', '--seccomp', '3');
   }
 
-  for (const path of DEFAULT_READ_ONLY_HOST_PATHS) {
-    argv.push('--ro-bind-try', path, path);
-  }
-
   const runtimeWritableRoots = removeNestedRoots(
     (command.pathContext.runtimeWritableRoots ?? []).filter(isUsableRuntimeRoot),
   );
@@ -348,6 +344,19 @@ function buildBubblewrapArgvWithRoots(
   for (const directory of requiredParentDirectories(mountRoots)) {
     argv.push('--dir', directory);
   }
+  // Materialize exact directory markers before any host bind. Creating them
+  // inside an already-mounted tree could follow concurrently replaced symlinks.
+  const exactReadableDirectories = new Set(
+    profileReadableRoots.filter((root) => {
+      const pinned = pinnedProfilePaths.get(root);
+      return exactReadableRoots.has(root) && pinned && fstatSync(pinned.sourceFd).isDirectory();
+    }),
+  );
+  for (const directory of exactReadableDirectories) argv.push('--dir', directory);
+
+  for (const path of DEFAULT_READ_ONLY_HOST_PATHS) {
+    argv.push('--ro-bind-try', path, path);
+  }
 
   for (const directory of extraProgramDirectories) {
     argv.push('--ro-bind', directory, directory);
@@ -370,11 +379,7 @@ function buildBubblewrapArgvWithRoots(
   for (const root of profileReadableRoots) {
     const pinned = pinnedProfilePaths.get(root);
     if (exactReadableRoots.has(root) && !pinned) continue;
-    if (exactReadableRoots.has(root) && pinned && fstatSync(pinned.sourceFd).isDirectory()) {
-      // An exact directory grant exposes its existence, never its descendants.
-      argv.push('--dir', root);
-      continue;
-    }
+    if (exactReadableDirectories.has(root)) continue;
     argv.push('--ro-bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
   for (const root of profileWritableRoots) {
