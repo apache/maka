@@ -30,6 +30,7 @@ import { type ExecutionBoundary, type SandboxBoundaryExpansion } from '@maka/cor
 import { type PermissionMode } from '@maka/core/permission';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { MAX_CHILD_FD } from '../child-fd-input.js';
 import { resolveCanonicalDirectoryEntryTarget } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import { classifyWindowsBrokerFailure } from '../sandbox/windows-broker-errors.js';
@@ -402,6 +403,20 @@ export class FilesystemWorkerClient {
         if (dirname(parent) === parent) break;
       }
     }
+    const firstMetadataFd = 5;
+    if (
+      platform === 'linux' &&
+      searchMetadata.some(
+        ({ targetType }, index) => targetType === 'file' && firstMetadataFd + index > MAX_CHILD_FD,
+      )
+    ) {
+      throw clientError(
+        'request_overflow',
+        'validation',
+        requestId,
+        'Too many ancestor ignore files for one Grep operation. Search from a higher-level directory.',
+      );
+    }
     const workerProfile = deriveWorkerProfile(
       effectiveProfile,
       operationBoundary,
@@ -486,7 +501,7 @@ export class FilesystemWorkerClient {
             path: metadata.canonicalPath,
             targetType: metadata.targetType,
             access: 'read',
-            childFd: 5 + pinnedMetadata.length,
+            childFd: firstMetadataFd + pinnedMetadata.length,
           });
           if (!pinned) {
             throw clientError('path_changed', 'validation', requestId);

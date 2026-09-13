@@ -485,6 +485,40 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
 });
 
 describe('filesystem worker Linux path context', () => {
+  test('reports excessive ancestor ignore files before preparing or launching a worker', async () => {
+    const root = await temporaryDirectory('maka-grep-metadata-budget-');
+    let target = root;
+    for (let index = 0; index < 61; index++) {
+      await writeFile(join(target, '.ignore'), '');
+      target = join(target, 'd');
+      await mkdir(target);
+    }
+    const { client, transforms, processInputs } = fakeClient({ platform: 'linux' });
+    await assert.rejects(
+      client.execute({
+        operation: grepOperation(target),
+        cwd: root,
+        permissionProfile: {
+          type: 'managed',
+          fileSystem: {
+            kind: 'restricted',
+            entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+          },
+          network: { kind: 'restricted' },
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'request_overflow');
+        assert.equal(error.stage, 'validation');
+        assert.match(error.message, /Search from a higher-level directory/);
+        return true;
+      },
+    );
+    assert.equal(transforms.length, 0);
+    assert.equal(processInputs.length, 0);
+  });
+
   test('rejects an existing subtree that disappears before it can be pinned', async () => {
     const workspace = await temporaryDirectory('maka-linux-worker-vanished-');
     const target = join(workspace, 'src');
