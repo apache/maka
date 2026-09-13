@@ -217,20 +217,24 @@ export function readableToolResult(serialized: string): string {
       value &&
       typeof value === 'object' &&
       'kind' in value &&
-      (value.kind === 'terminal' || value.kind === 'shell_run') &&
-      'output' in value
+      (value.kind === 'terminal' || value.kind === 'shell_run')
     ) {
-      if (typeof value.output === 'string') return value.output;
-      if (value.output && typeof value.output === 'object') {
-        const output = value.output as Record<string, unknown>;
-        return (
-          output.mode === 'pty'
-            ? [output.scrollback, output.screen, output.lastAlternateScreen]
-            : [output.stdout, output.stderr]
+      const shell = value as Record<string, unknown>;
+      let output: string | undefined;
+      if (typeof shell.output === 'string') output = shell.output;
+      if (shell.output && typeof shell.output === 'object') {
+        const shellOutput = shell.output as Record<string, unknown>;
+        output = (
+          shellOutput.mode === 'pty'
+            ? [shellOutput.scrollback, shellOutput.screen, shellOutput.lastAlternateScreen]
+            : [shellOutput.stdout, shellOutput.stderr]
         )
           .filter((part): part is string => typeof part === 'string' && part.length > 0)
           .join('\n');
       }
+      if (typeof shell.failureMessage === 'string' && shell.failureMessage.length > 0)
+        return output ? `${output}\n${shell.failureMessage}` : shell.failureMessage;
+      if (output !== undefined) return output;
     }
   } catch {
     /* Plain text projections are already readable. */
@@ -249,9 +253,7 @@ export function readToolResultPage(
     if (value?.kind === 'terminal' || value?.kind === 'shell_run') {
       metadata = Object.fromEntries(
         Object.entries(value).filter(([key]) =>
-          ['kind', 'status', 'exitCode', 'signal', 'revision', 'mode', 'failureMessage'].includes(
-            key,
-          ),
+          ['kind', 'status', 'exitCode', 'signal', 'revision', 'mode'].includes(key),
         ),
       );
       if (value.output && typeof value.output === 'object')

@@ -105,9 +105,9 @@ test('archive Read decodes content lines and retains terminal execution metadata
     }),
     { path: 'maka://runtime/tool-results/e' },
   );
-  assert.equal(page.content, 'one\ntwo\nerror');
+  assert.equal(page.content, 'one\ntwo\nerror\ncommand failed');
   assert.equal(page.metadata?.exitCode, 2);
-  assert.equal(page.metadata?.failureMessage, 'command failed');
+  assert.equal(page.metadata?.failureMessage, undefined);
   assert.equal(page.next, null);
   assert.deepEqual(readPage('', { path: 'empty', offset: 3 }), {
     content: '',
@@ -116,6 +116,46 @@ test('archive Read decodes content lines and retains terminal execution metadata
     totalLines: 1,
     next: null,
   });
+});
+
+test('archive Read pages a long shell failure without losing output or execution metadata', () => {
+  const stdout = 'one\ntwo';
+  const stderr = 'error';
+  const failureMessage = `failure: ${'界\\"'.repeat(4_000)}`;
+  const serialized = JSON.stringify({
+    kind: 'terminal',
+    cwd: '/workspace',
+    cmd: 'failing-command',
+    status: 'failed',
+    exitCode: 7,
+    failureMessage,
+    output: {
+      mode: 'pipes',
+      stdout,
+      stderr,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      redacted: false,
+    },
+  });
+  let input: ReadInput | null = { path: 'maka://runtime/tool-results/failure' };
+  let recovered = '';
+  let pages = 0;
+  while (input) {
+    const page = readToolResultPage(serialized, input);
+    assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+    assert.equal(page.metadata?.status, 'failed');
+    assert.equal(page.metadata?.exitCode, 7);
+    assert.equal(page.metadata?.failureMessage, undefined);
+    recovered += page.content;
+    if (page.next && page.partialLine !== true) recovered += '\n';
+    input = page.next;
+    pages += 1;
+    assert.ok(pages < 100);
+  }
+
+  assert.ok(pages > 1);
+  assert.equal(recovered, `${stdout}\n${stderr}\n${failureMessage}`);
 });
 
 test('archive Read preserves fields beside structured text across pages', () => {
