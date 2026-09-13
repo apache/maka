@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, opendir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { isPathInside, realpathAllowMissing } from '@maka/runtime/path-containment';
@@ -27,12 +27,13 @@ import {
   type SkillDiscoveryEntry,
 } from '@maka/runtime/skills';
 import type { SkillLocation, SkillLocationRef } from '@maka/ui';
+import { withSkillLocationCounts } from '../shared/skill-location-counts.js';
 
 export type ResolveSkillLocationResult =
   | { readonly ok: true; readonly path: string }
   | {
       readonly ok: false;
-      readonly reason: 'unknown_location' | 'missing' | 'blocked_path' | 'create_failed';
+      readonly reason: 'unknown_location' | 'missing' | 'blocked_path' | 'read_failed' | 'create_failed';
     };
 
 export interface SkillLocationContext {
@@ -50,23 +51,19 @@ export async function listSkillLocations(
     context.homeDirectory ?? homedir(),
   );
   const scan = await scanSkillsWithDiagnostics(discovery);
-  const counts = new Map<SkillLocationRef, number>();
-  for (const skill of [...scan.inventory, ...scan.rejected]) {
-    const ref = skillLocationRef(skill);
-    counts.set(ref, (counts.get(ref) ?? 0) + 1);
-  }
-  return Promise.all(discovery.entries.map(async (entry) => {
+  const locations = await Promise.all(discovery.entries.map(async (entry) => {
     const ref = skillLocationRef(entry);
     const inspected = await inspectDirectory(entry.containmentRoot, entry.dir);
+    const diagnostic = scan.discoveryDiagnostics.find(({ path }) => path === entry.dir);
     return {
       ref,
       scope: entry.scope as SkillLocation['scope'],
       source: entry.source as SkillLocation['source'],
       path: entry.dir,
-      status: inspected.status,
-      skillCount: counts.get(ref) ?? 0,
+      status: diagnostic?.reason ?? inspected.status,
     };
   }));
+  return withSkillLocationCounts(locations, [...scan.inventory, ...scan.rejected]);
 }
 
 export async function resolveSkillLocation(
@@ -85,7 +82,7 @@ export async function resolveSkillLocation(
   const inspected = await inspectDirectory(entry.containmentRoot, entry.dir);
   if (inspected.status === 'available') return { ok: true, path: inspected.path };
   if (inspected.status === 'blocked_path') return { ok: false, reason: 'blocked_path' };
-  if (inspected.status === 'read_failed') return { ok: false, reason: 'create_failed' };
+  if (inspected.status === 'read_failed') return { ok: false, reason: 'read_failed' };
   if (!createIfMissing) return { ok: false, reason: 'missing' };
 
   try {
@@ -140,9 +137,10 @@ async function inspectDirectory(
   }
   try {
     const targetReal = await realpath(target);
-    return isPathInside(rootReal, targetReal)
-      ? { status: 'available', path: targetReal }
-      : { status: 'blocked_path' };
+    if (!isPathInside(rootReal, targetReal)) return { status: 'blocked_path' };
+    const directory = await opendir(targetReal);
+    await directory.close();
+    return { status: 'available', path: targetReal };
   } catch {
     return { status: 'read_failed' };
   }

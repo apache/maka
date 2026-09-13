@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -36,8 +37,8 @@ import type {
   ManagedSkillUpdatePreview,
   SkillEntry,
   SkillGovernanceDetails,
-  SkillLocation,
 } from "@maka/ui";
+import type { OpenSkillLocationResult, SkillLocationsSnapshot } from '../shared/skill-locations.js';
 import type { createMainWindowController } from "./main-window.js";
 import {
   importManagedSkillSource,
@@ -183,25 +184,31 @@ export function registerRuntimeHostSkillsIpc(
     );
   });
 
-  handleReconnectableRead(deps.ipcMain, "skills:locations:list", async (): Promise<SkillLocation[]> => {
-    if (deps.allowLocalPaths === false) return [];
+  handleReconnectableRead(deps.ipcMain, "skills:locations:list", async (): Promise<SkillLocationsSnapshot> => {
+    if (deps.allowLocalPaths === false) return { contextId: null, locations: [] };
     const workspace = await deps.getSelectedWorkspaceTarget();
-    if (!workspace) return [];
+    if (!workspace) return { contextId: null, locations: [] };
     const snapshot = await deps.client.loadSkillCatalog({ workspace }, "governance");
-    return listSkillLocations({
-      projectRoot: snapshot.workspace.hostCwd,
-      workspaceRoot: deps.workspaceRoot,
-    });
+    return {
+      contextId: skillLocationContextId(snapshot.workspace, deps.workspaceRoot),
+      locations: await listSkillLocations({
+        projectRoot: snapshot.workspace.hostCwd,
+        workspaceRoot: deps.workspaceRoot,
+      }),
+    };
   });
 
   deps.ipcMain.handle(
     "skills:locations:open",
-    async (_event, ref: string, options?: { createIfMissing?: unknown }) => {
+    async (_event, ref: string, options?: { contextId?: unknown; createIfMissing?: unknown }): Promise<OpenSkillLocationResult> => {
       if (deps.allowLocalPaths === false) {
         return { ok: false as const, reason: "blocked_path" as const };
       }
       const workspace = await requireSelectedWorkspaceTarget(deps);
       const snapshot = await deps.client.loadSkillCatalog({ workspace }, "governance");
+      if (options?.contextId !== skillLocationContextId(snapshot.workspace, deps.workspaceRoot)) {
+        return { ok: false, reason: "stale_context" };
+      }
       const resolved = await resolveSkillLocation(
         {
           projectRoot: snapshot.workspace.hostCwd,
@@ -383,6 +390,12 @@ export function registerRuntimeHostSkillsIpc(
         : { ok: true as const, target: resolved.target };
     },
   );
+}
+
+function skillLocationContextId(workspace: WorkspaceProjection, workspaceRoot: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify([workspace.target, workspace.hostCwd, workspaceRoot]))
+    .digest('hex');
 }
 
 async function loadGovernance(

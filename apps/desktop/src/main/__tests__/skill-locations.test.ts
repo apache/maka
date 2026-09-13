@@ -18,10 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { writeSkillRuntimeState } from '@maka/runtime/skills';
 import { listSkillLocations, resolveSkillLocation } from '../skill-locations.js';
 
 test('lists every standard Skill location with availability and inventory counts', async () => {
@@ -62,6 +63,46 @@ test('creates and resolves only an allowlisted missing Skill location', async ()
       ok: false,
       reason: 'unknown_location',
     });
+  });
+});
+
+test('location counts include disabled, shadowed and rejected Skill copies', async () => {
+  await withFixture(async (context) => {
+    const projectDirectory = join(context.projectRoot, '.agents', 'skills');
+    const userDirectory = join(context.homeDirectory, '.agents', 'skills');
+    await writeSkill(projectDirectory, 'shared-tool');
+    await writeSkill(userDirectory, 'shared-tool');
+    await writeSkill(userDirectory, 'disabled-tool');
+    await mkdir(join(userDirectory, 'invalid-tool'));
+    await writeFile(join(userDirectory, 'invalid-tool', 'SKILL.md'), '# Missing metadata\n');
+    assert.deepEqual(await writeSkillRuntimeState(context.workspaceRoot, new Map([
+      ['user:agents:disabled-tool', false],
+    ])), { ok: true });
+
+    const locations = await listSkillLocations(context);
+    assert.equal(locations.find(({ ref }) => ref === 'project:agents')?.skillCount, 1);
+    assert.equal(locations.find(({ ref }) => ref === 'user:agents')?.skillCount, 3);
+  });
+});
+
+test('reports an unreadable Skill directory instead of an available empty location', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async () => {
+  await withFixture(async (context) => {
+    const directory = join(context.projectRoot, '.agents', 'skills');
+    await mkdir(directory, { recursive: true });
+    await chmod(directory, 0o111);
+    try {
+      const location = (await listSkillLocations(context))
+        .find(({ ref }) => ref === 'project:agents');
+      assert.equal(location?.status, 'read_failed');
+      assert.deepEqual(await resolveSkillLocation(context, 'project:agents', false), {
+        ok: false,
+        reason: 'read_failed',
+      });
+    } finally {
+      await chmod(directory, 0o700);
+    }
   });
 });
 

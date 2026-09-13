@@ -34,9 +34,13 @@ import type {
   ManagedSkillSourceEntry,
   ManagedSkillUpdatePreview,
   SkillEntry,
-  SkillLocation,
   SkillLocationRef,
 } from '@maka/ui';
+import type {
+  OpenSkillLocationOptions,
+  OpenSkillLocationResult,
+  SkillLocationsSnapshot,
+} from '../../../shared/skill-locations.js';
 
 export type ModuleHubUnsubscribe = () => void;
 
@@ -131,21 +135,9 @@ export type OpenSkillResult =
         | 'open_failed';
     };
 
-export type OpenSkillLocationResult =
-  | { ok: true }
-  | {
-      ok: false;
-      reason:
-        | 'unknown_location'
-        | 'missing'
-        | 'blocked_path'
-        | 'create_failed'
-        | 'open_failed';
-    };
-
 export interface ModuleHubSkillsService {
   list(host: ModuleHubRuntimeHostRef): Promise<SkillEntry[]>;
-  listLocations(host: ModuleHubRuntimeHostRef): Promise<SkillLocation[]>;
+  listLocations(host: ModuleHubRuntimeHostRef): Promise<SkillLocationsSnapshot>;
   listManagedSources(host: ModuleHubRuntimeHostRef): Promise<ManagedSkillSourceEntry[]>;
   listBundledCatalog(host: ModuleHubRuntimeHostRef): Promise<BundledSkillCatalogEntry[]>;
   importManagedSource(host: ModuleHubRuntimeHostRef): Promise<ImportManagedSkillSourceResult>;
@@ -182,7 +174,7 @@ export interface ModuleHubSkillsService {
   ): Promise<OpenSkillResult>;
   openLocation(
     ref: SkillLocationRef,
-    options: { createIfMissing?: boolean },
+    options: OpenSkillLocationOptions,
     host: ModuleHubRuntimeHostRef,
   ): Promise<OpenSkillLocationResult>;
 }

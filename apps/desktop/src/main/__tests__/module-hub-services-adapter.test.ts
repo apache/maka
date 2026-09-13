@@ -84,7 +84,7 @@ describe('createDesktopModuleHubServices', () => {
     await services.skills.setPinned('user:skill', false, host);
     await services.skills.delete('user:skill', host);
     await services.skills.open('skill', 'directory', host);
-    await services.skills.openLocation('user:agents', { createIfMissing: true }, host);
+    await services.skills.openLocation('user:agents', { contextId: 'project-context', createIfMissing: true }, host);
 
     const createInput = { title: 'Task' } as Parameters<
       typeof services.scheduledTasks.create
@@ -125,7 +125,7 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'skills.setPinned', args: ['user:skill', false, host] },
       { name: 'skills.delete', args: ['user:skill', host] },
       { name: 'skills.open', args: ['skill', 'directory', host] },
-      { name: 'skills.locations.open', args: ['user:agents', { createIfMissing: true }, host] },
+      { name: 'skills.locations.open', args: ['user:agents', { contextId: 'project-context', createIfMissing: true }, host] },
       { name: 'scheduledTasks.list', args: [host] },
       { name: 'scheduledTasks.create', args: [createInput, host] },
       { name: 'scheduledTasks.update', args: ['task', updateInput, host] },

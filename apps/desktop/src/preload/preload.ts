@@ -3868,7 +3868,7 @@ const makaBridge = {
       list(host?: DesktopRuntimeHostRef) {
         return invokeSelectedRuntimeHost(host, 'skills:locations:list');
       },
-      open(ref: import('@maka/ui').SkillLocationRef, options?: { createIfMissing?: boolean }, host?: DesktopRuntimeHostRef) {
+      open(ref: import('@maka/ui').SkillLocationRef, options: import('../shared/skill-locations.js').OpenSkillLocationOptions, host?: DesktopRuntimeHostRef) {
         return invokeSelectedRuntimeHost(host, 'skills:locations:open', ref, options);
       },
     },

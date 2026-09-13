@@ -329,7 +329,7 @@ type ShellCopy = {
     openLocationFailedTitle: string;
     openLocationFallback: string;
     openLocationFailures: Record<
-      'unknown_location' | 'missing' | 'blocked_path' | 'create_failed' | 'open_failed',
+      'unknown_location' | 'stale_context' | 'missing' | 'blocked_path' | 'read_failed' | 'create_failed' | 'open_failed',
       string
     >;
     openFailures: Record<
@@ -951,8 +951,10 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: '无法打开技能位置，请稍后重试。',
       openLocationFailures: {
         unknown_location: '这个技能位置无效。',
+        stale_context: '项目已切换，请刷新技能位置后重试。',
         missing: '目录不存在。',
         blocked_path: '技能位置不在允许范围内，已阻止打开。',
+        read_failed: '无法读取技能目录，请检查文件权限。',
         create_failed: '无法创建技能目录，请检查文件权限。',
         open_failed: '系统打开目录失败。',
       },
@@ -1469,8 +1471,10 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: '無法開啟技能位置，請稍後重試。',
       openLocationFailures: {
         unknown_location: '這個技能位置無效。',
+        stale_context: '專案已切換，請重新整理技能位置後再試。',
         missing: '目錄不存在。',
         blocked_path: '技能位置不在允許範圍內，已阻止開啟。',
+        read_failed: '無法讀取技能目錄，請檢查檔案權限。',
         create_failed: '無法建立技能目錄，請檢查檔案權限。',
         open_failed: '系統無法開啟目錄。',
       },
@@ -1992,8 +1996,10 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: 'The Skill location could not be opened. Try again later.',
       openLocationFailures: {
         unknown_location: 'This Skill location is invalid.',
+        stale_context: 'The project has changed. Refresh Skill locations and try again.',
         missing: 'The folder does not exist.',
         blocked_path: 'The Skill location is outside the allowed paths, so opening was blocked.',
+        read_failed: 'The Skill folder could not be read. Check file permissions.',
         create_failed: 'The Skill folder could not be created. Check file permissions.',
         open_failed: 'The system could not open the folder.',
       },

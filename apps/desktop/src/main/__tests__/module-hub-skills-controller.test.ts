@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { act, createElement } from "react";
 import type { SkillEntry, ToastApi } from "@maka/ui";
+import type { SkillLocationsSnapshot } from "../../shared/skill-locations.js";
 import { cleanupFakeDom, installReactRenderer } from "./fake-dom.js";
 import {
   createFakeModuleHubServices,
@@ -39,6 +40,20 @@ function skill(id: string): SkillEntry {
     path: `/skills/${id}/SKILL.md`,
     enabled: true,
     runtimeStatus: "enabled",
+  };
+}
+
+function skillLocations(project: string): SkillLocationsSnapshot {
+  return {
+    contextId: project,
+    locations: [{
+      ref: "project:agents",
+      scope: "project",
+      source: "agents",
+      path: `/${project}/.agents/skills`,
+      status: "missing",
+      skillCount: 0,
+    }],
   };
 }
 
@@ -148,16 +163,7 @@ test("Skills projections have independent same-Host generation and default-Host 
           sourceType: "local",
         },
       ],
-      listLocations: async () => [
-        {
-          ref: "project:agents",
-          scope: "project",
-          source: "agents",
-          path: "/project/.agents/skills",
-          status: "available",
-          skillCount: 1,
-        },
-      ],
+      listLocations: async () => skillLocations("project"),
       listBundledCatalog: async () => [
         {
           id: "bundled-a",
@@ -172,7 +178,8 @@ test("Skills projections have independent same-Host generation and default-Host 
   });
 
   await act(async () => renderController(root, services, input(records)));
-  const first = controller().host.onRefreshSkills();
+  let first: Promise<void>;
+  await act(async () => { first = controller().host.onRefreshSkills(); });
   await act(async () => controller().host.onRefreshSkills());
   assert.deepEqual(
     controller().host.skills.map(({ id }) => id),
@@ -198,7 +205,8 @@ test("Skills projections have independent same-Host generation and default-Host 
 
   const lateHostRead = deferred<SkillEntry[]>();
   services.skills.list = async () => lateHostRead.promise;
-  const pending = controller().host.onRefreshSkills();
+  let pending: Promise<void>;
+  await act(async () => { pending = controller().host.onRefreshSkills(); });
   defaultHost = hostB;
   await act(async () => {
     lateHostRead.resolve([skill("late-host-a")]);
@@ -227,7 +235,7 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
       },
       listLocations: async () => {
         calls.push("locations");
-        return [];
+        return { contextId: null, locations: [] };
       },
       listManagedSources: async () => {
         calls.push("sources");
@@ -335,6 +343,7 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     skills: {
       ...defaults.skills,
       open: async () => openFailure.promise,
+      listLocations: async () => skillLocations("project"),
       openLocation: async (ref, options) => {
         opened.push({ ref, createIfMissing: options.createIfMissing === true });
         return { ok: true };
@@ -372,11 +381,13 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     typeof controller().host.onImportManagedSkillSource,
     "function",
   );
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
+  await act(async () => controller().host.onRefreshSkills());
   assert.equal(typeof controller().host.onOpenSkillLocation, "function");
   await act(async () =>
-    controller().host.onOpenSkillLocation?.("user:agents", true),
+    controller().host.onOpenSkillLocation?.("project:agents", true),
   );
-  assert.deepEqual(opened, [{ ref: "user:agents", createIfMissing: true }]);
+  assert.deepEqual(opened, [{ ref: "project:agents", createIfMissing: true }]);
 
   const pendingOpen = controller().host.onOpenSkill?.("skill-a");
   defaultHost = hostB;
@@ -444,7 +455,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
   const records: ToastRecord[] = [];
   const host = { profileId: "profile-a", hostId: "host-a" };
   const staleHostRecheck = deferred<typeof host>();
-  const staleLocationRead = deferred<[]>();
+  const staleLocationRead = deferred<SkillLocationsSnapshot>();
   let hostReads = 0;
   let skillReads = 0;
   let locationReads = 0;
@@ -466,14 +477,17 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
       },
       listLocations: async () => {
         locationReads += 1;
-        return locationReads === 1 ? staleLocationRead.promise : [];
+        return locationReads === 1
+          ? staleLocationRead.promise
+          : { contextId: null, locations: [] };
       },
     },
   });
 
   await act(async () => renderController(root, services, input(records)));
-  const staleRefresh = controller().host.onRefreshSkills();
+  let staleRefresh: Promise<void>;
   await act(async () => {
+    staleRefresh = controller().host.onRefreshSkills();
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -486,7 +500,129 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
   );
 
   staleHostRecheck.resolve(host);
-  staleLocationRead.resolve([]);
+  staleLocationRead.resolve({ contextId: null, locations: [] });
   await act(async () => staleRefresh);
+  assert.deepEqual(records, []);
+});
+
+test("changing Projects invalidates displayed Skill locations even when the refresh fails", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const opened: Array<{ ref: string; contextId: string; createIfMissing?: boolean }> = [];
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    skills: {
+      ...defaults.skills,
+      listLocations: async () => skillLocations("project-a"),
+      openLocation: async (ref, options) => {
+        opened.push({ ref, ...options });
+        return { ok: true };
+      },
+    },
+  });
+  await act(async () =>
+    renderController(root, services, input(records, { clientPathsAccessible: true })),
+  );
+  await act(async () => controller().refreshProjectSkills());
+  assert.equal(controller().host.skillLocations[0]?.path, "/project-a/.agents/skills");
+  const openPreviousLocation = controller().host.onOpenSkillLocation;
+  assert.ok(openPreviousLocation);
+
+  const projectBLocations = deferred<SkillLocationsSnapshot>();
+  services.skills.listLocations = async () => projectBLocations.promise;
+  let refreshing: Promise<void>;
+  await act(async () => { refreshing = controller().refreshProjectSkills(); });
+  assert.deepEqual(controller().host.skillLocations, []);
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
+  await act(async () => openPreviousLocation("project:agents", true));
+  assert.deepEqual(opened, []);
+
+  await act(async () => {
+    projectBLocations.reject(new Error("project-b unavailable"));
+    await refreshing;
+  });
+  assert.deepEqual(controller().host.skillLocations, []);
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.description, "Skill locations could not be refreshed. Try again later.");
+
+  services.skills.listLocations = async () => skillLocations("project-b");
+  await act(async () => controller().host.onRefreshSkills());
+  assert.equal(controller().host.skillLocations[0]?.path, "/project-b/.agents/skills");
+  await act(async () => openPreviousLocation("project:agents", true));
+  assert.deepEqual(opened, []);
+  await act(async () => controller().host.onOpenSkillLocation?.("project:agents", true));
+  assert.deepEqual(opened, [{
+    ref: "project:agents",
+    contextId: "project-b",
+    createIfMissing: true,
+  }]);
+});
+
+test("Skill location actions do not retarget a snapshot from a previous default Host", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const hostA = { profileId: "profile-a", hostId: "host-a" };
+  const hostB = { profileId: "profile-b", hostId: "host-b" };
+  let defaultHost = hostA;
+  const opened: unknown[] = [];
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => defaultHost,
+    },
+    skills: {
+      ...defaults.skills,
+      listLocations: async () => skillLocations("project"),
+      openLocation: async (ref, options, host) => {
+        opened.push({ ref, ...options, host });
+        return { ok: true };
+      },
+    },
+  });
+  await act(async () =>
+    renderController(root, services, input(records, { clientPathsAccessible: true })),
+  );
+  await act(async () => controller().refreshProjectSkills());
+  const openPreviousLocation = controller().host.onOpenSkillLocation;
+  assert.ok(openPreviousLocation);
+  defaultHost = hostB;
+  await act(async () => openPreviousLocation("project:agents", true));
+  assert.deepEqual(opened, []);
+  await act(async () => controller().refreshProjectSkills());
+  await act(async () => controller().host.onOpenSkillLocation?.("project:agents", false));
+  assert.deepEqual(opened, [{
+    ref: "project:agents",
+    contextId: "project",
+    createIfMissing: false,
+    host: hostB,
+  }]);
+  assert.deepEqual(records, []);
+});
+
+test("a late Skill location response cannot restore the previous Project's directories", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const projectA = deferred<SkillLocationsSnapshot>();
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    skills: {
+      ...defaults.skills,
+      listLocations: async () => projectA.promise,
+    },
+  });
+  await act(async () =>
+    renderController(root, services, input(records, { clientPathsAccessible: true })),
+  );
+  let previousRefresh: Promise<void>;
+  await act(async () => { previousRefresh = controller().refreshProjectSkills(); });
+  services.skills.listLocations = async () => skillLocations("project-b");
+  await act(async () => controller().refreshProjectSkills());
+  await act(async () => {
+    projectA.resolve(skillLocations("project-a"));
+    await previousRefresh;
+  });
+  assert.equal(controller().host.skillLocations[0]?.path, "/project-b/.agents/skills");
   assert.deepEqual(records, []);
 });
