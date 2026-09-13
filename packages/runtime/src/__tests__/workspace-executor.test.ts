@@ -232,7 +232,9 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const result = await executor.globFiles({ cwd, pattern: 'src/*.*', limit: 2 });
 
-    assert.deepStrictEqual(result.files, ['src/a.ts', 'src/b.ts']);
+    assert.equal(result.files.length, 2);
+    assert.equal(new Set(result.files).size, 2);
+    assert.ok(result.files.every((file) => ['src/a.ts', 'src/b.ts', 'src/c.js'].includes(file)));
   });
 
   test('greps file contents with rg-compatible no-match behavior', async () => {

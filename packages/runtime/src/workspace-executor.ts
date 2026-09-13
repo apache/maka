@@ -19,7 +19,7 @@
 
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
-import { glob as nodeGlob } from 'node:fs/promises';
+import { globFiles } from './glob-search.js';
 import { isAbsolute, resolve } from 'node:path';
 import {
   isPathInside,
@@ -436,13 +436,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
-    const files: string[] = [];
-    const limit = input.limit ?? 200;
-    for await (const file of nodeGlob(input.pattern, { cwd: input.cwd })) {
-      files.push(typeof file === 'string' ? file : (file as { name: string }).name);
-      if (files.length >= limit) break;
-    }
-    return { files };
+    return globFiles(input);
   }
 
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {

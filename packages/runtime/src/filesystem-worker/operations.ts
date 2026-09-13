@@ -19,7 +19,7 @@
 
 import { searchFiles, GrepSearchError, type GrepRunner } from '../grep-search.js';
 import { promises as fs } from 'node:fs';
-import { glob as nodeGlob } from 'node:fs/promises';
+import { globFiles } from '../glob-search.js';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
 import {
@@ -64,8 +64,6 @@ import { isLikelySandboxDenial } from '../sandbox/detect.js';
 // on POSIX, lexical + reparse-rejecting inside the Windows AppContainer where
 // realpath is denied. See sandbox-paths.ts.
 const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
-
-const DEFAULT_GLOB_LIMIT = 200;
 
 export interface FilesystemWorkerOperationDependencies {
   grepExecutable?: string;
@@ -365,13 +363,7 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      const files: string[] = [];
-      const limit = operation.limit ?? DEFAULT_GLOB_LIMIT;
-      for await (const file of nodeGlob(operation.pattern, { cwd: path })) {
-        files.push(typeof file === 'string' ? file : (file as { name: string }).name);
-        if (files.length >= limit) break;
-      }
-      return { kind: 'glob', files };
+      return { kind: 'glob', ...(await globFiles({ ...operation, cwd: path })) };
     }
     case 'grep': {
       const path = await resolveExistingAllowed(
