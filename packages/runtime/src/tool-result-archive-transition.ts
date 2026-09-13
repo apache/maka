@@ -67,11 +67,13 @@ export function serializedToolResultProjection(projection: DurableToolResultProj
 /** The replacement a pruned Tool Result projects to. */
 export function archivedToolResultProjection(
   placeholder: ArchivedToolResultPlaceholder,
+  source?: DurableToolResultProjection,
 ): DurableToolResultProjection {
   return {
     version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
     kind: 'json',
     value: placeholder as unknown as Record<string, never>,
+    ...(source && 'isError' in source && source.isError ? { isError: true as const } : {}),
   };
 }
 
@@ -184,7 +186,7 @@ export async function archiveToolResultAsTransition(
       // The placeholder inside the replacement is the whole archive record:
       // artifact id, body digest and original size. The transition does not
       // repeat them — one fact, one place.
-      replacement: archivedToolResultProjection(placeholder),
+      replacement: archivedToolResultProjection(placeholder, request.sourceProjection),
       ...(request.previousTransitionId
         ? { previousTransitionId: request.previousTransitionId }
         : {}),

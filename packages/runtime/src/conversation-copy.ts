@@ -1323,7 +1323,7 @@ function cloneModelProjectionTransition(
       toolName: source.target.toolName,
     },
     sourceProjection,
-    replacement: archivedToolResultProjection(rewritten),
+    replacement: archivedToolResultProjection(rewritten, source.replacement),
     // The applied chain is copied in fold order, so a predecessor is always
     // rebuilt before its successor. An unmapped one means the chain broke, and
     // rooting the successor instead would change what the fold decides.

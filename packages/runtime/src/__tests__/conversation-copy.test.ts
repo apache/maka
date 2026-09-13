@@ -2799,7 +2799,7 @@ function sourceProjectionTransition(input: {
       toolName: 'Read',
     },
     sourceProjection: input.sourceProjection,
-    replacement: archivedToolResultProjection(placeholder),
+    replacement: archivedToolResultProjection(placeholder, input.sourceProjection),
     ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
     now: input.createdAt,
   });
@@ -3321,6 +3321,7 @@ test('conversation copy rebuilds projection transitions against the copied event
         id: 'tool-1',
         name: 'Read',
         result: { kind: 'text', text: TRANSITION_SECRET_BODY },
+        isError: true,
       },
     });
     for (const event of [
@@ -3463,6 +3464,7 @@ test('conversation copy rebuilds projection transitions against the copied event
     for (const transition of copiedTransitions.transitions) {
       assert.equal(transition.sessionId, 'session-target');
       assert.equal(transition.target.runtimeEventId, targetResult.id);
+      assert.equal('isError' in transition.replacement && transition.replacement.isError, true);
     }
     // Lineage is preserved through the remapped ids, never through the source's.
     assert.notEqual(copiedFirst.transitionId, first.transitionId);

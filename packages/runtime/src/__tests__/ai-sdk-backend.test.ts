@@ -9208,6 +9208,7 @@ describe('AiSdkBackend usage telemetry', () => {
           if (found) return found;
         }
     };
+    assert.equal(findToolResult(secondPrompt, 'tool-1')?.output.type, 'error-json');
     const frontRead = findToolResult(prompts[2], 'tool-2');
     assert.ok(frontRead);
     assert.match(JSON.stringify(frontRead.output), /FRONT_SENTINEL/);
