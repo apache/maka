@@ -21,6 +21,9 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 // The geometry ledger contains sizes and identities, never message bodies.
 // Unmeasured loaded rows get a local placeholder; unseen history has no estimate.
+// An offscreen height is provisional, including after width/content changes.
+// Every mount measures again; invalidating all rows to a constant would move
+// the whole document before any replacement measurements are available.
 export function useTranscriptKnownSpace(
   root: RefObject<HTMLElement | null>,
   sessionId: string | undefined,

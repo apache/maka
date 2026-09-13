@@ -290,6 +290,56 @@ try {
       assert.equal(blankFrames.length, 0, 'native traversal must not expose an empty transcript');
       assert.equal(revisitShrink.length, 0, 'revisiting measured history must preserve its extent');
       assert(row.coldMaxReversePx <= 1, 'height corrections must not reverse an upward reader');
+      if (scene === 'virtual-history-mixed-content' && trial === 0) {
+        // Reuse the real paging/mounting path at a different layout width.
+        // Old offscreen boxes remain provisional until visited, then converge;
+        // a second visit must not fall back to the previous width's heights.
+        const resizeSamples = [];
+        for (const width of [900, 1352]) {
+          await page.setViewportSize({ width, height: 932 });
+          const heights = [];
+          for (let visit = 0; visit < 2; visit++) {
+            for (const direction of [-1, 1]) {
+              let reached = false;
+              for (let step = 0; step < 250; step++) {
+                reached = await page.evaluate(async (direction) => {
+                  const root = document.querySelector('[data-chat-scroll-container]');
+                  root.dispatchEvent(
+                    new WheelEvent('wheel', { bubbles: true, deltaY: direction * 400 }),
+                  );
+                  root.scrollTop += direction * root.clientHeight;
+                  root.dispatchEvent(new Event('scroll'));
+                  for (let frame = 0; frame < 5; frame++) await new Promise(requestAnimationFrame);
+                  return direction < 0
+                    ? root.scrollTop <= 1
+                    : root.scrollHeight - root.clientHeight - root.scrollTop <= 1;
+                }, direction);
+                if (reached) break;
+              }
+              assert(reached, 'resized history traversal must reach its edge');
+            }
+            heights.push(
+              await page.evaluate(
+                () => document.querySelector('[data-chat-scroll-container]').scrollHeight,
+              ),
+            );
+          }
+          resizeSamples.push({ width, heights });
+          assert(
+            Math.abs(heights[0] - heights[1]) <= 1,
+            `remeasured history must converge at width ${width}: ${heights}`,
+          );
+        }
+        assert(
+          Math.abs(resizeSamples.at(-1).heights[1] - last.height) <= 1,
+          'returning to the original width must recover its measured extent',
+        );
+        await writeFile(
+          path.join(outputDir, 'virtual-history-resize.json'),
+          JSON.stringify(resizeSamples, null, 2),
+        );
+        console.log(JSON.stringify({ scenario: 'virtual-history-resize', samples: resizeSamples }));
+      }
       await page.close();
     }
   }
