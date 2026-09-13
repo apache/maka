@@ -373,7 +373,7 @@ export class FilesystemWorkerClient {
       throw clientError('request_overflow', 'validation', requestId);
     }
 
-    const launch = await this.input.getLaunchSpec();
+    const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const pinnedTarget =

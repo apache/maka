@@ -18,7 +18,7 @@
  */
 
 import { constants } from 'node:fs';
-import { access, realpath, stat } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -51,7 +51,9 @@ export type FilesystemWorkerLaunchSpecResult =
       message: string;
     };
 
-export type FilesystemWorkerLaunchSpecProvider = () => Promise<FilesystemWorkerLaunchSpecResult>;
+export type FilesystemWorkerLaunchSpecProvider = (operation: {
+  kind: string;
+}) => Promise<FilesystemWorkerLaunchSpecResult>;
 
 export interface CreateFilesystemWorkerLaunchSpecProviderInput {
   runtime: 'node' | 'electron';
@@ -72,38 +74,18 @@ export function createFilesystemWorkerLaunchSpecProvider(
 ): FilesystemWorkerLaunchSpecProvider {
   const platform = input.platform ?? process.platform;
   let base: Promise<LaunchBaseResult> | undefined;
-  let ripgrep: Promise<RipgrepResolution | undefined> | undefined;
-  // Mach-O inspection runs otool, so its result is kept per executable and
-  // file identity: an unchanged binary is inspected once, whether it was
-  // granted or refused, however often launches look for ripgrep again.
-  const inspections = new Map<string, MacosInspectionRecord>();
-  const resolveRipgrep = () =>
-    resolveRipgrepExecutable(
-      input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
-      platform,
-      input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
-      inspections,
-    );
-  // A resolved ripgrep stays cached while the same file is still there. A
-  // missing one, or one whose file has since disappeared or changed (a package
-  // upgrade removes the old keg; a reinstall in place can change its
-  // libraries), is looked up again on the next launch, with the same
-  // executable and dependency-root validation as the first lookup: installing
-  // ripgrep where the Host runs and retrying recovers without restarting the
-  // Host, and the sandbox only ever grants the copy found.
-  const currentRipgrep = async (): Promise<RipgrepResolution | undefined> => {
-    const known = (ripgrep ??= resolveRipgrep());
-    const resolved = await known;
-    if (resolved && (await fileIdentity(resolved.executable)) === resolved.identity)
-      return resolved;
-    // Concurrent launches share one fresh lookup.
-    if (ripgrep === known) ripgrep = resolveRipgrep();
-    return await ripgrep;
-  };
-  return async () => {
+  return async (operation) => {
     const resolved = await (base ??= resolveLaunchBase(input, platform));
     if (!resolved.ok) return resolved;
-    return { ok: true, spec: composeLaunchSpec(resolved.base, await currentRipgrep()) };
+    const grep =
+      operation.kind === 'grep'
+        ? await resolveRipgrepExecutable(
+            input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
+            platform,
+            input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
+          )
+        : undefined;
+    return { ok: true, spec: composeLaunchSpec(resolved.base, grep) };
   };
 }
 
@@ -134,15 +116,8 @@ export function buildFilesystemWorkerEnv(
 
 interface RipgrepResolution {
   readonly executable: string;
-  /** The file that was validated; a different file at the same path is looked up again. */
-  readonly identity: string;
   readonly runtimeReadableRoots: readonly string[];
   readonly executableRoots: readonly string[];
-}
-
-interface MacosInspectionRecord {
-  readonly identity: string;
-  readonly result: MacosExecutableDependencyResolution;
 }
 
 /** Everything in a launch that does not depend on ripgrep; resolved once. */
@@ -277,29 +252,19 @@ async function resolveRipgrepExecutable(
   inspectMacosExecutableDependencies: (
     executable: string,
   ) => Promise<MacosExecutableDependencyResolution>,
-  inspections: Map<string, MacosInspectionRecord>,
 ): Promise<RipgrepResolution | undefined> {
   const inspected = new Set<string>();
   for (const candidate of candidates) {
     const executable = await resolveExecutable(candidate);
     if (!executable || inspected.has(executable)) continue;
     inspected.add(executable);
-    const identity = await fileIdentity(executable);
-    if (!identity) continue;
     if (platform !== 'darwin') {
-      return { executable, identity, runtimeReadableRoots: [], executableRoots: [] };
+      return { executable, runtimeReadableRoots: [], executableRoots: [] };
     }
-    const known = inspections.get(executable);
-    const inspection =
-      known && known.identity === identity
-        ? known
-        : { identity, result: await inspectMacosExecutableDependencies(executable) };
-    inspections.set(executable, inspection);
-    const dependencies = inspection.result;
+    const dependencies = await inspectMacosExecutableDependencies(executable);
     if (!dependencies.ok) continue;
     return {
       executable,
-      identity,
       runtimeReadableRoots: dependencies.runtimeReadableRoots,
       executableRoots: dependencies.executableRoots,
     };
@@ -312,15 +277,6 @@ async function resolveExecutable(candidate: string): Promise<string | undefined>
   try {
     await access(candidate, constants.X_OK);
     return await realpath(candidate);
-  } catch {
-    return undefined;
-  }
-}
-
-async function fileIdentity(path: string): Promise<string | undefined> {
-  try {
-    const info = await stat(path);
-    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.mode}`;
   } catch {
     return undefined;
   }

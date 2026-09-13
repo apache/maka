@@ -33,7 +33,7 @@ test('Linux Electron worker launch does not require a macOS Frameworks directory
     resourceLocation: { kind: 'runtime' },
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (result.ok) {
@@ -58,7 +58,7 @@ test('macOS worker launch includes inspected ripgrep runtime directories', async
     }),
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
@@ -83,7 +83,7 @@ test('macOS worker omits ripgrep when dependency inspection fails', async () => 
     }),
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.spec.args.includes('--grep-executable'), false);
@@ -104,7 +104,7 @@ test('Windows packaged worker grants only its product-owned application director
       rgCandidates: [],
     });
 
-    const result = await getLaunchSpec();
+    const result = await getLaunchSpec({ kind: 'grep' });
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -131,7 +131,7 @@ test('a node runtime worker never receives the Electron-only stdio switch', asyn
     rgCandidates: [],
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.spec.args.includes('--no-stdio-init'), false);
@@ -148,13 +148,13 @@ test('a ripgrep installed after the first launch is found by the next one (#5169
       resourceLocation: { kind: 'runtime' },
       rgCandidates: [candidate],
     });
-    const before = await getLaunchSpec();
+    const before = await getLaunchSpec({ kind: 'grep' });
     assert.equal(before.ok, true);
     if (!before.ok) return;
     assert.equal(before.spec.args.includes('--grep-executable'), false);
 
     await installExecutable(candidate);
-    const after = await getLaunchSpec();
+    const after = await getLaunchSpec({ kind: 'grep' });
 
     assert.equal(after.ok, true);
     if (!after.ok) return;
@@ -180,7 +180,7 @@ test('a ripgrep that disappears is replaced by the next launch, and only the rep
       resourceLocation: { kind: 'runtime' },
       rgCandidates: [first, second],
     });
-    const before = await getLaunchSpec();
+    const before = await getLaunchSpec({ kind: 'grep' });
     assert.equal(before.ok, true);
     if (!before.ok) return;
     assert.deepEqual(before.spec.args.slice(-2), ['--grep-executable', firstReal]);
@@ -188,7 +188,7 @@ test('a ripgrep that disappears is replaced by the next launch, and only the rep
     // A package upgrade removes the old keg and installs the new one.
     await rm(dirname(first), { recursive: true, force: true });
     await installExecutable(second);
-    const after = await getLaunchSpec();
+    const after = await getLaunchSpec({ kind: 'grep' });
 
     assert.equal(after.ok, true);
     if (!after.ok) return;
@@ -201,7 +201,7 @@ test('a ripgrep that disappears is replaced by the next launch, and only the rep
   }
 });
 
-test('a resolved ripgrep is inspected once while it is still there (#5169)', async () => {
+test('non-Grep launches neither inspect nor grant ripgrep', async () => {
   const executable = await realpath(process.execPath);
   let inspections = 0;
   const getLaunchSpec = createFilesystemWorkerLaunchSpecProvider({
@@ -216,10 +216,12 @@ test('a resolved ripgrep is inspected once while it is still there (#5169)', asy
     },
   });
 
-  await getLaunchSpec();
-  await getLaunchSpec();
-
-  assert.equal(inspections, 1);
+  for (const kind of ['read', 'write', 'glob']) {
+    const result = await getLaunchSpec({ kind });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.spec.args.includes('--grep-executable'), false);
+  }
+  assert.equal(inspections, 0);
 });
 
 test('the worker is told where it runs so Grep can say where to install ripgrep (#5169)', async () => {
@@ -232,7 +234,7 @@ test('the worker is told where it runs so Grep can say where to install ripgrep 
     hostEnv: { WSL_DISTRO_NAME: 'Ubuntu-24.04' },
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
@@ -251,13 +253,13 @@ test('outside WSL the worker is not told a machine name (#5169)', async () => {
     hostEnv: {},
   });
 
-  const result = await getLaunchSpec();
+  const result = await getLaunchSpec({ kind: 'grep' });
 
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.spec.args.includes('--ripgrep-environment'), false);
 });
 
-test('a ripgrep whose libraries cannot be granted is not inspected again on every launch (#5169)', async () => {
+test('a repaired dependency is rechecked without changing ripgrep or restarting', async () => {
   const executable = await realpath(process.execPath);
   let inspections = 0;
   const getLaunchSpec = createFilesystemWorkerLaunchSpecProvider({
@@ -268,20 +270,20 @@ test('a ripgrep whose libraries cannot be granted is not inspected again on ever
     rgCandidates: [executable],
     inspectMacosExecutableDependencies: async () => {
       inspections += 1;
-      return { ok: false, reason: 'dependency_unresolved', message: 'fixture failure' };
+      return inspections === 1
+        ? { ok: false, reason: 'dependency_unresolved', message: 'fixture failure' }
+        : { ok: true, dependencyCount: 0, runtimeReadableRoots: [], executableRoots: [] };
     },
   });
 
-  for (let launch = 0; launch < 3; launch += 1) {
-    const result = await getLaunchSpec();
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.spec.args.includes('--grep-executable'), false);
-  }
-
-  assert.equal(inspections, 1);
+  const before = await getLaunchSpec({ kind: 'grep' });
+  assert.ok(before.ok && !before.spec.args.includes('--grep-executable'));
+  const after = await getLaunchSpec({ kind: 'grep' });
+  assert.ok(after.ok && after.spec.args.includes('--grep-executable'));
+  assert.equal(inspections, 2);
 });
 
-test('a ripgrep reinstalled in place is inspected again and granted its new libraries (#5169)', async () => {
+test('dependency grants refresh even when the ripgrep executable is unchanged', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-launch-spec-rg-in-place-'));
   try {
     const candidate = join(root, 'bin', 'rg');
@@ -305,14 +307,12 @@ test('a ripgrep reinstalled in place is inspected again and granted its new libr
         };
       },
     });
-    const before = await getLaunchSpec();
+    const before = await getLaunchSpec({ kind: 'grep' });
     assert.equal(before.ok, true);
     if (!before.ok) return;
     assert.ok(before.spec.executableRoots.includes(libraries[0]!));
 
-    // Same path, new binary: a reinstall rewrites the file in place.
-    await writeFile(candidate, '#!/bin/sh\n# 14.1.1\n', 'utf8');
-    const after = await getLaunchSpec();
+    const after = await getLaunchSpec({ kind: 'grep' });
 
     assert.equal(after.ok, true);
     if (!after.ok) return;
@@ -337,7 +337,7 @@ test('on Windows the winget links directory is searched even when PATH predates 
       hostEnv: { PATH: '', LOCALAPPDATA: root },
     });
 
-    const result = await getLaunchSpec();
+    const result = await getLaunchSpec({ kind: 'grep' });
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
