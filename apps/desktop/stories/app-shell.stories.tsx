@@ -2013,7 +2013,7 @@ function injectNestedScroller(parent: Element): HTMLElement {
 }
 
 /** Answered turns, oldest first. `from` may go negative as history loads. */
-function transcriptTurns(from: number, count: number): StoredMessage[] {
+function transcriptTurns(from: number, count: number, mixed = false): StoredMessage[] {
   return Array.from({ length: count }, (_, offset) => {
     const index = from + offset;
     const turnId = `turn-scroll-${index}`;
@@ -2023,7 +2023,7 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
         `msg-scroll-${index}-a`,
         turnId,
         499 - index * 2,
-        TAIL_LINES.slice(0, 4).join('\n\n'),
+        mixed ? mixedTurnText(Math.abs(index)) : TAIL_LINES.slice(0, 4).join('\n\n'),
       ),
     ];
   }).flat();
@@ -2352,7 +2352,7 @@ function SettledTranscriptHarness({
  * settled before its turns were laid out would be asked for the next page
  * against the geometry of the previous one.
  */
-function HistoryHarness({ turns, bounded = false, olderTurns = HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE }: { turns: number; bounded?: boolean; olderTurns?: number }) {
+function HistoryHarness({ turns, bounded = false, olderTurns = HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE, mixed = false }: { turns: number; bounded?: boolean; olderTurns?: number; mixed?: boolean }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   useEffect(() => {
@@ -2361,7 +2361,7 @@ function HistoryHarness({ turns, bounded = false, olderTurns = HISTORY_BATCH * H
   return (
     <ComposedShell
       chat={{
-        messages: transcriptTurns(range.from, range.count),
+        messages: transcriptTurns(range.from, range.count, mixed),
         viewportNavigation,
         hasOlderHistory: range.from > -olderTurns,
         hasNewerHistory: bounded && range.from + range.count < turns,
@@ -2572,6 +2572,12 @@ export const HistoryWindowTraversal: Story = {
   render: () => <HistoryHarness turns={40} bounded />,
 };
 
+// Real path: the bounded Desktop transcript mounts and evicts mixed prose and
+// code turns. The fixed-membership geometry scene below does not virtualize.
+export const VirtualHistoryMixedContent: Story = {
+  render: () => <HistoryHarness turns={24} olderTurns={0} bounded mixed />,
+};
+
 // Real path: traverse a long Session, return through already read history,
 // and jump to a loaded Turn whose body is currently outside the viewport.
 export const VirtualHistoryContinuity: Story = {
@@ -2681,22 +2687,25 @@ export const Performance45Tools: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
 };
 
-// Fixed membership: geometry probes must not mistake history paging for lazy
-// layout. Mixed prose and long 100+ line CodeBlocks exercise all three
-// skipping boundaries (Turn, timeline block, Astryx line chunk).
+function mixedTurnText(i: number): string {
+  const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
+    `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
+  ).join('\n\n');
+  const code = i % 6 === 0
+    ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
+        `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
+      ).join('\n') + '\n```'
+    : '';
+  return prose + code;
+}
+
+// Fixed membership isolates nested Markdown/code layout from history paging
+// and virtual row mounting; VirtualHistoryMixedContent covers those together.
 export const GeometryMixed24Turns: Story = {
   render: () => <ComposedShell chat={{ messages: Array.from({ length: 24 }, (_, i) => {
     const turnId = `geometry-${i}`;
-    const prose = Array.from({ length: 4 + (i % 5) * 3 }, (_, p) =>
-      `第 ${i + 1} 轮，第 ${p + 1} 段。${'固定内容用于检查首次上滚时的文档尺寸，不发生流式输出或历史分页。'.repeat(3)}`,
-    ).join('\n\n');
-    const code = i % 6 === 0
-      ? '\n\n```text\n' + Array.from({ length: 140 }, (_, line) =>
-          `${line + 1}: ${'wrapped-code-content-'.repeat(9)}`,
-        ).join('\n') + '\n```'
-      : '';
     return [user(`geometry-u-${i}`, turnId, 50 - i, `检查第 ${i + 1} 组。`),
-      assistant(`geometry-a-${i}`, turnId, 50 - i, prose + code)];
+      assistant(`geometry-a-${i}`, turnId, 50 - i, mixedTurnText(i))];
   }).flat(), hasOlderHistory: false, hasNewerHistory: false }} />,
 };
 

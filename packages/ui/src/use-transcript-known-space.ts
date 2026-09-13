@@ -30,21 +30,23 @@ export function useTranscriptKnownSpace(
   const previous = useRef<{
     sessionId: string | undefined;
     ids: readonly string[];
-    pitch: Map<string, number>;
+    heights: Map<string, number>;
     gap: number;
-  }>({ sessionId, ids: [], pitch: new Map(), gap: 0 });
+  }>({ sessionId, ids: [], heights: new Map(), gap: 0 });
   const old = previous.current;
   const mounted = new Set(ids);
   const overlaps = enabled && old.sessionId === sessionId
     ? old.ids.flatMap((id, index) => mounted.has(id) ? [index] : []) : [];
   const prefix = overlaps.length ? old.ids.slice(0, overlaps[0]) : [];
   const suffix = overlaps.length ? old.ids.slice(overlaps.at(-1)! + 1) : [];
-  const pitch = overlaps.length ? new Map(old.pitch) : new Map<string, number>();
+  // Placeholders and range spacers read the same observer-owned border boxes.
+  // Spacing belongs to the list, so it is never baked into a measured height.
+  const heights = overlaps.length ? old.heights : new Map<string, number>();
   const estimate = 320;
-  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (pitch.get(id) ?? estimate + old.gap), 0);
+  const gap = overlaps.length ? old.gap : 0;
+  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (heights.get(id) ?? estimate) + gap, 0);
   const before = sum(prefix);
   const after = sum(suffix);
-  const gap = overlaps.length ? old.gap : 0;
 
   useEffect(() => {
     if (!enabled) return;
@@ -53,14 +55,14 @@ export function useTranscriptKnownSpace(
   }, [enabled, root, sessionId]);
   useLayoutEffect(() => {
     if (!enabled) return;
-    previous.current = { sessionId, ids: [...prefix, ...ids, ...suffix], pitch, gap: previous.current.gap };
+    previous.current = { sessionId, ids: [...prefix, ...ids, ...suffix], heights, gap: previous.current.gap };
   });
 
   return {
     before, after,
     beforeHeight: Math.max(0, before - gap),
     afterHeight: Math.max(0, after - gap),
-    height: (id: string) => Math.max(1, (pitch.get(id) ?? estimate + gap) - gap),
-    measure: (id: string, height: number) => previous.current.pitch.set(id, height + previous.current.gap),
+    height: (id: string) => Math.max(1, heights.get(id) ?? estimate),
+    measure: (id: string, height: number) => heights.set(id, height),
   };
 }

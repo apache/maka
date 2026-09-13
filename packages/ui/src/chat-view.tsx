@@ -771,7 +771,7 @@ export function ChatView(props: {
                     required={turn.turnId === props.activeTurn?.turnId
                       || turn.turnId === scrollTargetTurn?.turnId
                       || turn.turnId === props.restoreTargetTurn?.turnId}
-                    initialHeight={knownSpace.height(turn.turnId)}
+                    getHeight={knownSpace.height}
                     onMeasure={knownSpace.measure}
                   >
                     <TurnView

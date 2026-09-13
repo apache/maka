@@ -29,10 +29,85 @@ import { outputDir, report, summarize } from './report.mjs';
 const server = await startStaticServer('apps/desktop/storybook-static');
 const browser = await chromium.launch({ headless: true });
 const samples = [];
+const scenes = (
+  process.env.SCROLL_WINDOW_SCENES ?? 'history-window-traversal,virtual-history-mixed-content'
+).split(',');
+const trials = Number(process.env.SCROLL_WINDOW_TRIALS ?? 3);
+assert(Number.isInteger(trials) && trials > 0);
+
+// A real virtual row can enter the viewport before IntersectionObserver's
+// mounting delivery. Hold that delivery to exercise the otherwise intermittent
+// transition from an estimated shell to measured content deterministically.
+async function verifyMountAnchor() {
+  const page = await browser.newPage({ viewport: { width: 1352, height: 932 } });
+  try {
+    await page.addInitScript(() => {
+      const Original = IntersectionObserver;
+      window.__mountAnchor = { hold: false, deliveries: [] };
+      window.IntersectionObserver = class extends Original {
+        constructor(callback, options) {
+          super((entries, observer) => {
+            if (window.__mountAnchor.hold) {
+              window.__mountAnchor.deliveries.push(() => callback(entries, observer));
+            } else callback(entries, observer);
+          }, options);
+        }
+      };
+    });
+    await page.goto(
+      `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--history-window-traversal&viewMode=story`,
+    );
+    await page.locator('[data-virtual-placeholder]').first().waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForFunction(() => !document.querySelector('.maka-markdown-pending'));
+    await page.waitForTimeout(1200);
+    const result = await page.evaluate(async () => {
+      const painted = async (count) => {
+        for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame);
+      };
+      const root = document.querySelector('[data-chat-scroll-container]');
+      const target = [...root.querySelectorAll('[data-virtual-placeholder]')].at(-1);
+      if (!target) throw new Error('Missing estimated shell');
+      const reader = [...root.querySelectorAll('.maka-turn[data-turn-id]')].find(
+        (turn) => turn.getBoundingClientRect().top >= target.getBoundingClientRect().bottom,
+      );
+      if (!reader) throw new Error('Missing rendered reader after the estimated shell');
+      window.__mountAnchor.hold = true;
+      root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 }));
+      root.scrollTop += target.getBoundingClientRect().top - root.getBoundingClientRect().top + 100;
+      root.dispatchEvent(new Event('scroll'));
+      await painted(3);
+      const before = reader.getBoundingClientRect().top;
+      const deliveries = window.__mountAnchor.deliveries.splice(0);
+      window.__mountAnchor.hold = false;
+      for (const deliver of deliveries) deliver();
+      await painted(8);
+      return {
+        deliveries: deliveries.length,
+        before,
+        after: reader.getBoundingClientRect().top,
+        mounted: target.querySelector('.maka-turn') !== null,
+      };
+    });
+    await writeFile(
+      path.join(outputDir, 'virtual-mount-anchor.json'),
+      JSON.stringify(result, null, 2),
+    );
+    assert(result.deliveries > 0 && result.mounted, 'the delayed virtual row must actually mount');
+    assert(
+      Math.abs(result.after - result.before) <= 1,
+      `mounting estimated rows must preserve the rendered reading anchor: ${JSON.stringify(result)}`,
+    );
+    console.log(JSON.stringify({ scenario: 'virtual-mount-anchor', ...result }));
+  } finally {
+    await page.close();
+  }
+}
 await mkdir(outputDir, { recursive: true });
 try {
-  for (const scene of ['history-window-traversal', 'geometry-mixed-24-turns']) {
-    for (let trial = 0; trial < 3; trial++) {
+  await verifyMountAnchor();
+  for (const scene of scenes) {
+    for (let trial = 0; trial < trials; trial++) {
       const page = await browser.newPage({ viewport: { width: 1352, height: 932 } });
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
@@ -87,9 +162,17 @@ try {
             height: root.scrollHeight,
             viewport: root.clientHeight,
             count: root.querySelectorAll('.maka-turn[data-turn-id]').length,
+            visibleCount: [...root.querySelectorAll('.maka-turn[data-turn-id]')].filter((turn) => {
+              const box = turn.getBoundingClientRect();
+              return box.bottom > top && box.top < top + root.clientHeight;
+            }).length,
             first: turns[0]?.dataset.turnId,
             last: turns.at(-1)?.dataset.turnId,
             phase: probe.phase,
+            membership: [...root.querySelectorAll('[data-transcript-turn-id]')]
+              .map((turn) => turn.dataset.transcriptTurnId)
+              .join(','),
+            thumbRatio: root.clientHeight / root.scrollHeight,
             anchorDelta: old ? old.getBoundingClientRect().top - previous.top : null,
           };
           probe.frames.push(sample);
@@ -149,8 +232,16 @@ try {
         const delta = frame.height - data.frames[i].height;
         return delta < -1 ? [{ ...frame, delta }] : [];
       });
-      const blankFrames = data.frames.filter((frame) => frame.count === 0);
+      const blankFrames = data.frames.filter((frame) => frame.visibleCount === 0);
       const revisitShrink = shrink.filter((frame) => frame.phase.startsWith('up-repeat'));
+      const coldChanges = data.frames.slice(1).flatMap((frame, i) => {
+        const previous = data.frames[i];
+        if (!frame.phase.startsWith('up-') || frame.phase.startsWith('up-repeat')) return [];
+        const delta = frame.height - previous.height;
+        return Math.abs(delta) > 1
+          ? [{ delta, sameMembership: frame.membership === previous.membership }]
+          : [];
+      });
       const row = {
         scene,
         trial,
@@ -158,6 +249,29 @@ try {
         blankFrames: blankFrames.length,
         revisitShrinkCount: revisitShrink.length,
         shrinkPx: -shrink.reduce((sum, frame) => sum + frame.delta, 0),
+        coldStableMembershipChangePx: coldChanges
+          .filter((change) => change.sameMembership)
+          .reduce((sum, change) => sum + Math.abs(change.delta), 0),
+        coldRangeChangePx: coldChanges
+          .filter((change) => !change.sameMembership)
+          .reduce((sum, change) => sum + Math.abs(change.delta), 0),
+        coldGrowthPx: coldChanges
+          .filter((change) => change.delta > 0)
+          .reduce((sum, change) => sum + change.delta, 0),
+        coldMaxReversePx: Math.max(
+          0,
+          ...data.frames
+            .slice(1)
+            .flatMap((frame, i) =>
+              frame.phase.startsWith('up-') &&
+              !frame.phase.startsWith('up-repeat') &&
+              frame.phase === data.frames[i].phase &&
+              !frame.phase.endsWith('pause') &&
+              frame.anchorDelta !== null
+                ? [-frame.anchorDelta]
+                : [],
+            ),
+        ),
         maxLongTaskMs: Math.max(0, ...data.tasks.map((task) => task.duration)),
         longTaskMs: data.tasks.reduce((sum, task) => sum + task.duration, 0),
         maxMounted: Math.max(...data.frames.map((frame) => frame.count)),
@@ -175,6 +289,7 @@ try {
       console.log(JSON.stringify(row));
       assert.equal(blankFrames.length, 0, 'native traversal must not expose an empty transcript');
       assert.equal(revisitShrink.length, 0, 'revisiting measured history must preserve its extent');
+      assert(row.coldMaxReversePx <= 1, 'height corrections must not reverse an upward reader');
       await page.close();
     }
   }
@@ -184,15 +299,18 @@ try {
       browser: browser.version(),
       samples,
       viewport: '1352x932',
-      conditions:
-        'Three fresh documents per scene; native wheel, 24 ticks of 450px with >=16ms spacing and 350ms pauses. Full up/down traversal; fonts and Markdown ready. Same driver on baseline and experiment refs.',
+      conditions: `${trials} fresh documents per scene; native wheel, 24 ticks of 450px with >=16ms spacing and 350ms pauses. Full up/down traversal; fonts and Markdown ready. Same driver on baseline and experiment refs.`,
       limits:
-        'Simulated history callbacks, not real Host/store timing or exact touchpad replay. Geometry and long tasks are separate outcomes. Three samples are not a robust timing distribution. No performance threshold.',
+        'Simulated history callbacks, not real Host/store timing or exact touchpad replay. Range-change frames can also contain height corrections, so stable-membership changes are only a lower bound on correction. Geometry and long tasks are separate outcomes. Small samples are not a robust timing distribution. No performance threshold.',
     },
-    ['history-window-traversal', 'geometry-mixed-24-turns'].flatMap((scene) =>
+    scenes.flatMap((scene) =>
       [
         'shrinkCount',
         'shrinkPx',
+        'coldStableMembershipChangePx',
+        'coldRangeChangePx',
+        'coldGrowthPx',
+        'coldMaxReversePx',
         'maxLongTaskMs',
         'longTaskMs',
         'maxMounted',

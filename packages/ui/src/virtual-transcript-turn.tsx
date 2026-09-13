@@ -17,22 +17,21 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 
-/** A flow placeholder owns geometry, never scroll position or history reads. */
+/** Mounts near the viewport; measured heights belong to the shared geometry ledger. */
 export function VirtualTranscriptTurn({
-  turnId, scrollRef, enabled, required, initialHeight, onMeasure, children,
+  turnId, scrollRef, enabled, required, getHeight, onMeasure, children,
 }: {
   turnId: string;
   scrollRef: RefObject<HTMLElement | null>;
   enabled: boolean;
   required: boolean;
-  initialHeight: number;
+  getHeight(id: string): number;
   onMeasure(id: string, height: number): void;
   children: ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
-  const height = useRef(initialHeight);
   const measure = useRef(onMeasure);
   measure.current = onMeasure;
   const [nearby, setNearby] = useState(!enabled);
@@ -64,14 +63,19 @@ export function VirtualTranscriptTurn({
     };
   }, [enabled, scrollRef]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = root.current;
-    if (!enabled || !mounted || !node) return;
+    if (!node) return;
+    // An estimated shell cannot hold a reading anchor. Keep the same exclusion
+    // through its first real layout: removing it in the mounting render lets
+    // the browser choose the shell just as its explicit height becomes auto.
+    node.style.overflowAnchor = enabled ? 'none' : '';
+    if (!enabled || !mounted) return;
     const observer = new ResizeObserver(([entry]) => {
       const next = entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height;
       if (next <= 0) return;
-      height.current = next;
       measure.current(turnId, next);
+      node.style.overflowAnchor = 'auto';
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -81,6 +85,6 @@ export function VirtualTranscriptTurn({
     data-transcript-turn-id={turnId}
     data-turn-id={mounted ? undefined : turnId}
     data-virtual-placeholder={mounted ? undefined : ''}
-    style={mounted ? undefined : { height: height.current, flexShrink: 0 }}
+    style={mounted ? undefined : { height: getHeight(turnId), flexShrink: 0 }}
   >{mounted ? children : null}</div>;
 }

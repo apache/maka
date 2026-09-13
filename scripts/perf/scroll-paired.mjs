@@ -43,6 +43,7 @@ const files = [
   'packages/ui/src/__tests__/use-chat-scroll.test.tsx',
   'apps/desktop/src/main/__tests__/session-workspace-action-identity.test.ts',
   'apps/desktop/src/main/__tests__/workhub-send-visibility.test.ts',
+  'packages/ui/src/virtual-transcript-turn.tsx',
 ];
 const original = files.map((file) => readFileSync(file));
 const output = path.resolve(process.env.MAKA_PERF_OUTPUT ?? 'perf-results');
@@ -57,9 +58,13 @@ try {
   for (const [index, variant] of order.entries()) {
     for (const file of files) {
       const ref =
-        file.endsWith('use-transcript-known-space.ts') && !['V', 'W'].includes(variant)
-          ? refs.B
-          : refs[variant];
+        // The helper's props must match the historical ChatView. Older arms
+        // predate virtual mounting and leave this file unused.
+        file.endsWith('virtual-transcript-turn.tsx')
+          ? refs.V
+          : file.endsWith('use-transcript-known-space.ts') && !['V', 'W'].includes(variant)
+            ? refs.B
+            : refs[variant];
       writeFileSync(file, execFileSync('git', ['show', ref + ':' + file]));
     }
     {
