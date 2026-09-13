@@ -34,7 +34,7 @@ const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, isDefault: index === 0, thinkingLevels: [],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: boolean, selectTarget = false, question = false): WorkHubServices {
+function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -79,7 +79,7 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
@@ -145,9 +145,16 @@ function makeServices(failFirst: boolean, withHistory: boolean, coloredHistory: 
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false }: { failFirst?: boolean; history?: boolean; colors?: boolean; selectTarget?: boolean; question?: boolean }) {
-  const [services] = useState(() => makeServices(failFirst, history, colors, selectTarget, question));
-  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: '100dvh' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false }: { failFirst?: boolean; history?: boolean; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean }) {
+  const [progressHeight, setProgressHeight] = useState(112);
+  const [services] = useState(() => {
+    const services = makeServices(failFirst, history, colors, selectTarget, question, progress);
+    // Storybook has no BrowserWindow: honor the production renderer's native
+    // height request and use the native progress card's 360px width.
+    if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
+    return services;
+  });
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
 const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' } } satisfies Meta;
 export default meta;
@@ -207,6 +214,7 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
     await userEvent.click(trigger);
     await waitFor(() => expect(canvas.queryByRole('listbox')).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
     await userEvent.click(trigger);
     await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
     await userEvent.tab();
@@ -218,6 +226,27 @@ export const StandardComposer: Story = {
     await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(writes.answer).toHaveBeenCalledWith(sessionId, expect.objectContaining({ text: 'Review requirements', attachments: [expect.objectContaining({ name: 'requirements.txt' })] })));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+  },
+};
+// Real path: a floating WorkHub progress card → edit its composer → open the model picker.
+export const ProgressModelPicker: Story = {
+  render: () => <Surface progress />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor);
+    await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
+    const trigger = await canvas.findByRole('button', { name: /切换当前任务模型/ });
+    await userEvent.click(trigger);
+    const wheel = await canvas.findByRole('listbox');
+    await waitFor(() => expect(wheel).toHaveFocus());
+    const surface = wheel.closest('.maka-model-wheel-popup')!;
+    const pixels = new OffscreenCanvas(1, 1).getContext('2d')!;
+    pixels.fillStyle = getComputedStyle(surface).backgroundColor;
+    pixels.fillRect(0, 0, 1, 1);
+    expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+    expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
   },
 };
 export const ComposerRetainsFailedAttachment: Story = {

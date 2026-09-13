@@ -52,6 +52,10 @@ export function ModelWheelPicker(props: {
     if (props.open === undefined) setInternalOpen(next);
     props.onOpenChange?.(next);
   };
+  const close = (restoreFocus: boolean) => {
+    setOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
+  };
   const layer = useLayer({ mode: 'context', lazyMount: true, lightDismiss: true,
     onHide: () => setOpen(false) });
   useLayoutEffect(() => {
@@ -73,16 +77,14 @@ export function ModelWheelPicker(props: {
     className={props.triggerClassName} aria-label={props.ariaLabel}
     aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? layer.id : undefined}
     onMouseDown={(event) => { if (open) event.preventDefault(); }}
-    onClick={() => setOpen(!open)}
+    onClick={() => open ? close(true) : setOpen(true)}
     onKeyDown={(event) => {
       if (!props.disabled && props.options.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault(); event.stopPropagation(); setOpen(true);
       }
     }} />
-    {layer.render(open && layer.isOpen ? <ModelWheel {...props} onClose={(restoreFocus) => {
-    setOpen(false);
-    if (restoreFocus) requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
-    }} /> : null, { placement: 'above', alignment: 'start', offset: 4, className: 'maka-model-wheel-popup' })}
+    {layer.render(open && layer.isOpen ? <ModelWheel {...props} onClose={close} /> : null,
+      { placement: 'above', alignment: 'start', offset: 4, className: 'maka-model-wheel-popup' })}
   </span>;
 }
 
