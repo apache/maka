@@ -58,3 +58,13 @@ test('process identity survives tool projection and a new commentary step', () =
   assert.equal(before[0]?.kind === 'processing' && before[0].id, 'start');
   assert.equal(after[0]?.kind === 'processing' && after[0].id, 'start');
 });
+
+
+test('keeps a reply visible when only reasoning follows it', () => {
+  assert.deepEqual(foldTimeline([commentary, tools, answer, thinking]), [
+    { kind: 'processing', id: 'start', children: [commentary, tools, thinking] }, answer,
+  ]);
+  assert.deepEqual(foldTimeline([commentary, tools, thinking]), [
+    { kind: 'processing', id: 'start', children: [commentary, tools, thinking] },
+  ]);
+});

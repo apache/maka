@@ -39,11 +39,13 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
   let anchor = 'start';
   let buffer: FoldedTimelineChild[] = [];
   const flush = (): void => {
-    // A trailing text is the current reply, including while it streams. Once
-    // more work follows it, it becomes process commentary. Do not guess a
-    // final answer from a text that is still followed by tool activity.
-    const tail = buffer.at(-1);
-    const answer = tail?.kind === 'text' ? buffer.pop() : undefined;
+    // Imported transcripts can record reasoning after the visible reply.
+    // Ignore that trailing reasoning when locating the answer, but stop at
+    // tool activity: text before tools is still process commentary.
+    const replyIndex = buffer.findLastIndex((item) => item.kind !== 'thinking');
+    const answer = buffer[replyIndex]?.kind === 'text'
+      ? buffer.splice(replyIndex, 1)[0]
+      : undefined;
     if (buffer.length > 0) {
       out.push({ kind: 'processing', id: anchor, children: buffer });
     }
