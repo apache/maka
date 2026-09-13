@@ -13,6 +13,7 @@
     "./builtin-tools": "./dist/builtin-tools.js",
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",
+    "./background-task-health-tool": "./dist/background-task-health-tool.js",
     "./deep-research-tools": "./dist/deep-research-tools.js",
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./tool-artifacts": "./dist/tool-artifacts.js",

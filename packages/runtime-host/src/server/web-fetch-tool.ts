@@ -39,6 +39,7 @@ export interface HostWebFetchService {
     readonly sessionId: string;
     readonly abortSignal?: AbortSignal;
   }): Promise<string>;
+  probe(input: { url: string; sessionId: string; abortSignal: AbortSignal }): Promise<{ status: number; statusText?: string; elapsedMs: number }>;
 }
 
 export function createHostWebFetchService(input: HostWebFetchServiceInput): HostWebFetchService {
@@ -64,6 +65,19 @@ export function createHostWebFetchService(input: HostWebFetchServiceInput): Host
       } finally {
         await transport.close();
       }
+    },
+    probe: async ({ url, abortSignal }) => {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Health endpoint must use HTTP or HTTPS.');
+      const resolved = await input.policy.resolveHostOutboundExecution();
+      if (resolved.kind === 'privacy_mode') throw new Error('Endpoint health checks are disabled while privacy mode is active.');
+      if (resolved.kind === 'credential_not_configured') throw new Error('Configure the network proxy credential before checking an endpoint.');
+      const transport = createFetchTransport(toRuntimePolicyProxy(resolved.networkProxy, resolved.secretMaterial.networkProxy?.secret));
+      const started = Date.now();
+      try {
+        const response = await transport.fetch(parsed, { method: 'HEAD', redirect: 'manual', signal: abortSignal });
+        return { status: response.status, ...(response.statusText ? { statusText: response.statusText } : {}), elapsedMs: Date.now() - started };
+      } finally { await transport.close(); }
     },
   };
 }

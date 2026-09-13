@@ -251,6 +251,7 @@ import {
   shouldResolveHostTavilyWebSearchReadiness,
 } from './web-search-tool.js';
 import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
+import { buildBackgroundTaskHealthTool } from '@maka/runtime/background-task-health-tool';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
@@ -653,6 +654,7 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
+    const backgroundTaskHealthTool = buildBackgroundTaskHealthTool(runtimeResources!, webFetchService);
     pluginWeb.bindRuntime({
       search: ({ query, limit, abortSignal }) =>
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
@@ -675,6 +677,7 @@ export async function createExecutionRuntimeHostComposition(
     const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
+      backgroundTaskHealthTool,
       ...runtimePolicy.modelTools,
     ];
     const hostTools = [...childHostTools, ...historyTools];

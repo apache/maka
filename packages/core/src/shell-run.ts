@@ -137,6 +137,8 @@ export interface ShellRunRecord {
   cwd: string;
   command: string;
   status: ShellRunStatus;
+  /** Native root process id, when admitted by the process driver. */
+  pid?: number;
   exitCode?: number;
   failureMessage?: string;
   startedAt: number;
@@ -159,7 +161,7 @@ export interface ShellRunRecord {
 export type ShellRunPatch = Partial<
   Pick<
     ShellRunRecord,
-    'status' | 'exitCode' | 'failureMessage' | 'updatedAt' | 'completedAt' | 'observedAt' | 'output'
+    'status' | 'pid' | 'exitCode' | 'failureMessage' | 'updatedAt' | 'completedAt' | 'observedAt' | 'output'
   >
 >;
 
@@ -307,6 +309,7 @@ const SHELL_RUN_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 const SHELL_RUN_PATCH_KEYS: ReadonlySet<string> = new Set([
   'status',
+  'pid',
   'exitCode',
   'failureMessage',
   'updatedAt',
@@ -325,6 +328,7 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'cwd',
   'command',
   'status',
+  'pid',
   'startedAt',
   'updatedAt',
   'completedAt',
@@ -380,6 +384,7 @@ export function normalizeShellRunRecord(
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
+    (record.pid === undefined || isPositiveInteger(record.pid)) &&
     isFiniteNumber(record.startedAt) &&
     isFiniteNumber(record.updatedAt) &&
     isPositiveInteger(record.revision) &&

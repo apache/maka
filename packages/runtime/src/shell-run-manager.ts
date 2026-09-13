@@ -972,6 +972,7 @@ export class ShellRunProcessManager
   private async markRunning(live: LiveShellRun): Promise<void> {
     live.record = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
       status: 'running',
+      ...(live.driver.pid !== undefined ? { pid: live.driver.pid } : {}),
       output: (await this.snapshotAtCut(live, false)).output,
       updatedAt: this.input.now(),
     });

@@ -782,6 +782,7 @@ type ShellRunResultMetadata = {
   kind: 'shell_run';
   ref: string;
   status: ShellRunStatus;
+  pid?: number;
   cwd: string;
   cmd: string;
   startedAt: number;
