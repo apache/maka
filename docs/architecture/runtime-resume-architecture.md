@@ -489,7 +489,9 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
+CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Startup
+recovery can reconstruct an already admitted continuation through that seam,
+but it does not automatically select an ordinary failed or cancelled Run.
 
 ### Current parked-reason boundary
 
@@ -829,9 +831,15 @@ Start with production-shaped red tests, then land core contract, storage constra
 
 ## Feature flags, migration, and rollback
 
-| Flag | Purpose | Rollback meaning |
+| Setting | Purpose | Rollback meaning |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Enable Desktop manual/auto resume and CLI `/resume` | May disable visible continuation; does not delete durable facts |
+| unset | Enable explicit Desktop and CLI/TUI resume; keep model-driven WorkHub resume disabled | Default product behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Also enable model-driven WorkHub resume | Preserves the previous full opt-in behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | Disable explicit and model-driven resume planning | May park reconstruction; does not delete durable facts |
+
+Unknown non-empty values fail closed like `0`. Every enabled entry point still
+uses the same authoritative planner; the policy only controls whether a new
+resume attempt may reach it.
 
 RuntimeEvent migration is unconditional on the first write. Downgrading to a
 reader that does not understand the new schema requires explicit, verified

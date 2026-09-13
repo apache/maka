@@ -1289,7 +1289,7 @@ export class ExecutionFixture {
   ): ChildProcess {
     const env = { ...process.env };
     if (safeBoundaryResumeEnabled) env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
-    else delete env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    else env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
     const child = fork(
       new URL('./execution-host.js', import.meta.url),
       [
