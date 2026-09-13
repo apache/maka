@@ -18,7 +18,7 @@
  */
 
 import { posix } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { fstatSync, readdirSync } from 'node:fs';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
@@ -126,13 +126,21 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       );
     }
 
-    const pinnedFdInputs = command.pathContext.pinnedProfilePaths?.map(
-      ({ fd, sourceFd, releaseSource }) => ({
+    const exactReadableRoots = exactProfileRoots(command.profile, 'read');
+    const pinnedFdInputs = command.pathContext.pinnedProfilePaths
+      ?.filter(
+        (entry) =>
+          !(
+            entry.access === 'read' &&
+            exactReadableRoots.has(entry.path) &&
+            fstatSync(entry.sourceFd).isDirectory()
+          ),
+      )
+      .map(({ fd, sourceFd, releaseSource }) => ({
         fd,
         sourceFd,
         ...(releaseSource ? { releaseSource } : {}),
-      }),
-    );
+      }));
     const pinnedRuntimeWritableFdInputs = command.pathContext.pinnedRuntimeWritableRoots?.map(
       ({ fd, sourceFd, releaseSource }) => ({
         fd,
@@ -362,6 +370,11 @@ function buildBubblewrapArgvWithRoots(
   for (const root of profileReadableRoots) {
     const pinned = pinnedProfilePaths.get(root);
     if (exactReadableRoots.has(root) && !pinned) continue;
+    if (exactReadableRoots.has(root) && pinned && fstatSync(pinned.sourceFd).isDirectory()) {
+      // An exact directory grant exposes its existence, never its descendants.
+      argv.push('--dir', root);
+      continue;
+    }
     argv.push('--ro-bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
   for (const root of profileWritableRoots) {

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { fstatSync, rmSync } from 'node:fs';
 import {
   lstat,
   mkdtemp,
@@ -310,6 +310,51 @@ describe('filesystem worker client Grep target scope', () => {
 });
 
 describe('filesystem worker operation-scoped Seatbelt profile', () => {
+  test('Linux mounts authorized Grep metadata files but only synthesizes the Git directory', async () => {
+    const root = await temporaryDirectory('maka-grep-linux-metadata-');
+    const source = join(root, 'src');
+    await mkdir(source);
+    await mkdir(join(root, '.git', 'info'), { recursive: true });
+    await writeFile(join(root, '.gitignore'), 'generated/\n');
+    await writeFile(join(root, '.git', 'info', 'exclude'), 'private/\n');
+    const { client, transforms, processInputs } = fakeClient({ platform: 'linux' });
+    await client.execute({
+      operation: {
+        kind: 'grep',
+        path: source,
+        pattern: 'x',
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 1000,
+      },
+      cwd: root,
+      permissionProfile: {
+        type: 'managed',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+        },
+        network: { kind: 'restricted' },
+      },
+    });
+    const pinned = transforms[0]!.command.pathContext.pinnedProfilePaths!;
+    const argv = processInputs[0]!.argv;
+    for (const path of [source, join(root, '.gitignore'), join(root, '.git', 'info', 'exclude')]) {
+      const entry = pinned.find((entry) => entry.path === path);
+      assert.ok(entry);
+      assert.ok(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${entry.fd}`, path));
+    }
+    const git = pinned.find((entry) => entry.path === join(root, '.git'))!;
+    assert.ok(git);
+    assert.equal(
+      processInputs[0]!.fdInputs?.some((entry) => entry.fd === git.fd),
+      false,
+    );
+    assert.equal(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${git.fd}`, git.path), false);
+    assert.ok(argv.some((arg, index) => arg === '--dir' && argv[index + 1] === git.path));
+    for (const entry of pinned) assert.throws(() => fstatSync(entry.sourceFd), { code: 'EBADF' });
+  });
+
   test('Grep grants ancestor metadata exactly and never follows an unauthorized metadata link', async () => {
     const root = await temporaryDirectory('maka-grep-metadata-');
     const source = join(root, 'src');

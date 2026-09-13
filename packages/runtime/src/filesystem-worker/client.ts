@@ -375,7 +375,7 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec(operation);
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const searchMetadata: string[] = [];
+    const searchMetadata: { path: string; targetType: 'file' | 'directory' }[] = [];
     if (operation.kind === 'grep' && target.targetType === 'directory') {
       // Narrow the data scan to its target without dropping already-authorized
       // ancestor ignore rules. Configuration files never grant their parent tree.
@@ -385,13 +385,23 @@ export class FilesystemWorkerClient {
           if (!canReadPath(effectiveProfile, path, pathContext)) continue;
           const canonical = await realpath(path).catch(() => undefined);
           if (canonical && canReadPath(effectiveProfile, canonical, pathContext)) {
-            searchMetadata.push(canonical);
+            const metadata = await lstat(canonical).catch(() => undefined);
+            if (metadata?.isFile() || (name === '.git' && metadata?.isDirectory())) {
+              searchMetadata.push({
+                path: canonical,
+                targetType: metadata.isDirectory() ? 'directory' : 'file',
+              });
+            }
           }
         }
         if (dirname(parent) === parent) break;
       }
     }
-    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary, searchMetadata);
+    const workerProfile = deriveWorkerProfile(
+      effectiveProfile,
+      operationBoundary,
+      searchMetadata.map(({ path }) => path),
+    );
     const pinnedTarget =
       platform === 'linux' && !entryMode && target.targetType !== 'missing'
         ? (() => {
@@ -456,7 +466,26 @@ export class FilesystemWorkerClient {
       );
     }
     let transformed: ReturnType<SandboxManager['transform']>;
+    const pinnedMetadata: NonNullable<ReturnType<typeof pinExistingLinuxProfilePath>>[] = [];
+    const releasePinnedPaths = () => {
+      pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
+      for (const pinned of pinnedMetadata) pinned.releaseSource();
+    };
     try {
+      if (platform === 'linux') {
+        for (const metadata of searchMetadata) {
+          const pinned = pinExistingLinuxProfilePath({
+            ...metadata,
+            access: 'read',
+            childFd: 5 + pinnedMetadata.length,
+          });
+          if (!pinned) {
+            throw clientError('path_changed', 'validation', requestId);
+          }
+          pinnedMetadata.push(pinned);
+        }
+      }
       transformed = this.input.sandboxManager.transform({
         platform,
         command: {
@@ -469,17 +498,18 @@ export class FilesystemWorkerClient {
             ...pathContext,
             runtimeReadableRoots: launch.spec.runtimeReadableRoots,
             executableRoots: launch.spec.executableRoots,
-            ...(pinnedTarget
+            ...(pinnedTarget || pinnedMetadata.length
               ? {
                   pinnedProfilePaths: [
-                    {
-                      path: pinnedTarget.path,
-                      access: pinnedTarget.access,
-                      fd: pinnedTarget.childFd,
-                      sourceFd: pinnedTarget.sourceFd,
-                      releaseSource: pinnedTarget.releaseSource,
-                    },
-                  ],
+                    ...(pinnedTarget ? [pinnedTarget] : []),
+                    ...pinnedMetadata,
+                  ].map((pinned) => ({
+                    path: pinned.path,
+                    access: pinned.access,
+                    fd: pinned.childFd,
+                    sourceFd: pinned.sourceFd,
+                    releaseSource: pinned.releaseSource,
+                  })),
                 }
               : {}),
             ...(pinnedRuntimeWritableRoot
@@ -498,13 +528,11 @@ export class FilesystemWorkerClient {
         },
       });
     } catch (error) {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
       throw error;
     }
     if (!transformed.ok) {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
       throw clientError(transformed.reason, 'transform', requestId, transformed.message, false, {
         backend: transformed.sandboxType,
         profileName: effectiveProfile.name ?? effectiveProfile.type,
@@ -540,8 +568,7 @@ export class FilesystemWorkerClient {
         dispatched,
       );
     } finally {
-      pinnedTarget?.releaseSource();
-      pinnedRuntimeWritableRoot?.releaseSource();
+      releasePinnedPaths();
     }
     if (processResult.timedOut) {
       throw clientError(
