@@ -30,7 +30,66 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
+
+Code Mode awaits normal Runtime tools, including user interactions. The upstream
+wall deadline aborts those waits. The opt-in `timeoutMode: 'execution'` instead
+counts cumulative synchronous QuickJS execution, retaining the VM and normal
+Promise completion order during asynchronous host waits. Cancellation and worker
+pool/memory bounds remain in effect. Wall mode is unchanged. Execution mode
+rejects synchronous host functions/module loaders, which Maka does not expose.
+Callers must supply a reachable cancellation signal: a guest Promise that never
+settles retains its Worker until cancelled, even without an outstanding Host tool.
+There is no automatic liveness deadline or deadlock detector.
+
+The patched package requires Maka's Node >=22.19 baseline and drops the optional
+TypeScript peer used only by upstream's older-Node fallback. Maka uses native
+`node:module.stripTypeScriptTypes`, so a second compiler is unnecessary and the
+upstream peer range otherwise conflicts with the repository's TypeScript 7.
+
+The SDK patch only forwards this policy. Its nested patch path follows the locked
+workspace installation through `node_modules/@maka/runtime`. No continuation,
+replay, result ordering, or Worker pool is added to Maka.
+
+`run-2.1.4-source.diff` is the readable source corresponding to the run patch.
+To rebuild, check out upstream `vercel-labs/run` tag `run@2.1.4`
+(`0207eebde4fc9c04b35d8414773a7dea6c552115`), apply that diff, install with
+`pnpm install --frozen-lockfile --ignore-scripts --filter run...`, and run
+`pnpm --filter run build`. Copy the changed `dist` files into the installed run
+package and regenerate with `node node_modules/patch-package/index.js run`.
+Copy the patched package manifest as well, and pass `--exclude '^$'` when
+regenerating so patch-package includes that manifest change.
+The large generated hunk is the inline Worker with unchanged embedded WASM;
+`run-2.1.4-notices.md` retains its embedded dependency notices.
+
+Remove both patches and the run override when published versions support the
+same execution budget semantics. Regression coverage lives in
+`packages/runtime/src/__tests__/code-mode.test.ts`: long host waits with dependent
+Promise.race progress, pending-host compute timeout, cumulative compute across
+awaits, and the existing cancellation/drain and resource-limit cases.
+
+## `@xterm/xterm@6.0.0`
+
+`RenderService.handleSelectionChanged` bypasses the renderer's existing hidden
+pause. Selection refreshes can therefore redraw a hidden DOM terminal in full;
+zero-width character measurements are not cached, causing repeated synchronous
+layout under output load. The patch retains the latest selection and reuses
+the existing selection/full-refresh flags to paint it when visibility resumes.
+It does not stop the PTY, parser, or output subscriptions. There is no public
+xterm API that intercepts this internal redraw before it runs.
+
+Both shipped entry points and their TypeScript source are patched. The large
+diff is the vendor's minified bundle lines, not an additional implementation.
+Against a disposable Electron fixture with CDP, run
+`node scripts/perf/xterm-hidden-selection.mjs <port>`: real Chromium verifies
+that hidden selection changes do not mutate rows and the latest selection is
+painted on resume without another write. It fails against the unpatched bundle.
+
+Delete when upstream routes selection changes through its paused-render
+contract and both bundle regressions pass without the patch.
+
 ## `@earendil-works/pi-tui@0.84.4`
+
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
 so a 1 MiB paste followed by 60 words retains roughly 60 MiB of duplicate text.
@@ -91,7 +150,7 @@ the queue at the native exit fence. See #2978.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.34`
+## `@ai-sdk/provider-utils@5.0.40`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
@@ -108,6 +167,12 @@ unmount. Unknown labels keep their plain-text fallback, and known languages
 keep reusing compiled regexes. A call-site language filter would duplicate the
 dependency's language list, discard the displayed label, and miss the shared
 CodeEditor path. Delete this hunk when upstream stops caching unsupported labels.
+
+`CodeBlock` retains memoized line chunks, but lays them out without guessed
+intrinsic heights. Replacing those estimates on first visibility changed the
+transcript scroll range (#5184). Keep layout/style/paint containment. Remove
+this hunk when upstream offers equivalent stable geometry; the default-mode
+geometry CI covers 1200 lines without any ablation override.
 
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft

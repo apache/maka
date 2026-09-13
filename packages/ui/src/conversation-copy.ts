@@ -327,6 +327,7 @@ export interface ConversationCopy {
     abortedByStop: string;
     systemNotes: {
       contextCompacting: string;
+      contextCompactionUnobserved: string;
       contextCompacted: string;
       contextCompactionFailedOpen: string;
       contextProviderDropping: (used: number, prior: number) => string;
@@ -553,6 +554,7 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
+        contextCompactionUnobserved: '上下文压缩状态暂不可用',
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
         contextProviderDropping: (used, prior) =>
@@ -710,6 +712,7 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
+        contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
         contextProviderDropping: (used, prior) =>
@@ -893,6 +896,7 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
       systemNotes: {
         contextCompacting: 'Compacting context…',
+        contextCompactionUnobserved: 'Context compaction status unavailable',
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
         contextProviderDropping: (used, prior) =>

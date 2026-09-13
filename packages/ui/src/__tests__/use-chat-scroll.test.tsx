@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, useRef } from 'react';
+import { act, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { StoredMessage } from '@maka/core/session';
@@ -355,10 +355,12 @@ test('a fill that issued no read is not chained into another one', async () => {
 
   await act(async () => { transcript.readerScrollTo(0); });
 
-  assert.equal(requests, 2, 'the landed read chains one re-check, whose refusal ends it');
+  assert.equal(requests, 1, 'the landed read waits for input settlement');
+  await act(() => transcript.scroller.dispatchEvent(new window.Event('scrollend')));
+  assert.equal(requests, 2, 'settlement rechecks the published range, whose refusal ends it');
 });
 
-test('an older request at offset zero restores the browser anchoring the reader depends on', async () => {
+test('an older request at offset zero does not move the reader', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
   );
@@ -391,7 +393,198 @@ test('an older request at offset zero restores the browser anchoring the reader 
 
   transcript.readerScrollTo(0);
   assert.equal(requests, 1);
-  assert.equal(transcript.scrollTop, 1, 'keep native anchoring enabled at the start');
+  assert.equal(transcript.scrollTop, 0, 'publication owns anchoring; input must not nudge the reader');
+});
+
+test('idle range admission commits the React DOM before a subsequent input can begin', async () => {
+  const navigation = createTranscriptViewportNavigation();
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  const { frames } = installScrollTestEnvironment(document, window);
+  const transcript = createTranscript(document, window, {
+    clientHeight: 400, turnHeight: 400, turnCount: 12,
+  });
+  let authority!: TranscriptScrollAuthority;
+  let publish!: (value: string) => void;
+  function Harness() {
+    const [value, setValue] = useState('old');
+    publish = setValue;
+    authority = useTranscriptScrollAuthority();
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({ scrollRef, sessionId: 'admission', messages: [], behavior: 'auto', viewportNavigation: navigation });
+    return <span>{value}</span>;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
+  await act(async () => {
+    navigation.commitRange('admission', () => publish('new'));
+    await Promise.resolve();
+    assert.equal(document.querySelector('#mount')!.textContent, 'new',
+      'an admitted update must not remain in React scheduling after its idle check');
+  });
+  await act(async () => {
+    navigation.commitRange('admission', () => publish('held'));
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 1 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    await Promise.resolve();
+    assert.equal(document.querySelector('#mount')!.textContent, 'new',
+      'input that starts before admission must hold the queued update');
+  });
+  await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  await act(() => {
+    const pending = [...frames.values()]; frames.clear();
+    for (const callback of pending) callback(0);
+  });
+  assert.equal(document.querySelector('#mount')!.textContent, 'held');
+});
+
+test('a source publication survives viewport unmount without another source update', async () => {
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  installScrollTestEnvironment(document, window);
+  const transcript = createTranscript(document, window, { clientHeight: 400, turnHeight: 400, turnCount: 12 });
+  const navigation = createTranscriptViewportNavigation();
+  let publish!: (value: string) => void;
+  let show!: (value: boolean) => void;
+  function Surface() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({ scrollRef, sessionId: 'session', messages: [], behavior: 'auto', viewportNavigation: navigation });
+    return null;
+  }
+  function Harness() {
+    const [value, setValue] = useState('old');
+    const [visible, setVisible] = useState(true);
+    publish = setValue; show = setVisible;
+    return <><span>{value}</span>{visible && <Surface />}</>;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
+  await act(() => wheel(transcript.scroller, -100));
+  await act(() => navigation.commitRange('session', () => publish('latest')));
+  assert.equal(document.querySelector('#mount')!.textContent, 'old');
+  await act(() => show(false));
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest');
+  await act(() => show(true));
+  assert.equal(document.querySelector('#mount')!.textContent, 'latest');
+});
+
+for (const hasOlder of [false, true]) {
+  test(`stationary upward input ${hasOlder ? 'reads available history' : 'keeps following without history'}`, async () => {
+    const navigation = createTranscriptViewportNavigation();
+    const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+    const { frames, deliverResizeOf } = installScrollTestEnvironment(document, window);
+    const transcript = createTranscript(document, window, {
+      clientHeight: 400, turnHeight: 200, turnCount: 1,
+    });
+    let authority!: TranscriptScrollAuthority;
+    let requests = 0;
+    function Harness() {
+      authority = useTranscriptScrollAuthority();
+      const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+      useChatScroll({
+        scrollRef, sessionId: 'short', messages: [], behavior: 'auto', viewportNavigation: navigation,
+        hasOlderHistory: hasOlder,
+        onPrefetchHistory: () => { requests++; return new Promise<boolean>(() => {}); },
+      });
+      return null;
+    }
+    const frame = async () => act(() => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+    });
+    mountedRoot = createRoot(document.querySelector('#mount')!);
+    await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
+    await frame(); // Initial fill may already be in flight when the reader asks.
+    await act(() => wheel(transcript.scroller, -100));
+    let publications = 0;
+    await act(() => navigation.commitRange('short', () => {
+      publications++;
+      transcript.setTurnCount(3);
+      if (hasOlder) {
+        [...transcript.scroller.children].forEach((turn, index) => {
+          (turn as HTMLElement).dataset.turnId = `turn-${index - 2}`;
+        });
+      }
+    }));
+    assert.equal(publications, 0, 'input holds publication, including an accepted history request');
+    await frame(); await frame();
+    assert.equal(requests, hasOlder ? 1 : 0);
+    assert.equal(publications, 1);
+    assert.equal(authority.getSnapshot().pinned, !hasOlder);
+    const beforeGrowth = transcript.scrollTop;
+    await act(() => {
+      transcript.setTurnCount(4);
+      deliverResizeOf(transcript.scroller);
+    });
+    assert.equal(transcript.scrollTop, hasOlder ? beforeGrowth : 400);
+  });
+}
+
+test('a held fill publishes before trimming or chaining from the new geometry', async () => {
+  const navigation = createTranscriptViewportNavigation();
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  const { frames } = installScrollTestEnvironment(document, window);
+  const transcript = createTranscript(document, window, {
+    clientHeight: 400, turnHeight: 400, turnCount: 12,
+  });
+  let authority!: TranscriptScrollAuthority;
+  let finishRead!: () => void;
+  let requests = 0;
+  let publications = 0;
+  const retained: string[] = [];
+  function Harness() {
+    authority = useTranscriptScrollAuthority();
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef, sessionId: 'held-fill', messages: [], behavior: 'auto', viewportNavigation: navigation,
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests++;
+        return new Promise<boolean>((resolve) => {
+          finishRead = () => {
+            navigation.commitRange('held-fill', () => {
+              publications++;
+              transcript.setTurnCount(14);
+              [...transcript.scroller.children].forEach((turn, index) => {
+                (turn as HTMLElement).dataset.turnId = `turn-${index - 2}`;
+              });
+            });
+            resolve(true);
+          };
+        });
+      },
+      onRetainWindow: (range) => { retained.push(range.firstTurnId); },
+    });
+    return null;
+  }
+  const frame = async () => act(() => {
+    const pending = [...frames.values()]; frames.clear();
+    for (const callback of pending) callback(0);
+  });
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(<TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>));
+  await frame();
+  retained.length = 0;
+  await act(() => {
+    const down = new window.Event('pointerdown');
+    Object.defineProperties(down, {
+      button: { value: 0 }, pointerType: { value: 'mouse' }, pointerId: { value: 1 },
+    });
+    transcript.scroller.dispatchEvent(down);
+    transcript.scroller.scrollTop = 0;
+    transcript.scroller.dispatchEvent(new window.Event('scroll'));
+  });
+  assert.equal(requests, 1);
+  await act(() => finishRead());
+  assert.equal(publications, 0);
+  assert.deepEqual(retained, [], 'published IDs cannot trim source while its new page is held');
+  assert.equal(requests, 1, 'a held response must not chain reads using stale geometry');
+  await act(() => document.dispatchEvent(new window.Event('pointerup')));
+  await frame(); await frame();
+  assert.equal(publications, 1);
+  assert.equal(retained.at(-1), 'turn--2', 'the new published band includes the older page');
 });
 
 test('a transcript change re-reads the band while the reader stays at the tail', async () => {
@@ -485,6 +678,8 @@ test('the retained window is the band around the reader, and an unmounted bookma
 
   retained.length = 0;
   transcript.readerScrollTo(6_000);
+  assert.deepEqual(retained, [], 'trim waits for the input to finish');
+  transcript.scroller.dispatchEvent(new window.Event('scrollend'));
   assert.deepEqual(retained.at(-1), { firstTurnId: 'turn-5', lastTurnId: 'turn-15' });
 
   // Six screens is the threshold: with less than that beyond the scrollport in
@@ -570,6 +765,7 @@ test('a viewport that shrinks trims what it just pushed beyond the band', async 
   transcript.readerScrollTo(4_000);
   retained.length = 0;
   transcript.readerScrollTo(4_100);
+  transcript.scroller.dispatchEvent(new window.Event('scrollend'));
   assert.deepEqual(retained, [], 'nothing lies six 1000px screens away');
 
   transcript.setClientHeight(400);

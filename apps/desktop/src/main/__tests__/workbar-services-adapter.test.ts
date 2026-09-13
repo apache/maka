@@ -18,19 +18,10 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { afterEach, describe, it, test } from 'node:test';
-import { parseHTML } from 'linkedom';
-import { act, createElement } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import type { ArtifactDescriptor } from '@maka/core/artifacts';
-import { LocaleProvider } from '@maka/ui';
+import { describe, it } from 'node:test';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopWorkbarServices } from '../../renderer/platform/desktop/create-workbar-services.js';
-import {
-  ArtifactPreview,
-  createFakeWorkbarServices,
-  WorkbarServicesProvider,
-} from '../../renderer/features/workbar/testing.js';
 
 type RecordedCall = { name: string; args: unknown[] };
 
@@ -46,7 +37,6 @@ function createBridgeRecorder(): {
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
-    'browser.onLive',
     'inspector.subscribeUsageChanges',
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
@@ -89,6 +79,59 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('recovers only live local desktop PTYs from the Host inventory and updates', async () => {
+    const { bridge } = createBridgeRecorder();
+    const manual = {
+      sessionId: 's', ownership: { kind: 'local' },
+      sourceTurnId: 'desktop-terminal-one', sourceToolCallId: 'desktop-terminal-one',
+      result: { ref: 'manual', mode: 'pty', status: 'running' },
+    } as ShellRunUpdate;
+    const updates = [
+      manual,
+      { ...manual, sourceTurnId: 'agent-turn' },
+      { ...manual, result: { ...manual.result, mode: 'pipes' } },
+      { ...manual, result: { ...manual.result, status: 'completed' } },
+      { ...manual, ownership: { kind: 'source_unavailable', sourceSessionId: 'source' } },
+    ] as ShellRunUpdate[];
+    let listener: ((update: ShellRunUpdate) => void) | undefined;
+    bridge.shellRuns = {
+      ...bridge.shellRuns,
+      recover: async () => ({ resources: updates, closes: [] }),
+      subscribeUpdates: (handler) => { listener = handler; return () => { listener = undefined; }; },
+    };
+    const services = createDesktopWorkbarServices(bridge);
+    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual], closes: [] });
+    const received: ShellRunUpdate[] = [];
+    const dispose = services.terminal.subscribeUpdates((update) => received.push(update));
+    for (const update of updates) listener?.(update);
+    assert.deepEqual(received, [manual, updates[3]]);
+    dispose();
+    assert.equal(listener, undefined);
+  });
+  it('waits for Host admission before accepting a Side Conversation follow-up', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.submitMessage')?.args,
+      [
+        'fork',
+        'next_turn',
+        { messageId: 'message-next', text: 'later' },
+        { waitForHostAdmission: true },
+      ],
+    );
+  });
+
   it('preserves the Side Conversation Stop identity kind', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -105,6 +148,30 @@ describe('createDesktopWorkbarServices', () => {
         ['fork', { source: 'stop_button', expectedTurnId: 'turn-1' }],
       ],
     );
+  });
+
+  it('reports Side Conversation readiness again after an observation reseed', () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+    let readyCount = 0;
+
+    services.sideChat.subscribeEvents('fork', () => undefined, () => {
+      readyCount += 1;
+    })();
+
+    const subscribe = calls.find((call) => call.name === 'sessions.subscribeEvents');
+    assert.ok(subscribe);
+    const observationSeed = subscribe.args[2] as
+      | ((phase: 'pending' | 'ready') => void)
+      | undefined;
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+
+    assert.equal(readyCount, 2);
   });
 
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
@@ -139,14 +206,12 @@ describe('createDesktopWorkbarServices', () => {
     await services.browser.close('s');
     await services.browser.getState('s');
     services.browser.subscribeState(eventHandler)();
-    services.browser.subscribeLive(eventHandler)();
 
     await services.artifacts.list('s');
     await services.artifacts.readText('s', 'a');
     await services.artifacts.readBinary('s', 'a');
     await services.artifacts.delete('s', 'a');
     await services.artifacts.openPath('s', 'a');
-    await services.artifacts.showInFolder('s', 'a');
     await services.artifacts.saveAs('s', 'a');
 
     await services.inspector.trace('s', 'cursor-1');
@@ -162,6 +227,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.listTurns('s');
     await services.sideChat.readSettledMessages('s', {
       requiredAssistantMessageId: 'message',
+      requiredTurnId: 'turn',
     });
     await services.sideChat.branchFromTurn('s', {
       sourceTurnId: 'turn',
@@ -177,7 +243,23 @@ describe('createDesktopWorkbarServices', () => {
       text: 'hello',
     });
     await services.sideChat.stop('fork');
-    await services.sideChat.steer('fork', 'more');
+    const nextFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+    const currentFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'current_turn',
+      'more',
+      'message-current',
+    );
+    await services.sideChat.queryMessageExecutions('fork', ['message-next']);
+    await services.sideChat.retractQueueEntry('fork', 'entry-1');
+    await services.sideChat.promoteQueueEntry('fork', 'entry-2');
+    await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
+    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
     await services.sideChat.setPermissionMode('fork', 'ask');
     await services.sideChat.regenerateTurn('fork', {
       sourceTurnId: 'turn-2',
@@ -211,13 +293,11 @@ describe('createDesktopWorkbarServices', () => {
         'browser.close',
         'browser.getState',
         'browser.onState',
-        'browser.onLive',
         'artifacts.list',
         'artifacts.readText',
         'artifacts.readBinary',
         'artifacts.delete',
         'app.openArtifactPath',
-        'app.showArtifactInFolder',
         'app.saveArtifactAs',
         'inspector.trace',
         'inspector.summary',
@@ -235,6 +315,12 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
+        'sessions.submitMessage',
+        'sessions.queryMessageExecutions',
+        'sessions.retractQueueEntry',
+        'sessions.promoteQueueEntry',
+        'sessions.updateQueueEntry',
+        'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
@@ -256,95 +342,29 @@ describe('createDesktopWorkbarServices', () => {
       's',
       'cursor-1',
     ]);
-    assert.equal(settledReads[0]?.[0], bridge.transcripts);
+    assert.equal(settledReads[0]?.[0], bridge);
     assert.deepEqual(settledReads[0]?.slice(1), [
       's',
-      { requiredAssistantMessageId: 'message' },
+      { requiredAssistantMessageId: 'message', requiredTurnId: 'turn' },
     ]);
+    const followUpCalls = calls.filter((call) => call.name === 'sessions.submitMessage');
+    assert.deepEqual(followUpCalls[0]?.args, [
+      'fork',
+      'next_turn',
+      { messageId: 'message-next', text: 'later' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(followUpCalls[1]?.args, [
+      'fork',
+      'current_turn',
+      { messageId: 'message-current', text: 'more' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(nextFollowUp, { kind: 'queued' });
+    assert.deepEqual(currentFollowUp, { kind: 'queued' });
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.queryMessageExecutions')?.args,
+      ['fork', ['message-next']],
+    );
   });
-});
-
-let mountedRoot: Root | undefined;
-const originalRendererGlobals = {
-  document: globalThis.document,
-  window: globalThis.window,
-  HTMLElement: globalThis.HTMLElement,
-  HTMLIFrameElement: globalThis.HTMLIFrameElement,
-  Node: globalThis.Node,
-  matchMedia: globalThis.matchMedia,
-  requestAnimationFrame: globalThis.requestAnimationFrame,
-  cancelAnimationFrame: globalThis.cancelAnimationFrame,
-  IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
-};
-
-afterEach(async () => {
-  if (mountedRoot) await act(() => mountedRoot?.unmount());
-  mountedRoot = undefined;
-  Object.assign(globalThis, originalRendererGlobals);
-});
-
-test('HTML preview failure CTA uses the Finder reveal callback', async () => {
-  const { document, window } = parseHTML('<div id="root"></div>');
-  Object.assign(globalThis, {
-    document,
-    window,
-    HTMLElement: window.HTMLElement,
-    HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
-    Node: window.Node,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
-    cancelAnimationFrame: (handle: number) => clearTimeout(handle),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  mountedRoot = root;
-  let revealCalls = 0;
-  const defaults = createFakeWorkbarServices();
-  const services = createFakeWorkbarServices({
-    artifacts: {
-      ...defaults.artifacts,
-      readText: async () => ({ ok: false, reason: 'read_failed' as const }),
-    },
-  });
-  const record = {
-    id: 'artifact-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    createdAt: 1,
-    name: 'interactive.html',
-    kind: 'html',
-    sizeBytes: 42,
-    mimeType: 'text/html',
-    source: 'tool_result',
-  } as ArtifactDescriptor;
-
-  await act(async () => {
-    root.render(createElement(
-      LocaleProvider,
-      {
-        locale: 'en',
-        children: createElement(
-          WorkbarServicesProvider,
-          { services },
-          createElement(ArtifactPreview, {
-            record,
-            onShowInFolder: () => { revealCalls += 1; },
-          }),
-        ),
-      },
-    ));
-    await Promise.resolve();
-  });
-
-  const button = [...document.querySelectorAll('button')].find((candidate) =>
-    candidate.textContent?.includes('Show in Finder'),
-  );
-  assert.ok(button, 'failure card should expose a Finder action');
-  await act(async () => {
-    button.dispatchEvent(new window.Event('click', { bubbles: true }));
-    await Promise.resolve();
-  });
-  assert.equal(revealCalls, 1);
 });

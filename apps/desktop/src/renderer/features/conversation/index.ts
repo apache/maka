@@ -45,6 +45,10 @@ export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
+export {
+  useAppShellSessionUiState,
+  type TranscriptPublisher,
+} from './controller/use-app-shell-session-ui-state.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
@@ -58,3 +62,8 @@ export {
   clearPending,
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+
+export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';

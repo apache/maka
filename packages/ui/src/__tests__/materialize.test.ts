@@ -362,7 +362,6 @@ describe("flat timeline under tool projection (#1307 P1 regression)", () => {
     ], "en");
     const turns = overlayLiveTurn(settled, {
       turnId: "t2",
-      phase: "streamed",
       steps: [
         {
           stepId: "a1",
@@ -420,7 +419,6 @@ describe("live content over persisted partial rows", () => {
     ], "en");
     const turns = overlayLiveTurn(settled, {
       turnId: "t1",
-      phase: "streamed",
       steps: [
         {
           stepId: "assistant-1",
@@ -522,7 +520,6 @@ describe("live tool status over persisted", () => {
     ], "en");
     const turns = overlayLiveTurn(settled, {
       turnId: "t1",
-      phase: "streamed",
       steps: [
         {
           stepId: "a1",
@@ -568,7 +565,6 @@ describe("live tool status over persisted", () => {
     ], "en");
     const turns = overlayLiveTurn(settled, {
       turnId: "t1",
-      phase: "streamed",
       steps: [
         {
           stepId: "a1",

@@ -88,7 +88,7 @@ test('holds steering above the composer while old output continues, then renders
     createElement(LocaleProvider, { locale: 'en', children: createElement(ChatSurfaceLayout, {
       composer: createElement(Composer, { streaming: true, pendingMessages: transientMessages, onSend: () => undefined, onStop: () => undefined }),
       children: createElement(ChatView, {
-        messages: durable, liveTurn: live, transientMessages,
+        messages: durable, liveTurns: live ? [live] : undefined, transientMessages,
         initialLiveContentSnapshot: { turnId: 'turn-1', entries: new Map([['text:before', 'old answer continues'], ['text:after', 'reply to new instruction']]) }, onNew: () => undefined, scrollBehavior: 'auto',
         activeSession: { id: 'session', name: 'Session', status: 'running', labels: [] } as unknown as SessionSummary,
       }),
@@ -97,7 +97,7 @@ test('holds steering above the composer while old output continues, then renders
   const waiting = render();
   assert.equal(waiting.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
   assert.equal(waiting.querySelectorAll('.maka-steering-message').length, 0);
-  const timeline = () => createTranscriptProjection().project({ messages, liveTurn: live, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
+  const timeline = () => createTranscriptProjection().project({ messages, liveTurns: live ? [live] : undefined, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
   assert.deepEqual(timeline(), ['old answer continues']);
   live = applyLiveTurnEvent(live, { type: 'text_complete', id: 'finished', turnId: 'turn-1', messageId: 'before', ts: 3, text: 'old answer continues' });
   live = applyLiveTurnEvent(live, { type: 'steering_message', id: 'accepted', turnId: 'turn-1', messageId: pending.id, ts: 4, content: { text: pending.text } });

@@ -46,7 +46,7 @@ type Story = StoryObj<typeof meta>;
 
 const unsubscribe = () => () => undefined;
 const noop = () => undefined;
-const terminalWrite = fn(async () => null);
+const terminalWrite = fn(async () => undefined);
 const sshWrite = fn(async () => undefined);
 const browserNavigate = fn(async () => undefined);
 const registerDirectory = fn(async () => ({
@@ -108,10 +108,13 @@ export const ActiveTerminal: Story = {
   decorators: [
     withWorkbarServices({
       terminal: {
+        recover: async () => ({ resources: [], closes: [] }),
+        subscribeCloseChanges: () => () => undefined,
+        subscribeUpdates: () => () => undefined,
         start: async () => {
           throw new Error('not used by this story');
         },
-        stop: async () => null,
+        stop: async () => undefined,
         attach: async () => ({
           sessionId: 'runtime-surface',
           ref: 'pty:storybook',
@@ -202,7 +205,6 @@ export const BrowserLoaded: Story = {
           hasPage: true,
         }),
         subscribeState: unsubscribe,
-        subscribeLive: unsubscribe,
         setViewport: () => undefined,
         back: async () => undefined,
         forward: async () => undefined,

@@ -45,8 +45,11 @@ import type { ModelProjectionTransition } from '@maka/core/model-projection-tran
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
   createExternalExecutionBoundary();
 
-type TestAiSdkBackendInput = Omit<AiSdkBackendInput, 'readExecutionBoundary'> &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>> & {
+type TestAiSdkBackendInput = Omit<
+  AiSdkBackendInput,
+  'readExecutionBoundary' | 'readPermissionMode'
+> &
+  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'readPermissionMode'>> & {
     testProjectionArtifacts?: boolean;
     /**
      * The transcript this backend's turn produces, row by row as it appears.
@@ -100,6 +103,7 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const transitions: ModelProjectionTransition[] = [];
   const backend = new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
+    readPermissionMode: async () => input.header.permissionMode,
     loadModelProjectionTransitions: async () => ({
       transitions: [...transitions],
       unreadableTargets: new Set<string>(),
@@ -158,8 +162,11 @@ export function testToolResultArchive(
   });
 }
 
-type TestToolRuntimeInput = Omit<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'> &
-  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'>> & {
+type TestToolRuntimeInput = Omit<
+  ToolRuntimeInput,
+  'readExecutionBoundary' | 'readPermissionMode' | 'turnId'
+> &
+  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'readPermissionMode' | 'turnId'>> & {
     /** The transcript rows this runtime's calls produce; see the backend helper. */
     appendMessage?: (message: StoredMessage) => Promise<void>;
   };
@@ -169,6 +176,7 @@ export function createTestToolRuntime(input: TestToolRuntimeInput): ToolRuntime 
   const { appendMessage, ...runtimeInput } = input;
   const runtime = new ToolRuntime({
     readExecutionBoundary: readExternalExecutionBoundary,
+    readPermissionMode: async () => input.header.permissionMode,
     turnId: 'turn-1',
     ...runtimeInput,
   });

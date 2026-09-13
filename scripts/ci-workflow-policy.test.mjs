@@ -213,7 +213,7 @@ test('shared comparison drives every diff gate on refreshed merges, pushes and d
           'npm',
           'run',
           'check:renderer-architecture',
-          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+          ...(expectedBase ? ['--', '--base', expectedBase, '--strict-base'] : []),
         ],
       ],
     ];
@@ -913,8 +913,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 91/u);
-  assert.match(recovery, /# pass 91/u);
+  assert.match(recovery, /# tests 93/u);
+  assert.match(recovery, /# pass 93/u);
   assert.match(recovery, /# skipped 0/u);
 });
 

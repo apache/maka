@@ -1092,10 +1092,9 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
                   {
                     type: 'tool-call',
                     toolCallId: 'code-boundary-request',
-                    toolName: 'request_sandbox_boundary',
+                    toolName: 'exec',
                     input: JSON.stringify({
-                      expansion: { network: { enabled: true } },
-                      justification: 'Use the network.',
+                      code: 'return await tools.request_sandbox_boundary({ expansion: { network: { enabled: true } }, justification: "Use the network." })',
                     }),
                   },
                   {
@@ -1213,7 +1212,11 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
       );
 
       if (!inheritedDenial) {
-        await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+        await pollFor(() => events.some((event) => event.type === 'sandbox_boundary_request'), {
+          attempts: 500,
+          pollMs: 10,
+          message: 'Code Mode did not request the sandbox boundary',
+        });
         const request = events.find((event) => event.type === 'sandbox_boundary_request');
         assert.ok(request?.type === 'sandbox_boundary_request');
         await backend.respondToSandboxBoundary({
@@ -1556,7 +1559,36 @@ describe('AiSdkBackend model history', () => {
     assert.equal(model.doStreamCalls[0]?.maxOutputTokens, 32_768 - 1_024);
   });
 
-  test('leaves OpenAI-compatible output limits to their provider adapter', async () => {
+  test('rejects an output budget consumed entirely by fixed thinking before sending', async () => {
+    const model = completionModel();
+    const backend = createBackend({
+      connection: {
+        slug: 'kimi-coding-plan',
+        providerType: 'kimi-coding-plan',
+        defaultModel: 'kimi-for-coding',
+        modelOverrides: { 'kimi-for-coding': { maxOutputTokens: 1024 } },
+      },
+      modelId: 'kimi-for-coding',
+      providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } },
+      modelFactory: () => model,
+      tools: [],
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-current',
+      text: 'Hello',
+      context: [],
+    })) {
+      events.push(event);
+    }
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.match(
+      events.find((event) => event.type === 'error')?.message ?? '',
+      /Output budget must exceed/,
+    );
+  });
+
+  test('leaves catalog-derived OpenAI-compatible output limits to their provider adapter', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
@@ -5164,6 +5196,7 @@ describe('AiSdkBackend model history', () => {
           newId: idGenerator(),
           now: monotonicClock(),
           readExecutionBoundary: readExternalExecutionBoundary,
+          readPermissionMode: async () => 'ask',
           contextBudget: {
             name: 'malformed-summary-config-circuit-test',
             charsPerToken: 1,

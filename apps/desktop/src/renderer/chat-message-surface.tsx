@@ -35,7 +35,7 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
+import { selectLiveTurns } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
@@ -59,7 +59,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'deepResearchRun'
   | 'emptyOverride'
   | 'initialLiveContentSnapshot'
-  | 'liveTurn'
+  | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
   | 'onPrefetchHistory'
@@ -150,8 +150,9 @@ export function ChatMessageSurface({
     activeSession?.id,
     isDeepResearchSession(activeSession?.labels),
   );
-  const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
-  const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
+  const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
+  const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
@@ -169,9 +170,7 @@ export function ChatMessageSurface({
   } else if (
     activation.initialLiveContent
     && (
-      !seededLiveTurn
-      || seededLiveTurn.terminal
-      || seededLiveTurn.turnId !== activation.initialLiveContent.turnId
+      !seededLiveTurns?.some((turn) => turn.turnId === activation.initialLiveContent?.turnId && !turn.terminal)
     )
   ) {
     setActivation({
@@ -230,8 +229,8 @@ export function ChatMessageSurface({
           <ChatView
             {...chatViewRest}
             viewportNavigation={sessionUiController.transcriptViewportNavigation}
-            liveTurn={seededLiveTurn}
-            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            liveTurns={seededLiveTurns}
+              // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
             // the activation reaching the DOM is always this session's.
             initialLiveContentSnapshot={activation.initialLiveContent}

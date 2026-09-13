@@ -169,7 +169,6 @@ export function buildSubagentSpawnTool(
         }),
     ),
     categoryHint: 'subagent',
-    nesting: 'direct_only',
     impl: async (input, ctx) => {
       const definition = input.subagent_id
         ? await resolvePresetDefinition(input.subagent_id, ctx, definitions)
@@ -318,7 +317,6 @@ export function buildSubagentListTool(): MakaTool<
       })
       .strip(),
     categoryHint: 'read',
-    nesting: 'direct_only',
     impl: async (input, ctx) => {
       // Runtime Host supplies this capability to production clients. Keep the
       // failure explicit at the embedding boundary.
@@ -566,7 +564,6 @@ export function buildSubagentOutputTool(): MakaTool<
         }),
     ),
     categoryHint: 'read',
-    nesting: 'direct_only',
     impl: async (input, ctx) => {
       if (!ctx.readChildAgentOutput) {
         // Same reachability as `agent_list` above.

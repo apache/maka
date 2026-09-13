@@ -83,7 +83,9 @@ export function LocalizedChatMessage({
   accessibleLabel: string;
 }) {
   const overrides = useMemo(
-    () => ({ '@astryx.chatMessage.messageFrom': accessibleLabel }),
+    // This is already formatted text, not an ICU template. Quote from the
+    // first syntax character onward; ICU only opens a quote before syntax.
+    () => ({ '@astryx.chatMessage.messageFrom': accessibleLabel.replace(/'/g, "''").replace(/[{}<>].*$/s, "'$&'") }),
     [accessibleLabel],
   );
   return (
@@ -432,6 +434,8 @@ export const TurnView = memo(function TurnView(props: {
    * While live the footer shows activity in the same slot as completed
    * actions, without exposing actions against a still-streaming answer.
    */
+  /** Whether current Host observation permits activity cues; content stays intact. */
+  activityObserved?: boolean;
   liveStreaming?: {
     onStreamingSettled?: (messageId?: string) => void;
     /**
@@ -459,6 +463,11 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
+  const answerContext = accessibleActionContext(
+    turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+    turn.startedAt,
+    locale,
+  );
   // A recorded conversational terminal turn owns presentation beyond its
   // timeline: failure/abort state and recovery actions must remain visible even
   // when the provider produced no assistant event. Inferred legacy turns and
@@ -605,14 +614,14 @@ export const TurnView = memo(function TurnView(props: {
           key={note.id}
           className="maka-chat-system-message"
           variant={note.compactionState === "running" || note.compactionState === "compacted" ? "divider" : "default"}
-          data-compaction-state={note.compactionState}
-          aria-label={note.compactionState === "running" ? note.text : copy.systemAriaLabel}
+          data-compaction-state={note.compactionState === 'running' && props.activityObserved === false ? 'unavailable' : note.compactionState}
+          aria-label={note.compactionState === 'running' && props.activityObserved === false ? copy.systemNotes.contextCompactionUnobserved : note.compactionState === "running" ? note.text : copy.systemAriaLabel}
         >
           {note.compactionState ? (
             <span className="maka-compaction-status">
-              {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
-              <span>{note.text}</span>
-              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
+              {note.compactionState === "running" && props.activityObserved !== false && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              <span>{note.compactionState === 'running' && props.activityObserved === false ? copy.systemNotes.contextCompactionUnobserved : note.text}</span>
+              {note.compactionState === "running" && props.activityObserved !== false && <TurnElapsedTime startedAt={turn.startedAt} />}
             </span>
           ) : note.text}
         </ChatSystemMessage>
@@ -649,7 +658,7 @@ export const TurnView = memo(function TurnView(props: {
         return (
           <Fragment key={assistantKey}>
             <LocalizedChatMessage
-              accessibleLabel={copy.assistantAriaLabel}
+              accessibleLabel={`${copy.assistantAriaLabel} · ${answerContext}`}
               sender="assistant"
               data-turn-status={turn.status}
               className="maka-chat-message maka-assistant-answer"
@@ -664,6 +673,7 @@ export const TurnView = memo(function TurnView(props: {
                 item.kind === 'processing' ? (
                   <ProcessingBlock
                     key={`processing-${item.id}`}
+                    activityObserved={props.activityObserved}
                     entries={item.children}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
@@ -676,6 +686,7 @@ export const TurnView = memo(function TurnView(props: {
                 ) : (
                   <TurnTimelineEntry
                     key={timelineEntryKey(item, index)}
+                    activityObserved={props.activityObserved}
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
@@ -760,11 +771,7 @@ export const TurnView = memo(function TurnView(props: {
                     activityLabel={runningToolLabel}
                   />
                 ) : undefined}
-                context={accessibleActionContext(
-                  turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
-                  turn.startedAt,
-                  locale,
-                )}
+                context={answerContext}
                 onAction={
                   props.onFooterAction
                     ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
@@ -1163,7 +1170,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
-      data-maka-transcript-boundary="default"
+      data-maka-transcript-boundary=""
       data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
@@ -1222,6 +1229,7 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
 function TurnTimelineEntry(props: {
+  activityObserved?: boolean;
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
@@ -1233,7 +1241,7 @@ function TurnTimelineEntry(props: {
     return (
       <DeepThinking
         text={item.text}
-        live={item.live === true}
+        live={item.live === true && props.activityObserved !== false}
         settledText={props.initialLiveContent?.get(`thinking:${item.messageId}`)}
         truncated={item.truncated === true}
       />
@@ -1243,6 +1251,7 @@ function TurnTimelineEntry(props: {
     return (
       <ToolTrow
         items={item.items}
+        activityObserved={props.activityObserved}
         onOpenLinkedSession={props.onOpenLinkedSession}
         onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
       />
@@ -1262,6 +1271,7 @@ function TurnTimelineEntry(props: {
 }
 
 function ProcessingBlock(props: {
+  activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
@@ -1271,11 +1281,12 @@ function ProcessingBlock(props: {
   return (
     <div
       className="maka-processing-sequence"
-      data-maka-transcript-boundary="large"
+      data-maka-transcript-boundary=""
     >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
+          activityObserved={props.activityObserved}
           item={entry}
           onOpenLinkedSession={props.onOpenLinkedSession}
           onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
@@ -1292,7 +1303,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
-      data-maka-transcript-boundary="large"
+      data-maka-transcript-boundary=""
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}

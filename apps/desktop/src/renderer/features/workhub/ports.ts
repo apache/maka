@@ -82,6 +82,7 @@ export interface WorkHubServices {
     handler: (event: SessionEvent) => void,
     onError: (error: unknown) => void,
     onPhase: (phase: 'pending' | 'ready') => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): () => void;
   openTranscript(
     sessionId: string,

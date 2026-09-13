@@ -110,11 +110,9 @@ export interface SessionNavigationServices {
  * actions capture them once and dereference at call time.
  */
 export interface SessionNavigationPorts {
-  activeIdRef: RefObject<string | undefined>;
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
   pendingSessionRowActionsRef: RefObject<Set<string>>;
   activateSession(sessionId: string | undefined): void;
-  clearActiveMessages(): void;
   clearSessionRendererState(sessionId: string): void;
   refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
   toastApi: SessionNavigationToastApi;

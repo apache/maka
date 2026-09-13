@@ -30,6 +30,7 @@ import {
   parseRuntimeHostInstalledUpdateCommand,
   type RuntimeHostCliCommand,
 } from './runtime-host-cli.js';
+import { sessionBundleHelpText } from './runtime-host-help.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
 export type MakaCliCommand =
@@ -85,11 +86,14 @@ export function parseMakaCliArgs(
   if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
-  if (first === 'session-export') return { kind: 'session-export', args: argv.slice(1) };
-  if (first === 'session-import') return { kind: 'session-import', args: argv.slice(1) };
+  if (first === 'session-export' || first === 'session-import') {
+    return argv[1] === '--help' || argv[1] === '-h'
+      ? { kind: 'help', text: sessionBundleHelpText(cliCommand, first) }
+      : { kind: first, args: argv.slice(1) };
+  }
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
-  if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1));
-  if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
+  if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1), cliCommand);
+  if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1), cliCommand);
   return {
     kind: 'error',
     message: `Unexpected argument: ${first ?? ''}`,
@@ -136,48 +140,27 @@ function helpText(cliCommand: string): string {
     'Launches the Maka terminal UI in the current working directory.',
     '',
     'Commands:',
-    `  ${cliCommand}              Start the TUI`,
-    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
-    `  ${cliCommand} run ...      Run one non-interactive model turn`,
-    `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
-    `  ${cliCommand} session-export --workspace-root <dir> --session <id> --out <file.maka-session>`,
-    `  ${cliCommand} session-import --workspace-root <dir> --bundle <file.maka-session>`,
-    `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
-    `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
-    `  ${cliCommand} update --target <latest|next|version>  Update this npm-global CLI and its local Runtime Host`,
-    `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
-    `  ${cliCommand} runtime-host activate --framed --root-id <id>`,
-    `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
-    `  ${cliCommand} runtime-host service install [options]`,
-    `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
-    `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
-    `  ${cliCommand} runtime-host service mesh status|create|invite|join|remove|leave|close|reconcile [options]`,
-    `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
-    `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service update-policy [--target <manual|latest|next|version>] [--json]`,
-    `  ${cliCommand} runtime-host service reconcile-update [--json]`,
-    `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
-    `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
-    `  ${cliCommand} runtime-host access connection-code [--name <name>] [--root <path>]`,
-    `  ${cliCommand} runtime-host access list`,
-    `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
-    `  ${cliCommand} runtime-host access revoke --credential <id>`,
-    `  ${cliCommand} runtime-host project list [--root <path>]`,
-    `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
-    `  ${cliCommand} runtime-host plugin status|list|inspect|failures [--root <path>]`,
-    `  ${cliCommand} runtime-host plugin install|uninstall|reload <target> [--root <path>]`,
-    `  ${cliCommand} runtime-host plugin export <extension-id> <bundle-path> [--root <path>]`,
-    `  ${cliCommand} runtime-host plugin apply <operations.json> [--root <path>]`,
-    `  ${cliCommand} runtime-host plugin reconcile [--root <path>]`,
-    `  ${cliCommand} runtime-host profile list`,
-    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
-    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
-    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
-    `  ${cliCommand} runtime-host profile remove --id <id>`,
-    `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
+    ...(
+      [
+        ['', 'Start the TUI'],
+        ['--acp', 'Serve ACP v1 over stdio (initialize, session/new, session/list)'],
+        ['run ...', 'Run one non-interactive model turn'],
+        ['-p ...', `Alias for ${cliCommand} run`],
+        ['activate ...', 'Run one Cloud Session activation and emit JSONL'],
+        ['eval ...', 'Run one declarative multi-arm experiment'],
+        ['session-export ...', 'Write a Session bundle to a file'],
+        ['session-import ...', 'Read a Session bundle back into a workspace'],
+        ['update ...', 'Update this npm-global CLI and its local Runtime Host'],
+        ['runtime-host ...', 'Serve and manage a Runtime Host'],
+      ] as const
+    ).map(([name, summary], _index, entries) => {
+      // A custom launcher ("npm run cli:dev --") is far wider than `maka`, so the
+      // column is measured, never assumed.
+      const width = Math.max(
+        ...entries.map(([other]) => `${cliCommand} ${other}`.trimEnd().length),
+      );
+      return `  ${`${cliCommand} ${name}`.trimEnd().padEnd(width + 2)}${summary}`;
+    }),
     '',
     'Options:',
     '  -h, --help        Show help',
@@ -186,70 +169,8 @@ function helpText(cliCommand: string): string {
     '  --resume <id> --cwd <path>  Reopen a session after its directory moved',
     '  --host <profile-id>     Connect the TUI to a saved Runtime Host profile',
     '  --project <project-id>  Select an existing Project on a remote Host',
-    '  MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL  Access credential used by runtime-host profile set',
     '',
-    'Runtime Host serve options:',
-    '  --root <path>                 Select the canonical data root',
-    '  --project-root <label>=<path> Publish an absolute project directory root (repeatable)',
-    '  --no-project-roots            Disable remote project browsing and registration',
-    '  --websocket-port <port>       Enable an authenticated WebSocket listener',
-    '  --websocket-host <host>       Bind host (default: 127.0.0.1)',
-    '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
-    '  --tls-certificate <path>      TLS certificate for WSS',
-    '  --tls-private-key <path>      TLS private key for WSS',
-    '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
-    '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
-    '  --peer-native-path <path>     Load the experimental direct-peer native module',
-    '  --peer-key <path>             Persist the direct-peer transport identity',
-    '  --peer-id <id>                Require an existing direct-peer transport identity',
-    '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
-    '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
-    '  --json                        Emit one machine-readable ready event',
-    '',
-    'Managed Runtime Host service install options (Linux or macOS):',
-    '  --root <path>                 Select the canonical data root',
-    '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
-    '  --no-project-roots            Disable remote project browsing and registration',
-    '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
-    '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
-    '  --json                        Emit a machine-readable result',
-    '',
-    'Managed Runtime Host setup options (Linux or macOS):',
-    '  --principal <id>              Stable Client pairing identity',
-    '  --preset <name>               Pair a desktop-client or terminal-client',
-    '  --root <path>                 Select the canonical data root',
-    '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
-    '  --no-project-roots            Disable remote project browsing and registration',
-    '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
-    '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
-    '  --json                        Emit framed machine-readable progress and result records',
-    '',
-    'Managed Runtime Host direct-peer options:',
-    '  --listen <multiaddr>          Persist a listener address (repeatable)',
-    '  --coordination-relay <addr>   Prefer a Circuit Relay v2 address (repeatable)',
-    '  --clear-coordination-relays   Remove every manually configured relay',
-    '  --automatic-relay-discovery   Enable best-effort public relay discovery',
-    '  --no-automatic-relay-discovery  Disable public discovery and retain manual relays',
-    '  --default-public-stun          Use the packaged best-effort public STUN policy',
-    '  --no-public-stun               Disable public STUN and keep host candidates only',
-    '  --webrtc-stun <stun-url>       Use a custom STUN endpoint (repeatable)',
-    '',
-    'Runtime Host access issue options:',
-    '  --root <path>                 Select the canonical data root',
-    '  --kind <kind>                 remote-owner or capability-provider',
-    '  --principal <id>              Name the authenticated Client principal',
-    '  --grant <operation>           Grant one exact operation (repeatable)',
-    '  --preset <name>               Grant the desktop-client or terminal-client operation set',
-    '  --publish-client-capabilities Allow Client Capability publication',
-    '  --allow-host-paths            Allow operations that submit Host paths',
-    '  --capability-owner-credential <id>  Bind a provider to one Client-bound owner credential',
-    '',
-    'Runtime Host capability provider options:',
-    '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
-    '  --mcp-config <path>           Publish tools from an MCP configuration file',
-    '  --expected-root <root-id>     Pin the canonical Runtime Host root identity',
-    '  --credential-env <name>       Read the access credential from this environment variable',
-    '  --client-identity <path>      Persist the provider Client instance identity here',
+    `Run \`${cliCommand} <command> --help\` for a command's own options.`,
   ].join('\n');
 }
 

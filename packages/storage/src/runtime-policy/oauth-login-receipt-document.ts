@@ -18,6 +18,7 @@
  */
 
 import {
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeProviderType,
   decodeRuntimePolicyEntityId,
@@ -192,12 +193,35 @@ function decodeTarget(value: unknown): InteractiveOAuthLoginTarget {
     value,
     'OAuth login receipt target',
     'invalid_document',
-    ['kind', 'providerType', 'connectionId'],
+    ['kind', 'providerType', 'connectionId', 'slug', 'name'],
     ['kind'],
   );
   if (base.kind === 'create') {
-    const item = record(value, 'OAuth create target', 'invalid_document', ['kind', 'providerType']);
-    return { kind: 'create', providerType: decodeOAuthProvider(item.providerType) };
+    const item = record(
+      value,
+      'OAuth create target',
+      'invalid_document',
+      ['kind', 'providerType', 'slug', 'name'],
+      ['kind', 'providerType'],
+    );
+    const providerType = decodeOAuthProvider(item.providerType);
+    if (providerType !== 'openai-codex' && (item.slug !== undefined || item.name !== undefined)) {
+      throw codecError(
+        'invalid_document',
+        'Custom OAuth Connection identity is only supported for openai-codex',
+      );
+    }
+    if (providerType !== 'openai-codex') return { kind: 'create', providerType };
+    return {
+      kind: 'create',
+      providerType,
+      ...(item.slug === undefined
+        ? {}
+        : { slug: decodePersistedDomain(() => decodeConnectionSlug(item.slug)) }),
+      ...(item.name === undefined
+        ? {}
+        : { name: decodePersistedDomain(() => decodeConnectionName(item.name)) }),
+    };
   }
   if (base.kind === 'existing') {
     const item = record(value, 'OAuth existing target', 'invalid_document', [
@@ -249,7 +273,10 @@ function sameTarget(actual: InteractiveOAuthLoginTarget, expected: InteractiveOA
   return (
     actual.kind === expected.kind &&
     (actual.kind === 'create'
-      ? expected.kind === 'create' && actual.providerType === expected.providerType
+      ? expected.kind === 'create' &&
+        actual.providerType === expected.providerType &&
+        actual.slug === expected.slug &&
+        actual.name === expected.name
       : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
   );
 }
@@ -270,6 +297,7 @@ function targetMatchesIdentity(
   connection: InteractiveOAuthConnectionIdentity,
 ): boolean {
   return target.kind === 'create'
-    ? target.providerType === connection.providerType
+    ? target.providerType === connection.providerType &&
+        (target.slug === undefined || target.slug === connection.slug)
     : target.connectionId === connection.connectionId;
 }

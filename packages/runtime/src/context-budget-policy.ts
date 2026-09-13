@@ -18,8 +18,12 @@
  */
 
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
-import { declaredContextWindow, relayModelProfile } from '@maka/core/model-thinking';
+import {
+  declaredContextWindow,
+  modelOverride,
+  resolveModelLimits,
+  modelLimitsConflict,
+} from '@maka/core/model-thinking';
 import type { ContextBudgetPolicy } from './context-budget.js';
 
 export interface BuildDefaultContextBudgetPolicyOptions {
@@ -84,27 +88,15 @@ export function resolveSelectedModelContextWindow(
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
   const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
-  // A model-facts pin is the cross-provider correction authority. It must win
-  // over the older relay-only declaration so catalog display and execution use
-  // the same window. Relay declarations retain their existing precedence when
-  // there is no facts pin for this field.
-  if (model?.factOverriddenFields?.includes('contextWindow')) {
-    return narrowestPositiveLimit(model.contextWindow, model.inputLimit);
-  }
-  // A user declaration outranks both the provider's /models report and
-  // generated metadata — mirrors the declared-vision precedence in
-  // model-metadata.ts. A declared context window is legal on any provider: it
-  // states a fact about the model, not a request shape (#1584).
-  const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
-  if (declared !== undefined) return declared;
-  const metadata = lookupModelMetadata(connection.providerType, selectedModelId);
-  // Provider/access-path facts outrank static metadata. Within one source,
-  // use the narrowest positive bound: models.dev's input limit can be lower
-  // than its total context window, while an access path can expose a narrower
-  // context window than the public catalog.
-  const modelLimit = narrowestPositiveLimit(model?.contextWindow, model?.inputLimit);
-  const metadataLimit = narrowestPositiveLimit(metadata.contextWindow, metadata.inputLimit);
-  return modelLimit ?? metadataLimit;
+  // Resolve each fact independently before deriving the input budget.
+  const limits = resolveModelLimits(
+    connection.providerType,
+    model ?? { id: selectedModelId },
+    connection.modelOverrides?.[selectedModelId],
+  );
+  if (modelLimitsConflict(limits))
+    throw new Error('Model input limit exceeds the context window. Update the model limits.');
+  return narrowestPositiveLimit(limits.contextWindow, limits.inputLimit);
 }
 
 function narrowestPositiveLimit(...values: Array<number | undefined>): number | undefined {

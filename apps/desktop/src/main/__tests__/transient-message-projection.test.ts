@@ -21,10 +21,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
+import { deriveMessageQueueProjection } from '../../renderer/application/contracts/message-queue-projection.js';
 import {
   mergeTransientMessageProjection,
+  projectQueuedTransientMessages,
   reconcileTransientMessages,
-} from '../../renderer/transient-message-projection.js';
+} from '../../renderer/application/contracts/transient-message-projection.js';
 
 /** The durable Message that replaces the transient row above. */
 function canonicalSend(): StoredMessage {
@@ -114,6 +116,84 @@ test('keeps a transient message out of a sparse historical range', () => {
 
   assert.deepEqual(projected, []);
   assert.equal(pending.has('message-live'), true);
+});
+
+test('uses the Host queue snapshot order for already-present transient messages', () => {
+  const localSecond = {
+    ...transient,
+    id: 'message-2',
+    turnId: 'message-2',
+    text: 'second',
+  };
+  const remoteFirst = {
+    ...transient,
+    id: 'message-1',
+    turnId: 'message-1',
+    text: 'first',
+  };
+  const pending = new Map([[localSecond.id, localSecond]]);
+
+  projectQueuedTransientMessages(pending, [remoteFirst, localSecond]);
+
+  assert.deepEqual(
+    reconcileTransientMessages(pending, []).map((message) => message.id),
+    ['message-1', 'message-2'],
+  );
+});
+
+test('derives one queue projection for main and Side Conversation consumers', () => {
+  const projection = deriveMessageQueueProjection({
+    type: 'queue_update',
+    id: 'queue-1',
+    turnId: 'turn-1',
+    ts: 7,
+    steering: ['in flight', 'steer'],
+    followup: ['next'],
+    steeringEntries: [
+      {
+        entryId: 'in-flight',
+        messageId: 'message-in-flight',
+        content: { text: 'in flight' },
+        placement: 'current_turn',
+        state: 'in_flight',
+      },
+      {
+        entryId: 'steer',
+        messageId: 'message-steer',
+        content: { text: 'raw', displayText: 'steer', quotes: [{ text: 'context' }] },
+        placement: 'current_turn',
+        state: 'queued',
+      },
+    ],
+    followupEntries: [
+      {
+        entryId: 'next',
+        messageId: 'message-next',
+        content: { text: 'next' },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+    ],
+  });
+
+  assert.deepEqual(projection.entries.map((entry) => entry.entryId), ['steer', 'next']);
+  assert.deepEqual(projection.transientMessages, [
+    {
+      id: 'message-steer',
+      pendingSteering: true,
+      transientPlacement: 'current_turn',
+      hostTurnId: 'turn-1',
+      ts: 7,
+      text: 'steer',
+      quotes: [{ text: 'context' }],
+    },
+    {
+      id: 'message-next',
+      transientPlacement: 'next_turn',
+      ts: 7,
+      text: 'next',
+    },
+  ]);
 });
 
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {

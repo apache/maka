@@ -35,13 +35,12 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 import { clearNewTaskReloadIntent, markNewTaskReloadIntent } from './new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
-} from './transient-message-projection.js';
+} from './application/contracts/transient-message-projection.js';
 
 type RefBox<T> = { current: T };
 
@@ -52,10 +51,14 @@ export type MessageListUpdater = (
 ) => void;
 
 export interface SessionWorkspaceActions {
+  captureSelection(): () => boolean;
+  isSessionSelected(sessionId: string | undefined): boolean;
+  retiredSessionIds(sessions: readonly { id: string }[]): string[];
   setActiveId(next: string | undefined): void;
   startNewSession(): void;
   clearOwnedSessionState(sessionId: string): void;
   setMessages: MessageListUpdater;
+  commitTranscript(sessionId: string, messages: StoredMessage[], controller?: DesktopTranscriptRangeController): boolean;
   addTransientMessage(sessionId: string, message: TransientUserMessage): void;
   updateTransientMessage(sessionId: string, message: TransientUserMessage): void;
   retireCancelledTransientMessages(sessionId: string): Promise<void>;
@@ -64,6 +67,8 @@ export interface SessionWorkspaceActions {
 
 export function createSessionWorkspaceActions(deps: {
   activeIdRef: RefBox<string | undefined>;
+  readRequestedSessionId(): string | undefined;
+  isReadableSession(sessionId: string): boolean;
   messagesRef: RefBox<StoredMessage[]>;
   transientMessagesBySessionRef: RefBox<Map<string, Map<string, TransientUserMessage>>>;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
@@ -76,6 +81,8 @@ export function createSessionWorkspaceActions(deps: {
 }): SessionWorkspaceActions {
   const {
     activeIdRef,
+    readRequestedSessionId,
+    isReadableSession,
     messagesRef,
     transientMessagesBySessionRef,
     transcriptRangeRef,
@@ -146,21 +153,14 @@ export function createSessionWorkspaceActions(deps: {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return;
     try {
-      // A legal Host queue already fills the protocol's per-query cap, and an
-      // unreconciled root Message sits beside it, so asking about every row at
-      // once fails the whole proof and retires nothing.
       const messageIds = [...pending.keys()];
-      const cancelled: string[] = [];
-      for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
-        const result = await window.maka.sessions.queryCancelledMessages(
-          sessionId,
-          messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
-        );
-        cancelled.push(...result.cancelledMessageIds);
-      }
+      const { cancelledMessageIds } = await window.maka.sessions.queryCancelledMessages(
+        sessionId,
+        messageIds,
+      );
       const current = transientMessagesBySessionRef.current.get(sessionId);
       if (!current) return;
-      for (const messageId of cancelled) current.delete(messageId);
+      for (const messageId of cancelledMessageIds) current.delete(messageId);
       if (current.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
       reprojectActiveTransients(sessionId);
     } catch {
@@ -177,19 +177,27 @@ export function createSessionWorkspaceActions(deps: {
 
   function setActiveId(next: string | undefined): void {
     selectionRevisionRef.current += 1;
-    // Clear here, not in the read effect: a layout-effect clear would wipe an
-    // optimistic first message before the first paint.
-    if (!next) {
-      setMessageLoadPending(false);
-    } else if (next !== activeIdRef.current) {
-      messagesRef.current = [];
-      setMessagesState([]);
-      setTransientMessagesState(projectTransientMessages(next, []));
-      setMessageLoadPending(true);
+    if (next !== readRequestedSessionId()) transcriptRangeRef.current = undefined;
+    const changed = next !== activeIdRef.current;
+    // An existing conversation is handed over by commitTranscript. New/local
+    // tasks have no readable history yet and must show their staged first row
+    // immediately so creating a task never waits for sending that same row.
+    if (changed && (!next || !activeIdRef.current || !isReadableSession(next))) {
+      activeIdRef.current = next;
+      setMessages([]);
     }
-    activeIdRef.current = next;
+    setMessageLoadPending(Boolean(next && changed));
     if (next) clearNewTaskReloadIntent();
     setActiveIdState(next);
+  }
+
+  function commitTranscript(sessionId: string, messages: StoredMessage[], controller?: DesktopTranscriptRangeController): boolean {
+    if (readRequestedSessionId() !== sessionId) return false;
+    transcriptRangeRef.current = controller;
+    activeIdRef.current = sessionId;
+    setMessages(messages);
+    setMessageLoadPending(false);
+    return true;
   }
 
   function startNewSession(): void {
@@ -201,16 +209,37 @@ export function createSessionWorkspaceActions(deps: {
   }
 
   function clearOwnedSessionState(sessionId: string): void {
+    const requested = readRequestedSessionId();
+    if (activeIdRef.current === sessionId) {
+      activeIdRef.current = undefined;
+      transcriptRangeRef.current = undefined;
+      setMessages([]);
+    }
+    if (requested === sessionId) {
+      const displayed = activeIdRef.current;
+      setActiveId(displayed && isReadableSession(displayed) ? displayed : undefined);
+    }
     transientMessagesBySessionRef.current.delete(sessionId);
     if (activeIdRef.current === sessionId) setTransientMessagesState([]);
     clearSessionUiState(sessionId);
   }
 
   return {
+    isSessionSelected: (sessionId) => readRequestedSessionId() === sessionId && activeIdRef.current === sessionId,
+    captureSelection() {
+      const revision = selectionRevisionRef.current;
+      return () => selectionRevisionRef.current === revision;
+    },
+    retiredSessionIds(sessions) {
+      return [...new Set([activeIdRef.current, readRequestedSessionId()])].filter(
+        (id): id is string => id !== undefined && !sessions.some((session) => session.id === id),
+      );
+    },
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
     setMessages,
+    commitTranscript,
     addTransientMessage,
     updateTransientMessage,
     retireCancelledTransientMessages,

@@ -33,30 +33,111 @@ const owner = {
 };
 
 test('observation readiness includes its active seed even when the invoke reply overtakes event IPC', async () => {
-  // Deliberately never deliver event IPC: only the invoke response arrives.
-  const { bridge } = await preloadHarness(async (channel) => {
-    if (channel === 'sessions:observe') return {
-      kind: 'ready',
-      value: [{
-        type: 'text_delta', id: 'seed-1', turnId: 'turn-1', messageId: 'message-1',
-        ts: 1, startOffset: 0, text: 'All output accumulated while away',
-      }],
-    };
+  const invoked = deferred<string>();
+  const { bridge, events } = await preloadHarness(async (channel, ...args) => {
+    if (channel === 'sessions:observe') { invoked.resolve(args[2] as string); return { kind: 'ready' }; }
     throw new Error('Unexpected channel: ' + channel);
   });
   const order: string[] = [];
-  let unsubscribe = () => {};
-  await new Promise<void>((resolve, reject) => {
-    unsubscribe = bridge.sessions.subscribeEvents(
+  const unsubscribe = bridge.sessions.subscribeEvents(
       JSON.stringify([owner.hostId, 'session-1']),
       (event) => { if (event.type === 'text_delta') order.push(event.text); },
-      () => { order.push('ready'); resolve(); },
-      undefined,
-      reject,
+      (phase) => { order.push(phase); },
+      (error) => { throw error; },
+      (projection) => { order.push(projection?.rootTurn?.turnId ?? 'idle'); },
     );
+  const observerId = await invoked.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, [], 'registration acknowledgement must not publish readiness');
+  events.emit('sessions:event:session-1', {}, owner, {
+    type: 'host_observation_seed',
+    observerIds: [observerId],
+    execution: { type: 'host_execution', available: true, rootTurn: { turnId: 'turn-1' } },
+    events: [{
+      type: 'text_delta', id: 'seed-1', turnId: 'turn-1', messageId: 'message-1',
+      ts: 1, startOffset: 0, text: 'All output accumulated while away',
+    }],
   });
-  assert.deepEqual(order, ['All output accumulated while away', 'ready']);
+  assert.deepEqual(order, ['turn-1', 'All output accumulated while away', 'ready']);
   unsubscribe();
+});
+
+test('execution and observation failures stay separate from Runtime events', async () => {
+  const invoked = deferred<void>();
+  const { bridge, events } = await preloadHarness(async (channel) => {
+    if (channel === 'sessions:observe') { invoked.resolve(); return { kind: 'ready' }; }
+    throw new Error('Unexpected channel: ' + channel);
+  });
+  const sessionId = JSON.stringify([owner.hostId, 'session-1']);
+  const projections: Array<Parameters<NonNullable<Parameters<MakaBridge['sessions']['subscribeEvents']>[4]>>[0]> = [];
+  const failures: unknown[] = [];
+  const unsubscribe = bridge.sessions.subscribeEvents(sessionId,
+    () => assert.fail('Observation data must never enter the Runtime event reducer'),
+    undefined, (error) => failures.push(error), (value) => projections.push(value));
+  await invoked.promise;
+  try {
+    events.emit('sessions:event:session-1', {}, owner, {
+      type: 'host_execution', available: true,
+      rootTurn: { sessionId: 'session-1', turnId: 'new-turn', runId: 'run-1', status: 'running' },
+    });
+    assert.equal(projections.at(-1)?.rootTurn?.sessionId, sessionId);
+    events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_pending' });
+    assert.equal(projections.at(-1)?.available, false);
+    assert.equal(projections.at(-1)?.rootTurn?.turnId, 'new-turn');
+    events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_error', message: 'connection lost' });
+    assert.equal(failures.length, 1);
+    events.emit('sessions:event:session-1', {}, owner, {
+      type: 'host_execution', available: true, rootTurn: null,
+    });
+    assert.equal(projections.at(-1)?.rootTurn, null);
+    assert.equal(projections.at(-1)?.available, true);
+  } finally { unsubscribe(); }
+});
+
+test('one ordered stream handles no-content roots, late acknowledgements, new subscribers and recovery', async (t) => {
+  const acknowledgement = deferred<{ kind: 'ready' }>();
+  const observerIds: string[] = [];
+  const { bridge, events } = await preloadHarness(async (channel, ...args) => {
+    if (channel === 'sessions:observe') {
+      observerIds.push(args[2] as string);
+      return acknowledgement.promise;
+    }
+    throw new Error('Unexpected channel: ' + channel);
+  });
+  const sessionId = JSON.stringify([owner.hostId, 'session-1']);
+  const emit = (message: unknown) => events.emit('sessions:event:session-1', {}, owner, message);
+  const execution = (turnId: string) => ({
+    type: 'host_execution', available: true, rootTurn: { sessionId: 'session-1', turnId, status: 'running' },
+  });
+  const subscribe = (order: string[]) => bridge.sessions.subscribeEvents(
+    sessionId, () => assert.fail('No Runtime events are needed for a running root'),
+    (phase) => order.push(phase), (error) => { throw error; },
+    (value) => order.push(`${value?.rootTurn?.turnId}:${value?.available}`),
+  );
+  const first: string[] = [];
+  t.after(subscribe(first));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  emit({ type: 'host_observation_seed', observerIds: [observerIds[0]], execution: execution('turn-1'), events: [] });
+  assert.deepEqual(first, ['turn-1:true', 'ready']);
+  emit(execution('turn-2'));
+  acknowledgement.resolve({ kind: 'ready' });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(first, ['turn-1:true', 'ready', 'turn-2:true'], 'a late acknowledgement cannot replay older state');
+
+  const second: string[] = [];
+  t.after(subscribe(second));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(observerIds.length, 2);
+  emit({ type: 'host_observation_seed', observerIds: [observerIds[1]], execution: execution('turn-2'), events: [] });
+  assert.deepEqual(second, ['turn-2:true', 'ready']);
+  assert.deepEqual(first, ['turn-1:true', 'ready', 'turn-2:true'], 'new subscriber seeding must not replay to existing subscribers');
+
+  emit({ type: 'host_observation_pending' });
+  assert.deepEqual(first.slice(-2), ['turn-2:false', 'pending']);
+  assert.deepEqual(second.slice(-2), ['turn-2:false', 'pending']);
+  emit({ type: 'host_observation_seed', observerIds, execution: execution('turn-3'), events: [] });
+  assert.deepEqual(first.slice(-2), ['turn-3:true', 'ready']);
+  assert.deepEqual(second.slice(-2), ['turn-3:true', 'ready']);
 });
 
 test('cancelled Session observation removes preload listeners without publishing readiness or errors', async () => {
@@ -74,28 +155,52 @@ test('cancelled Session observation removes preload listeners without publishing
     JSON.stringify([owner.hostId, 'session-1']),
     () => callbacks.push('event'),
     () => callbacks.push('ready'),
-    () => callbacks.push('seed'),
     () => callbacks.push('error'),
   );
   try {
     await started.promise;
     assert.equal(events.listenerCount('sessions:event:session-1'), 1);
-    assert.equal(events.listenerCount('sessions:observation-seed'), 1);
     observation.resolve({ kind: 'cancelled' });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(events.listenerCount('sessions:event:session-1'), 0);
-    assert.equal(events.listenerCount('sessions:observation-seed'), 0);
     events.emit('sessions:event:session-1', {}, owner, {
       type: 'text_delta', id: 'late-1', turnId: 'turn-1', messageId: 'message-1',
       ts: 1, startOffset: 0, text: 'Late output',
     });
-    events.emit('sessions:observation-seed', {}, owner, { sessionId: 'session-1', phase: 'ready' });
+    events.emit('sessions:event:session-1', {}, owner, {
+      type: 'host_observation_seed', execution: { type: 'host_execution', available: true, rootTurn: null }, events: [],
+    });
     assert.deepEqual(callbacks, []);
   } finally {
     observation.resolve({ kind: 'cancelled' });
     unsubscribe();
   }
+});
+
+test('unsubscribing while consuming a seed prevents remaining content and readiness', async () => {
+  const invoked = deferred<string>();
+  const { bridge, events } = await preloadHarness(async (channel, ...args) => {
+    if (channel === 'sessions:observe') { invoked.resolve(args[2] as string); return { kind: 'ready' }; }
+    throw new Error('Unexpected channel: ' + channel);
+  });
+  const text: string[] = [];
+  const unsubscribe = bridge.sessions.subscribeEvents(
+    JSON.stringify([owner.hostId, 'session-1']),
+    (event) => { if (event.type === 'text_delta') text.push(event.text); unsubscribe(); },
+    () => assert.fail('A disposed subscription cannot become ready'),
+  );
+  const observerId = await invoked.promise;
+  events.emit('sessions:event:session-1', {}, owner, {
+    type: 'host_observation_seed', observerIds: [observerId],
+    execution: { type: 'host_execution', available: true, rootTurn: null },
+    events: ['first', 'second'].map((value, index) => ({
+      type: 'text_delta', id: `seed-${index}`, turnId: 'turn-1', messageId: `message-${index}`,
+      ts: 1, startOffset: 0, text: value,
+    })),
+  });
+  assert.deepEqual(text, ['first']);
+  assert.equal(events.listenerCount('sessions:event:session-1'), 0);
 });
 
 test('cancelled transcript open rejects and removes its preload listener', async () => {

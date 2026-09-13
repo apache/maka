@@ -124,6 +124,7 @@ on:
       - 'packages/storage/src/native-file-lock.ts'
       - 'packages/storage/src/root-authority.ts'
       - 'packages/storage/src/runtime-policy/document-io.ts'
+      - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
       - '.github/workflows/windows-recovery.yml'
@@ -226,8 +227,8 @@ jobs:
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) { exit $exitCode }
           $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
-          if ($output -notcontains '# tests 91' -or $output -notcontains '# pass 91' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Skill catalog gate did not run exactly 91 passing Windows tests'
+          if ($output -notcontains '# tests 93' -or $output -notcontains '# pass 93' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 93 passing Windows tests'
             exit 1
           }
 

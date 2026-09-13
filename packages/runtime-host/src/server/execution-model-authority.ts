@@ -1013,9 +1013,9 @@ export async function resolveExecutionTarget(
     models: discovered
       ? [...resolved.connection.models]
       : [...resolved.connection.models, modelInfo],
-    ...(resolved.connection.relayModelProfiles === undefined
+    ...(resolved.connection.modelOverrides === undefined
       ? {}
-      : { relayModelProfiles: resolved.connection.relayModelProfiles }),
+      : { modelOverrides: resolved.connection.modelOverrides }),
     ...(resolved.connection.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: resolved.connection.requestBodyOverlay }),

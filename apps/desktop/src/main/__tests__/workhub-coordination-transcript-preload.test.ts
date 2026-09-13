@@ -533,8 +533,8 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
     const services = createDesktopWorkHubServices({
       attachments: {},
       sessions: {
-        subscribeEvents(_sessionId, _onEvent, ready, phase) {
-          onReady = ready!;
+        subscribeEvents(_sessionId, _onEvent, phase) {
+          onReady = () => phase!('ready');
           onPhase = phase!;
           return () => {};
         },

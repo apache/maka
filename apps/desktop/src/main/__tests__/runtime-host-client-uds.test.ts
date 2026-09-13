@@ -259,6 +259,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
+      mainWindowController: {
+        showSaveDialog: async () => ({ canceled: true }),
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      },
       attachmentApprovals: createAttachmentApprovalRegistry(),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
@@ -516,7 +520,8 @@ test('drives bounded Session domain projections through real UDS framing', async
     const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
     registerRuntimeHostSessionDomainsIpc(
-      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver() },
+      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver(),
+        terminalCloses: new (await import('../terminal-close-intents.js')).TerminalCloseIntents() },
       ipc,
     );
 
@@ -596,7 +601,7 @@ function unusedSessionCopyCleanup() {
 
 function unusedSessionObserver() {
   return {
-    async observe() { return []; },
+    async observe() {},
     async unobserve() {},
   };
 }

@@ -657,14 +657,27 @@ function selectedModelMaxOutputTokens(
   const anthropicMessages = runtime.wire === 'anthropic-messages';
   const kimiOpenAiChat =
     connection.providerType === 'kimi-coding-plan' && runtime.wire === 'openai-chat';
-  if (!anthropicMessages && !kimiOpenAiChat) return undefined;
-  const wireOutputLimit =
+  const requestedBudget = connection.modelOverrides?.[modelId]?.maxOutputTokens;
+  if (requestedBudget === undefined && !anthropicMessages && !kimiOpenAiChat) return undefined;
+  const capacity =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
     lookupModelMetadata(connection.providerType, modelId).maxOutputTokens;
+  const wireOutputLimit =
+    requestedBudget === undefined
+      ? capacity
+      : capacity === undefined
+        ? requestedBudget
+        : Math.min(requestedBudget, capacity);
   if (wireOutputLimit === undefined) return undefined;
-  return anthropicMessages
+  const outputTokens = anthropicMessages
     ? wireOutputLimit - fixedAnthropicThinkingBudget(providerOptions)
     : wireOutputLimit;
+  if (outputTokens <= 0) {
+    throw new Error(
+      'Output budget must exceed the fixed thinking budget. Increase the output limit or reduce thinking.',
+    );
+  }
+  return outputTokens;
 }
 
 function usesNativeOpenAiResponses(

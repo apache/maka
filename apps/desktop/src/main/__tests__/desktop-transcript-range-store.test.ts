@@ -23,6 +23,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '@maka/runtime-host/protocol';
 import {
   encodeDesktopTranscriptChange,
+  encodeDesktopTranscriptPage,
   encodeDesktopTranscriptSnapshot,
 } from '../desktop-transcript-ipc.js';
 import {
@@ -39,7 +40,10 @@ import {
 } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { TranscriptReadSupersededError } from '../../renderer/features/conversation/index.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
-import { readSettledMessages } from '../../renderer/session-message-settlement.js';
+import {
+  readSettledMessages,
+  readSettledMessagesFrom,
+} from '../../renderer/platform/desktop/session-message-settlement.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
@@ -54,6 +58,18 @@ test('merges a settled tail without dropping earlier messages', () => {
     settled,
     latest,
   ]);
+});
+
+test('merges an anchored historical range before its overlapping tail', () => {
+  const answerA = { ...assistantMessage('answer A', 'assistant-a'), turnId: 'turn-a', ts: 9 };
+  const answerB = { ...assistantMessage('answer B', 'assistant-b'), turnId: 'turn-b', ts: 20 };
+  const partialC = { ...assistantMessage('partial C', 'assistant-c'), turnId: 'turn-c', ts: 10 };
+  const answerC = { ...partialC, text: 'answer C' };
+
+  assert.deepEqual(
+    mergeSettledMessages([answerA, partialC], [answerB, answerC]),
+    [answerA, answerB, answerC],
+  );
 });
 
 test('cancels settlement while transcript open is pending', async () => {
@@ -91,6 +107,167 @@ test('cancels settlement while transcript open is pending', async () => {
     else Reflect.deleteProperty(globalThis, 'window');
   }
 });
+
+for (const paged of [false, true]) {
+  test(`reads one Host-owned Turn outside the bounded transcript tail${paged ? ' across multiple pages' : ''}`, async () => {
+    const sessionKey = JSON.stringify(['host-1', 'session-1']);
+    const turnB: StoredMessage[] = [
+      userMessage('follow-up one', 'user-b'),
+      { ...assistantMessage('answer B', 'assistant-b'), turnId: 'turn-b', ts: 4 },
+      {
+        type: 'turn_state',
+        id: 'complete-b',
+        turnId: 'turn-b',
+        ts: 5,
+        status: 'completed',
+      },
+    ];
+    const turnC: StoredMessage[] = [
+      userMessage('follow-up two', 'user-c'),
+      { ...assistantMessage('answer C', 'assistant-c'), turnId: 'turn-c', ts: 7 },
+      {
+        type: 'turn_state',
+        id: 'complete-c',
+        turnId: 'turn-c',
+        ts: 8,
+        status: 'completed',
+      },
+    ];
+    const navigations: number[] = [];
+    const extensions: number[] = [];
+    let deliverySequence = 0;
+
+    const result = await readSettledMessagesFrom(
+      {
+        sessions: {
+          listTurns: async (sessionId) => {
+            assert.equal(sessionId, sessionKey);
+            return [{ turnId: 'turn-b', firstSequence: 3, status: 'completed' }];
+          },
+        },
+        transcripts: {
+          open: async (_sessionId, handler) => {
+            for (const batch of encodeDesktopTranscriptSnapshot({
+              sessionId: 'session-1',
+              generation: 'generation-1',
+              hostEpoch: 'host-1',
+              durableThrough: 8,
+              durable: turnC.map((message, index) => ({ sequence: index + 6, message })),
+              overlay: [],
+              hasOlder: true,
+              hasNewer: false,
+            })) handler({ ...batch, deliverySequence: ++deliverySequence });
+            return {
+              sessionId: sessionKey,
+              generation: 'generation-1',
+              hostEpoch: 'host-1',
+              readThroughMessageId: 'complete-c',
+              async acknowledgeTail() { assert.fail('A recovery read must not mark the Session read'); },
+              async loadBefore() {},
+              async loadAfter(sequence, maxBytes, navigation) {
+                assert.equal(maxBytes, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+                assert.equal(sequence, 4);
+                extensions.push(sequence);
+                for (const batch of encodeDesktopTranscriptPage({
+                  sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1', navigation,
+                }, {
+                  durableThrough: 8,
+                  durable: [{ sequence: 5, message: turnB[2]! }],
+                  hasNewer: true,
+                }, { direction: 'newer', anchor: sequence })) {
+                  handler({ ...batch, deliverySequence: ++deliverySequence });
+                }
+              },
+              async loadAround(sequence, maxBytes, navigation) {
+                assert.equal(maxBytes, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+                navigations.push(sequence);
+                for (const batch of encodeDesktopTranscriptSnapshot({
+                  sessionId: 'session-1',
+                  generation: 'generation-1',
+                  hostEpoch: 'host-1',
+                  durableThrough: 8,
+                  durable: (paged ? turnB.slice(0, 2) : turnB).map((message, index) => ({ sequence: index + 3, message })),
+                  overlay: [],
+                  hasOlder: true,
+                  hasNewer: true,
+                }, navigation)) handler({ ...batch, deliverySequence: ++deliverySequence });
+              },
+              async loadLatest() {},
+              async close() {},
+            };
+          },
+        },
+      },
+      sessionKey,
+      { requiredTurnId: 'turn-b' },
+    );
+
+    assert.deepEqual(navigations, [3]);
+    assert.deepEqual(extensions, paged ? [4] : []);
+    assert.deepEqual(result, { messages: [...turnB, ...turnC], settled: true });
+  });
+}
+
+for (const hasSequence of [false, true]) {
+  test(`does not settle when a targeted Host-owned Turn ${hasSequence ? 'cannot be recovered' : 'has no indexed sequence'}`, async () => {
+    const sessionKey = JSON.stringify(['host-1', 'session-1']);
+    const tail: StoredMessage[] = [
+      { ...assistantMessage('answer C', 'assistant-c'), turnId: 'turn-c', ts: 7 },
+      {
+        type: 'turn_state',
+        id: 'complete-c',
+        turnId: 'turn-c',
+        ts: 8,
+        status: 'completed',
+      },
+    ];
+    let targetedRead = false;
+    let deliverySequence = 0;
+
+    const result = await readSettledMessagesFrom(
+      {
+        sessions: {
+          listTurns: async () => [{
+            turnId: 'missing-turn', status: 'completed', ...(hasSequence ? { firstSequence: 3 } : {}),
+          }],
+        },
+        transcripts: {
+          open: async (_sessionId, handler) => {
+            for (const batch of encodeDesktopTranscriptSnapshot({
+              sessionId: 'session-1',
+              generation: 'generation-1',
+              hostEpoch: 'host-1',
+              durableThrough: 8,
+              durable: tail.map((message, index) => ({ sequence: index + 7, message })),
+              overlay: [],
+              hasOlder: true,
+              hasNewer: false,
+            })) handler({ ...batch, deliverySequence: ++deliverySequence });
+            return {
+              sessionId: sessionKey,
+              generation: 'generation-1',
+              hostEpoch: 'host-1',
+              readThroughMessageId: 'complete-c',
+              async acknowledgeTail() {},
+              async loadBefore() {},
+              async loadAfter() {},
+              async loadAround() {
+                targetedRead = true;
+              },
+              async loadLatest() {},
+              async close() {},
+            };
+          },
+        },
+      },
+      sessionKey,
+      { requiredTurnId: 'missing-turn' },
+    );
+
+    assert.equal(targetedRead, hasSequence);
+    assert.deepEqual(result, { messages: tail, settled: false });
+  });
+}
 
 test('moves a fragmented overlay record to durable storage without duplicating it', () => {
   const message = assistantMessage('x'.repeat(DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES * 2));

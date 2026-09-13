@@ -42,6 +42,7 @@ import {
 } from './permission.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode } from './orchestration.js';
+import type { ToolMode } from './tool-mode.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -239,6 +240,8 @@ export interface SessionExternalOrigin {
 }
 
 export interface SessionHeader {
+  /** Frozen at creation; absent on older tasks means direct tool calling. */
+  toolMode?: ToolMode;
   // Identity
   id: string;
   /** Absent means an ordinary Session; special roles remain on the same Session substrate. */

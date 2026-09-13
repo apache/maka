@@ -19,7 +19,7 @@
 
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SessionSummary } from '@maka/core/session';
@@ -224,23 +224,22 @@ export const ExistingConversation: Story = {
     await userEvent.unhover(trigger);
 
     await userEvent.click(trigger);
-    const notice = document.body.querySelector('.maka-model-switch-notice');
-    await expect(notice).toBeInTheDocument();
-    await expect(notice).toHaveAttribute('aria-hidden', 'true');
-    await expect(notice).toHaveTextContent(warning);
     await expect(announcement).toHaveTextContent(warning);
     await expect(announcement).toHaveAttribute('aria-live', 'polite');
     await expect(announcement).toHaveAttribute('aria-atomic', 'true');
-    const menu = within(document.body).getByRole('menu');
+    const menu = within(document.body).getByRole('listbox');
     await expect(menu).not.toContainElement(announcement);
 
     await userEvent.keyboard('{Escape}');
     await expect(announcement).toBeEmptyDOMElement();
     await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
 
+    // Closing replaces the wheel with a new trigger and restores focus next frame.
+    await waitFor(() => expect(within(canvasElement).getByRole('button', {
+      name: /切换当前任务模型|Switch model for this task/,
+    })).toHaveFocus());
     await userEvent.keyboard('{ArrowDown}');
     await expect(announcement).toHaveTextContent(warning);
-    await expect(document.body.querySelector('.maka-model-switch-notice')).toBeInTheDocument();
   },
 };
 
@@ -400,13 +399,9 @@ export const ManyConnections: Story = {
     });
     await userEvent.click(trigger);
     const menu = within(document.body);
-    // Every connection is its own labelled group and the last group's model is
-    // reachable in the menu's accessibility tree. This drives the visual state;
-    // selection behaviour and scroll geometry are contracts left to focused
-    // tests / e2e, not asserted here.
-    const groups = await menu.findAllByRole('group');
-    await expect(groups.length).toBeGreaterThanOrEqual(7);
-    await menu.findByRole('menuitemradio', { name: 'vendor/gamma' });
+    await expect(await menu.findAllByRole('option')).toHaveLength(MANY_CHOICES.length);
+    await userEvent.keyboard('{End}');
+    await expect(await menu.findByRole('option', { name: /vendor\/gamma/, selected: true })).toBeInTheDocument();
   },
 };
 
@@ -434,7 +429,7 @@ export const LongModelNames: Story = {
     // Verifies the long-labelled model is reachable as a radio menu item. Whether the
     // long text truncates or wraps within the menu bounds is a visual check,
     // not asserted here.
-    await within(document.body).findByRole('menuitemradio', {
+    await within(document.body).findByRole('option', {
       name: /A very long model name that keeps going/,
     });
   },
@@ -482,8 +477,8 @@ export const StaleCurrentModel: Story = {
     await userEvent.click(trigger);
     const menu = within(document.body);
     // The dropped model leads the menu as the current selection…
-    await menu.findByRole('menuitemradio', { name: /claude-opus-3-retired/ });
+    await menu.findByRole('option', { name: /claude-opus-3-retired/ });
     // …while its connection's remaining models still follow underneath.
-    await menu.findByRole('menuitemradio', { name: 'Claude Sonnet 4' });
+    await menu.findByRole('option', { name: /Claude Sonnet 4/ });
   },
 };
