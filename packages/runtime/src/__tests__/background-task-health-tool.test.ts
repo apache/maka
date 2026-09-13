@@ -53,7 +53,7 @@ test('reports process tracking separately when endpoint is not checked', async (
   assert.deepEqual(
     JSON.parse(String(await tool.impl({ ref: 'maka://runtime/background-tasks/run-1' }, context))),
     {
-      process: { status: 'running', tracked: true, pid: 1234 },
+      process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
       endpoint: { status: 'not_checked' },
     },
   );
@@ -80,8 +80,14 @@ test('reports endpoint health only from the probe result', async () => {
       ),
     ),
     {
-      process: { status: 'running', tracked: true, pid: 1234 },
-      endpoint: { status: 204, statusText: 'No Content', elapsedMs: 4, health: 'healthy' },
+      process: { status: 'running', tracked: true, startedAt: 1, updatedAt: 2, pid: 1234 },
+      endpoint: {
+        status: 204,
+        statusText: 'No Content',
+        elapsedMs: 4,
+        target: 'http://127.0.0.1:8765',
+        health: 'healthy',
+      },
     },
   );
   assert.equal(called, 1);

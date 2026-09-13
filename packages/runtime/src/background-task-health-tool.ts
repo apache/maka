@@ -83,7 +83,11 @@ export function buildBackgroundTaskHealthTool(
       const process = {
         status: shell.status,
         tracked: true,
+        startedAt: shell.startedAt,
+        updatedAt: shell.updatedAt,
         ...(shell.pid !== undefined ? { pid: shell.pid } : {}),
+        ...(shell.completedAt !== undefined ? { completedAt: shell.completedAt } : {}),
+        ...(shell.failureMessage !== undefined ? { failureMessage: shell.failureMessage } : {}),
       };
       if (!url) return JSON.stringify({ process, endpoint: { status: 'not_checked' } });
       const endpoint = await probe.probe({
@@ -95,6 +99,7 @@ export function buildBackgroundTaskHealthTool(
         process,
         endpoint: {
           ...endpoint,
+          target: new URL(url).origin,
           health: endpoint.status >= 200 && endpoint.status < 400 ? 'healthy' : 'unhealthy',
         },
       });
