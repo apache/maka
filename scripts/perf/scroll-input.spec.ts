@@ -36,13 +36,11 @@ test('dense upward input with real Host history', async () => {
       e2eFixtureScenario: 'chat-prompt-rail',
       locale: 'zh-CN',
       showWindow: true,
-      tracePath: path.join(outputDir, 'scroll-input.trace.zip'),
     },
     async (page) => {
       await page.setViewportSize({ width: 1352, height: 932 });
       const cdp = await page.context().newCDPSession(page);
       const browser = await cdp.send('Browser.getVersion');
-      await cdp.send('Profiler.enable');
       for (let trial = 0; trial < 3; trial++) {
         await page.reload();
         await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
@@ -67,6 +65,7 @@ test('dense upward input with real Host history', async () => {
             running: true,
             phase: 'input',
             frames: [] as any[],
+            ranges: [] as any[],
             events: [] as any[],
             tasks: [] as any[],
           });
@@ -81,36 +80,39 @@ test('dense upward input with real Host history', async () => {
           for (const type of ['wheel', 'scroll', 'scrollend'])
             root.addEventListener(
               type,
-              () =>
-                p.events.push({ type, ms: performance.now(), phase: p.phase, top: root.scrollTop }),
+              () => p.events.push({ type, ms: performance.now(), phase: p.phase }),
               { passive: true },
             );
-          const frame = () => {
+          const range = () => {
             const ids = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].map(
               (el) => el.dataset.turnId,
             );
-            p.frames.push({
+            if (p.ranges.at(-1)?.ids.join(',') === ids.join(',')) return;
+            p.ranges.push({
               ms: performance.now(),
               phase: p.phase,
-              top: root.scrollTop,
-              height: root.scrollHeight,
               ids,
             });
+          };
+          range();
+          const observer = new MutationObserver(range);
+          observer.observe(root, { childList: true, subtree: true });
+          const frame = () => {
+            p.frames.push({ ms: performance.now(), phase: p.phase });
             if (p.running) requestAnimationFrame(frame);
+            else observer.disconnect();
           };
           requestAnimationFrame(frame);
         });
-        await cdp.send('Profiler.start');
         for (let tick = 0; tick < 120; tick++) {
           await cdp.send('Input.dispatchMouseEvent', input);
-          await page.waitForTimeout(4);
+          await page.waitForTimeout(16);
         }
         const releasedAt = await page.evaluate(() => {
           (window as any).__denseScroll.phase = 'released';
           return performance.now();
         });
         await page.waitForTimeout(1200);
-        const profile = await cdp.send('Profiler.stop');
         const raw = await page.evaluate(() => {
           (window as any).__denseScroll.running = false;
           return (window as any).__denseScroll;
@@ -120,10 +122,7 @@ test('dense upward input with real Host history', async () => {
           20,
         );
         const initial = raw.frames[0];
-        const changes = raw.frames.filter(
-          (frame: any, i: number) =>
-            i > 0 && frame.ids.join(',') !== raw.frames[i - 1].ids.join(','),
-        );
+        const changes = raw.ranges.slice(1);
         expect(
           changes.length,
           'real Host history must publish at least one changed range',
@@ -137,13 +136,14 @@ test('dense upward input with real Host history', async () => {
             wheels.slice(1).map((event: any, i: number) => event.ms - wheels[i].ms),
           ).median,
           maxLongTaskMs: Math.max(0, ...raw.tasks.map((task: any) => task.duration)),
-          maxMounted: Math.max(...raw.frames.map((frame: any) => frame.ids.length)),
+          longTaskMs: raw.tasks.reduce((sum: number, task: any) => sum + task.duration, 0),
+          maxFrameGapMs: Math.max(
+            ...raw.frames.slice(1).map((frame: any, i: number) => frame.ms - raw.frames[i].ms),
+          ),
+          maxMounted: Math.max(...raw.ranges.map((frame: any) => frame.ids.length)),
           publicationsDuringInput: changes.filter((frame: any) => frame.ms < releasedAt).length,
           publicationsAfterInput: changes.filter((frame: any) => frame.ms >= releasedAt).length,
           firstPublicationAfterReleaseMs: firstReleased ? firstReleased.ms - releasedAt : -1,
-          inputFramesAtTop: raw.frames.filter(
-            (frame: any) => frame.phase === 'input' && frame.top <= 1,
-          ).length,
         };
         samples.push(row);
         console.log(JSON.stringify(row));
@@ -151,21 +151,19 @@ test('dense upward input with real Host history', async () => {
           path.join(outputDir, `scroll-input-${trial}.json`),
           JSON.stringify({ row, releasedAt, ...raw }, null, 2),
         );
-        await writeFile(
-          path.join(outputDir, `scroll-input-${trial}.cpuprofile`),
-          JSON.stringify(profile.profile),
-        );
       }
       await report(
         'frontend-scroll-input',
         {
+          variant: process.env.MAKA_PERF_VARIANT,
+          sourceCommit: process.env.MAKA_PERF_SOURCE_COMMIT,
           browser,
           samples,
           viewport: '1352x932',
           conditions:
-            'Three renderer reloads in one real Desktop + Host. Native CDP input, 120 ticks at >=4ms driver spacing. Profile and trace enabled identically on both refs.',
+            'Three renderer reloads in one real Desktop + Host. Native CDP input, 120 ticks at >=16ms driver spacing. No profiler or trace. Frame timestamps only; DOM ranges sampled on child-list mutation without layout reads.',
           limits:
-            'Actual wheel intervals recorded; not exact touchpad replay. DOM publication is observable, pending store rows are not counted. A top frame alone does not prove starvation or data accumulation. CPU profile overhead included. -1 means no post-release range publication was observed.',
+            'Actual wheel intervals recorded; not exact touchpad replay or end-to-end input latency. DOM range changes are observable, pending store rows are not counted. Mutation observer overhead remains. -1 means no post-release range publication was observed.',
         },
         Object.keys(samples[0])
           .filter((key) => key !== 'trial')

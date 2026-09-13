@@ -1,0 +1,64 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
+
+const refs = {
+  A: '839d14535a541ef0da29ea4d6626a2e3d0e32a8e',
+  B: '0039a230754a4bd832653f481194fb40516464db',
+};
+const files = ['packages/ui/src/chat-view.tsx', 'packages/ui/src/use-chat-scroll.ts'];
+const original = files.map((file) => readFileSync(file));
+const output = path.resolve(process.env.MAKA_PERF_OUTPUT ?? 'perf-results');
+const run = (command, args, options = {}) =>
+  execFileSync(command, args, { stdio: 'inherit', ...options });
+const order = ['A', 'B', 'B', 'A', 'A', 'B'];
+mkdirSync(output, { recursive: true });
+try {
+  for (const [index, variant] of order.entries()) {
+    for (const file of files)
+      writeFileSync(file, execFileSync('git', ['show', refs[variant] + ':' + file]));
+    run('npm', ['--workspace', '@maka/ui', 'run', 'build']);
+    run('npm', ['--workspace', '@maka/desktop', 'run', 'build:renderer']);
+    // The only source delta between the two refs is the measured-space experiment.
+    // Its unused helper remains present for A, with no import/call in A's bundle.
+    const env = {
+      ...process.env,
+      MAKA_PERF_PAIRED: '1',
+      MAKA_PERF_VARIANT: variant,
+      MAKA_PERF_SOURCE_COMMIT: refs[variant],
+      MAKA_PERF_OUTPUT: path.join(output, index + '-' + variant),
+    };
+    run(
+      'npx',
+      [
+        'playwright',
+        'test',
+        '--config',
+        '../../scripts/perf/playwright.config.ts',
+        'scroll-input.spec.ts',
+      ],
+      { cwd: 'apps/desktop', env },
+    );
+  }
+} finally {
+  files.forEach((file, index) => writeFileSync(file, original[index]));
+}
