@@ -65,6 +65,7 @@ import {
 } from '../conversation-copy.js';
 import {
   buildHistoryCompactCheckpoint,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
@@ -2902,7 +2903,8 @@ for (const inspectFirst of [false, true]) {
       });
       const sourceRecords = await runStore.readEvents('session-source', 'run-source');
       const firstPage = readToolResultPage(serialized, { path: placeholder.resourceRef! });
-      assert.ok(firstPage.next?.path.startsWith('maka://read/'));
+      assert.ok(firstPage.next);
+      const invalidContinuation = firstPage.next.path.replace(/at=\d+/, 'at=');
       for (const event of [
         runtimeEvent({
           id: 'page-call',
@@ -2927,6 +2929,16 @@ for (const inspectFirst of [false, true]) {
             name: 'Read',
             result: { kind: 'json', value: firstPage },
             modelProjection: { version: 1, kind: 'json', value: firstPage as never },
+          },
+        }),
+        runtimeEvent({
+          id: 'page-advice',
+          ts: 4.3,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'text',
+            text: `Continue with "${firstPage.next.path}". Invalid: ${invalidContinuation}`,
           },
         }),
       ])
@@ -3022,11 +3034,19 @@ for (const inspectFirst of [false, true]) {
       const compactable = (
         await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')
       ).filter(isHistoryCompactContentEvent);
+      const sourceTransitions = (
+        await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-source', [
+          'run-source',
+        ])
+      ).transitions;
+      const covered = inspectFirst ? compactable : compactable.slice(0, 1);
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-source',
-        coveredRuntimeEvents: inspectFirst ? compactable : compactable.slice(0, 1),
+        coveredRuntimeEvents: covered,
+        effectiveCoveredRuntimeEvents: reduceEffectiveModelProjections(covered, sourceTransitions)
+          .events,
         summary: sectionedSummary(
-          inspectFirst ? `Use ${placeholder.resourceRef}` : 'Unrelated user request summary.',
+          inspectFirst ? `Use ${firstPage.next.path}` : 'Unrelated user request summary.',
         ),
         highWaterName: 'copy-test',
         highWaterSeq: 1,
@@ -3044,6 +3064,10 @@ for (const inspectFirst of [false, true]) {
       const successor = buildHistoryCompactCheckpoint({
         sessionId: 'session-source',
         coveredRuntimeEvents: compactable,
+        effectiveCoveredRuntimeEvents: reduceEffectiveModelProjections(
+          compactable,
+          sourceTransitions,
+        ).events,
         summary: sectionedSummary(`Continue with ${placeholder.resourceRef}`),
         highWaterName: 'copy-test',
         highWaterSeq: 2,
@@ -3058,6 +3082,21 @@ for (const inspectFirst of [false, true]) {
         turnId: 'turn-1',
         ts: 9,
         data: { checkpoint: successor },
+      });
+      const staleCheckpoint = buildHistoryCompactCheckpoint({
+        sessionId: 'session-source',
+        coveredRuntimeEvents: compactable,
+        summary: sectionedSummary('STALE_COPY_SUMMARY'),
+        now: 10,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: 'history_compact_checkpoint_recorded',
+        id: 'stale-copy-checkpoint',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 10,
+        data: { checkpoint: staleCheckpoint },
       });
       const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
         'session-source',
@@ -3119,6 +3158,17 @@ for (const inspectFirst of [false, true]) {
       );
       assert.ok(storedPage?.type === 'tool_result');
       assert.deepEqual(storedPage.content, { kind: 'json', value: copiedPage });
+      const expectedAdvice = `Continue with "${copiedPage.next.path}". Invalid: ${invalidContinuation}`;
+      assert.ok(
+        targetEvents.some(
+          (event) => event.content?.kind === 'text' && event.content.text === expectedAdvice,
+        ),
+      );
+      assert.ok(
+        copiedLedger.copiedMessages.some(
+          (message) => message.type === 'assistant' && message.text === expectedAdvice,
+        ),
+      );
 
       const read = createLedgerToolResultArchiveReader({
         read: async () => ({
@@ -3203,6 +3253,22 @@ for (const inspectFirst of [false, true]) {
       const copiedCheckpoint = checkpointEvent?.data?.checkpoint;
       assert.ok(validateHistoryCompactCheckpointShape(copiedCheckpoint, 'session-target'));
       assert.equal(copiedCheckpoint.version, 2);
+      assert.equal(
+        copiedCheckpoint.coverage.effectiveSourceDigest,
+        historyCompactSourceDigest(
+          reduceEffectiveModelProjections(
+            targetEvents
+              .filter(isHistoryCompactContentEvent)
+              .slice(0, copiedCheckpoint.coverage.eventCount),
+            transitions.transitions,
+          ).events,
+        ),
+      );
+      assert.equal(
+        records.filter((record) => record.type === 'history_compact_checkpoint_recorded').length,
+        2,
+      );
+      assert.doesNotMatch(JSON.stringify(records), /STALE_COPY_SUMMARY/);
       assert.equal(
         matchHistoryCompactCheckpointPrefix(
           copiedCheckpoint,

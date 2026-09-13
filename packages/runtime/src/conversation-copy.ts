@@ -38,6 +38,7 @@ import {
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from './history-compact-checkpoint.js';
@@ -668,7 +669,7 @@ export async function cloneConversationRuntimeLedger(
         };
     }
     if (event.content?.kind === 'text')
-      event.content.text = rewriteLedgerArchiveText(event.content.text, references);
+      event.content.text = rewriteCopiedText(event.content.text, references, clonedEventBySourceId);
     if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
       const args = event.content.args;
       if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
@@ -726,7 +727,7 @@ export async function cloneConversationRuntimeLedger(
   const copiedMessages = input.copiedMessages.map((message) => {
     const copied = rewriteConversationCopyMessage(message, references);
     if (copied.type === 'user' || copied.type === 'assistant')
-      return { ...copied, text: rewriteLedgerArchiveText(copied.text, references) };
+      return { ...copied, text: rewriteCopiedText(copied.text, references, clonedEventBySourceId) };
     if (
       copied.type === 'tool_result' &&
       archiveReadCalls.has(`${copied.turnId}:${copied.toolUseId}`)
@@ -807,6 +808,18 @@ function rewriteLedgerArchiveText(
       .split(`maka://runtime/tool-results/${encodeURIComponent(source)}`)
       .join(`maka://runtime/tool-results/${encodeURIComponent(target)}`);
   return text;
+}
+
+/** Text identifies generated addresses; the structured Read rewriter owns their semantics. */
+function rewriteCopiedText(
+  text: string,
+  references: ConversationCopyMessageReferenceMap,
+  clonedEvents: ReadonlyMap<string, RuntimeEvent>,
+): string {
+  return rewriteLedgerArchiveText(text, references).replace(
+    /maka:\/\/read\/[A-Za-z0-9_-]+\?at=\d+&sha=[a-f0-9]{32}(?![A-Za-z0-9_?&#=%/-])/g,
+    (path) => rewriteReadInput({ path }, references, clonedEvents).path,
+  );
 }
 
 function rewriteReadInput(
@@ -1148,6 +1161,18 @@ function cloneAgentRunEvent(
     if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
     if (match.reason) return null;
+    // Rebinding a digest must not make an already stale source summary valid.
+    const sourceEffective = reduceEffectiveModelProjections(
+      match.coveredRuntimeEvents,
+      [...clonedTransitions.keys()].map((record) =>
+        decodeModelProjectionTransition(record.data?.transition, record.sessionId),
+      ),
+    ).events;
+    if (
+      sourceCheckpoint.coverage.effectiveSourceDigest !==
+      historyCompactSourceDigest(sourceEffective)
+    )
+      return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // re-runnable here on structure and truncation (the size floor needs the
@@ -1177,7 +1202,11 @@ function cloneAgentRunEvent(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
-      summary: rewriteLedgerArchiveText(sourceCheckpoint.summary, references),
+      effectiveCoveredRuntimeEvents: reduceEffectiveModelProjections(
+        coveredRuntimeEvents,
+        [...clonedTransitions.values()].filter((transition) => transition !== null),
+      ).events,
+      summary: rewriteCopiedText(sourceCheckpoint.summary, references, clonedRuntimeEvents),
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
