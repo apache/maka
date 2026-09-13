@@ -118,7 +118,16 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
-  await anchors.locator('.workhub-navigation-item').first().click();
+  const workRail = anchors.locator('.workhub-navigation-item').first();
+  await workRail.click();
+  await expect(page.locator('.workHubDock')).toBeVisible();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
+  await workRail.click();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toBeVisible();
+  await workRail.click();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  await page.getByRole('button').filter({ has: page.getByText('WorkHub navigation regression', { exact: true }) }).click();
   await expect(page.locator('.workHubDock')).toBeHidden();
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await expect(page.locator('.workHubDock')).toBeVisible();

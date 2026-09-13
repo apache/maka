@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import type { IpcMain } from 'electron';
-import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { AttachmentIngestBlockedError, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import {
   RuntimeHostOperationError,
@@ -43,7 +43,7 @@ import {
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { normalizeSessionSendCommand } from './permission-response-guard.js';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
-import { resolveAttachmentRefs, prepareIngestItems } from './attachment-ingest.js';
+import { resolveAttachmentRefs, prepareIngestItems, type AttachmentSnapshotInput } from './attachment-ingest.js';
 import { mergeWorkspaceFileInlineReferences } from './session-workspace-inline-references.js';
 import {
   resolveDesktopSessionCreateInput,
@@ -585,24 +585,34 @@ export function registerDesktopSessionLocalIpc(deps: {
         if (attachment.ref.kind !== 'session_file' || attachment.ref.sessionId !== sessionId)
           throw new Error('Retained attachment belongs to another Session');
       }
-      const prepared = await prepareIngestItems({
-        senderId: event.sender.id,
-        items: command.attachmentItems ?? [],
-        approvals: deps.approvals,
-        stat,
-        maxAttachments: MAX_ATTACHMENT_COUNT - retained.length,
-        maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
+      const snapshot = async ({ name, mimeType, content }: AttachmentSnapshotInput) => ({
+        name,
+        mimeType,
+        base64: Buffer.from(content).toString('base64'),
       });
-      const staged = await resolveAttachmentRefs({
-        files: prepared.files,
-        maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
-        resizeImage: deps.resizeImage,
-        snapshot: async ({ name, mimeType, content }) => ({
-          name,
-          mimeType,
-          base64: Buffer.from(content).toString('base64'),
-        }),
-      });
+      let prepared: Awaited<ReturnType<typeof prepareIngestItems>>;
+      let staged: Awaited<ReturnType<typeof resolveAttachmentRefs<Awaited<ReturnType<typeof snapshot>>>>>;
+      try {
+        prepared = await prepareIngestItems({
+          senderId: event.sender.id,
+          items: command.attachmentItems ?? [],
+          approvals: deps.approvals,
+          stat,
+          maxAttachments: MAX_ATTACHMENT_COUNT - retained.length,
+          maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
+        });
+        staged = await resolveAttachmentRefs({
+          files: prepared.files,
+          maxTotalBytes: MAX_LOCAL_MESSAGE_BYTES,
+          resizeImage: deps.resizeImage,
+          snapshot,
+        });
+      } catch (error) {
+        if (error instanceof AttachmentIngestBlockedError) {
+          return { ok: false as const, reason: 'attachment_blocked' as const, code: error.code };
+        }
+        throw error;
+      }
       // Revalidate authority after asynchronous file reads and native resizing.
       if (service.target(scope).partition !== target.partition)
         throw new Error('Host authority changed while saving the message');
@@ -611,26 +621,35 @@ export function registerDesktopSessionLocalIpc(deps: {
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
-      prepared.commit(() =>
-        service.store.enqueue(target.partition, {
-          staged,
-          command: {
-            sessionId,
-            messageId,
-            placement,
-            content: {
-              text: command.text,
-              ...(command.displayText !== undefined ? { displayText } : {}),
-              attachments: retained,
-              directoryReferences: command.directoryReferences,
-              quotes: command.quotes,
-              inlineReferences,
+      try {
+        // The approval can be consumed while the reads above were in flight, so
+        // admission is part of the same conversion to the envelope.
+        prepared.commit(() =>
+          service.store.enqueue(target.partition, {
+            staged,
+            command: {
+              sessionId,
+              messageId,
+              placement,
+              content: {
+                text: command.text,
+                ...(command.displayText !== undefined ? { displayText } : {}),
+                attachments: retained,
+                directoryReferences: command.directoryReferences,
+                quotes: command.quotes,
+                inlineReferences,
+              },
+              ...(command.skillIds?.length ? { skillIds: command.skillIds } : {}),
+              ...(command.turnOrchestration ? { turnOrchestration: command.turnOrchestration } : {}),
             },
-            ...(command.skillIds?.length ? { skillIds: command.skillIds } : {}),
-            ...(command.turnOrchestration ? { turnOrchestration: command.turnOrchestration } : {}),
-          },
-        }),
-      );
+          }),
+        );
+      } catch (error) {
+        if (error instanceof AttachmentIngestBlockedError) {
+          return { ok: false as const, reason: 'attachment_blocked' as const, code: error.code };
+        }
+        throw error;
+      }
       deps.changed(target.scope, sessionId);
       service.wake();
       return {

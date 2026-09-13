@@ -29,10 +29,13 @@ import {
   type InteractionFormFieldDraft,
 } from './form-interaction-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
+import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 export function FormInteractionPrompt(props: {
   request: FormRequestEvent;
+  onStop?(): void | Promise<void>;
+  stopPending?: boolean;
   onRespond(response: InteractionFormResponse): void | Promise<void>;
 }) {
   return <ActiveFormInteractionPrompt key={props.request.requestId} {...props} />;
@@ -40,14 +43,18 @@ export function FormInteractionPrompt(props: {
 
 function ActiveFormInteractionPrompt(props: {
   request: FormRequestEvent;
+  onStop?(): void | Promise<void>;
+  stopPending?: boolean;
   onRespond(response: InteractionFormResponse): void | Promise<void>;
 }) {
-  const copy = getConversationCopy(useUiLocale()).forms;
+  const conversationCopy = getConversationCopy(useUiLocale());
+  const copy = conversationCopy.forms;
   const titleId = useId();
   const [drafts, setDrafts] = useState<InteractionFormFieldDraft[]>(
     () => createInteractionFormDrafts(props.request.fields),
   );
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [responseError, setResponseError] = useState<string>();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const mountedRef = useMountedRef();
@@ -57,11 +64,14 @@ function ActiveFormInteractionPrompt(props: {
   }
 
   async function respond(response: InteractionFormResponse) {
-    if (responsePendingRef.current) return;
+    if (responsePendingRef.current || props.stopPending) return;
+    setResponseError(undefined);
     responsePendingRef.current = true;
     setResponsePending(true);
     try {
       await props.onRespond(response);
+    } catch (error) {
+      if (mountedRef.current) setResponseError(error instanceof Error ? error.message : String(error));
     } finally {
       responsePendingRef.current = false;
       if (mountedRef.current) setResponsePending(false);
@@ -77,6 +87,7 @@ function ActiveFormInteractionPrompt(props: {
     void respond(response);
   }
 
+  const singleChoice = props.request.fields.length === 1 && props.request.fields[0]?.kind === 'single_select' && props.request.fields[0].required;
   const requester = props.request.requester.source
     ? copy.requesterWithSource(props.request.requester.name, props.request.requester.source)
     : copy.requester(props.request.requester.name);
@@ -93,6 +104,7 @@ function ActiveFormInteractionPrompt(props: {
           <p>{requester}</p>
         </header>
 
+        {responseError && <p role="alert">{responseError}</p>}
         <div className="maka-form-interaction-fields">
           {props.request.fields.map((field, index) => {
             const draft = drafts[index];
@@ -108,10 +120,10 @@ function ActiveFormInteractionPrompt(props: {
                 aria-label={field.label}
                 aria-describedby={constraintId}
               >
-                <div className="maka-form-interaction-field-heading">
+                {!singleChoice && <div className="maka-form-interaction-field-heading">
                   <span>{field.label}</span>
                   <span>{field.required ? copy.required : copy.optional}</span>
-                </div>
+                </div>}
                 {field.description ? <p className="maka-form-interaction-field-description">{field.description}</p> : null}
                 {constraint ? (
                   <p className="maka-form-interaction-field-description" id={constraintId}>
@@ -122,11 +134,18 @@ function ActiveFormInteractionPrompt(props: {
                   <CheckboxInput
                     label={copy.include(field.label)}
                     value={draft.included}
-                    isDisabled={responsePending}
+                    isDisabled={responsePending || props.stopPending}
                     onChange={(included) => updateDraft(index, { ...draft, included })}
                   />
                 ) : null}
-                {draft.included ? renderFormControl({
+                {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
+                  <ChoicePanel label={field.label} options={field.options} keyboardHint={copy.keyboardHint}
+                    value={typeof draft.value === 'string' ? draft.value : ''}
+                    disabled={responsePending || props.stopPending}
+                    onChange={(value) => updateDraft(index, { ...draft, value })}
+                    onConfirm={accept}
+                    onEscape={() => void respond({ requestId: props.request.requestId, action: 'cancel' })} />
+                ) : draft.included ? renderFormControl({
                   field,
                   draft,
                   disabled: responsePending,
@@ -141,23 +160,26 @@ function ActiveFormInteractionPrompt(props: {
 
         <footer className="maka-interaction-actions maka-form-interaction-actions">
           <div>
+            {props.onStop && <Button variant="ghost" isDisabled={props.stopPending}
+              onClick={() => void props.onStop?.()}
+              label={props.stopPending ? conversationCopy.questions.stopping : conversationCopy.questions.stop} />}
             <Button
               variant="ghost"
-              isDisabled={responsePending}
+              isDisabled={responsePending || props.stopPending}
               onClick={() => void respond({ requestId: props.request.requestId, action: 'cancel' })}
               label={copy.cancel}
             />
           </div>
           <div className="maka-form-interaction-primary-actions">
-            <Button
+            {!singleChoice && <Button
               variant="ghost"
-              isDisabled={responsePending}
+              isDisabled={responsePending || props.stopPending}
               onClick={() => void respond({ requestId: props.request.requestId, action: 'decline' })}
               label={copy.decline}
-            />
+            />}
             <Button
               variant="primary"
-              isDisabled={responsePending}
+              isDisabled={responsePending || props.stopPending}
               onClick={accept}
               label={responsePending ? copy.submitting : copy.accept}
             />

@@ -679,7 +679,7 @@ function createWorkspaceFilesystemExecutor(
             label: 'Grep',
             scope,
           });
-          const { matches } = await workspace.grepFiles({
+          const result = await workspace.grepFiles({
             cwd,
             pattern: operation.pattern,
             path,
@@ -689,7 +689,7 @@ function createWorkspaceFilesystemExecutor(
             timeoutMs: operation.timeoutMs,
             ...(abortSignal ? { abortSignal } : {}),
           });
-          return { kind: 'grep', matches };
+          return { kind: 'grep', ...result };
         }
       }
     },

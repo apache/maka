@@ -63,12 +63,19 @@ import {
   SessionOperationFailure,
   projectSessionCatalogRecord,
 } from './session-catalog-coordinator.js';
+import {
+  RuntimeInteractionAdmissionRejectedError,
+  RuntimeInteractionFailStopError,
+} from '@maka/runtime/interaction-authority';
+import type { HostInteractionCoordinator } from './interaction-coordinator.js';
+import type { WorkHubCoordinationSelectAndDelegateInput } from '../protocol/workhub-coordination.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   WorkHubActionEffectFailure,
   WorkHubActionGateFailure,
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
+  type WorkHubAdmittedAction,
 } from './workhub-coordination-action-gate.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
@@ -157,11 +164,15 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
     input: WorkHubCoordinationConfigureModelInput,
   ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
   readonly routingModel?: HostWorkHubRoutingModel;
+  readonly requestForm?: HostInteractionCoordinator['requestForm'];
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
 export class HostWorkHubCoordinationCoordinator {
+  readonly #requestForm: HostWorkHubCoordinationCoordinatorOptions['requestForm'];
   readonly handlers: WorkHubCoordinationOperationHandlerMap = {
+    'workhub.coordination.selectAndDelegate': (input, context) =>
+      this.#selectAndDelegate(input, context),
     'workhub.coordination.resolve': () => this.#resolve(),
     'workhub.coordination.query': () => this.#query(),
     'workhub.coordination.configureModel': (input) => this.#configureModel(input),
@@ -186,6 +197,7 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
+    this.#requestForm = options.requestForm;
     this.#configureModel = options.configureModel;
     this.#routingModel = options.routingModel;
     this.#transitionConfiguration = options.transitionConfiguration;
@@ -536,9 +548,172 @@ export class HostWorkHubCoordinationCoordinator {
     }
   }
 
+  async #selectAndDelegate(
+    input: WorkHubCoordinationSelectAndDelegateInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.selectAndDelegate'>> {
+    try {
+      const authority = await this.#executions.readActiveWorkHubRoutingRequest(input.turnId);
+      if (!authority || authority.decision || !this.#requestForm) {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Target selection requires an active, unbound Coordination Turn',
+          },
+        };
+      }
+      // The interaction identity binds the complete operation and original user authority.
+      // Its durable answer can be replayed without rebuilding (or interpreting) the offer.
+      const requestId = createHash('sha256')
+        .update(
+          JSON.stringify({
+            input,
+            runId: authority.runId,
+            content: authority.content,
+          }),
+        )
+        .digest('hex');
+      const choice = await this.#requestForm({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        turnId: input.turnId,
+        runId: authority.runId,
+        requestId,
+        create: async () => {
+          if (await this.#stores.readWorkHubAssignment(input.actionId)) {
+            throw new WorkHubActionGateFailure(
+              'action_conflict',
+              'This action identity already belongs to another selection',
+            );
+          }
+          const page = await this.#actionGate.candidates();
+          if (page.candidateSetId !== input.candidateSetId) {
+            throw new WorkHubActionGateFailure(
+              'candidate_set_stale',
+              'Discover fresh candidates before requesting a target choice',
+            );
+          }
+          const options = input.candidateRefs.map((ref) => {
+            const candidate = page.candidates.find((item) => item.candidateRef === ref);
+            if (!candidate)
+              throw new WorkHubActionGateFailure(
+                'candidate_unavailable',
+                'Target choice contains an unavailable candidate',
+              );
+            // Keep labels inside the shared form wire budget; identity is the opaque value.
+            const label = `${candidate.sessionName} — ${candidate.workspace.hostCwd}`;
+            let bounded = '';
+            for (const character of label) {
+              if (Buffer.byteLength(bounded + character, 'utf8') > 190) break;
+              bounded += character;
+            }
+            return {
+              // An opaque, durable binding: only an exact offered value is accepted by
+              // the form authority. Names and model-written answers never resolve identity.
+              value: JSON.stringify([ref, candidate.sessionId, digest(candidate.workspace)]),
+              label: page.candidates.some(
+                (other) =>
+                  other.sessionId !== candidate.sessionId &&
+                  other.sessionName === candidate.sessionName &&
+                  other.workspace.hostCwd === candidate.workspace.hostCwd,
+              )
+                ? `${bounded} [${candidate.sessionId.slice(0, 12)}]`
+                : bounded,
+            };
+          });
+          return {
+            kind: 'form',
+            toolUseId: input.actionId,
+            message: 'Choose the work to continue',
+            requester: { name: 'WorkHub' },
+            fields: [
+              {
+                kind: 'single_select',
+                name: 'target',
+                label: 'Work / Workspace',
+                required: true,
+                options,
+              },
+            ],
+          };
+        },
+      });
+      if (choice.answer.action !== 'accept') return { ok: true, result: { kind: 'cancelled' } };
+      const value = choice.answer.values.target;
+      const binding: unknown = typeof value === 'string' ? JSON.parse(value) : undefined;
+      if (
+        !Array.isArray(binding) ||
+        binding.length !== 3 ||
+        !binding.every((part) => typeof part === 'string') ||
+        !input.candidateRefs.includes(binding[0])
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Target choice does not belong to this operation',
+          },
+        };
+      }
+      if (
+        Date.now() - choice.createdAt > 10 * 60_000 &&
+        !(await this.#stores.readWorkHubAssignment(input.actionId))
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'candidate_set_stale',
+            message: 'Target choice expired; discover candidates and ask again',
+          },
+        };
+      }
+      const [offeredRef, sessionId, workspaceDigest] = binding as [string, string, string];
+      const freshAuthority = await this.#executions.readActiveWorkHubRoutingRequest(input.turnId);
+      if (freshAuthority?.runId !== authority.runId) {
+        return {
+          ok: false,
+          error: { code: 'operation_conflict', message: 'The selecting Run is no longer active' },
+        };
+      }
+      // Re-read active authority after waiting. The Gate performs fresh candidate validation
+      // and durable action replay before it admits any target execution.
+      const outcome = await this.#actFromTurn(
+        {
+          turnId: input.turnId,
+          actionId: input.actionId,
+          proposal: { disposition: 'delegate_existing', candidateRef: offeredRef },
+          candidateSetId: input.candidateSetId,
+          delegationText: input.delegationText,
+        },
+        context,
+        { sessionId, workspaceDigest },
+      );
+      return outcome.ok
+        ? { ok: true, result: { kind: 'delegated', result: outcome.result } }
+        : outcome;
+    } catch (error) {
+      if (error instanceof RuntimeInteractionFailStopError) throw error;
+      return {
+        ok: false,
+        error: {
+          code:
+            error instanceof WorkHubActionGateFailure
+              ? error.code === 'candidate_set_stale'
+                ? 'candidate_set_stale'
+                : 'operation_conflict'
+              : error instanceof RuntimeInteractionAdmissionRejectedError
+                ? 'operation_conflict'
+                : 'persistence_failed',
+          message: error instanceof Error ? error.message : 'Target selection is unavailable',
+        },
+      };
+    }
+  }
+
   async #actFromTurn(
     input: WorkHubCoordinationActFromTurnInput,
     context: ConnectionContext,
+    selectedTarget?: WorkHubAdmittedAction['selectedTarget'],
   ): Promise<OperationOutcome<'workhub.coordination.actFromTurn'>> {
     let request;
     try {
@@ -580,6 +755,7 @@ export class HostWorkHubCoordinationCoordinator {
         result: await this.#actionGate.act(
           {
             ...action,
+            ...(selectedTarget ? { selectedTarget } : {}),
             userText: request.content.text,
             ...(carriesAttachments && request.content.attachments
               ? { attachments: request.content.attachments }

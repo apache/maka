@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { beforeEach, afterEach, mock } from 'node:test';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   scheduledTaskEditSeed,
@@ -28,6 +28,10 @@ import {
 
 const recurrenceAnchor = new Date(2026, 8, 13, 9, 0).getTime();
 const snoozedNextFire = new Date(2026, 8, 13, 9, 10).getTime();
+
+// These cases exercise a future snooze, independent of the machine's wall clock.
+beforeEach(() => mock.timers.enable({ apis: ['Date'], now: recurrenceAnchor - 60_000 }));
+afterEach(() => mock.timers.reset());
 
 const snoozedDailyTask: ScheduledTask = {
   id: 'daily-reminder',

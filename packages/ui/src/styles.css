@@ -1144,3 +1144,9 @@
   outline: none;
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
+
+.maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
+
+.maka-choice-panel { outline: none; }
+
+.maka-choice-hint { margin: 8px 0; }

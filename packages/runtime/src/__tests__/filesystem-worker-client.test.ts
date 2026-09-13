@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { fstatSync, rmSync } from 'node:fs';
 import {
   lstat,
   mkdtemp,
@@ -36,6 +36,7 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
+  canReadPath,
   canWritePath,
   createReadOnlyPermissionProfile,
   type PermissionProfile,
@@ -280,7 +281,14 @@ describe('filesystem worker client Grep target scope', () => {
       expectedIdentity: 'unchecked',
     });
 
-    assert.deepEqual(result, { kind: 'grep', matches: ['file.ts:1:value'] });
+    assert.deepEqual(result, {
+      kind: 'grep',
+      matches: ['file.ts:1:value'],
+      matchedLines: 1,
+      returnedLines: 1,
+      omittedLines: 0,
+      truncated: false,
+    });
     assert.equal(requests[0]?.expectedTarget.scope, 'exact');
   });
 
@@ -309,6 +317,100 @@ describe('filesystem worker client Grep target scope', () => {
 });
 
 describe('filesystem worker operation-scoped Seatbelt profile', () => {
+  test('Linux mounts authorized Grep metadata files but only synthesizes the Git directory', async () => {
+    const root = await temporaryDirectory('maka-grep-linux-metadata-');
+    const source = join(root, 'src');
+    await mkdir(source);
+    await mkdir(join(root, 'git-metadata', 'info'), { recursive: true });
+    await symlink(join(root, 'git-metadata'), join(root, '.git'));
+    await writeFile(join(root, 'rules'), 'generated/\n');
+    await symlink(join(root, 'rules'), join(root, '.gitignore'));
+    await writeFile(join(root, '.ignore'), 'temporary/\n');
+    await writeFile(join(root, '.git', 'info', 'exclude'), 'private/\n');
+    const { client, transforms, processInputs } = fakeClient({ platform: 'linux' });
+    await client.execute({
+      operation: {
+        kind: 'grep',
+        path: source,
+        pattern: 'x',
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 1000,
+      },
+      cwd: root,
+      permissionProfile: {
+        type: 'managed',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+        },
+        network: { kind: 'restricted' },
+      },
+    });
+    const pinned = transforms[0]!.command.pathContext.pinnedProfilePaths!;
+    const argv = processInputs[0]!.argv;
+    for (const path of [
+      source,
+      join(root, '.gitignore'),
+      join(root, '.ignore'),
+      join(root, '.git', 'info', 'exclude'),
+    ]) {
+      const entry = pinned.find((entry) => entry.path === path);
+      assert.ok(entry);
+      assert.ok(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${entry.fd}`, path));
+    }
+    const git = pinned.find((entry) => entry.path === join(root, '.git'))!;
+    assert.ok(git);
+    assert.equal(
+      processInputs[0]!.fdInputs?.some((entry) => entry.fd === git.fd),
+      false,
+    );
+    assert.equal(hasArgTriple(argv, '--ro-bind', `/proc/self/fd/${git.fd}`, git.path), false);
+    assert.ok(argv.some((arg, index) => arg === '--dir' && argv[index + 1] === git.path));
+    const markerIndex = argv.findIndex(
+      (arg, index) => arg === '--dir' && argv[index + 1] === git.path,
+    );
+    const firstHostBind = argv.findIndex(
+      (arg) => arg === '--ro-bind' || arg === '--ro-bind-try' || arg === '--bind',
+    );
+    assert.ok(markerIndex < firstHostBind);
+    for (const entry of pinned) assert.throws(() => fstatSync(entry.sourceFd), { code: 'EBADF' });
+  });
+
+  test('Grep grants ancestor metadata exactly and never follows an unauthorized metadata link', async () => {
+    const root = await temporaryDirectory('maka-grep-metadata-');
+    const source = join(root, 'src');
+    const outside = await temporaryDirectory('maka-grep-metadata-outside-');
+    await mkdir(source);
+    await writeFile(join(root, '.gitignore'), 'generated/\n');
+    await writeFile(join(outside, 'rules'), '*\n');
+    await symlink(join(outside, 'rules'), join(root, '.ignore'));
+    const { client, transforms } = fakeClient();
+    await client.execute({
+      operation: {
+        kind: 'grep',
+        path: source,
+        pattern: 'x',
+        maxCountPerFile: 50,
+        limit: 200,
+        timeoutMs: 1000,
+      },
+      cwd: root,
+      permissionProfile: {
+        type: 'managed',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+        },
+        network: { kind: 'restricted' },
+      },
+    });
+    const { profile, pathContext } = transforms[0]!.command;
+    assert.equal(canReadPath(profile, join(root, '.gitignore'), pathContext), true);
+    assert.equal(canReadPath(profile, join(root, 'private.txt'), pathContext), false);
+    assert.equal(canReadPath(profile, join(outside, 'rules'), pathContext), false);
+  });
+
   test('narrows a write worker to the exact target while preserving the base policy', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-operation-profile-');
     const target = join(workspace, 'target.txt');
@@ -390,6 +492,40 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
 });
 
 describe('filesystem worker Linux path context', () => {
+  test('reports excessive ancestor ignore files before preparing or launching a worker', async () => {
+    const root = await temporaryDirectory('maka-grep-metadata-budget-');
+    let target = root;
+    for (let index = 0; index < 61; index++) {
+      await writeFile(join(target, '.ignore'), '');
+      target = join(target, 'd');
+      await mkdir(target);
+    }
+    const { client, transforms, processInputs } = fakeClient({ platform: 'linux' });
+    await assert.rejects(
+      client.execute({
+        operation: grepOperation(target),
+        cwd: root,
+        permissionProfile: {
+          type: 'managed',
+          fileSystem: {
+            kind: 'restricted',
+            entries: [{ kind: 'path', path: root, access: 'read', match: 'subtree' }],
+          },
+          network: { kind: 'restricted' },
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'request_overflow');
+        assert.equal(error.stage, 'validation');
+        assert.match(error.message, /Search from a higher-level directory/);
+        return true;
+      },
+    );
+    assert.equal(transforms.length, 0);
+    assert.equal(processInputs.length, 0);
+  });
+
   test('rejects an existing subtree that disappears before it can be pinned', async () => {
     const workspace = await temporaryDirectory('maka-linux-worker-vanished-');
     const target = join(workspace, 'src');
@@ -598,7 +734,14 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
     case 'apply_patch':
       return { kind: 'apply_patch', ok: true, path: request.operation.path };
     case 'grep':
-      return { kind: 'grep', matches: ['file.ts:1:value'] };
+      return {
+        kind: 'grep',
+        matches: ['file.ts:1:value'],
+        matchedLines: 1,
+        returnedLines: 1,
+        omittedLines: 0,
+        truncated: false,
+      };
     case 'glob':
       return { kind: 'glob', files: [] };
     default:

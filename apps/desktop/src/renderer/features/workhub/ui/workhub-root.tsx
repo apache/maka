@@ -17,15 +17,16 @@
  * under the License.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
+import { FormInteractionPrompt } from '@maka/ui';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
-import { WorkHubHighlightProvider } from './workhub-work-identity.js';
+import { WorkHubHighlightProvider, WorkHubHighlightContext } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -66,7 +67,12 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 }
 
 export function WorkHubRoot() {
-  const controller = useWorkHubController();
+  return <WorkHubHighlightProvider><WorkHubContents /></WorkHubHighlightProvider>;
+}
+
+function WorkHubContents() {
+  const { selectWork } = useContext(WorkHubHighlightContext);
+  const controller = useWorkHubController(() => selectWork(undefined));
   const { services, session, transcript, busy } = controller;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
@@ -80,6 +86,12 @@ export function WorkHubRoot() {
   const surface = useRef<HTMLElement>(null);
   const [editingProgressRequest, setEditingProgressRequest] = useState<number>();
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
+  const promptStates = new Map<string, import('../model/linked-work.js').WorkHubDelegationState>();
+  for (const message of transcript.messages) if (message.type === 'turn_state') promptStates.set(message.turnId, message.status);
+  for (const [turnId, state] of Object.entries(controller.turnStates)) promptStates.set(turnId, state);
+  if (controller.liveTurn && !controller.liveTurn.terminal) promptStates.set(controller.liveTurn.turnId, 'running');
+  if (controller.pendingTurnId && controller.sending) promptStates.set(controller.pendingTurnId, 'running');
+  if (controller.activeInteraction) promptStates.set(controller.activeInteraction.turnId, 'waiting_for_user');
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
   const conversationExpanded = expandedOverride ?? hasConversation;
   const hasConversationRef = useRef(hasConversation);
@@ -90,6 +102,12 @@ export function WorkHubRoot() {
   const progress = presentation?.progressRequest !== undefined;
   const editingProgress = progress && editingProgressRequest === presentation.progressRequest;
   const floating = presentation?.placement === 'floating';
+  useEffect(() => {
+    if (controller.activeQuestion || controller.activeForm) {
+      setConversationExpanded(true);
+
+    }
+  }, [controller.activeQuestion, controller.activeForm, presentation?.progressRequest]);
   const showConversation = !progress && (!floating || conversationExpanded);
   useLayoutEffect(() => {
     const element = surface.current;
@@ -129,19 +147,28 @@ export function WorkHubRoot() {
     if (!composerSurface.current) return;
     const resize = () => {
       surface.current?.style.setProperty('--workhub-composer-height', `${compactHeight()}px`);
+      void services.presentation.setConversationLayout({ expanded: conversationExpanded, compactHeight: compactHeight(), interactionPending: Boolean(controller.activeInteraction) }).catch(controller.report);
       if (progress) {
         const height = Math.ceil(progressHeader.current?.getBoundingClientRect().height ?? 80) + compactHeight() + 2;
         void services.presentation.resizeProgress(presentation.progressRequest!, height).catch(controller.report);
         return;
       }
-      void services.presentation.setConversationLayout({ expanded: conversationExpanded, compactHeight: compactHeight() }).catch(controller.report);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(composerSurface.current);
     if (progressHeader.current) observer.observe(progressHeader.current);
     resize();
     return () => observer.disconnect();
-  }, [services, floating, conversationExpanded, presentation?.progressRequest, editingProgress]);
+  }, [services, floating, conversationExpanded, presentation?.progressRequest, editingProgress, controller.activeInteraction]);
+  const previousInteraction = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    const id = controller.activeInteraction?.requestId;
+    if (previousInteraction.current && !id && document.hasFocus() &&
+      (document.activeElement === document.body || composerSurface.current?.contains(document.activeElement))) {
+      composer.current?.focus();
+    }
+    previousInteraction.current = id;
+  }, [controller.activeInteraction?.requestId]);
   const toggleConversation = () => {
     if (conversationExpanded) {
       cancelReveal(revealMark.current, history.current);
@@ -179,7 +206,10 @@ export function WorkHubRoot() {
     void services.control.getSnapshot().then(acceptControl).catch(controller.report);
     const focus = services.presentation.onFocusComposer((expand) => {
       if (expand) setConversationExpanded(true);
-      composer.current?.focus();
+      const choice = surface.current?.querySelector<HTMLElement>('.maka-choice-panel');
+      if (choice) {
+        if (!choice.contains(document.activeElement)) choice.focus();
+      } else composer.current?.focus();
       // A warm summon must not fade the last painted frame back out.
       if (hasPresented.current) return;
       hasPresented.current = true;
@@ -235,11 +265,10 @@ export function WorkHubRoot() {
     void task.catch(controller.report);
   };
   return (
-    <WorkHubHighlightProvider>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
-        call(services.presentation.showConversation(presentation.progressRequest));
+        if (presentation.progressRequest !== undefined) call(services.presentation.expandProgress(presentation.progressRequest));
       }} />}
       {!progress && floating && conversationExpanded && <div className="workHubWindowControls">
         <IconButton className="workHubCloseButton" type="button" size="sm" variant="ghost" icon={<X size={12} />} label={t.hide} onClick={() => call(services.presentation.hide())} />
@@ -263,6 +292,11 @@ export function WorkHubRoot() {
                 )}
               </div>
             )}
+            {controller.activeForm && <FormInteractionPrompt request={controller.activeForm} onRespond={controller.respondToUserForm} onStop={controller.stop} stopPending={controller.stopPending} />}
+            {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
+              request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
+              onStop={controller.stop} stopPending={controller.stopPending} />}
+            <div hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
@@ -282,7 +316,7 @@ export function WorkHubRoot() {
                 const accepted = await controller.send(text, attachments, followUpMode);
                 if (accepted) {
                   setConversationExpanded(true);
-                  if (progress) call(services.presentation.showConversation(presentation.progressRequest));
+                  if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
                 }
                 return accepted;
               }}
@@ -302,6 +336,7 @@ export function WorkHubRoot() {
                 </div>
               }
             />
+            </div>
             {!progress && floating && !conversationExpanded && (
               <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={toggleConversation} />
             )}
@@ -310,9 +345,10 @@ export function WorkHubRoot() {
       >
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
         <div className="workhub-body">
-        <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} onOpenSession={(id) => call(services.presentation.openSession(id))} />
+        <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} />
         <div className="workhub-conversation-shell">
         <WorkHubConversation
+          promptStates={promptStates}
           workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
@@ -341,6 +377,6 @@ export function WorkHubRoot() {
         </div></div>
         </div>
       </ChatSurfaceLayout>
-    </section></WorkHubHighlightProvider>
+    </section>
   );
 }

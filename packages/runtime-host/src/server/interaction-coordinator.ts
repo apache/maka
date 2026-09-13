@@ -36,6 +36,8 @@ import {
   projectInteractionQuestionRequest,
   type InteractionCanonicalOutcome,
   type InteractionClosureReason,
+  type InteractionFormRequest,
+  type InteractionFormResult,
 } from '@maka/core/interaction';
 import type {
   SandboxBoundaryRequest,
@@ -140,6 +142,7 @@ interface LiveFormEntry extends LiveEntryBase {
   readonly kind: 'form';
   readonly request: StoredInteractionRequest;
   readonly continuation: RuntimeFormContinuation;
+  readonly hostResult?: Promise<HostFormResult>;
 }
 
 interface LiveSandboxBoundaryEntry extends LiveEntryBase {
@@ -171,6 +174,18 @@ interface CommittedEntry {
 interface SettledSandboxBoundaryEntry {
   readonly entry: LiveSandboxBoundaryEntry;
   readonly settlement: SandboxBoundarySettlement;
+}
+
+export interface HostFormResult {
+  readonly createdAt: number;
+  readonly answer: InteractionFormResult;
+}
+
+export interface HostFormInput extends RuntimeInteractionRunIdentity {
+  /** Caller-derived immutable request identity, including the operation input digest. */
+  readonly requestId: string;
+  /** Only evaluated for a new request; replay uses the durable offered options. */
+  readonly create: () => Promise<InteractionFormRequest>;
 }
 
 export interface ClientCapabilityApprovalInput {
@@ -261,6 +276,73 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       close: (reason: RuntimeInteractionRunClosureReason) => this.#closeRun(run, reason),
       release: () => this.#releaseRun(run),
     });
+  }
+
+  /** Host tools share Runtime's durable interaction lifecycle without rebinding its Run. */
+  async requestForm(input: HostFormInput): Promise<HostFormResult> {
+    this.#throwIfPoisoned();
+    const run = this.#runs.get(runKey(input));
+    if (!run || !run.bound || run.released) {
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'invalid_request');
+    }
+    this.#assertRunOpen(run, input.requestId);
+    const replay = await this.#readInteraction(input.requestId);
+    if (replay) {
+      if (runKey(replay.request) !== runKey(input) || replay.request.request.kind !== 'form') {
+        throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'invalid_request');
+      }
+      if (replay.outcome) {
+        const outcome = runtimeFormOutcome(replay.outcome.outcome);
+        return {
+          createdAt: replay.request.createdAt,
+          answer: outcome.kind === 'form_answer' ? outcome.answer : { action: 'cancel' },
+        };
+      }
+    }
+    const existing = this.#live.get(input.requestId);
+    if (existing?.kind === 'form' && existing.run === run && existing.hostResult)
+      return existing.hostResult;
+    // An orphaned pending record cannot resurrect a continuation after a Host restart.
+    if (replay)
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'request_settled');
+    const request = projectInteractionFormRequest(await input.create());
+    const concurrent = this.#live.get(input.requestId);
+    if (concurrent?.kind === 'form' && concurrent.run === run && concurrent.hostResult)
+      return concurrent.hostResult;
+    this.#assertRunOpen(run, input.requestId);
+    const createdAt = this.#now();
+    let settle!: (answer: InteractionFormResult) => void;
+    let reject!: (error: unknown) => void;
+    const hostResult = observed(
+      new Promise<HostFormResult>((resolve, fail) => {
+        settle = (answer) => resolve({ createdAt, answer });
+        reject = fail;
+      }),
+    );
+    try {
+      await this.#accept(run, {
+        kind: 'form',
+        request: { ...runIdentity(run), requestId: input.requestId, createdAt, request },
+        hostResult,
+        continuation: {
+          requestId: input.requestId,
+          turnId: run.turnId,
+          runId: run.runId,
+          applyAnswer: async (answer) => {
+            settle(answer);
+          },
+          applyClosure: async () => {
+            settle({ action: 'cancel' });
+          },
+          // Host publication is performed by #accept, with no Runtime event producer to await.
+          waitForPublication: async () => {},
+        },
+      });
+    } catch (error) {
+      reject(error);
+      throw error;
+    }
+    return hostResult;
   }
 
   async requestClientCapabilityApproval(

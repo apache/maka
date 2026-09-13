@@ -22,7 +22,12 @@ import { createContext, useState, type ReactNode } from 'react';
 export const WorkHubHighlightContext = createContext<{
   sessionId: string | undefined;
   highlight(sessionId: string | undefined): void;
-}>({ sessionId: undefined, highlight: () => {} });
+  navigationWork?: { sessionId: string; nonce: number };
+  navigateWork(work: { sessionId: string; name: string }): void;
+  selectedWork?: { sessionId: string; name: string };
+  toggleWork(work: { sessionId: string; name: string }): void;
+  selectWork(work: { sessionId: string; name: string } | undefined): void;
+}>({ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectWork: () => {}, toggleWork: () => {} });
 
 /** Stable across refreshes and reordering; color supplements the visible work name. */
 export function workHubIdentityHue(sessionId: string): number {
@@ -33,10 +38,24 @@ export function workHubIdentityHue(sessionId: string): number {
 }
 
 
-/** Work identity hover is local presentation state shared by the three rails. */
+/** Work identity hover and conversation filtering are local presentation state. */
 export function WorkHubHighlightProvider({ children }: { children: ReactNode }) {
   const [sessionId, highlight] = useState<string>();
-  return <WorkHubHighlightContext.Provider value={{ sessionId, highlight }}>
+  const [navigationWork, setNavigationWork] = useState<{ sessionId: string; nonce: number }>();
+  const [selectedWork, setSelectedWork] = useState<{ sessionId: string; name: string }>();
+  const selectWork = (work: { sessionId: string; name: string } | undefined) => {
+    setNavigationWork(undefined);
+    setSelectedWork(work);
+  };
+  const navigateWork = (work: { sessionId: string; name: string }) => {
+    if (selectedWork?.sessionId === work.sessionId) selectWork(undefined);
+    else if (navigationWork?.sessionId === work.sessionId) selectWork(work);
+    else {
+      setSelectedWork(undefined);
+      setNavigationWork({ sessionId: work.sessionId, nonce: Date.now() });
+    }
+  };
+  return <WorkHubHighlightContext.Provider value={{ sessionId, highlight, navigationWork, navigateWork, selectedWork, selectWork, toggleWork: (work) => selectWork(selectedWork?.sessionId === work.sessionId ? undefined : work) }}>
     {children}
   </WorkHubHighlightContext.Provider>;
 }

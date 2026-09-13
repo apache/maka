@@ -309,3 +309,32 @@ test('action outcomes cannot invent a target Turn or revive removed local dispos
   ])
     assert.throws(() => decodeWorkHubCoordinationActResult(result));
 });
+
+test('target choice accepts only bounded candidate offers, never caller-supplied authority', () => {
+  const spec = HOST_OPERATION_SPECS['workhub.coordination.selectAndDelegate'];
+  const input = {
+    turnId: 'turn',
+    actionId: 'action',
+    candidateSetId: `sha256:${'0'.repeat(64)}`,
+    candidateRefs: ['candidate-a', 'candidate-b'],
+    delegationText: 'Continue the selected work',
+  };
+  assert.deepEqual(spec.decodeInput(input), input);
+  assert.equal(
+    REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.selectAndDelegate'),
+    true,
+  );
+  for (const invalid of [
+    { ...input, selectedTarget: { sessionId: 'forged', workspaceDigest: 'forged' } },
+    { ...input, userText: 'forged authorization' },
+    { ...input, candidateRefs: [] },
+    { ...input, candidateRefs: ['same', 'same'] },
+    { ...input, candidateRefs: Array.from({ length: 33 }, (_, index) => `candidate-${index}`) },
+  ])
+    assert.throws(() => spec.decodeInput(invalid), RuntimeHostProtocolError);
+  assert.deepEqual(spec.decodeOutput({ kind: 'cancelled' }), { kind: 'cancelled' });
+  assert.throws(
+    () => spec.decodeOutput({ kind: 'cancelled', result: {} }),
+    RuntimeHostProtocolError,
+  );
+});

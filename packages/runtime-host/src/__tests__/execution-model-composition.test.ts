@@ -151,8 +151,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  // Read uses one bounded file/resource schema and no separate archive tool.
-  'sha256:d7115dca352c667403190156941602a098a38bf0e0ccc9bd0fcfeb04fe16df49';
+  // Unified Read pages and Grep completeness share the hosted tool profile.
+  'sha256:fb7f539090471695ec1d8ca31555d083d8c3c0e0c40d5dcf655b14c103b10c22';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;

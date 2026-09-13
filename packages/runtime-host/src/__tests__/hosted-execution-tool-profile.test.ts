@@ -166,11 +166,12 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
     makeTool('mcp__desktop_browser__browser_navigate'),
     control,
     tasks,
+    makeTool('AskUserQuestion'),
   ];
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, 'Read'],
+    [control.name, tasks.name, 'Read', 'AskUserQuestion'],
   );
   const read = projected[2]!;
   const context = {

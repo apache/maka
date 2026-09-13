@@ -224,14 +224,14 @@ export const ExistingConversation: Story = {
     await userEvent.unhover(trigger);
 
     await userEvent.click(trigger);
-    await expect(announcement).toHaveTextContent(warning);
+    await waitFor(() => expect(announcement).toHaveTextContent(warning));
     await expect(announcement).toHaveAttribute('aria-live', 'polite');
     await expect(announcement).toHaveAttribute('aria-atomic', 'true');
     const menu = within(document.body).getByRole('listbox');
     await expect(menu).not.toContainElement(announcement);
 
     await userEvent.keyboard('{Escape}');
-    await expect(announcement).toBeEmptyDOMElement();
+    await waitFor(() => expect(announcement).toBeEmptyDOMElement());
     await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
 
     // Closing replaces the wheel with a new trigger and restores focus next frame.
@@ -239,7 +239,7 @@ export const ExistingConversation: Story = {
       name: /切换当前任务模型|Switch model for this task/,
     })).toHaveFocus());
     await userEvent.keyboard('{ArrowDown}');
-    await expect(announcement).toHaveTextContent(warning);
+    await waitFor(() => expect(announcement).toHaveTextContent(warning));
   },
 };
 

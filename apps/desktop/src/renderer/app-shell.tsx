@@ -850,8 +850,8 @@ function AppShellContent({
       if (!confirmed) return false;
       // Abandoning the proposal is what leaves Plan: Runtime writes the
       // Session back to `agent` itself as part of it.
-      await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-    } else await window.maka.sessions.setCollaborationMode(sessionId, active ? 'plan' : 'agent');
+      await sessionSettingIntent.abandonPlanProposal(sessionId, latestProposal.proposalId);
+    } else await sessionSettingIntent.setCollaborationMode(sessionId, active ? 'plan' : 'agent');
     return true;
   }
 
