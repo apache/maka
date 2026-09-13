@@ -39,8 +39,9 @@
  *  5. **Copy/export policy**: only the text-based kinds (`file`, `diff`,
  *     `html`) expose a Copy button. `image` / `pdf` rows do NOT — those are
  *     binary, and silently base64-stuffing a multi-MB PDF into the clipboard
- *     is a footgun. HTML gets「打开」(the system default app); other kinds
- *     get「在 Finder 中打开」. All kinds still get「另存为」.
+ *     is a footgun. HTML rows explicitly offer View in Maka; their preview
+ *     menu offers Open in Default App and Show in Finder separately.
+ *     All kinds still get Save As.
  *
  * Layout: fills the Generated files tab and switches between a list and one
  * full-panel preview while reporting its authoritative filtered count.
@@ -518,7 +519,7 @@ export function ArtifactPane(props: {
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
                   onClick={() => openPreview(record.id)}
-                  label={record.name}
+                  label={record.kind === 'html' ? `${record.name} · ${copy.pane.viewInMaka}` : record.name}
                   icon={(
                     <span className="maka-artifact-row-icon" aria-hidden="true">
                       <KindIcon kind={record.kind} />
@@ -526,6 +527,7 @@ export function ArtifactPane(props: {
                   )}
                   endContent={(
                     <span className="maka-artifact-row-meta">
+                      {record.kind === 'html' && <span>{copy.pane.viewInMaka}</span>}
                       <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
                       <span className="maka-artifact-row-time">
                         {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
@@ -557,6 +559,7 @@ export function ArtifactPane(props: {
             <div className="maka-artifact-preview-heading">
               <strong title={previewRecord.name}>{previewRecord.name}</strong>
               <span>
+                {previewRecord.kind === 'html' && `${copy.pane.viewInMaka} · `}
                 {formatBytes(previewRecord.sizeBytes)} · {formatRelativeTimestamp(previewRecord.createdAt, Date.now(), locale)}
               </span>
             </div>
