@@ -18,7 +18,11 @@
  */
 
 import { assertMaximalJsonPages } from './fixtures/json-pages.js';
-import { EXTERNAL_SESSION_PAGE_MAX_ITEMS } from '../protocol/index.js';
+import {
+  EXTERNAL_SESSION_NAME_MAX_BYTES,
+  EXTERNAL_SESSION_PAGE_MAX_ITEMS,
+  EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES,
+} from '../protocol/index.js';
 
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -289,6 +293,56 @@ test('a row too large to share a page still advances the cursor', () => {
     ['b'],
   );
   assert.equal(second.nextSourceOffset, 2);
+});
+
+test('the largest row the wire bounds allow still shares a page', async () => {
+  // The page budget is a packing limit only because one row is bounded well
+  // below it, and that is what makes the over-budget branch unreachable. This
+  // builds the largest row the wire bounds permit — every field at its cap, with
+  // a full window of imported ids — and requires two of them to fit. Raising a
+  // field bound past the budget fails here, instead of quietly costing the
+  // catalog a row at runtime.
+  const maxId = (suffix: string) =>
+    `${'i'.repeat(EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES - 1)}${suffix}`;
+  // The inputs are far larger than any field bound, so what reaches the page is
+  // exactly the caps — which is what this test is about.
+  const longestRow = (suffix: string) => ({
+    id: maxId(suffix),
+    name: 'n'.repeat(1024 * 1024),
+    cwd: `/${'c'.repeat(1024 * 1024)}`,
+  });
+  const adapter = adapterFixture({ count: 2 });
+  adapter.listSessions = async (query) =>
+    pageFixtureSummaries([longestRow('0'), longestRow('1')], query);
+  const fixture = coordinatorFixture([adapter], {
+    lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
+      sourceSessionIds.map((sourceSessionId) => ({
+        sourceSessionId,
+        livePublishedImportCount: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+        recentSessionIds: Array.from(
+          { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS },
+          () => 'r'.repeat(EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES),
+        ),
+      })),
+  });
+
+  const outcome = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) assert.fail('Expected a catalog page');
+  // Two rows share the page, so neither needed the over-budget branch.
+  assert.equal(outcome.result.sessions.length, 2);
+  assert.equal(outcome.result.sessions[0]?.name.length, EXTERNAL_SESSION_NAME_MAX_BYTES);
+  assert.equal(
+    outcome.result.sessions[0]?.importState.importedSessionIds.length,
+    EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= EXTERNAL_SESSION_RESULT_MAX_BYTES,
+  );
 });
 
 test('stops catalog pages before the encoded result limit', async () => {
