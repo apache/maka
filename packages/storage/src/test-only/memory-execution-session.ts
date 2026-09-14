@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { isCanonicalReadOnlyPermissionProfile as isReadOnlyProfile } from '@maka/core/permission-profile';
 import { tmpdir } from 'node:os';
 import {
   decodeCanonicalMessage,
@@ -109,11 +110,6 @@ function genesisProfile(mode: 'ask' | 'explore'): ManagedProfile {
   const initial = createGenesisExecutionBoundary(mode);
   if (initial.kind !== 'managed') throw new Error('Expected managed genesis boundary');
   return initial.profile;
-}
-function isReadOnlyProfile(profile: ManagedProfile): boolean {
-  const { name: _name, ...policy } = profile;
-  const { name: _canonicalName, ...canonical } = genesisProfile('explore');
-  return equal(policy, canonical);
 }
 function saveBoundary(s: MemoryState, id: string, value: ExecutionBoundary): void {
   rows<ExecutionBoundary>(s, 'boundaries').set(id, value);
@@ -774,20 +770,29 @@ export function createMemorySessionStore(
         });
       });
     },
-    reorderMessageAdmissions: async (id, ids) => {
+    reorderMessageAdmissions: async (id, ids, disposition = 'followup') => {
       write('message.reorder', (s) => {
         assertSafeSessionId(id);
         ids.forEach(assertSafeSessionId);
-        const all = [...admissions(s).values()].filter(
-          (x) => x.sessionId === id && x.disposition === 'followup',
-        );
+        const order = rows<number>(s, 'admissionOrder');
+        const all = [...admissions(s).values()]
+          .filter((x) => x.sessionId === id && x.disposition === disposition)
+          .sort(
+            (x, y) =>
+              (order.get(key(id, x.messageId)) ?? 0) - (order.get(key(id, y.messageId)) ?? 0),
+          );
         if (
           new Set(ids).size !== ids.length ||
-          ids.length !== all.length ||
+          (disposition === 'followup' && ids.length !== all.length) ||
           ids.some((x) => !all.some((v) => v.messageId === x))
         )
           conflict('Admission order mismatch');
-        ids.forEach((mid, index) => rows<number>(s, 'admissionOrder').set(key(id, mid), index));
+        const selected = new Set(ids);
+        let next = 0;
+        all.forEach((entry, index) => {
+          const messageId = selected.has(entry.messageId) ? ids[next++]! : entry.messageId;
+          order.set(key(id, messageId), index);
+        });
       });
     },
     markMessagesHandedOff: async (input) => {

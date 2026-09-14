@@ -34,10 +34,12 @@ import {
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   buildImmutableRuntimePrefix,
+  buildImmutableRuntimePrefixProof,
   decodeContinuationClaim,
   continuationStartEventMatchesClaim,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
+  type ImmutableRuntimePrefixProofV1,
 } from '@maka/core/runtime-boundary';
 import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
@@ -52,6 +54,7 @@ import type { ExecutionRuntimeEventWriter } from '../execution-stores.js';
 import type {
   ToolOperationRecord,
   SessionRuntimeEventEntry,
+  ImmutableRuntimePrefixProofReadBudget,
 } from '../runtime-event-store-contract.js';
 import {
   assertPreparedInput,
@@ -64,7 +67,7 @@ import { assertNoReservedWorkspaceAuthorityAppend } from '../runtime-event-autho
 import { immutableSteeringMessageId } from '../runtime-event-invariants.js';
 import {
   RuntimeTranscriptOversizedTurnError,
-  type RuntimeTranscriptInvocation,
+  type RuntimeTranscriptInvocationHeader,
 } from '../runtime-transcript-query.js';
 import {
   partialRuntimeStream,
@@ -332,6 +335,56 @@ function prefix(
     list.slice(0, limit).map((event, i) => ({ eventSeq: i + 1, event })),
   );
 }
+function prefixProof(
+  s: MemoryState,
+  input: { sessionId: string; runId: string; upToEventSeq?: number },
+  budget: ImmutableRuntimePrefixProofReadBudget,
+): ImmutableRuntimePrefixProofV1 {
+  for (const [name, value] of Object.entries(budget)) {
+    if (!Number.isSafeInteger(value) || value < 1)
+      throw new Error(`Invalid immutable RuntimeEvent prefix proof ${name}`);
+  }
+  if (
+    input.upToEventSeq !== undefined &&
+    (!Number.isSafeInteger(input.upToEventSeq) || input.upToEventSeq <= 0)
+  )
+    throw new Error('Invalid immutable RuntimeEvent prefix high-water');
+  const list = immutable(s, input.sessionId, input.runId);
+  const first = list[0];
+  if (!first) throw new Error('immutable RuntimeEvent prefix is empty');
+  let lastEventSeq = 0;
+  function* read(): Iterable<{ eventSeq: number; event: RuntimeEvent }> {
+    let bytes = 0;
+    for (const [index, event] of list.entries()) {
+      const eventSeq = index + 1;
+      if (input.upToEventSeq !== undefined && eventSeq > input.upToEventSeq) break;
+      if (eventSeq > budget.maxEvents)
+        throw new Error('Immutable RuntimeEvent prefix proof exceeds its event limit');
+      const size = Buffer.byteLength(JSON.stringify(event), 'utf8');
+      if (size > budget.maxRecordBytes)
+        throw new Error('Immutable RuntimeEvent prefix proof exceeds its record byte limit');
+      if ((bytes += size) > budget.maxBytes)
+        throw new Error('Immutable RuntimeEvent prefix proof exceeds its byte limit');
+      lastEventSeq = eventSeq;
+      yield { eventSeq, event };
+    }
+  }
+  const proof = buildImmutableRuntimePrefixProof(
+    {
+      sessionId: first.sessionId,
+      invocationId: first.invocationId,
+      runId: first.runId,
+      turnId: first.turnId,
+    },
+    read(),
+  );
+  if (input.upToEventSeq !== undefined && lastEventSeq !== input.upToEventSeq)
+    throw new Error(
+      `immutable RuntimeEvent prefix high-water ${input.upToEventSeq} is unavailable`,
+    );
+  return proof;
+}
+
 function assertBoundary(s: MemoryState, claim: ContinuationClaimV1) {
   let previous: ImmutableRuntimePrefixV1 | undefined;
   for (const [index, segment] of claim.boundary.segments.entries()) {
@@ -380,7 +433,7 @@ function transcript(
   s: MemoryState,
   sessionId: string,
   throughOrdinal = Number.MAX_SAFE_INTEGER,
-): RuntimeTranscriptInvocation[] {
+): Array<RuntimeTranscriptInvocationHeader & { events: SessionRuntimeEventEntry[] }> {
   check(sessionId);
   const entries = ordinals(s).get(sessionId) ?? [];
   return runtimeInvocationsFromSessionEvents(
@@ -651,6 +704,8 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       if (new Set(ids).size !== ids.length) throw new Error('Immutable steering identity conflict');
     },
     readImmutableRuntimePrefix: async (input) => a.read((s) => prefix(s, input)),
+    readImmutableRuntimePrefixProof: async (input, budget) =>
+      a.read((s) => prefixProof(s, input, budget)),
     claimContinuation: async (input) =>
       a.write('runtime.claimContinuation', (s) => {
         const claim = decodeContinuationClaim(copy(input.claim));
@@ -815,12 +870,28 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         const all = transcript(s, sessionId);
         return all.length ? Math.max(...all.map((i) => i.lastOrdinal)) : null;
       }),
-    readTranscriptInvocations: async (sessionId, request) =>
-      a.read((s) => {
-        const { direction, throughOrdinal, position, limit: n, maxEvents, maxBytes } = request;
-        for (const value of [throughOrdinal, position, n, maxEvents, maxBytes])
+    readTranscriptInvocations: async (sessionId, request, project) => {
+      const { maxEvents, maxBytes, maxRecordBytes } = request;
+      // Detach the selected storage facts before handing them to the caller.
+      // The caller owns its projection result; it may contain live methods and
+      // must not pass back through the authority's structured-clone boundary.
+      const selected = a.read((s) => {
+        const {
+          direction,
+          throughOrdinal,
+          position,
+          limit: n,
+          maxEvents,
+          maxBytes,
+          maxRecordBytes,
+        } = request;
+        for (const value of [throughOrdinal, position])
           if (!Number.isSafeInteger(value) || value < 0)
             throw new RangeError('Invalid transcript bound');
+        limit(n);
+        for (const value of [maxEvents, maxBytes, maxRecordBytes])
+          if (!Number.isSafeInteger(value) || value < 1)
+            throw new RangeError('Invalid transcript read limit');
         if (direction !== 'older' && direction !== 'newer')
           throw new Error('Invalid transcript direction');
         const all = transcript(s, sessionId, throughOrdinal);
@@ -833,18 +904,22 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
                 .filter((i) => i.lastOrdinal >= position)
                 .sort((x, y) => x.lastOrdinal - y.lastOrdinal)
         ).slice(0, n);
-        if (
-          selected.some(
-            (i) =>
-              bounded(
-                i.events.map((e) => e.event),
-                { maxRecords: maxEvents, maxBytes },
-              ).status === 'limit_exceeded',
-          )
-        )
-          throw new RuntimeTranscriptOversizedTurnError('Transcript Turn exceeds budget');
         return selected.sort((x, y) => x.firstOrdinal - y.firstOrdinal);
-      }),
+      });
+      return selected.map(({ events, ...header }) => {
+        function* read(): Iterable<SessionRuntimeEventEntry> {
+          let count = 0;
+          let bytes = 0;
+          for (const entry of events) {
+            const size = Buffer.byteLength(JSON.stringify(entry.event), 'utf8');
+            if (++count > maxEvents || size > maxRecordBytes || (bytes += size) > maxBytes)
+              throw new RuntimeTranscriptOversizedTurnError('Transcript Turn exceeds budget');
+            yield copy(entry);
+          }
+        }
+        return project(header, read());
+      });
+    },
     readTranscriptLandmarks: async (sessionId, throughOrdinal, n) =>
       a.read((s) => {
         if (!Number.isSafeInteger(throughOrdinal) || throughOrdinal < 0 || !Number.isSafeInteger(n))

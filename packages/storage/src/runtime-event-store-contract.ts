@@ -19,6 +19,12 @@
 
 import type { RuntimeEvent, ToolRecoveryMode } from '@maka/core/runtime-event';
 
+export interface ImmutableRuntimePrefixProofReadBudget {
+  readonly maxEvents: number;
+  readonly maxBytes: number;
+  readonly maxRecordBytes: number;
+}
+
 /** T1/T2 transactions keep their runtime fact and recovery journal inseparable. */
 export interface CommitToolPreparedInput {
   operationId: string;

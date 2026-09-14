@@ -68,8 +68,8 @@ import type {
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
-import type { ImmutableRuntimePrefixProofReadBudget } from './sqlite-runtime-store.js';
 
 import { localExecutionPersistenceProvider } from './local-execution-persistence.js';
 import {

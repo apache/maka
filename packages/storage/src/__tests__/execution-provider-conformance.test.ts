@@ -24,6 +24,9 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { RuntimeTranscriptOversizedTurnError } from '../runtime-transcript-query.js';
+import { invocationOpening } from './fixtures/invocation-opening.js';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
@@ -76,6 +79,199 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(
+    backend + ': bounded prefix proofs match immutable history and reject exceeded budgets',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: s }) => {
+        const { prepared, outcome } = toolInputs();
+        const input = { sessionId: 'tool-session', runId: 'tool-run' };
+        const budget = { maxEvents: 10, maxBytes: 64 * 1024, maxRecordBytes: 16 * 1024 };
+        await assert.rejects(s.readImmutableRuntimePrefixProof(input, budget), /empty/);
+        await s.commitToolPrepared(prepared);
+        await s.commitToolOutcome(outcome);
+        for (const upToEventSeq of [undefined, 1, 2, 3]) {
+          const request = { ...input, upToEventSeq };
+          const full = await s.readImmutableRuntimePrefix(request);
+          const proof = await s.readImmutableRuntimePrefixProof(request, budget);
+          assert.deepEqual(proof, {
+            protocol: 'immutable_runtime_prefix_proof_v1',
+            identity: full.identity,
+            position: full.position,
+            prefixDigest: full.prefixDigest,
+            firstEvent: full.events[0],
+            lastEvent: full.events.at(-1),
+          });
+          proof.firstEvent.author = 'user';
+          assert.deepEqual(
+            (await s.readImmutableRuntimePrefixProof(request, budget)).firstEvent,
+            full.events[0],
+          );
+        }
+        for (const field of ['maxEvents', 'maxBytes', 'maxRecordBytes'] as const) {
+          await assert.rejects(
+            s.readImmutableRuntimePrefixProof(input, { ...budget, [field]: 1 }),
+            /limit/,
+          );
+          await assert.rejects(
+            s.readImmutableRuntimePrefixProof(input, { ...budget, [field]: 0 }),
+            /Invalid/,
+          );
+        }
+        await assert.rejects(
+          s.readImmutableRuntimePrefixProof({ ...input, upToEventSeq: 4 }, budget),
+          /unavailable/,
+        );
+        await assert.rejects(
+          s.readImmutableRuntimePrefixProof({ ...input, upToEventSeq: 0 }, budget),
+          /high-water/,
+        );
+      });
+    },
+  );
+  test(backend + ': transcript projection consumes bounded detached event iterators', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const run = {
+        sessionId: 'projection-session',
+        runId: 'projection-run',
+        turnId: 'projection-turn',
+        invocationId: 'projection-invocation',
+      };
+      const opening = buildInvocationOpenedEvent({
+        id: 'projection-opened',
+        run,
+        openedAt: 1,
+        opening: invocationOpening(),
+      });
+      const body: RuntimeEvent = {
+        ...run,
+        id: 'projection-body',
+        ts: 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'A projected answer' },
+      };
+      const ending: RuntimeEvent = {
+        ...run,
+        id: 'projection-ended',
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: { endInvocation: true },
+        status: 'completed',
+      };
+      for (const event of [opening, body, ending])
+        await s.appendRuntimeEvent(run.sessionId, run.runId, event);
+      const throughOrdinal = (await s.readTranscriptHighWater(run.sessionId))!;
+      const request = {
+        direction: 'older' as const,
+        throughOrdinal,
+        position: throughOrdinal,
+        limit: 1,
+        maxEvents: 10,
+        maxBytes: 64 * 1024,
+        maxRecordBytes: 16 * 1024,
+      };
+      const project = (
+        header: { firstOrdinal: number; lastOrdinal: number },
+        entries: Iterable<{ ordinal: number; event: RuntimeEvent }>,
+      ) => ({
+        first: header.firstOrdinal,
+        last: header.lastOrdinal,
+        entries: [...entries].map(({ ordinal, event }) => ({ ordinal, id: event.id })),
+      });
+      const expected = await s.readTranscriptInvocations(run.sessionId, request, project);
+      assert.equal(expected.length, 1);
+      assert.deepEqual(
+        expected[0]!.entries.map((e) => e.id),
+        [opening.id, body.id, ending.id],
+      );
+      assert.equal(expected[0]!.last, throughOrdinal);
+      await s.readTranscriptInvocations(run.sessionId, request, (header, entries) => {
+        header.invocation.opening.route.modelId = 'mutated';
+        for (const entry of entries) entry.event.author = 'user';
+        return null;
+      });
+      assert.deepEqual(
+        await s.readTranscriptInvocations(run.sessionId, request, project),
+        expected,
+      );
+      assert.equal(
+        (await s.readRunInvocation(run.sessionId, run.runId))!.opening.route.modelId,
+        'fake-model',
+      );
+      assert.equal(
+        (await s.readImmutableRuntimeEvents(run.sessionId, run.runId))[1]!.author,
+        'agent',
+      );
+      for (const field of ['maxEvents', 'maxBytes', 'maxRecordBytes'] as const) {
+        await assert.rejects(
+          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 1 }, project),
+          RuntimeTranscriptOversizedTurnError,
+        );
+        await assert.rejects(
+          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 0 }, project),
+          /Invalid/,
+        );
+      }
+      const firstOnly = await s.readTranscriptInvocations(
+        run.sessionId,
+        { ...request, maxEvents: 1 },
+        (_header, entries) => entries[Symbol.iterator]().next().value?.event.id,
+      );
+      assert.deepEqual(firstOnly, [opening.id]);
+      // Projectors own their results, which can contain live methods (the
+      // production transcript reader returns a fold), not just cloneable data.
+      const projected = { read: () => 'caller-owned projection' };
+      const results = await s.readTranscriptInvocations(
+        run.sessionId,
+        request,
+        (_header, entries) => {
+          assert.equal([...entries].length, 3);
+          return projected;
+        },
+      );
+      assert.equal(results[0], projected);
+      assert.equal(results[0]!.read(), 'caller-owned projection');
+    });
+  });
+  test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const session = await s.create(sessionInput(root));
+      const base = assignmentRequest('reorder', session.id, 'Target', 'turn').admission;
+      for (const messageId of ['older-a', 'selected-a', 'older-b', 'selected-b'])
+        await s.commitMessageAdmission({ ...base, messageId });
+      for (const messageId of ['follow-a', 'follow-b'])
+        await s.commitMessageAdmission({
+          ...base,
+          messageId,
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+        });
+      const queue = async (kind: 'steering' | 'followup') =>
+        (await s.listMessageAdmissions(session.id))
+          .filter((x) => x.disposition === kind)
+          .map((x) => x.messageId);
+      await s.reorderMessageAdmissions(session.id, ['selected-b', 'selected-a'], 'steering');
+      assert.deepEqual(await queue('steering'), ['older-a', 'selected-b', 'older-b', 'selected-a']);
+      assert.deepEqual(await queue('followup'), ['follow-a', 'follow-b']);
+      const before = await s.listMessageAdmissions(session.id);
+      for (const ids of [
+        ['selected-a', 'selected-a'],
+        ['selected-a', 'missing'],
+        ['selected-a', 'follow-a'],
+      ])
+        await assert.rejects(s.reorderMessageAdmissions(session.id, ids, 'steering'));
+      await assert.rejects(s.reorderMessageAdmissions(session.id, ['follow-b']));
+      await s.reorderMessageAdmissions(session.id, [], 'steering');
+      assert.deepEqual(await s.listMessageAdmissions(session.id), before);
+      await s.reorderMessageAdmissions(session.id, ['follow-b', 'follow-a']);
+      assert.deepEqual(await queue('followup'), ['follow-b', 'follow-a']);
+      assert.deepEqual(await queue('steering'), ['older-a', 'selected-b', 'older-b', 'selected-a']);
+    });
+  });
   test(
     backend + ': catalog lists subagent Sessions unless a parent filter restricts them',
     async () => {
@@ -1899,6 +2095,7 @@ function goalRecord(sessionId: string): GoalAuthorityRecord {
     },
     controlLease: { goalId: 'goal', generation: 0 },
     currentExecution: null,
+    pendingContinuation: null,
   };
 }
 function intercept(

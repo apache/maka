@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { withTimeout } from '@maka/core/test-only/async-primitives';
 import type { AttachmentRef } from '@maka/core/events';
+import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   type WorkHubDelegationAssignedMessage,
@@ -53,6 +54,7 @@ import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 type Notice =
   | { type: 'ready'; hostEpoch: string }
+  | { type: 'routing_decision_ready'; turnId: string }
   | { type: 'assignment_failed' }
   | {
       type: 'assignment_committed';
@@ -70,6 +72,7 @@ type Notice =
 
 const TIMEOUT = 15_000;
 const ATTACHMENT_TEXT = 'Durable requirements: resume exactly this submitted message.';
+const clientHosts = new WeakMap<RuntimeHostConnection, HostProcess>();
 
 // This is a real process loss at a precise durable boundary, not a close/reopen
 // simulation. A fresh Host acquires a fresh lease and runs production recovery.
@@ -88,7 +91,7 @@ for (const disposition of ['create_new', 'delegate_existing'] as const) {
         const first = new HostProcess(root, capability.rootId, 'crash');
         children.push(first);
         const firstReady = await first.wait('ready');
-        const client = await connectClient(root);
+        const client = await connectFixtureClient(root, first);
         clients.push(client);
         await client.request('workhub.coordination.resolve', {});
         const action: WorkHubAdmittedAction = {
@@ -162,7 +165,7 @@ for (const disposition of ['create_new', 'delegate_existing'] as const) {
         children.push(recovered);
         const ready = await recovered.wait('ready');
         assert.notEqual(ready.hostEpoch, firstReady.hostEpoch);
-        const connection = await connectClient(root);
+        const connection = await connectFixtureClient(root, recovered);
         clients.push(connection);
         const dispatch = await recovered.wait('dispatch');
         assert.equal(dispatch.sessionId, assignment.targetSessionId);
@@ -289,7 +292,7 @@ for (const failAssignment of [false, true]) {
         failAssignment ? 'fail-assignment-once' : 'recover',
       );
       await host.wait('ready');
-      client = await connectClient(root);
+      client = await connectFixtureClient(root, host);
       await client.request('workhub.coordination.resolve', {});
       const sessionId = 'attachment-target';
       await client.request('session.create', {
@@ -399,7 +402,7 @@ test('real Host uses the independent Memory provider for messages, history and W
     await withStores(capability, configureDefaultTarget);
     host = new HostProcess(root, capability.rootId, 'memory');
     const ready = await host.wait('ready');
-    client = await connectClient(root);
+    client = await connectFixtureClient(root, host);
     await client.request('session.create', {
       sessionId: 'memory-task',
       name: 'Memory task',
@@ -495,15 +498,63 @@ test('real Host uses the independent Memory provider for messages, history and W
   }
 });
 
-// Each proposal is authorized by an actual admitted coordination Turn. The
-// fixture holds only its fake model open; Host admission and action validation
-// remain production code, including after a restart and on a client retry.
+async function connectFixtureClient(
+  root: string,
+  host: HostProcess,
+): Promise<RuntimeHostConnection> {
+  const client = await connectClient(root);
+  try {
+    await client.replaceClientCapabilities({
+      offers: () => [
+        {
+          offerId: 'desktop-workhub',
+          version: '0',
+          affinity: 'session',
+          hostPathAccess: 'none',
+          label: 'Desktop WorkHub',
+          tools: ['control', 'tasks'].map((name) => ({
+            serverId: 'desktop_workhub',
+            name,
+            inputSchema: { type: 'object', additionalProperties: false },
+          })),
+        },
+      ],
+      call: async () => {
+        throw new Error('The held fake model must not dispatch a Desktop WorkHub tool');
+      },
+    });
+    clientHosts.set(client, host);
+    return client;
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+}
+
+// Each proposal is authorized by an actual admitted coordination Turn. Only
+// model output is deterministic: the routing decision enters the trusted model
+// seam, and the primary fake model stays open. Client capability binding, Host
+// admission and action validation remain production code, including on replay.
 async function actWorkHub(
   client: RuntimeHostConnection,
   input: WorkHubAdmittedAction,
 ): Promise<WorkHubCoordinationActResult> {
   const { userText, attachments, ...action } = input;
   const turnId = randomUUID();
+  const host = clientHosts.get(client);
+  assert.ok(host);
+  const decision: WorkHubRoutingDecision =
+    'operation' in action.proposal
+      ? { kind: 'linked', operation: action.proposal.operation }
+      : action.proposal.disposition === 'create_new'
+        ? { kind: 'routing', disposition: 'create_new' }
+        : {
+            kind: 'routing',
+            disposition: 'delegate_existing',
+            candidateSetId: action.candidateSetId!,
+            candidateRef: action.proposal.candidateRef,
+          };
+  await host.setRoutingDecision(turnId, decision);
   await client.request('workhub.coordination.answer', {
     turnId,
     text: userText,
@@ -625,11 +676,22 @@ class HostProcess {
     });
   }
 
-  async wait<T extends Notice['type']>(type: T): Promise<Extract<Notice, { type: T }>> {
+  async setRoutingDecision(turnId: string, decision: WorkHubRoutingDecision): Promise<void> {
+    this.child.send({ type: 'routing_decision', turnId, decision });
+    await this.wait('routing_decision_ready', (notice) => notice.turnId === turnId);
+  }
+
+  async wait<T extends Notice['type']>(
+    type: T,
+    matches: (notice: Extract<Notice, { type: T }>) => boolean = () => true,
+  ): Promise<Extract<Notice, { type: T }>> {
     let check!: () => void;
     const notice = new Promise<Extract<Notice, { type: T }>>((resolve) => {
       check = () => {
-        const found = this.notices.find((n): n is Extract<Notice, { type: T }> => n.type === type);
+        const found = this.notices.find(
+          (n): n is Extract<Notice, { type: T }> =>
+            n.type === type && matches(n as Extract<Notice, { type: T }>),
+        );
         if (found) resolve(found);
       };
       this.listeners.add(check);

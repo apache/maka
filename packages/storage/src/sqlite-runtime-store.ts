@@ -23,6 +23,7 @@ import type {
   ToolCommitResult,
   SessionRuntimeEventEntry,
   ToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 export type {
   CommitToolPreparedInput,
@@ -30,6 +31,7 @@ export type {
   ToolCommitResult,
   SessionRuntimeEventEntry,
   ToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 
 import { mkdirSync } from 'node:fs';
@@ -172,12 +174,6 @@ export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
-
-export interface ImmutableRuntimePrefixProofReadBudget {
-  readonly maxEvents: number;
-  readonly maxBytes: number;
-  readonly maxRecordBytes: number;
-}
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {

@@ -6244,28 +6244,6 @@ function requireManagedProfile(
   return boundary.profile;
 }
 
-function assertGraphLookupIdentity(value: string, name: string): void {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > 256 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new Error(`Invalid agent graph ${name}`);
-  }
-}
-
-function isCanonicalReadOnlySandboxProfile(
-  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
-): boolean {
-  const { name: _profileName, ...profilePolicy } = profile;
-  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
-    createGenesisExecutionBoundary('explore'),
-  );
-  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
-}
-
 function assertSafeBoundaryRequestId(value: string): void {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error('Invalid sandbox boundary request id');
