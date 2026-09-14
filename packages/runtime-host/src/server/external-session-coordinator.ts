@@ -384,7 +384,15 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
   };
 }
 
-function boundedCatalogPage(
+/**
+ * One page of the catalog, under the encoded-result budget.
+ *
+ * Exported so the assembly can be tested directly: a row large enough to fill a
+ * page by itself is not reachable through the request path, because the
+ * per-field wire bounds cap one row far below this budget. What the assembly
+ * has to guarantee is that such a row still advances the cursor.
+ */
+export function boundedCatalogPage(
   candidates: readonly {
     session: ExternalSessionCatalogItem;
     nextSourceOffset: number;
@@ -405,14 +413,23 @@ function boundedCatalogPage(
       page.push(candidate.session);
       continue;
     }
-    // A row that does not fit ends the page. The first one is still delivered
-    // whatever it costs: stepping over it is the only way the cursor could
-    // move, and the Session the user asked to see would vanish behind an empty
-    // page. Delivering it and stopping is also what keeps the overshoot to one
-    // row — an appended row the budget refused would leave the total
-    // under-counted for every row after it. The per-field wire bounds already
-    // cap one row far below this budget.
-    if (page.length === 0) page.push(candidate.session);
+    // A row that does not fit ends the page.
+    //
+    // The first one is still delivered whatever it costs: stepping over it is
+    // the only way the cursor could move, and the Session the user asked to see
+    // would vanish behind an empty page. Delivering it and stopping is also what
+    // keeps the overshoot to one row — an appended row the budget refused would
+    // leave the total under-counted for every row after it.
+    //
+    // Its cursor is its own offset, where a later row's would be its
+    // predecessor's: a page that stops before the row it could not take resumes
+    // at that row, and one that took it resumes after it. Taking the
+    // predecessor's offset there would step over the rows the page never
+    // returned.
+    if (page.length === 0) {
+      page.push(candidate.session);
+      return { sessions: page, nextSourceOffset: candidate.nextSourceOffset };
+    }
     return { sessions: page, nextSourceOffset: candidates[index - 1]?.nextSourceOffset };
   }
   return { sessions: page };

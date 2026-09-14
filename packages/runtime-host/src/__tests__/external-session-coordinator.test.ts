@@ -40,7 +40,10 @@ import {
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
+import {
+  boundedCatalogPage,
+  HostExternalSessionCoordinator,
+} from '../server/external-session-coordinator.js';
 import {
   NoUsableImportModelError,
   SessionOperationFailure,
@@ -252,6 +255,40 @@ test('reports an unresolved import independently from durable import history', a
 
   releaseRead();
   assert.equal((await importing).ok, true);
+});
+
+test('a row too large to share a page still advances the cursor', () => {
+  // A row cannot reach the page budget through the request path — the per-field
+  // wire bounds cap it far below — so this drives the assembly directly. What it
+  // pins is the cursor: a page that carries one over-budget row must resume
+  // after it, not after the row the budget refused before it (which would step
+  // over every row in between) and not at the same offset (which would never
+  // move).
+  const oversized = (id: string, nextSourceOffset: number) => ({
+    session: {
+      id,
+      name: id,
+      hostCwd: `/${'x'.repeat(80 * 1024)}`,
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+    },
+    nextSourceOffset,
+  });
+
+  const first = boundedCatalogPage([oversized('a', 1), oversized('b', 2), oversized('c', 3)], true);
+  assert.deepEqual(
+    first.sessions.map((session) => session.id),
+    ['a'],
+  );
+  assert.equal(first.nextSourceOffset, 1);
+
+  // Several such rows in a row: each page carries exactly one and moves on, so
+  // the walk still reaches every row.
+  const second = boundedCatalogPage([oversized('b', 2), oversized('c', 3)], true);
+  assert.deepEqual(
+    second.sessions.map((session) => session.id),
+    ['b'],
+  );
+  assert.equal(second.nextSourceOffset, 2);
 });
 
 test('stops catalog pages before the encoded result limit', async () => {
