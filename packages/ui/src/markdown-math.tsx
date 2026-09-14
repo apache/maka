@@ -94,6 +94,7 @@ function protectMarkdownMath(
   source: string,
   startsAtLineStart = true,
   allowDisplayMath = true,
+  protectEscapedBrackets = false,
 ): {
   text: string;
   safeSourceEnd: number;
@@ -123,6 +124,20 @@ function protectMarkdownMath(
       atLineStart = source[index - 1] === '\n';
       if (fence.closed) markSafe();
       else break;
+      continue;
+    }
+
+    // Hide escaped label brackets from both the math delimiter scan and the
+    // Markdown bracket matcher, then restore them through the literal plugin.
+    if (
+      protectEscapedBrackets
+      && source[index] === '\\'
+      && (source[index + 1] === '[' || source[index + 1] === ']')
+    ) {
+      text += transportToken(source[index + 1] ?? '', '2');
+      index += 2;
+      atLineStart = false;
+      markSafe();
       continue;
     }
 
@@ -168,24 +183,35 @@ function protectMarkdownMath(
       continue;
     }
     if (link?.kind === 'match') {
+      if (link.isImage) {
+        // Image alt text is rendered as a raw attribute, not as Markdown
+        // inline content. Leave its source untouched and continue scanning
+        // the destination normally.
+        text += source.slice(index, link.end);
+        index = link.end;
+        atLineStart = false;
+        markSafe();
+        continue;
+      }
       // Display math renders as a block, which cannot live inside an inline
       // link label, and Markdown reads `\[` / `\]` there as literal escaped
-      // brackets. Re-run the label with display math disabled so the escapes
-      // survive for Markdown to unescape; inline math still renders inside.
-      const inner = protectMarkdownMath(
+      // brackets. Re-run every closed label with display math disabled so
+      // escaped brackets survive for Markdown to unescape; inline math still
+      // renders inside. Astryx decides later whether the label is an inline
+      // link, reference use, shortcut, or definition, so all forms must share
+      // this transport representation.
+      const protectedLabel = protectMarkdownMath(
         source.slice(link.labelStart, link.labelEnd),
         false,
         false,
+        true,
       );
-      // Astryx matches label brackets without regard for escapes, so an
-      // escaped bracket would end the label early and the link would never
-      // form. Rewrite just those escapes as literal tokens for real links;
-      // image alt text stays untouched because it renders as a raw string.
-      const label = link.isImage ? inner.text : encodeEscapedBrackets(inner.text);
-      text += source.slice(index, link.labelStart) + label + source.slice(link.labelEnd, link.end);
+      text += source.slice(index, link.labelStart)
+        + protectedLabel.text
+        + source.slice(link.labelEnd, link.end);
       index = link.end;
       atLineStart = source[index - 1] === '\n';
-      if (inner.safeSourceEnd >= link.labelEnd - link.labelStart) {
+      if (protectedLabel.safeSourceEnd >= link.labelEnd - link.labelStart) {
         markSafe();
       } else {
         canMarkSafe = false;
@@ -339,6 +365,9 @@ function readDelimitedMath(
 }
 
 const MAX_LINK_LABEL_DEPTH = 32;
+const MAX_LINK_LABEL_LENGTH = 4096;
+const MAX_LINK_TAIL_DEPTH = 32;
+const MAX_LINK_TAIL_LENGTH = 65536;
 
 type MarkdownLinkScan =
   | { kind: 'match'; labelStart: number; labelEnd: number; end: number; isImage: boolean }
@@ -346,16 +375,16 @@ type MarkdownLinkScan =
   | undefined;
 
 /**
- * Recognize a Markdown inline link or image starting at `index` so its label
- * can be re-scanned without display math. Bare `[text]` without a `(...)` or
- * `[ref]` tail is left alone: without the tail there is no link whose inline
- * layout display math could break.
+ * Recognize a bounded Markdown label starting at `index` so its contents can
+ * be re-scanned without display math. Astryx resolves whether a closed label
+ * is an inline link, reference use, shortcut, or definition after this pass;
+ * treating all of them alike keeps reference identities stable.
  */
 function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
   let openerEnd: number;
   let isImage = false;
   if (source[index] === '!') {
-    if (index + 1 >= source.length) return { kind: 'pending', end: index + 1 };
+    if (index + 1 >= source.length) return undefined;
     if (source[index + 1] !== '[') return undefined;
     if (isEscaped(source, index)) return undefined;
     openerEnd = index + 2;
@@ -368,23 +397,31 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
   }
 
   const labelEnd = findLabelEnd(source, openerEnd);
-  if (labelEnd === 'pending') return { kind: 'pending', end: openerEnd };
-  if (labelEnd === 'invalid') return undefined;
+  if (labelEnd === 'pending') return { kind: 'pending', end: source.length };
+  if (typeof labelEnd !== 'number') return { kind: 'pending', end: labelEnd.end };
+
+  const match = (end: number) => ({
+    kind: 'match' as const,
+    labelStart: openerEnd,
+    labelEnd,
+    end,
+    isImage,
+  });
 
   const tail = source[labelEnd + 1] ?? '';
   if (tail === '(') {
     const tailEnd = findInlineTailEnd(source, labelEnd + 1);
-    if (tailEnd === 'pending') return { kind: 'pending', end: openerEnd };
-    if (tailEnd === 'invalid') return undefined;
-    return { kind: 'match', labelStart: openerEnd, labelEnd, end: tailEnd, isImage };
+    if (tailEnd === 'pending') return { kind: 'pending', end: source.length };
+    if (typeof tailEnd !== 'number') return match(tailEnd.end);
+    return match(tailEnd);
   }
   if (tail === '[') {
     const refEnd = findLabelEnd(source, labelEnd + 2);
-    if (refEnd === 'pending') return { kind: 'pending', end: openerEnd };
-    if (refEnd === 'invalid') return undefined;
-    return { kind: 'match', labelStart: openerEnd, labelEnd, end: refEnd + 1, isImage };
+    if (refEnd === 'pending') return { kind: 'pending', end: source.length };
+    if (typeof refEnd !== 'number') return match(refEnd.end);
+    return match(refEnd + 1);
   }
-  return undefined;
+  return match(labelEnd + 1);
 }
 
 /** Whether the character at `pos` is backslash-escaped (odd run before it). */
@@ -403,12 +440,18 @@ function isEscaped(source: string, pos: number): boolean {
  * code spans, and nested labels. Blank lines and excessive nesting can never
  * form a label; running out of input means more text may still complete it.
  */
-function findLabelEnd(source: string, from: number): number | 'pending' | 'invalid' {
+function findLabelEnd(
+  source: string,
+  from: number,
+): number | 'pending' | { kind: 'invalid'; end: number } {
   let depth = 0;
   let i = from;
   while (i < source.length) {
+    if (i - from >= MAX_LINK_LABEL_LENGTH) {
+      return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+    }
     const ch = source[i] ?? '';
-    if (ch === '\n' && source[i + 1] === '\n') return 'invalid';
+    if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
     if (ch === '\\') {
       if (i + 1 >= source.length) return 'pending';
       i += 2;
@@ -424,7 +467,9 @@ function findLabelEnd(source: string, from: number): number | 'pending' | 'inval
     }
     if (ch === '[') {
       depth++;
-      if (depth > MAX_LINK_LABEL_DEPTH) return 'pending';
+      if (depth > MAX_LINK_LABEL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+      }
       i++;
       continue;
     }
@@ -440,17 +485,22 @@ function findLabelEnd(source: string, from: number): number | 'pending' | 'inval
 }
 
 /**
- * Find the end of an inline `(destination)` tail starting at its `(`.
- * Quotes get no special treatment: apostrophes are ordinary URL characters,
- * and a title's balanced parens resolve through nesting. Only the label
- * needs exact bounds; the tail just confirms link-ness and is copied as-is.
+ * Find the end of an inline `(destination)` tail starting at its `(`. A
+ * pending tail consumes the remaining source in one pass; resuming at the
+ * opener would rescan the same suffix for every `[label](` in a stream.
  */
-function findInlineTailEnd(source: string, from: number): number | 'pending' | 'invalid' {
+function findInlineTailEnd(
+  source: string,
+  from: number,
+): number | 'pending' | { kind: 'invalid'; end: number } {
   let depth = 1;
   let i = from + 1;
   while (i < source.length) {
+    if (i - from >= MAX_LINK_TAIL_LENGTH) {
+      return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+    }
     const ch = source[i] ?? '';
-    if (ch === '\n' && source[i + 1] === '\n') return 'invalid';
+    if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
     if (ch === '\\') {
       if (i + 1 >= source.length) return 'pending';
       i += 2;
@@ -458,43 +508,24 @@ function findInlineTailEnd(source: string, from: number): number | 'pending' | '
     }
     if (ch === '(') {
       depth++;
+      if (depth > MAX_LINK_TAIL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+      }
       i++;
       continue;
     }
     if (ch === ')') {
       depth--;
       if (depth === 0) return i + 1;
-      i++;
-      continue;
     }
     i++;
   }
   return 'pending';
 }
 
-/**
- * Replace Markdown-escaped brackets inside a link label with literal
- * transport tokens. Every other escape survives verbatim for Markdown to
- * resolve, and tokens contain no brackets for link matching to trip over.
- */
-function encodeEscapedBrackets(text: string): string {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] === '\\' && i + 1 < text.length) {
-      const next = text[i + 1] ?? '';
-      if (next === '[' || next === ']') {
-        out += transportToken(next, '2');
-      } else {
-        out += text.slice(i, i + 2);
-      }
-      i += 2;
-      continue;
-    }
-    out += text[i] ?? '';
-    i++;
-  }
-  return out;
+function findInvalidLinkBoundary(source: string, from: number): number {
+  const blankLine = source.indexOf('\n\n', from);
+  return blankLine >= 0 ? blankLine : source.length;
 }
 
 function findPendingFenceBoundary(source: string, from: number): number {

@@ -18,6 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { performance } from 'node:perf_hooks';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
@@ -31,6 +32,7 @@ import {
 import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
 import { LocaleProvider } from '../locale-context.js';
+import { createMarkdownMathCache, prepareMarkdownMath } from '../markdown-math.js';
 import {
   createMermaidConfig,
   MAX_MERMAID_EDGES,
@@ -280,6 +282,58 @@ it('still renders display math outside link labels', () => {
   assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
   assert.match(markup, /class="maka-math maka-math-display"/);
   assert.match(markup, /class="katex-display"/);
+});
+
+it('preserves escaped brackets across reference link forms', () => {
+  const cases = [
+    {
+      use: '[\\[DISCUSS\\] Clarify][topic]',
+      definition: '[topic]: https://example.com/topic',
+    },
+    {
+      use: '[\\[DISCUSS\\] Clarify][]',
+      definition: '[\\[DISCUSS\\] Clarify]: https://example.com/collapsed',
+    },
+    {
+      use: '[\\[DISCUSS\\] Clarify]',
+      definition: '[\\[DISCUSS\\] Clarify]: https://example.com/shortcut',
+    },
+  ];
+
+  for (const { use, definition } of cases) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, {
+        text: `${use}\n\n${definition}`,
+      }),
+    }));
+
+    assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\//);
+    assert.match(markup, /\[DISCUSS\] Clarify/);
+    assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+  }
+});
+
+it('does not rescan malformed link tails quadratically', () => {
+  const input = '[x]('.repeat(32_000);
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  const prepared = prepareMarkdownMath(input, cache);
+  const elapsed = performance.now() - started;
+
+  assert.equal(prepared, input);
+  assert.ok(elapsed < 1_000, `malformed link scan took ${elapsed.toFixed(1)}ms`);
+
+  const streamedInput = '[x]('.repeat(16_000);
+  const streamedCache = createMarkdownMathCache();
+  const streamedStarted = performance.now();
+  const chunkSize = streamedInput.length / 16;
+  for (let end = chunkSize; end <= streamedInput.length; end += chunkSize) {
+    assert.equal(prepareMarkdownMath(streamedInput.slice(0, end), streamedCache), streamedInput.slice(0, end));
+  }
+  const streamedElapsed = performance.now() - streamedStarted;
+
+  assert.ok(streamedElapsed < 1_000, `streaming malformed link scan took ${streamedElapsed.toFixed(1)}ms`);
 });
 
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
