@@ -5965,6 +5965,11 @@ Slug openai-work<cursor>
       listSources: async () => ['opencode'],
       listSessions: async () => {
         catalogReads += 1;
+        // Read 1 loaded the picker, read 2 is the baseline taken just before
+        // the request, and read 3 is the reconciliation. The copy appears
+        // between the baseline and the reconciliation, which is the only shape
+        // that proves the import made it.
+        const afterRequest = catalogReads > 2;
         return {
           sessions: [
             {
@@ -5972,8 +5977,8 @@ Slug openai-work<cursor>
               name: 'Imported after disconnect',
               hostCwd: '/repo',
               importState: {
-                importedCount: catalogReads > 1 ? 1 : 0,
-                importedSessionIds: catalogReads > 1 ? ['imported-after-loss'] : [],
+                importedCount: afterRequest ? 1 : 0,
+                importedSessionIds: afterRequest ? ['imported-after-loss'] : [],
                 isImporting: false,
               },
             },
@@ -6008,7 +6013,7 @@ Slug openai-work<cursor>
     );
     terminal.input('\r');
     await waitFor(() => driver.sessionIds.includes('imported-after-loss'));
-    assert.equal(catalogReads, 2);
+    assert.equal(catalogReads, 3);
 
     exitMaka(terminal);
     await run;
@@ -6029,9 +6034,9 @@ Slug openai-work<cursor>
               name: 'Ambiguous import',
               hostCwd: '/repo',
               importState: {
-                importedCount: catalogReads > 1 ? 2 : 0,
+                importedCount: catalogReads > 2 ? 2 : 0,
                 importedSessionIds:
-                  catalogReads > 1 ? ['concurrent-import', 'imported-after-loss'] : [],
+                  catalogReads > 2 ? ['concurrent-import', 'imported-after-loss'] : [],
                 isImporting: false,
               },
             },
@@ -6066,6 +6071,69 @@ Slug openai-work<cursor>
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
     assert.equal(driver.sessionIds.includes('concurrent-import'), false);
     assert.equal(driver.sessionIds.includes('imported-after-loss'), false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('keeps an outcome-unknown import uncertain when another client made the copy', async () => {
+    // The picker showed no copies, a Desktop import finished before this
+    // request was dispatched, and this request's outcome is unknown. The
+    // baseline taken immediately before the dispatch already holds Desktop's
+    // copy, so the count does not grow and the id is not this import's —
+    // opening it would hand the user someone else's conversation.
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    let catalogReads = 0;
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async () => {
+        catalogReads += 1;
+        const desktopFinished = catalogReads > 1;
+        return {
+          sessions: [
+            {
+              id: 'ses_external',
+              name: 'Claimed by another client',
+              hostCwd: '/repo',
+              importState: {
+                importedCount: desktopFinished ? 1 : 0,
+                importedSessionIds: desktopFinished ? ['desktop-copy'] : [],
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      importSession: async () => {
+        throw {
+          operation: 'external-session.import',
+          code: 'commit_outcome_unknown',
+        };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Claimed by another client'),
+    );
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
+    assert.equal(driver.sessionIds.includes('desktop-copy'), false);
 
     exitMaka(terminal);
     await run;

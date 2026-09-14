@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isConversationTextMessage } from '@maka/core/session';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
@@ -86,7 +86,16 @@ export class RuntimeLedgerRepair {
         // A turn whose only user row was steering is not a turn of its own: the
         // steering was said into a Turn some durable Root already owns, so
         // converting it would stand a second, synthetic run beside that one.
-        if (!turnMessages.some((message) => message.type === 'user')) continue;
+        //
+        // An imported transcript is measured against the projection instead,
+        // which is the one the importer already held it to: an external Agent
+        // can open a conversation on an assistant reply, and that reply is
+        // conversation — dropping it would leave the copy holding a turn the
+        // Ledger never kept.
+        const startsATurn = header.externalOrigin
+          ? turnMessages.some(isConversationTextMessage)
+          : turnMessages.some((message) => message.type === 'user');
+        if (!startsATurn) continue;
         const [turn] = deriveTurnRecords(turnMessages);
         if (!turn) continue;
         if (ownedTurnIds.has(turn.turnId)) continue;

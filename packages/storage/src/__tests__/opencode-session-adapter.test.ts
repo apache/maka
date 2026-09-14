@@ -180,6 +180,30 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('a parent_id this build cannot read is a child, not a root', async () => {
+    // A BLOB (or any other non-text) decodes through `stringOf` to `undefined`,
+    // which reads as "no parent" — and would import another Session's child as
+    // a root of its own. Only NULL and the empty string mark a root.
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        db.prepare('UPDATE session SET parent_id = ? WHERE id = ?').run(
+          Buffer.from([1, 2, 3]),
+          fixture.session.id,
+        );
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      assert.deepEqual(await adapter.listSessions(), []);
+      await assert.rejects(
+        adapter.readSession(fixture.session.id),
+        /parent_id.*cannot be proven a root/u,
+      );
+    });
+  });
+
   test('converts the captured session into canonical Maka messages', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home);

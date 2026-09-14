@@ -50,6 +50,28 @@ import type {
 import type { StoredMessage } from '@maka/core/session';
 
 export const OPENCODE_SESSION_ADAPTER_ID = 'opencode';
+/**
+ * What one OpenCode transcript may cost before the import is refused.
+ *
+ * Rows are `message` rows plus `part` rows, counted the way the preflight
+ * counts them, and bytes are the id, foreign-key and `data` columns it sums.
+ * Both bounds are needed because they bound different things: bytes bound what
+ * the conversion holds, and rows bound how many source objects it builds. The
+ * byte bound is the one that binds first on real data — at the source's own
+ * 877 bytes per row, 64 MiB is reached at about 76,600 rows, well short of the
+ * row bound.
+ *
+ * Measured with `node scripts/opencode-transcript-benchmark.mjs`, which
+ * replicates a real transcript to a chosen size in a temporary database:
+ *
+ *   76,608 rows / 64.54 MiB   317 ms   216 MiB peak resident growth
+ *   250,272 rows / 210.98 MiB 1,104 ms 641 MiB peak resident growth
+ *
+ * The second line is the row bound with the byte bound lifted. It is not a
+ * reachable import — 250,000 rows within 64 MiB means under 268 bytes a row,
+ * and then the bytes, not the rows, set the cost — so the two bounds together
+ * hold one import to roughly the first line's 200 MiB of transient memory.
+ */
 export const OPENCODE_TRANSCRIPT_MAX_RAW_BYTES = 64 * 1024 * 1024;
 export const OPENCODE_TRANSCRIPT_MAX_ROWS = 250_000;
 
@@ -678,7 +700,7 @@ function toSessionRow(value: unknown): SessionRow | undefined {
   const id = stringOf(row?.id);
   if (id === undefined) return undefined;
   const directory = stringOf(row?.directory) ?? '';
-  const parentId = stringOf(row?.parent_id);
+  const parentId = readParentId(row?.parent_id);
   return {
     id,
     title: stringOf(row?.title) ?? '',
@@ -692,6 +714,21 @@ function toSessionRow(value: unknown): SessionRow | undefined {
     archived: numberOf(row?.time_archived) !== undefined,
     ...(parentId !== undefined ? { parentId } : {}),
   };
+}
+
+/**
+ * A catalog row, or `undefined` when it cannot be proven a root Session.
+ *
+ * The page's SQL already restricts `parent_id` to NULL or the empty string, so
+ * a row that fails here is one those bounds did not anticipate. One unreadable
+ * row must not fail the whole listing.
+ */
+function toCatalogSessionRow(value: unknown): SessionRow | undefined {
+  try {
+    return toSessionRow(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function toMessageRow(value: unknown): MessageRow | undefined {
@@ -727,6 +764,26 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The source marks a root Session's `parent_id` as NULL or the empty string.
+ *
+ * Anything else is a child. A value this build cannot read as text is a child
+ * it cannot name — not the absence of a parent — so it is refused rather than
+ * decoded to `undefined`, which would let a child session be imported as a
+ * root of its own. The catalog's SQL already restricts its rows to roots, so a
+ * row that fails here is one the pagination bounds did not anticipate: skipped
+ * there, refused here.
+ */
+function readParentId(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(
+      'opencode session `parent_id` is neither text nor null, so the session cannot be proven a root',
+    );
+  }
+  return value.length > 0 ? value : undefined;
 }
 
 function numberOf(value: unknown): number | undefined {

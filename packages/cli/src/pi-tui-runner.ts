@@ -2961,15 +2961,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const findImportedExternalSession = async (
+  /**
+   * What the Host says about one source's copies right now.
+   *
+   * Read fresh rather than taken from the row the user picked: those rows were
+   * loaded when the picker opened, and a copy another client made since then is
+   * not evidence of this import's outcome. The whole catalog is walked because
+   * the source is not promised to be on the first page.
+   */
+  const readExternalImportState = async (
     adapterId: string,
     sourceSessionId: string,
-    previousIds: ReadonlySet<string>,
-  ): Promise<string | undefined> => {
+  ): Promise<{ importedCount: number; importedSessionIds: ReadonlySet<string> } | undefined> => {
     if (!input.externalSessions) return undefined;
     let cursor: string | undefined;
     const seenCursors = new Set<string>();
-    const candidates = new Set<string>();
     do {
       const page = await input.externalSessions.listSessions({
         adapterId,
@@ -2977,14 +2983,45 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         ...(cursor ? { cursor } : {}),
       });
       const source = page.sessions.find((session) => session.id === sourceSessionId);
-      for (const id of source?.importState.importedSessionIds ?? []) {
-        if (!previousIds.has(id)) candidates.add(id);
+      if (source) {
+        return {
+          importedCount: source.importState.importedCount,
+          importedSessionIds: new Set(source.importState.importedSessionIds),
+        };
       }
       if (page.nextCursor === null || seenCursors.has(page.nextCursor)) break;
       seenCursors.add(page.nextCursor);
       cursor = page.nextCursor;
     } while (cursor);
-    return candidates.size === 1 ? [...candidates][0] : undefined;
+    return undefined;
+  };
+
+  /**
+   * The copy an unknown-outcome import made, when the Host's own counts prove
+   * it.
+   *
+   * `commit_outcome_unknown` means this client cannot tell what the Host
+   * committed, so the only evidence left is that a copy appeared since the
+   * request was dispatched. That is evidence only when nothing else could have
+   * made it: the source's published count must have grown, and exactly one id
+   * must be new with none dropped. An import another client completed in the
+   * same window leaves the count unchanged or two ids new, and both stay
+   * uncertain — opening someone else's conversation is worse than asking the
+   * user to pick the copy out of the Session list.
+   */
+  const reconcileImportedExternalSession = async (
+    adapterId: string,
+    sourceSessionId: string,
+    before: { importedCount: number; importedSessionIds: ReadonlySet<string> } | undefined,
+  ): Promise<string | undefined> => {
+    if (!before) return undefined;
+    const after = await readExternalImportState(adapterId, sourceSessionId);
+    if (!after || after.importedCount <= before.importedCount) return undefined;
+    const added = [...after.importedSessionIds].filter((id) => !before.importedSessionIds.has(id));
+    const dropped = [...before.importedSessionIds].filter(
+      (id) => !after.importedSessionIds.has(id),
+    );
+    return added.length === 1 && dropped.length === 0 ? added[0] : undefined;
   };
 
   const importExternalSession = async (
@@ -2993,7 +3030,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   ): Promise<void> => {
     if (!input.externalSessions) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    const previousIds = new Set(source.importState.importedSessionIds);
+    // The reconciliation baseline is read here, immediately before the
+    // request, so a copy that already existed when the picker opened cannot be
+    // mistaken for this import's result.
+    const before = await readExternalImportState(adapterId, source.id).catch(() => undefined);
     let importedSessionId: string | undefined;
     try {
       const result = await input.externalSessions.importSession({
@@ -3018,10 +3058,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
         return;
       }
-      importedSessionId = await findImportedExternalSession(
+      importedSessionId = await reconcileImportedExternalSession(
         adapterId,
         source.id,
-        previousIds,
+        before,
       ).catch(() => undefined);
       if (!importedSessionId) {
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
