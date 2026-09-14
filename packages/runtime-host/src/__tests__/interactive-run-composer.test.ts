@@ -19,9 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { PlanEvent, PlanMutationResult, PlanSessionState, PlanStore } from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
-import type { MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
@@ -255,6 +256,124 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
     /Hosted tool profile is unavailable/,
   );
 });
+
+test('a committed Plan execution tool publishes the plan invalidation while the Turn runs', async () => {
+  const notifications: string[] = [];
+  const composer = createFixtureComposer({
+    plan: {
+      store: planStoreStub(),
+      state: activePlanState(),
+      mode: 'agent',
+      onExecutionChanged: (sessionId) => notifications.push(sessionId),
+    },
+  });
+  const update = composer.tools.find(({ name }) => name === 'update_plan');
+  const cancel = composer.tools.find(({ name }) => name === 'cancel_plan');
+  assert.ok(update);
+  assert.ok(cancel);
+
+  await update.impl({ steps: [{ id: 'step-1', status: 'in_progress' }] }, toolContext());
+  await cancel.impl({ reason: 'User abandoned the plan.' }, toolContext());
+
+  // One invalidation per committed write: the Desktop panel refreshes from this
+  // frame instead of waiting for the end of the Turn.
+  assert.deepEqual(notifications, ['session-1', 'session-1']);
+});
+
+test('a rejected Plan execution write publishes no invalidation', async () => {
+  const notifications: string[] = [];
+  const composer = createFixtureComposer({
+    plan: {
+      store: planStoreStub(
+        new Error('PlanConflictError: update_plan must include every execution step'),
+      ),
+      state: activePlanState(),
+      mode: 'agent',
+      onExecutionChanged: (sessionId) => notifications.push(sessionId),
+    },
+  });
+  const update = composer.tools.find(({ name }) => name === 'update_plan');
+  assert.ok(update);
+
+  await assert.rejects(
+    async () => await update.impl({ steps: [] }, toolContext()),
+    /must include every execution step/,
+  );
+  assert.deepEqual(notifications, []);
+});
+
+function activePlanState(): PlanSessionState {
+  const step = {
+    id: 'step-1',
+    title: 'Step one',
+    description: 'Do the first step.',
+    status: 'pending' as const,
+    updatedAt: 1,
+  };
+  return {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: 2,
+    proposals: [
+      {
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        revision: 1,
+        title: 'Ship the plan request',
+        steps: [{ id: step.id, title: step.title, description: step.description }],
+        status: 'approved',
+        submittedAt: 1,
+      },
+    ],
+    executions: [
+      {
+        executionId: 'execution-1',
+        planId: 'plan-1',
+        proposalId: 'proposal-1',
+        sessionId: 'session-1',
+        status: 'active',
+        steps: [step],
+        startedAt: 1,
+        updatedAt: 2,
+      },
+    ],
+    latestProposalId: 'proposal-1',
+    activeExecutionId: 'execution-1',
+  };
+}
+
+function planStoreStub(failure?: Error): PlanStore {
+  const mutate = async (): Promise<PlanMutationResult> => {
+    if (failure) throw failure;
+    const event: PlanEvent = {
+      id: 'event-1',
+      sessionId: 'session-1',
+      ts: 3,
+      storeVersion: 3,
+      type: 'plan_progress_updated',
+      executionId: 'execution-1',
+      steps: activePlanState().executions[0]!.steps,
+    };
+    return { event, state: activePlanState() };
+  };
+  return {
+    updateExecution: mutate,
+    cancelExecution: mutate,
+  } as unknown as PlanStore;
+}
+
+function toolContext(): MakaToolContext {
+  return {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolCallId: 'call-1',
+    cwd: '/workspace',
+    abortSignal: new AbortController().signal,
+    emitOutput: () => {},
+  };
+}
 
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
