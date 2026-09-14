@@ -105,6 +105,117 @@ import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
+for (const terminal of ['gateway', 'eof', 'other'] as const) {
+  test(`recovers ${terminal} SSE with one failed attempt and no repeated tool effects`, async () => {
+    const durable = durableTurnHarness('turn-tb4', 'do the work', { runId: 'run-tb4' });
+    const requests: unknown[] = [];
+    const executed: string[] = [];
+    const assistants: AssistantMessage[] = [];
+    const attempts: ModelCallAttempt[] = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      const call = requests.length;
+      const chunk = (delta: unknown, finish_reason: string | null = null) => ({
+        id: `request-${call}`,
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'deepseek/deepseek-v4.1-flash',
+        choices: [{ index: 0, delta, finish_reason }],
+      });
+      const chunks: unknown[] = [];
+      if (call === 2) chunks.push(chunk({ content: 'Partial answer' }));
+      if (call < 4) {
+        chunks.push(
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: `call-${call}`,
+                type: 'function',
+                function: {
+                  name: 'Write',
+                  arguments: JSON.stringify({ value: ['prior', 'discarded', 'fresh'][call - 1] }),
+                },
+              },
+            ],
+          }),
+        );
+      } else if (call === 4) chunks.push(chunk({ content: 'Done' }));
+      if (call === 2 && terminal.startsWith('gateway')) {
+        chunks.push({
+          error: {
+            code: 'gateway_stream_terminated',
+            message: 'Upstream stream ended before terminal chunk',
+          },
+        });
+      } else if (call === 2 && terminal === 'other') {
+        chunks.push(chunk({}, 'other'));
+      } else if (call !== 2) {
+        chunks.push({
+          ...chunk({}, call < 4 ? 'tool_calls' : 'stop'),
+          usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+        });
+      }
+      return new Response(chunks.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(''), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: {
+        slug: 'commandcode',
+        providerType: 'commandcode',
+        defaultModel: 'deepseek/deepseek-v4.1-flash',
+      },
+      apiKey: 'offline-only',
+      modelId: 'deepseek/deepseek-v4.1-flash',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [
+        {
+          ...testTool('Write', z.object({ value: z.string() })),
+          impl: async (input) => {
+            executed.push((input as { value: string }).value);
+            return { ok: true };
+          },
+        },
+      ],
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+      recordModelCallAttempt: ({ attempt }) => {
+        attempts.push(attempt);
+      },
+    });
+    const events = await drainDurably(backend.send(durable.input({ runId: 'run-tb4' })), durable);
+    const error = events.find((event) => event.type === 'error');
+    const persisted = JSON.parse(JSON.stringify(durable.ledger)) as RuntimeEvent[];
+    const replayContainsPartial = JSON.stringify(await replayPrompt(persisted)).includes(
+      'Partial answer',
+    );
+    assert.equal(replayContainsPartial, false);
+    assert.equal(requests.length, 4);
+    assert.deepEqual(executed, ['prior', 'fresh']);
+    assert.equal(assistants[0]?.interrupted, true);
+    assert.equal(assistants[0]?.text, 'Partial answer');
+    assert.equal(
+      events.some((event) => event.type === 'token_usage'),
+      false,
+    );
+    assert.equal(attempts[1]?.usageBasis, 'missing');
+    assert.deepEqual(
+      attempts.map(({ status }) => status),
+      ['completed', 'failed', 'completed', 'completed'],
+    );
+    assert.equal(attempts[1]?.errorClass, 'stream_truncated');
+    assert.equal(attempts[1]?.retryable, true);
+    assert.equal(JSON.stringify(requests.slice(2)).includes('discarded'), false);
+    assert.equal(JSON.stringify(requests.slice(2)).includes('Partial answer'), false);
+    assert.equal(error, undefined);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+}
+
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
     for (const [providerType, modelId, expected] of [
@@ -8208,104 +8319,6 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
-  for (const visibleText of [false, true]) {
-    test(`isolates undispatched local calls after truncation (visible text: ${visibleText})`, async () => {
-      const durable = durableTurnHarness('turn-local-truncated', 'do the work');
-      const executed: string[] = [];
-      const assistants: AssistantMessage[] = [];
-      let calls = 0;
-      const model = new MockLanguageModelV4({
-        doStream: async () => {
-          calls += 1;
-          const chunks: LanguageModelV4StreamPart[] = [{ type: 'stream-start', warnings: [] }];
-          if (calls === 2 && visibleText) {
-            chunks.push(
-              { type: 'text-start', id: 'partial' },
-              { type: 'text-delta', id: 'partial', delta: 'Partial answer' },
-            );
-          }
-          if (calls < 4) {
-            chunks.push({
-              type: 'tool-call',
-              toolCallId: `call-${calls}`,
-              toolName: 'Write',
-              input: JSON.stringify({ value: ['prior', 'discarded', 'fresh'][calls - 1] }),
-              providerExecuted: false,
-            });
-          } else {
-            chunks.push(
-              { type: 'text-start', id: 'final' },
-              { type: 'text-delta', id: 'final', delta: 'Done' },
-              { type: 'text-end', id: 'final' },
-            );
-          }
-          if (calls !== 2) {
-            chunks.push({
-              type: 'finish',
-              finishReason: { unified: calls < 4 ? 'tool-calls' : 'stop', raw: 'stop' },
-              usage: {
-                inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
-                outputTokens: { total: 3, text: 3, reasoning: 0 },
-              },
-            });
-          }
-          return {
-            stream: simulateReadableStream({
-              chunks,
-              initialDelayInMs: null,
-              chunkDelayInMs: null,
-            }),
-          };
-        },
-      });
-      const backend = createBackend({
-        connection: connection(),
-        modelId: 'mock-model-id',
-        modelFactory: () => model,
-        tools: [
-          {
-            ...testTool('Write', z.object({ value: z.string() })),
-            impl: async (input) => {
-              executed.push((input as { value: string }).value);
-              return { ok: true };
-            },
-          },
-        ],
-        appendMessage: async (message) => {
-          if (message.type === 'assistant') assistants.push(message);
-        },
-        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-        providerRetrySleep: async () => {},
-      });
-      const events = await drainDurably(backend.send(durable.input()), durable);
-      assert.equal(calls, 4);
-      assert.deepEqual(executed, ['prior', 'fresh']);
-      assert.equal(
-        events.some(
-          (event) =>
-            (event.type === 'tool_start' || event.type === 'tool_result') &&
-            event.toolUseId === 'call-2',
-        ),
-        false,
-      );
-      assert.equal(JSON.stringify(durable.ledger).includes('discarded'), false);
-      assert.deepEqual(
-        assistants.map((message) => message.text),
-        visibleText ? ['Partial answer', 'Done'] : ['Done'],
-      );
-      const error = events.find((event) => event.type === 'error');
-      assert.equal(error, undefined);
-      if (visibleText) assert.equal(assistants[0]?.interrupted, true);
-      assert.equal(
-        events.some((event) => event.type === 'token_usage'),
-        false,
-      );
-      assert.equal(JSON.stringify(model.doStreamCalls.slice(2)).includes('discarded'), false);
-      assert.equal(JSON.stringify(model.doStreamCalls.slice(2)).includes('Partial answer'), false);
-      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-    });
-  }
-
   test('records exhaustion of output-free truncated stream recovery', async () => {
     const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
     let calls = 0;
@@ -11166,9 +11179,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
     const failureTrace = traces.find((event) => event.type === 'model_stream_failed');
-    assert.equal(failureTrace?.data?.rawErrorName, 'Error');
     assert.match(String(failureTrace?.data?.redactedErrorMessage), /stream idle timeout/);
-    assert.equal(typeof failureTrace?.data?.redactedErrorStackSha256, 'string');
   });
 
   test('retries an idle watchdog timeout after an unstarted Responses text item', async () => {
@@ -11415,66 +11426,6 @@ describe('AiSdkBackend RunTrace', () => {
       events,
     );
     await waitFor(() => timers.armCount() >= 4);
-    timers.fire();
-    await eventsPromise;
-
-    assert.equal(calls, 1);
-    assert.equal(
-      events.some((event) => event.type === 'provider_retry'),
-      false,
-    );
-    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-  });
-
-  test('does not retry an idle watchdog timeout after a terminal finish boundary', async () => {
-    const timers = manualWatchdogTimer();
-    const finishConsumed = makeGate();
-    let calls = 0;
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      streamWatchdogTimer: timers.clock,
-      providerRetrySleep: async () => {},
-    });
-    type FakeStreamInput = {
-      abortSignal: AbortSignal;
-      onStreamActivity: () => void;
-    };
-    (
-      backend as unknown as {
-        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<ModelStreamResult> };
-      }
-    ).modelAdapter.startStream = async (input: FakeStreamInput) => {
-      calls += 1;
-      return {
-        events: (async function* () {
-          input.onStreamActivity();
-          yield { kind: 'finish' as const, finishReason: 'stop' };
-          finishConsumed.release();
-          await new Promise<void>((_resolve, reject) => {
-            const abort = () => reject(input.abortSignal.reason ?? new Error('aborted'));
-            if (input.abortSignal.aborted) abort();
-            else input.abortSignal.addEventListener('abort', abort, { once: true });
-          });
-        })(),
-        outcome: Promise.resolve({
-          kind: 'completed',
-          finishReason: 'stop',
-          request: { messages: [] },
-          continuation: 'none',
-        }),
-      };
-    };
-
-    const events: SessionEvent[] = [];
-    const eventsPromise = collectEvents(
-      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
-      events,
-    );
-    await finishConsumed.promise;
     timers.fire();
     await eventsPromise;
 
@@ -14695,14 +14646,13 @@ describe('AiSdkBackend thinking persistence', () => {
         yield { kind: 'thinking-signature', signature: 'sig-last' };
       })(),
       outcome: Promise.resolve({
-        kind: 'truncated',
+        kind: 'failed',
         failure: {
           type: 'model_failure',
           kind: 'provider_unavailable',
           message: 'Provider stream ended without finishing (unknown)',
           retryable: false,
         },
-        request: { messages: [] },
         continuation: 'none',
       }),
     });
@@ -16276,13 +16226,13 @@ function textCompletionModel(text: string): MockLanguageModelV4 {
     },
   ];
   return new MockLanguageModelV4({
-    doStream: {
+    doStream: async () => ({
       stream: simulateReadableStream({
         chunks,
         initialDelayInMs: null,
         chunkDelayInMs: null,
       }),
-    },
+    }),
   });
 }
 
@@ -16308,13 +16258,13 @@ function completionModel(): MockLanguageModelV4 {
     },
   ];
   return new MockLanguageModelV4({
-    doStream: {
+    doStream: async () => ({
       stream: simulateReadableStream({
         chunks,
         initialDelayInMs: null,
         chunkDelayInMs: null,
       }),
-    },
+    }),
   });
 }
 

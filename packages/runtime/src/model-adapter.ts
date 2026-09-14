@@ -37,7 +37,6 @@ import type {
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
-  ModelRequestMetadata,
   ModelToolSet,
   ToolCallPart,
 } from './model-protocol.js';
@@ -236,12 +235,16 @@ export class ModelAdapter {
       this.input.providerOptions,
       this.runtime,
     );
+    let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const trackedModel = input.providerRequestTracker
       ? withProviderStreamTracking({
           model: input.model,
           wrapLanguageModel,
           tracker: input.providerRequestTracker,
           abortSignal: input.abortSignal,
+          onAttempt: (settle) => {
+            settleAccounting = settle;
+          },
           ...(input.historyCompactBoundary
             ? { historyCompactBoundary: input.historyCompactBoundary }
             : {}),
@@ -327,6 +330,9 @@ export class ModelAdapter {
       requestMessages: fullMessages,
       abortSignal: input.abortSignal,
       runtimeToolName,
+      settleAccounting: async (outcome) => {
+        await settleAccounting?.(outcome);
+      },
     });
   }
 
@@ -344,6 +350,7 @@ export class ModelAdapter {
       requestMessages: ModelMessage[];
       abortSignal: AbortSignal;
       runtimeToolName?: (name: string) => string;
+      settleAccounting: (outcome: ModelStepOutcome) => Promise<void>;
     },
   ): ModelStreamResult {
     const openAiChatReasoningTransportState =
@@ -356,7 +363,6 @@ export class ModelAdapter {
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
-    const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
@@ -374,6 +380,9 @@ export class ModelAdapter {
             ) {
               streamedRawFinishReason =
                 rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
+              streamedFinishReason = chunkFinishReason(chunk) ?? streamedFinishReason;
+              if (chunk.type === 'finish') sawFinish = true;
+              continue;
             }
             if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
               // The SDK emits this trailer from flush() when no
@@ -391,10 +400,6 @@ export class ModelAdapter {
               continuation.runtimeToolName,
             )) {
               if (event.kind === 'error') failure = event.failure;
-              if (event.kind === 'finish') sawFinish = true;
-              if (event.kind === 'finish' || event.kind === 'step-finish') {
-                streamedFinishReason = event.finishReason ?? streamedFinishReason;
-              }
               yield event;
             }
           }
@@ -404,6 +409,9 @@ export class ModelAdapter {
             yield { kind: 'error', failure };
           }
         } finally {
+          if (continuation.abortSignal.aborted) {
+            failure = normalizeProviderFailure(continuation.abortSignal.reason);
+          }
           const [sdkUsage, sdkFinishReason] = await Promise.all([
             sdk.usage.catch(() => undefined),
             sdk.finishReason.catch(() => undefined),
@@ -430,7 +438,6 @@ export class ModelAdapter {
             finishReason,
             rawFinishReason,
             usage,
-            request,
           });
           let deferredFailure: ModelFailure | undefined;
 
@@ -446,7 +453,6 @@ export class ModelAdapter {
               finishReason,
               rawFinishReason,
               usage,
-              request,
             });
           }
 
@@ -471,7 +477,11 @@ export class ModelAdapter {
               }
             }
           } finally {
-            settleOutcome(settled);
+            try {
+              await continuation.settleAccounting(settled);
+            } finally {
+              settleOutcome(settled);
+            }
           }
           if (deferredFailure) {
             // Consumers may stop iterating at the first error. The outcome and
@@ -567,31 +577,26 @@ interface ModelStepSettlementEvidence {
   finishReason: ModelFinishReason;
   rawFinishReason?: string;
   usage?: NormalizedUsage;
-  request: ModelRequestMetadata;
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage, request } = evidence;
+  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
-      'aborted',
       failure ??
         normalizeProviderFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-      request,
       usage,
     );
   }
   if (failure) {
-    return failedStepOutcome('failed', failure, request, usage);
+    return failedStepOutcome(failure, usage);
   }
   if (!sawFinish || finishReason === 'other' || finishReason === 'unknown') {
     return failedStepOutcome(
-      'truncated',
       modelStepFailure(
         'stream_truncated',
         `Provider stream ended without finishing (${finishReason})`,
       ),
-      request,
       usage,
     );
   }
@@ -600,19 +605,18 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       finishReason === 'error'
         ? providerFinishFailure(rawFinishReason)
         : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
-    return failedStepOutcome('failed', terminalFailure, request, usage);
+    return failedStepOutcome(terminalFailure, usage);
   }
   return {
     kind: 'completed',
     finishReason,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
   };
 }
 
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
-  return { type: 'model_failure', kind, message, retryable: false };
+  return { type: 'model_failure', kind, message, retryable: kind === 'stream_truncated' };
 }
 
 function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
@@ -634,16 +638,13 @@ function providerFinishFailure(rawFinishReason: string | undefined): ModelFailur
 }
 
 function failedStepOutcome(
-  kind: Exclude<ModelStepOutcome['kind'], 'completed'>,
   failure: ModelFailure,
-  request: ModelRequestMetadata,
   usage?: NormalizedUsage,
 ): Exclude<ModelStepOutcome, { kind: 'completed' }> {
   return {
-    kind,
+    kind: 'failed',
     failure,
     ...(usage ? { usage } : {}),
-    request,
     continuation: 'none',
   };
 }
@@ -1083,32 +1084,6 @@ function translateChunk(
     case 'tool-input-delta':
     case 'tool-input-end':
       return [{ kind: 'tool-input', providerExecuted: chunk.providerExecuted === true }];
-    // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
-    // carry no text/thinking to stream. The backend owns step accounting: it
-    // counts and flushes one AssistantMessage per step and rotates the
-    // messageId at each `finish-step`. `step-finish` is legacy replay fixture
-    // compatibility — handled as a step boundary, not a text carrier.
-    case 'finish-step':
-    case 'step-finish': {
-      const finishReason = chunkFinishReason(chunk);
-      const rawFinishReason = rawFinishReasonString(chunk.rawFinishReason);
-      // The same value the turn's outcome is decided from, so the record and
-      // the outcome cannot name different reasons for the same stream.
-      const usage = normalizeAiSdkUsage(chunk.usage, {
-        rawFinishReason: rawFinishReason ?? finishReason,
-      });
-      return [
-        {
-          kind: 'step-finish',
-          ...(usage ? { usage } : {}),
-          ...(finishReason ? { finishReason } : {}),
-        },
-      ];
-    }
-    case 'finish': {
-      const finishReason = chunkFinishReason(chunk);
-      return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
-    }
     case 'start-step':
     case 'tool-result':
     case 'tool-error': {
