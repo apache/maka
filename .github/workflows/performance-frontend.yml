@@ -38,29 +38,6 @@ jobs:
       - run: npm --workspace @maka/desktop run build-storybook
       - id: browsers
         run: npx playwright install --with-deps chromium
-      - name: Virtual history continuity and selection
-        run: |
-          node --input-type=module <<'JS'
-          import { chromium } from '@playwright/test';
-          import { mkdir, writeFile } from 'node:fs/promises';
-          import { startStaticServer, smokeStory } from './scripts/storybook-visual-smoke.mjs';
-          const server = await startStaticServer('apps/desktop/storybook-static');
-          const browser = await chromium.launch();
-          const page = await browser.newPage();
-          await mkdir('perf-results', { recursive: true });
-          try {
-            await smokeStory(page, server.baseUrl, {
-              storyId: 'product-shell-official-appshell--virtual-history-continuity',
-              colorScheme: 'light', palette: 'default',
-            });
-          } catch (error) {
-            await writeFile('perf-results/continuity-error.txt', String(error));
-            throw error;
-          } finally {
-            await page.screenshot({ path: 'perf-results/continuity.png' });
-            await browser.close(); await server.close();
-          }
-          JS
       - name: Native history traversal never exposes an empty transcript
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results/native-history

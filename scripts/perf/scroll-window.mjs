@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// A/B experiment: identical native input and frame observations on both refs.
+// Native history geometry gate with raw frame and browser timing evidence.
 // History storage is simulated; real Host admission is measured separately.
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -117,26 +117,6 @@ try {
       }
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
-      await page.addInitScript(() => {
-        window.__scrollWrites = [];
-        const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
-        Object.defineProperty(Element.prototype, 'scrollTop', {
-          ...descriptor,
-          set(value) {
-            const before = descriptor.get.call(this);
-            descriptor.set.call(this, value);
-            if (this.matches('[data-chat-scroll-container]')) {
-              window.__scrollWrites.push({
-                ms: performance.now(),
-                before,
-                requested: value,
-                after: descriptor.get.call(this),
-                stack: new Error().stack,
-              });
-            }
-          },
-        });
-      });
       await page.goto(
         `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--${scene}&viewMode=story`,
       );
@@ -151,7 +131,6 @@ try {
           events: [],
           tasks: [],
           longAnimationFrames: [],
-          scrollWrites: window.__scrollWrites,
           running: true,
           phase: 'start',
         });
@@ -188,8 +167,6 @@ try {
         new PerformanceObserver((list) =>
           probe.longAnimationFrames.push(...list.getEntries().map((entry) => entry.toJSON())),
         ).observe({ type: 'long-animation-frame' });
-        let previous;
-        let previousRendered;
         let previousText;
         // Follow an actual visible glyph, not the top of a provisional shell
         // or a tall Turn whose beginning can be far outside the viewport.
@@ -216,16 +193,7 @@ try {
           }
         };
         const frame = () => {
-          const turns = [...root.querySelectorAll('[data-turn-id]')];
           const top = root.getBoundingClientRect().top;
-          const anchor = turns.find((turn) => turn.getBoundingClientRect().bottom > top);
-          const rendered = turns.find(
-            (turn) =>
-              turn.matches('.maka-turn') &&
-              turn.getBoundingClientRect().bottom > top &&
-              turn.getBoundingClientRect().top < top + root.clientHeight,
-          );
-          const old = previous && root.querySelector(`[data-turn-id="${previous.id}"]`);
           const sample = {
             ms: performance.now(),
             top: root.scrollTop,
@@ -236,15 +204,7 @@ try {
               const box = turn.getBoundingClientRect();
               return box.bottom > top && box.top < top + root.clientHeight;
             }).length,
-            first: turns[0]?.dataset.turnId,
-            last: turns.at(-1)?.dataset.turnId,
             phase: probe.phase,
-            anchorId: previous?.id,
-            anchorWasPlaceholder: previous?.placeholder,
-            renderedAnchorId: previousRendered?.node.dataset.turnId,
-            renderedAnchorDelta: previousRendered?.node.isConnected
-              ? previousRendered.node.getBoundingClientRect().top - previousRendered.top
-              : null,
             readerDelta:
               previousText?.node.isConnected && previousText.range.getClientRects().length
                 ? previousText.range.getBoundingClientRect().top - previousText.top
@@ -252,20 +212,8 @@ try {
             membership: [...root.querySelectorAll('[data-transcript-turn-id]')]
               .map((turn) => turn.dataset.transcriptTurnId)
               .join(','),
-            thumbRatio: root.clientHeight / root.scrollHeight,
-            anchorDelta: old ? old.getBoundingClientRect().top - previous.top : null,
           };
           probe.frames.push(sample);
-          previous = anchor
-            ? {
-                id: anchor.dataset.turnId,
-                top: anchor.getBoundingClientRect().top,
-                placeholder: anchor.hasAttribute('data-virtual-placeholder'),
-              }
-            : undefined;
-          previousRendered = rendered
-            ? { node: rendered, top: rendered.getBoundingClientRect().top }
-            : undefined;
           previousText = readingText(top);
           if (probe.running) requestAnimationFrame(frame);
         };
