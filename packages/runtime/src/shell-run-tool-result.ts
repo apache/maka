@@ -67,7 +67,7 @@ export function terminalContent(record: ShellRunRecord): TerminalToolResult {
     status: terminalResultStatus(record.status),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
-    output: projectShellOutputForModel(record.output),
+    output: record.output,
     ...(sandboxDenialForRecord(record) ? { sandboxDenial: sandboxDenialForRecord(record) } : {}),
   };
 }

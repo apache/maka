@@ -52,6 +52,12 @@ import {
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
 
+const PREFIX_PROOF_TEST_BUDGET = {
+  maxEvents: 64,
+  maxBytes: 1024 * 1024,
+  maxRecordBytes: 256 * 1024,
+};
+
 describe('SqliteRuntimeStore', () => {
   it('applies versioned migrations and reopens the same database without rewriting schema', async () => {
     await withStore(async (store, dbPath) => {
@@ -119,7 +125,7 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('bounds a transcript Turn by the bytes it stores, not by its JSON string length', async () => {
+  it('bounds a transcript Turn by stored total and per-record bytes', async () => {
     await withStore(async (store) => {
       const run = {
         sessionId: 'session-1',
@@ -186,16 +192,79 @@ describe('SqliteRuntimeStore', () => {
         position: 1,
         limit: 8,
         maxEvents: 64,
+        maxRecordBytes: 64_000,
       };
       await assert.rejects(
-        store.readTranscriptInvocations(run.sessionId, { ...request, maxBytes: 6_000 }),
+        store.readTranscriptInvocations(
+          run.sessionId,
+          { ...request, maxBytes: 6_000 },
+          (_turn, events) => [...events],
+        ),
         (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
       );
-      const served = await store.readTranscriptInvocations(run.sessionId, {
-        ...request,
-        maxBytes: 64_000,
-      });
+      await assert.rejects(
+        store.readTranscriptInvocations(
+          run.sessionId,
+          { ...request, maxBytes: 64_000, maxRecordBytes: 6_000 },
+          (_turn, events) => [...events],
+        ),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      await assert.rejects(
+        store.readTranscriptInvocations(
+          run.sessionId,
+          { ...request, maxEvents: 2, maxBytes: 64_000 },
+          (_turn, events) => [...events],
+        ),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      const served = await store.readTranscriptInvocations(
+        run.sessionId,
+        { ...request, maxBytes: 64_000 },
+        (_turn, events) => [...events],
+      );
       assert.equal(served.length, 1);
+    });
+  });
+
+  it('projects transcript RuntimeEvents from a bounded row iterator', async () => {
+    await withStore(async (store) => {
+      await appendSettledTurn(store, 1);
+
+      const projected = await store.readTranscriptInvocations(
+        'session-1',
+        {
+          direction: 'newer',
+          throughOrdinal: Number.MAX_SAFE_INTEGER,
+          position: 1,
+          limit: 1,
+          maxEvents: 3,
+          maxBytes: 64_000,
+          maxRecordBytes: 32_000,
+        },
+        (turn, events) => {
+          assert.equal(Array.isArray(events), false);
+          return {
+            invocationId: turn.invocation.invocationId,
+            firstOrdinal: turn.firstOrdinal,
+            lastOrdinal: turn.lastOrdinal,
+            rows: [...events].map(({ ordinal, event }) => ({ ordinal, eventId: event.id })),
+          };
+        },
+      );
+
+      assert.deepEqual(projected, [
+        {
+          invocationId: 'invocation-1',
+          firstOrdinal: 1,
+          lastOrdinal: 3,
+          rows: [
+            { ordinal: 1, eventId: 'opened-1' },
+            { ordinal: 2, eventId: 'prompt-1' },
+            { ordinal: 3, eventId: 'terminal-1' },
+          ],
+        },
+      ]);
     });
   });
 
@@ -219,10 +288,15 @@ describe('SqliteRuntimeStore', () => {
           limit: 1,
           maxEvents: 64,
           maxBytes: 64_000,
+          maxRecordBytes: 64_000,
         };
         query.highWater('session-1');
-        query.invocations('session-1', { ...request, direction: 'older' });
-        query.invocations('session-1', { ...request, direction: 'newer' });
+        query.invocations('session-1', { ...request, direction: 'older' }, (_turn, events) => [
+          ...events,
+        ]);
+        query.invocations('session-1', { ...request, direction: 'newer' }, (_turn, events) => [
+          ...events,
+        ]);
         // A full scan is how a page starts costing the Session it sits in: the
         // rows it walks are every Turn's, not the page's.
         for (const { sql, bind } of executed) {
@@ -1033,6 +1107,22 @@ describe('SqliteRuntimeStore', () => {
           turnId: source.turnId,
           runId: rootRunId,
         };
+        let fullEventReads = 0;
+        const membershipStore = {
+          listSessionInvocations: store.listSessionInvocations.bind(store),
+          readRunInvocation: store.readRunInvocation.bind(store),
+          readContinuationClaimStateByBoundary:
+            store.readContinuationClaimStateByBoundary.bind(store),
+          readImmutableRuntimePrefixProof: (input: {
+            sessionId: string;
+            runId: string;
+            upToEventSeq?: number;
+          }) => store.readImmutableRuntimePrefixProof(input, PREFIX_PROOF_TEST_BUDGET),
+          readImmutableRuntimeEvents: async () => {
+            fullEventReads += 1;
+            throw new Error('membership read loaded full events');
+          },
+        };
         for (let index = 0; index < 2; index += 1) {
           const target = {
             sessionId: source.sessionId,
@@ -1063,6 +1153,14 @@ describe('SqliteRuntimeStore', () => {
           await store.appendRuntimeEvent(seal.sessionId, seal.runId, seal);
           assert.equal(
             (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          assert.equal(
+            (
+              await readLogicalRuntimeExecution(membershipStore, logicalIdentity, undefined, {
+                mode: 'membership',
+              })
+            )?.pendingHandoff?.claimId,
             claimId,
           );
           segments.push(
@@ -1126,9 +1224,38 @@ describe('SqliteRuntimeStore', () => {
           await store.commitContinuationStart({ claim, event: source });
           await store.commitContinuationStart({ claim, event: source });
           const live = await readLogicalRuntimeExecution(store, logicalIdentity);
+          const membership = await readLogicalRuntimeExecution(
+            membershipStore,
+            logicalIdentity,
+            undefined,
+            { mode: 'membership' },
+          );
           assert.equal(live?.root.runId, rootRunId);
           assert.equal(live?.tip.runId, source.runId);
           assert.equal(live?.pendingHandoff, undefined);
+          assert.deepEqual(membership?.runIds, live?.runIds);
+          assert.equal(membership?.root.runId, live?.root.runId);
+          assert.equal(membership?.tip.runId, live?.tip.runId);
+          assert.equal(membership?.pendingHandoff, undefined);
+          assert.equal(fullEventReads, 0);
+          if (index === 0) {
+            await assert.rejects(
+              readLogicalRuntimeExecution(
+                {
+                  ...membershipStore,
+                  readImmutableRuntimePrefixProof: async (input) => ({
+                    ...(await membershipStore.readImmutableRuntimePrefixProof(input)),
+                    prefixDigest:
+                      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  }),
+                },
+                logicalIdentity,
+                undefined,
+                { mode: 'membership' },
+              ),
+              /successor opened without its continuation claim/,
+            );
+          }
           await assert.rejects(
             store.appendRuntimeEvent(source.sessionId, 'rogue', {
               ...source,
@@ -1938,10 +2065,34 @@ describe('SqliteRuntimeStore', () => {
         sessionId: 'session-1',
         runId: 'run-1',
       });
+      const proof = await store.readImmutableRuntimePrefixProof(
+        { sessionId: 'session-1', runId: 'run-1' },
+        PREFIX_PROOF_TEST_BUDGET,
+      );
+      const pinnedProof = await store.readImmutableRuntimePrefixProof(
+        { sessionId: 'session-1', runId: 'run-1', upToEventSeq: 1 },
+        PREFIX_PROOF_TEST_BUDGET,
+      );
 
       assert.equal(pinned.prefixDigest, beforePartial.prefixDigest);
       assert.equal(latest.position.lastEventSeq, 2);
       assert.notEqual(latest.prefixDigest, beforePartial.prefixDigest);
+      assert.equal(proof.prefixDigest, latest.prefixDigest);
+      assert.deepEqual(proof.position, latest.position);
+      assert.equal(proof.firstEvent.id, 'user-event-1');
+      assert.equal(proof.lastEvent.id, 'model-event-2');
+      assert.equal(pinnedProof.prefixDigest, pinned.prefixDigest);
+      assert.equal(pinnedProof.firstEvent.id, pinnedProof.lastEvent.id);
+      for (const [budget, message] of [
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxEvents: 1 }, /event limit/],
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxBytes: 1 }, /byte limit/],
+        [{ ...PREFIX_PROOF_TEST_BUDGET, maxRecordBytes: 1 }, /record byte limit/],
+      ] as const) {
+        await assert.rejects(
+          store.readImmutableRuntimePrefixProof({ sessionId: 'session-1', runId: 'run-1' }, budget),
+          message,
+        );
+      }
     });
   });
 
@@ -2089,6 +2240,13 @@ describe('SqliteRuntimeStore', () => {
             sessionId: 'session-1',
             runId: 'run-1',
           }),
+          /event_seq gap/,
+        );
+        await assert.rejects(
+          reopened.readImmutableRuntimePrefixProof(
+            { sessionId: 'session-1', runId: 'run-1' },
+            PREFIX_PROOF_TEST_BUDGET,
+          ),
           /event_seq gap/,
         );
       } finally {

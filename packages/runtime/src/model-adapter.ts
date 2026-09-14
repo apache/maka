@@ -1082,7 +1082,7 @@ function translateChunk(
     case 'tool-input-start':
     case 'tool-input-delta':
     case 'tool-input-end':
-      return chunk.providerExecuted === true ? [{ kind: 'provider-tool-input' }] : [];
+      return [{ kind: 'tool-input', providerExecuted: chunk.providerExecuted === true }];
     // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
     // carry no text/thinking to stream. The backend owns step accounting: it
     // counts and flushes one AssistantMessage per step and rotates the

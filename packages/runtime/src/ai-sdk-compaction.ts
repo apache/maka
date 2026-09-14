@@ -50,6 +50,7 @@ import {
   mergeContextBudgetDiagnostic,
   mergeContextBudgetDiagnosticPatches,
   type ContextBudgetPolicy,
+  type ToolResultPruneStats,
 } from './context-budget.js';
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
@@ -76,24 +77,17 @@ import type {
   RequestProjectionStage,
 } from './request-projection.js';
 import {
-  rewriteActiveToolResultsInMessages,
-  type ActiveToolResultProjectionSource,
-  type ActiveToolResultPruneDiagnosticPatch,
-} from './active-tool-result-prune.js';
-import {
   archiveToolResultAsTransition,
-  collectStaleToolResultArchiveCandidates,
+  collectToolResultArchiveCandidates,
   serializedToolResultProjection,
   type ToolResultArchiveTransitionServices,
 } from './tool-result-archive-transition.js';
 import { estimateTokens } from './context-budget-helpers.js';
 import {
-  baseToolResultProjection,
   reduceEffectiveModelProjections,
   type LoadedModelProjectionTransitions,
 } from './model-projection-transition-ledger.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 import type { SessionEvent } from '@maka/core/events';
 import type { AsyncEventQueue } from './async-queue.js';
@@ -276,7 +270,6 @@ export class AiSdkCompaction {
       sessionId: this.sessionId,
       archiveToolResult: (candidate) => archive(candidate),
       recordTransition: (transition) => record(transition, turnId),
-      loadTransitions: () => this.loadModelProjectionTransitions(),
       now: this.now,
     };
   }
@@ -550,11 +543,14 @@ export class AiSdkCompaction {
    *
    * The current Turn's own events go through here on every provider step, for
    * the same reason prior Turns do: what the model sees is the folded ledger,
-   * not the raw one. A ledger this build cannot read in full leaves the slice
-   * untouched — the content is then merely unpruned, never wrongly replaced.
+   * not the raw one. Checkpoint validation and replay pass the same snapshot;
+   * standalone callers read one here. Unreadable targets remain withheld.
    */
-  public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
-    const loaded = await this.loadModelProjectionTransitions();
+  public async foldEffectiveModelHistory(
+    events: readonly RuntimeEvent[],
+    snapshot?: LoadedModelProjectionTransitions,
+  ): Promise<RuntimeEvent[]> {
+    const loaded = snapshot ?? (await this.loadModelProjectionTransitions());
     if (loaded.transitions.length === 0 && loaded.unreadableTargets.size === 0) {
       return [...events];
     }
@@ -588,32 +584,29 @@ export class AiSdkCompaction {
   }
 
   /**
-   * Fold the durable transition ledger onto this session's prior history, and
-   * commit any new stale-result transition the prune policy calls for.
+   * Apply the same bounded-result rule to current and prior events.
    *
    * This is the one seam where raw RuntimeEvents become effective model
    * history: the caller uses the returned events for replay, budgeting and
    * compaction alike, so no later stage can read content a transition removed.
    */
-  public async prepareContextBudgetPolicy(
+  public async pruneToolResults(
     runtimeContext: readonly RuntimeEvent[],
     turnId: string,
   ): Promise<{
-    policy: ContextBudgetPolicy | undefined;
     events: RuntimeEvent[];
-    diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
+    projectionSnapshot: LoadedModelProjectionTransitions;
+    stats?: ToolResultPruneStats;
   }> {
     const policy = this.input.contextBudget;
-    const loaded = await this.loadModelProjectionTransitions();
-    let transitions = loaded.transitions;
+    let loaded = await this.loadModelProjectionTransitions();
     let effective = reduceEffectiveModelProjections(
       runtimeContext,
-      transitions,
+      loaded.transitions,
       loaded.unreadableTargets,
     );
-    if (!policy) return { policy, events: effective.events };
-    let nextPolicy = policy;
-    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
+    if (!policy) return { events: effective.events, projectionSnapshot: loaded };
+    let stats: ToolResultPruneStats | undefined;
 
     // A chain this reader cannot see in full is a chain it must not extend: a
     // successor built on a partly known state would name the wrong predecessor
@@ -622,21 +615,17 @@ export class AiSdkCompaction {
       loaded.unreadableTargets.size === 0
         ? this.toolResultArchiveTransitionServices(turnId)
         : undefined;
-    if (policy.staleToolResultPrune?.enabled === true && services) {
+    if (policy.toolResultPrune?.enabled === true && services) {
       // The decision is taken over EFFECTIVE history, so a result an earlier
       // Turn already replaced is never re-measured — or re-archived — at the
       // size it used to have.
-      const candidates = collectStaleToolResultArchiveCandidates(
+      const candidates = collectToolResultArchiveCandidates(
         effective.events,
-        policy.staleToolResultPrune,
+        policy.toolResultPrune,
         policy.charsPerToken ?? 4,
       );
-      const committed: ModelProjectionTransition[] = [];
-      let archiveFailures = 0;
-      let estimatedTokensBefore = 0;
-      let estimatedTokensAfter = 0;
       for (const candidate of candidates) {
-        const outcome = await archiveToolResultAsTransition(services, {
+        await archiveToolResultAsTransition(services, {
           runtimeEventId: candidate.runtimeEventId,
           turnId: candidate.turnId,
           toolCallId: candidate.toolCallId,
@@ -648,44 +637,60 @@ export class AiSdkCompaction {
           reason: candidate.reason,
           result: candidate.result,
         });
-        if (!outcome) {
-          archiveFailures += 1;
-          continue;
-        }
-        committed.push(outcome.transition);
-        estimatedTokensBefore += candidate.originalEstimatedTokens;
-        estimatedTokensAfter += estimateTokens(
-          serializedToolResultProjection(outcome.transition.replacement).length,
-          policy.charsPerToken ?? 4,
-        );
       }
-      if (committed.length > 0) {
-        transitions = [...transitions, ...committed];
+      if (candidates.length > 0) {
+        // Writes (including a rival winner or an uncertain commit) cannot tell
+        // us what the model sees. Read once after the batch and use this same
+        // snapshot for checkpoint validation, replay, and diagnostics.
+        loaded = await this.loadModelProjectionTransitions();
         effective = reduceEffectiveModelProjections(
           runtimeContext,
-          transitions,
+          loaded.transitions,
           loaded.unreadableTargets,
         );
-      }
-      if (committed.length > 0 || archiveFailures > 0) {
-        diagnosticPatch = {
-          ...(committed.length > 0
-            ? {
-                prunedToolResults: committed.length,
-                prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
-                prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
-                archivePlaceholders: committed.length,
-                archivePlaceholderReasonCounts: {
-                  stale_tool_result_pruned_before_compact: committed.length,
-                },
-              }
-            : {}),
-          ...(archiveFailures > 0
-            ? { archiveWriteFailures: archiveFailures, unarchivedToolResults: archiveFailures }
-            : {}),
+        stats = {
+          prunedToolResults: 0,
+          prunedToolResultEstimatedTokensBefore: 0,
+          prunedToolResultEstimatedTokensAfter: 0,
+          archiveWriteFailures: 0,
         };
+        for (const candidate of candidates) {
+          const applied = effective.applied.find(
+            (transition) => transition.target.runtimeEventId === candidate.runtimeEventId,
+          );
+          if (!applied) {
+            stats.archiveWriteFailures++;
+            continue;
+          }
+          stats.prunedToolResults++;
+          stats.prunedToolResultEstimatedTokensBefore += candidate.originalEstimatedTokens;
+          stats.prunedToolResultEstimatedTokensAfter += estimateTokens(
+            serializedToolResultProjection(applied.replacement).length,
+            policy.charsPerToken ?? 4,
+          );
+        }
       }
     }
+
+    return { events: effective.events, projectionSnapshot: loaded, ...(stats ? { stats } : {}) };
+  }
+
+  public async prepareContextBudgetPolicy(
+    runtimeContext: readonly RuntimeEvent[],
+    turnId: string,
+  ): Promise<{
+    policy: ContextBudgetPolicy | undefined;
+    events: RuntimeEvent[];
+    projectionSnapshot: LoadedModelProjectionTransitions;
+    diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
+  }> {
+    const policy = this.input.contextBudget;
+    const prepared = await this.pruneToolResults(runtimeContext, turnId);
+    const effective = { events: prepared.events };
+    if (!policy)
+      return { policy, events: effective.events, projectionSnapshot: prepared.projectionSnapshot };
+    let nextPolicy = policy;
+    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined = prepared.stats;
 
     let loadedCheckpoint: HistoryCompactCheckpoint | undefined;
     try {
@@ -743,100 +748,8 @@ export class AiSdkCompaction {
     return {
       policy: nextPolicy,
       events: effective.events,
+      projectionSnapshot: prepared.projectionSnapshot,
       ...(diagnosticPatch ? { diagnosticPatch } : {}),
-    };
-  }
-
-  public buildActiveToolResultPruneProjection(
-    turnId: string,
-    includeNewestStep: boolean,
-    onDiagnosticPatch?: (patch: ActiveToolResultPruneDiagnosticPatch) => void,
-  ): RequestProjectionStage | undefined {
-    const policy = this.input.contextBudget?.activeToolResultPrune;
-    if (policy?.enabled !== true) return undefined;
-    const services = this.toolResultArchiveTransitionServices(turnId);
-    // No durable ledger, no lossy rewrite. The old per-Turn placeholder map let
-    // this run prune content that the NEXT request would have shown again.
-    if (!services || !this.input.loadTurnRuntimeEvents) return undefined;
-
-    // The current Turn reads the same folded history as every other consumer.
-    // Nothing here remembers what this run already archived: the ledger says it,
-    // and a step that measures the raw body again would archive it again.
-    let effective: { events: RuntimeEvent[]; lastApplied: Map<string, string> } | undefined;
-    const loadEffectiveTurnEvents = async (): Promise<typeof effective> => {
-      if (effective) return effective;
-      const loaded = await this.loadModelProjectionTransitions();
-      if (loaded.unreadableTargets.size > 0) return undefined;
-      let turnEvents: RuntimeEvent[];
-      try {
-        turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);
-      } catch {
-        return undefined;
-      }
-      const reduction = reduceEffectiveModelProjections(turnEvents, loaded.transitions);
-      const lastApplied = new Map<string, string>();
-      for (const transition of reduction.applied) {
-        lastApplied.set(transition.target.runtimeEventId, transition.transitionId);
-      }
-      effective = { events: reduction.events, lastApplied };
-      return effective;
-    };
-
-    const resolveProjection = async (
-      toolCallId: string,
-    ): Promise<ActiveToolResultProjectionSource | undefined> => {
-      const current = await loadEffectiveTurnEvents();
-      if (!current) return undefined;
-      const event = current.events.find(
-        (candidate) =>
-          candidate.partial !== true &&
-          candidate.content?.kind === 'function_response' &&
-          candidate.content.id === toolCallId,
-      );
-      if (!event || event.content?.kind !== 'function_response') return undefined;
-      const projection = baseToolResultProjection(event);
-      if (!projection) return undefined;
-      const previousTransitionId = current.lastApplied.get(event.id);
-      return {
-        runtimeEventId: event.id,
-        turnId: event.turnId,
-        toolName: event.content.name,
-        projection,
-        ...(previousTransitionId ? { previousTransitionId } : {}),
-      };
-    };
-
-    return async (options) => {
-      const eligibleToolCallIds = collectPrunableCompletedStepToolCallIds(
-        options.completedSteps,
-        includeNewestStep,
-      );
-      if (eligibleToolCallIds.size === 0) return undefined;
-      // Each provider step rebuilds its messages from the durable Turn ledger,
-      // so each step must re-fold it too.
-      effective = undefined;
-      const rewritten = await rewriteActiveToolResultsInMessages({
-        messages: options.messages,
-        policy,
-        stepNumber: options.stepNumber,
-        turnId,
-        charsPerToken: this.input.contextBudget?.charsPerToken,
-        eligibleToolCallIds,
-        completedToolCalls: options.completedSteps.flatMap((step, stepNumber) =>
-          (step.toolCalls ?? []).map((call) => ({
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            input: call.input,
-            stepNumber,
-          })),
-        ),
-        resolveProjection,
-        transitions: services,
-      });
-      if (hasActiveToolResultPruneDiagnosticPatch(rewritten.diagnosticPatch)) {
-        onDiagnosticPatch?.(rewritten.diagnosticPatch);
-      }
-      return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
     };
   }
 
@@ -1220,7 +1133,8 @@ export class AiSdkCompaction {
     // materializable and replay-admissible. A checkpoint that fails either
     // check must never be persisted because it would poison every later
     // projection.
-    const replayPlan = buildRuntimeEventModelReplayPlan(plan.replacementEvents, {
+    const effectiveReplacement = await this.foldEffectiveModelHistory(plan.replacementEvents);
+    const replayPlan = buildRuntimeEventModelReplayPlan(effectiveReplacement, {
       toolActivityTurnIds: collectToolActivityTurnIds(orderedEvents),
     });
     if (
@@ -1294,7 +1208,6 @@ export class AiSdkCompaction {
    */
   public async recoverFromOverflowError(input: {
     error: unknown;
-    retryAlreadyUsed: boolean;
     midTurnState: MidTurnCapacityCompactState | undefined;
     turnId: string;
     stepNumber: number;
@@ -1308,7 +1221,9 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (input.retryAlreadyUsed || !state) return undefined;
+    if (!state || state.compactionAttemptedThisSend || state.omittedImageToolResults.size > 0) {
+      return undefined;
+    }
     if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
@@ -1379,52 +1294,6 @@ export class AiSdkCompaction {
   }
 }
 
-// -- moved helpers (defined in ai-sdk-backend, used only by cache write) -------
-
-function incrementRecord(counts: Record<string, number>, key: string): void {
-  counts[key] = (counts[key] ?? 0) + 1;
-}
-
-function mergeCountsInto(
-  target: Record<string, number>,
-  source: Record<string, number> | undefined,
-): void {
-  for (const [key, value] of Object.entries(source ?? {})) {
-    target[key] = (target[key] ?? 0) + value;
-  }
-}
-
-// -- moved helpers (prepare-step / signature / prune) ------------------------
-
-/**
- * Tool results from the newest completed step have not crossed the provider
- * boundary yet: projection is invoked immediately before the first request
- * that could show those results to the model. By default active pruning defers
- * the newest step and archives only older completed steps, after the model has
- * had one request in which to consume their exact output.
- *
- * `includeNewestStep` widens eligibility to every completed step, including the
- * newest. The caller sets it when mid-turn capacity compaction is active: the
- * final-payload verdict may need an oversized newest result pruned to a
- * placeholder before declaring exhaustion, and capacity/recovery rebuilds
- * re-materialize raw bodies from the ledger that must be re-archived.
- */
-function collectPrunableCompletedStepToolCallIds(
-  steps: RequestProjectionContext['completedSteps'],
-  includeNewestStep: boolean,
-): Set<string> {
-  const out = new Set<string>();
-  const prunableSteps = includeNewestStep ? steps : steps.slice(0, -1);
-  for (const step of prunableSteps) {
-    for (const call of step.toolCalls ?? []) {
-      if (typeof call.toolCallId === 'string' && call.toolCallId.length > 0) {
-        out.add(call.toolCallId);
-      }
-    }
-  }
-  return out;
-}
-
 interface AcceptedMidTurnCompactionProjection {
   sourceSignatures: readonly string[];
   projectedMessages: readonly ModelMessage[];
@@ -1475,18 +1344,6 @@ function stableStringifyForSignature(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringifyForSignature(object[key])}`)
     .join(',')}}`;
-}
-
-export function hasActiveToolResultPruneDiagnosticPatch(
-  patch: ActiveToolResultPruneDiagnosticPatch,
-): boolean {
-  return (
-    (patch.activePrunedToolResults ?? 0) > 0 ||
-    (patch.activeSupersededToolResults ?? 0) > 0 ||
-    (patch.activeDuplicateToolResults ?? 0) > 0 ||
-    (patch.activeArchiveFailures ?? 0) > 0 ||
-    (patch.activeEstimatedTokensSaved ?? 0) > 0
-  );
 }
 
 /**

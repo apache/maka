@@ -30,7 +30,7 @@ import {
 } from './model-projection-transition-ledger.js';
 import {
   isArchivedToolResultPlaceholder,
-  type ToolResultArchiveReader,
+  type ToolResultArchiveReadResult,
 } from './tool-result-archive.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 import type { LedgerArchiveResourceIdentity } from './tool-result-archive-resource.js';
@@ -40,124 +40,123 @@ import {
   TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_TRANSITIONS,
 } from '@maka/core/tool-result-archive-evidence';
 
-/**
- * Read-only v1 reconstruction. It never calls a live tool projector, reads an
- * Artifact, changes history, or authorizes access from a hash alone.
- * The evidence port is trusted to return the complete bounded target history.
- */
-export function createLedgerToolResultArchiveReader(
+async function readLedgerArchive(
   evidence: ToolResultArchiveEvidenceReader,
-): ToolResultArchiveReader {
-  return async (input) => {
-    const request = { ...input };
+  request: (LedgerArchiveResourceIdentity | { storage: 'event'; runtimeEventId: string }) & {
+    sessionId: string;
+    maxBytes: number;
+  },
+): Promise<ToolResultArchiveReadResult> {
+  const identity = 'bodySha256' in request ? request : undefined;
+  if (
+    identity &&
+    (!/^[a-f0-9]{64}$/.test(identity.bodySha256) ||
+      !Number.isSafeInteger(identity.originalBytes) ||
+      identity.originalBytes < 1)
+  )
+    return { ok: false, reason: 'corrupt' };
+  if (
+    !Number.isSafeInteger(request.maxBytes) ||
+    (identity && request.maxBytes < identity.originalBytes)
+  )
+    return { ok: false, reason: 'too_large' };
+  try {
+    const loaded = await evidence.read({
+      sessionId: request.sessionId,
+      runtimeEventId: request.runtimeEventId,
+    });
+    if (!loaded.ok)
+      return {
+        ok: false,
+        reason: loaded.reason === 'unavailable' ? 'read_failed' : loaded.reason,
+      };
+    const { event } = loaded;
+    const content = event.content;
+    if (event.sessionId !== request.sessionId) return { ok: false, reason: 'session_mismatch' };
     if (
-      !isArchivedToolResultPlaceholder(request) ||
-      !/^[a-f0-9]{64}$/.test(request.bodySha256) ||
-      !Number.isSafeInteger(request.originalBytes) ||
-      request.originalBytes < 1
-    ) {
-      return { ok: false, reason: 'corrupt' };
-    }
-    const maxBytes = request.maxBytes ?? request.originalBytes;
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < request.originalBytes)
-      return { ok: false, reason: 'too_large' };
-    try {
-      const loaded = await evidence.read({
-        sessionId: request.sessionId,
-        runtimeEventId: request.runtimeEventId,
-      });
-      if (!loaded.ok)
-        return {
-          ok: false,
-          reason: loaded.reason === 'unavailable' ? 'read_failed' : loaded.reason,
-        };
-      const { event } = loaded;
-      const content = event.content;
-      if (event.sessionId !== request.sessionId) return { ok: false, reason: 'session_mismatch' };
+      event.id !== request.runtimeEventId ||
+      content?.kind !== 'function_response' ||
+      (identity && (content.id !== identity.toolCallId || content.name !== identity.toolName)) ||
+      content.providerExecuted ||
+      !content.modelProjection
+    )
+      return { ok: false, reason: 'source_mismatch' };
+    let source = decodeDurableToolResultProjection(content.modelProjection);
+    const byId = new Map<string, ModelProjectionTransition>();
+    for (const record of loaded.transitions) {
+      const transition = decodeLedgerTransition(record, request.sessionId);
       if (
-        event.id !== request.runtimeEventId ||
-        content?.kind !== 'function_response' ||
-        content.id !== request.toolCallId ||
-        content.name !== request.toolName ||
-        content.providerExecuted ||
-        !content.modelProjection
+        !transition ||
+        record.sessionId !== request.sessionId ||
+        transition.target.runtimeEventId !== event.id
       )
-        return { ok: false, reason: 'source_mismatch' };
-      let source = decodeDurableToolResultProjection(content.modelProjection);
-      const byId = new Map<string, ModelProjectionTransition>();
-      for (const record of loaded.transitions) {
-        const transition = decodeLedgerTransition(record, request.sessionId);
+        return { ok: false, reason: 'corrupt' };
+      const previous = byId.get(transition.transitionId);
+      if (
+        previous &&
+        JSON.stringify({ ...previous, createdAt: 0 }) !==
+          JSON.stringify({ ...transition, createdAt: 0 })
+      ) {
+        return { ok: false, reason: 'corrupt' };
+      }
+      byId.set(transition.transitionId, transition);
+    }
+    const reduction = reduceEffectiveModelProjections([event], [...byId.values()]);
+    for (const transition of reduction.applied) {
+      const replacement = transition.replacement;
+      const placeholder = replacement.kind === 'json' ? replacement.value : undefined;
+      if (
+        isArchivedToolResultPlaceholder(placeholder) &&
+        ((!identity && transition === reduction.applied.at(-1)) ||
+          (placeholder.rewriteVersion === 2 &&
+            identity &&
+            placeholder.sourceProjectionDigest === identity.sourceProjectionDigest &&
+            placeholder.previousTransitionId === identity.previousTransitionId))
+      ) {
         if (
-          !transition ||
-          record.sessionId !== request.sessionId ||
-          transition.target.runtimeEventId !== event.id
+          placeholder.runtimeEventId !== event.id ||
+          placeholder.toolCallId !== content.id ||
+          placeholder.toolName !== content.name ||
+          (identity &&
+            (placeholder.bodySha256 !== identity.bodySha256 ||
+              placeholder.originalBytes !== identity.originalBytes))
+        )
+          return { ok: false, reason: 'source_mismatch' };
+        if (
+          placeholder.rewriteVersion === 2 &&
+          (placeholder.sourceProjectionDigest !== transition.sourceProjectionDigest ||
+            placeholder.previousTransitionId !== transition.previousTransitionId)
         )
           return { ok: false, reason: 'corrupt' };
-        const previous = byId.get(transition.transitionId);
-        if (
-          previous &&
-          JSON.stringify({ ...previous, createdAt: 0 }) !==
-            JSON.stringify({ ...transition, createdAt: 0 })
-        ) {
+        const serializedResult = serializeToolResultProjectionV1(source);
+        if (placeholder.originalBytes > request.maxBytes) return { ok: false, reason: 'too_large' };
+        if (Buffer.byteLength(serializedResult, 'utf8') !== placeholder.originalBytes)
+          return { ok: false, reason: 'size_mismatch' };
+        if (createHash('sha256').update(serializedResult).digest('hex') !== placeholder.bodySha256)
           return { ok: false, reason: 'corrupt' };
-        }
-        byId.set(transition.transitionId, transition);
+        return { ok: true, serializedResult };
       }
-      const reduction = reduceEffectiveModelProjections([event], [...byId.values()]);
-      for (const transition of reduction.applied) {
-        const replacement = transition.replacement;
-        const placeholder = replacement.kind === 'json' ? replacement.value : undefined;
-        if (
-          isArchivedToolResultPlaceholder(placeholder) &&
-          ((placeholder.rewriteVersion === 1 &&
-            request.rewriteVersion === 1 &&
-            placeholder.artifactId === request.artifactId) ||
-            (placeholder.rewriteVersion === 2 &&
-              request.rewriteVersion === 2 &&
-              placeholder.sourceProjectionDigest === request.sourceProjectionDigest &&
-              placeholder.previousTransitionId === request.previousTransitionId))
-        ) {
-          if (
-            placeholder.runtimeEventId !== request.runtimeEventId ||
-            placeholder.toolCallId !== request.toolCallId ||
-            placeholder.toolName !== request.toolName ||
-            placeholder.bodySha256 !== request.bodySha256 ||
-            placeholder.originalBytes !== request.originalBytes ||
-            placeholder.rewriteVersion !== request.rewriteVersion
-          )
-            return { ok: false, reason: 'source_mismatch' };
-          if (
-            placeholder.rewriteVersion === 2 &&
-            (placeholder.sourceProjectionDigest !== transition.sourceProjectionDigest ||
-              placeholder.previousTransitionId !== transition.previousTransitionId)
-          )
-            return { ok: false, reason: 'corrupt' };
-          const serializedResult = serializeToolResultProjectionV1(source);
-          if (Buffer.byteLength(serializedResult, 'utf8') !== request.originalBytes)
-            return { ok: false, reason: 'size_mismatch' };
-          if (createHash('sha256').update(serializedResult).digest('hex') !== request.bodySha256)
-            return { ok: false, reason: 'corrupt' };
-          return { ok: true, serializedResult };
-        }
-        source = transition.replacement;
-      }
-      return { ok: false, reason: 'not_found' };
-    } catch {
-      return { ok: false, reason: 'corrupt' };
+      source = transition.replacement;
     }
-  };
+    if (!identity && reduction.rejected.length === 0) {
+      const serializedResult = serializeToolResultProjectionV1(source);
+      if (Buffer.byteLength(serializedResult, 'utf8') > request.maxBytes)
+        return { ok: false, reason: 'too_large' };
+      return { ok: true, serializedResult };
+    }
+    return { ok: false, reason: 'not_found' };
+  } catch {
+    return { ok: false, reason: 'corrupt' };
+  }
 }
 
 export function createLedgerArchiveResourceReader(evidence: ToolResultArchiveEvidenceReader) {
-  const reader = createLedgerToolResultArchiveReader(evidence);
-  return (input: LedgerArchiveResourceIdentity & { sessionId: string; maxBytes: number }) =>
-    reader({
-      ...input,
-      kind: 'maka.archived_tool_result',
-      rewriteVersion: 2,
-      originalEstimatedTokens: 1,
-      reason: 'stale_tool_result_pruned_before_compact',
-    });
+  return (
+    input: (LedgerArchiveResourceIdentity | { storage: 'event'; runtimeEventId: string }) & {
+      sessionId: string;
+      maxBytes: number;
+    },
+  ) => readLedgerArchive(evidence, input);
 }
 
 /** Verify reconstructibility before committing a replacement; does not write any payload. */

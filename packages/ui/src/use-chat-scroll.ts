@@ -46,7 +46,7 @@ export function useChatScroll(input: {
    * requester that is already aiming this turn itself and only needs the
    * reveal to agree with it, instantly and at the same edge.
    */
-  target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
+  target?: { turnId: string; nonce: number; preserveFocus?: boolean; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
   onTargetHandled?(nonce: number): void;
   viewportNavigation?: TranscriptViewportNavigation;
@@ -260,6 +260,7 @@ export function useChatScroll(input: {
     const explicitTarget = input.target?.turnId
       ? {
           kind: 'search' as const,
+          preserveFocus: input.target.preserveFocus,
           turnId: input.target.turnId,
           nonce: input.target.nonce,
           align: input.target.align ?? ('center' as const),
@@ -320,8 +321,10 @@ export function useChatScroll(input: {
       // switching away still retains the position the command established.
       reportReadingAnchor.current?.();
       if (target.kind === 'restore') return;
-      targetElement.setAttribute('tabindex', '-1');
-      targetElement.focus({ preventScroll: true });
+      if (!target.preserveFocus) {
+        targetElement.setAttribute('tabindex', '-1');
+        targetElement.focus({ preventScroll: true });
+      }
       setHighlightedTurnId(target.turnId);
       targetHandledRef.current?.(target.nonce);
     });

@@ -69,16 +69,11 @@ describe('mid-turn history compact policy', () => {
 describe('tool-result prune policy', () => {
   test('uses bounded runtime defaults', () => {
     const policy = buildDefaultContextBudgetPolicy();
-    assert.deepEqual(policy?.activeToolResultPrune, {
+    assert.deepEqual(policy?.toolResultPrune, {
       enabled: true,
-      maxCurrentResultEstimatedTokens: 2_048,
-      minSupersededResultEstimatedTokens: 256,
-      minStepNumber: 1,
     });
-    assert.deepEqual(policy?.staleToolResultPrune, {
+    assert.deepEqual(policy?.toolResultPrune, {
       enabled: true,
-      maxResultEstimatedTokens: 2_048,
-      minRecentTurnsFull: 2,
     });
   });
 });

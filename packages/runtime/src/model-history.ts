@@ -1133,7 +1133,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
     .map((attachment) => {
       const resourceRef = formatAttachmentResourceRef(attachment.ref);
       const readArgument = resourceRef
-        ? { ref: resourceRef }
+        ? { path: resourceRef }
         : attachment.ref.kind === 'workspace_file'
           ? { path: attachment.ref.relativePath }
           : attachment.ref.kind === 'external_file'
@@ -1146,7 +1146,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
               ...(attachment.kind === 'image'
                 ? [`Markdown image source: ${JSON.stringify(resourceRef)}`]
                 : []),
-              'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
+              'This is a Session resource, not a workspace file. Use the path above; never use the display name as a path.',
             ].join('\n')
           : `Read argument: ${JSON.stringify(readArgument)}`
         : 'The attachment content is unavailable to Read.';

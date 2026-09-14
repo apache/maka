@@ -338,3 +338,24 @@ enforce safely.
 - Copying an ordinary Session's complete transcript into WorkHub.
 - Allowing model or routing output to authorize writes without the deterministic
   Action Gate.
+
+## Host target-choice interaction
+
+Target selection is an interaction capability, independent of the optional
+pre-admission model-routing strategy described above. The default Coordination
+model can invoke `tasks.select_and_delegate` after candidate discovery. The Host
+publishes a durable Form using its existing interaction authority, accepts an exact
+opaque option, and passes its bound Session/workspace to the existing Action Gate.
+No additional Session lifecycle or WorkHub database is introduced.
+
+The Coordination Turn is already admitted while waiting. Only the subsequent Gate
+and target admission can start delegated execution. The operation re-reads active
+Run authority after waiting, retains the original admitted user content, and never
+rewrites an existing routing decision. Bound experimental Turns must follow their
+admitted decision; changing it requires a later coordination decision.
+
+Renderer reload re-queries the pending interaction. Cancellation/Stop closes it;
+Host recovery closes orphaned continuations. A stale offer cannot silently choose
+another work. Successful assignment replay uses the durable action identity. The
+former `answer -> targetSelection -> answer` pre-admission protocol and renderer
+Promise are removed rather than retained as a second selection implementation.

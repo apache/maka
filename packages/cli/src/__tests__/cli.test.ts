@@ -52,7 +52,10 @@ describe('Maka CLI args', () => {
     assert.match(help.text, /^ {2}maka activate /m);
     assert.match(help.text, /^ {2}maka eval /m);
     assert.match(help.text, /^ {2}maka update /m);
-    assert.match(help.text, /^ {2}maka --acp {2,}Serve ACP v1 over stdio /m);
+    assert.match(
+      help.text,
+      /^ {2}maka --acp {2,}Serve ACP v1 over stdio \(sessions, prompts, streaming, cancellation\)$/m,
+    );
     // Runtime Host owns its own help; the root lists it once and points there.
     assert.match(help.text, /^ {2}maka runtime-host \.\.\. {2,}Serve and manage a Runtime Host$/m);
     assert.doesNotMatch(help.text, /^ {2}maka runtime-host (?:serve|service|access) /m);

@@ -151,8 +151,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  // ArchiveRead now describes both ledger and legacy resource references.
-  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
+  // Unified Read pages and Grep completeness share the hosted tool profile.
+  'sha256:fb7f539090471695ec1d8ca31555d083d8c3c0e0c40d5dcf655b14c103b10c22';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2544,7 +2544,6 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -2825,7 +2824,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     // must never see WebSearch in the effective root tool surface. Non-direct
     // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
-      'ArchiveRead',
       'AskUserQuestion',
       'Bash',
       'Edit',
@@ -3333,10 +3331,8 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'implementation',
     ]);
     // A child now carries the archive decoder alongside its allowlist (#2026).
-    // Its own placeholders name `ArchiveRead`, so the ceiling that governs
-    // agent-permission tools cannot be the thing that decides whether the child
-    // can read back a result the runtime itself pruned.
-    assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    // The existing Read also resolves Session-scoped tool results.
+    assert.deepEqual(toolNames(requests[2]?.body), ['Glob', 'Grep', 'Read']);
     assert.doesNotMatch(JSON.stringify(requests[2]?.body), /## Response format/u);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
 
@@ -3533,7 +3529,6 @@ test('production Host publishes and retires an implementation child patch', asyn
       'implementation',
     ]);
     const childToolNames = [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -5096,7 +5091,6 @@ function backendCreationFixture(input: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({
         archiveToolResult: async () => ({ artifactId: 'fixture-tool-result-archive' }),
-        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
         readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
       }),
     },
@@ -5733,7 +5727,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    assert.deepEqual(toolNames(body), ['Glob', 'Grep', 'Read']);
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }
@@ -5744,7 +5738,6 @@ async function handleProviderRequest(
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 3) {
     assert.deepEqual(toolNames(body), [
-      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -5782,7 +5775,7 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 6) {
     flow.ptyReadCount = 1;
     respondProviderToolCall(response, streamRequestIndex, 'Read', {
-      ref: requireRuntimeResourceRef(body),
+      path: requireRuntimeResourceRef(body),
     });
     return;
   }
@@ -5800,7 +5793,7 @@ async function handleProviderRequest(
         );
         flow.ptyReadCount += 1;
         respondProviderToolCall(response, streamRequestIndex, 'Read', {
-          ref: requireRuntimeResourceRef(body),
+          path: requireRuntimeResourceRef(body),
         });
         return;
       }

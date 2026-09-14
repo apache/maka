@@ -241,12 +241,12 @@ export interface MakaTool<P = any, R = unknown> {
     readonly sessionId: string;
     readonly operationId: string;
   }) => Promise<void> | void;
-  /** Optional synchronous provider-visible content mapping, used for screenshot image parts. */
+  /** Synchronous model mapping. Return undefined to use the canonical default projection. */
   toModelOutput?: (options: {
     toolCallId: string;
     input: unknown;
     output: unknown;
-  }) => ToolResultOutput;
+  }) => ToolResultOutput | undefined;
 }
 
 export interface MakaToolContext {
@@ -913,6 +913,8 @@ export class ToolRuntime {
         return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
       }
       const output = tool.toModelOutput({ toolCallId, input, output: result });
+      if (output === undefined)
+        return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
       // Projection is deliberately synchronous and total at the tool boundary.
       // Fail closed for untyped/plugin implementations that violate the
       // contract so a completed effect can never be stranded before T2.
@@ -2057,7 +2059,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           executionArgs,
-          terminalResult,
+          terminalFailure.content,
         );
         const modelProjection = isPromiseLike(projected) ? await projected : projected;
         const durableOutcome = await durableAttempt?.commitOutcome(
@@ -3891,14 +3893,14 @@ function coerceTerminalFailure(
     args && typeof args === 'object' && typeof (args as { command?: unknown }).command === 'string'
       ? (args as { command: string }).command
       : '';
-  const stdout = redactSecrets(String(error.stdout ?? ''));
-  const stderr = redactSecrets(String(error.stderr ?? ''));
+  const stdout = String(error.stdout ?? '');
+  const stderr = String(error.stderr ?? '');
   const sandboxDenied = error.reason === 'sandbox_denial' && error.sandboxed === true;
   return {
     content: {
       kind: 'terminal',
       cwd,
-      cmd: redactSecrets(command),
+      cmd: command,
       status: error.code === 124 ? 'timed_out' : error.code === 130 ? 'cancelled' : 'failed',
       exitCode: error.code,
       output: {
@@ -3907,7 +3909,7 @@ function coerceTerminalFailure(
         stderr,
         stdoutTruncated: error.stdoutTruncated === true,
         stderrTruncated: error.stderrTruncated === true,
-        redacted: stdout !== String(error.stdout ?? '') || stderr !== String(error.stderr ?? ''),
+        redacted: false,
       },
       ...(sandboxDenied
         ? {

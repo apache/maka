@@ -48,6 +48,7 @@ export interface AcpChildProcessHarnessOptions {
   readonly model?: {
     readonly id: string;
     readonly thinkingLevels: readonly ThinkingLevel[];
+    readonly baseUrl?: string;
   };
 }
 
@@ -364,7 +365,7 @@ async function seedModelConnection(
         slug: 'acp-fixture-model',
         name: 'ACP fixture model',
         providerType: 'openai-compatible',
-        baseUrl: 'https://acp-model.invalid/v1',
+        baseUrl: model.baseUrl ?? 'https://acp-model.invalid/v1',
         enabled: true,
         enabledModelIds: [model.id],
         ...(model.thinkingLevels.length === 0

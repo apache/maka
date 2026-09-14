@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
@@ -54,6 +55,24 @@ function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
 }
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders neutral provider dropping guidance', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'system_note',
+        id: 'drop-1',
+        turnId: 't1',
+        ts: 1,
+        kind: 'context_provider_dropping',
+        data: { inputTokens: 100, priorInputTokens: 100 },
+      },
+    ]);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n'),
+      /truncated or rewritten/,
+    );
+  });
+
   test('renders manual compaction from the typed terminal outcome', async () => {
     for (const [outcome, expected] of [
       [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],
@@ -2627,7 +2646,7 @@ describe('Maka Pi TUI transcript', () => {
         type: 'tool_start',
         toolUseId: 'read-bg',
         toolName: 'Read',
-        args: { ref },
+        args: { path: ref },
       }),
     );
 
@@ -3915,7 +3934,7 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('folds a background-task Read result into its parent Bash card', () => {
+  test('folds the real Read observation into its Bash card while the model gets a bounded page', async () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
     applyMakaSessionEventToTranscript(
@@ -3942,21 +3961,41 @@ describe('Maka Pi TUI transcript', () => {
         type: 'tool_start',
         toolUseId: 'read-bg',
         toolName: 'Read',
-        args: { ref },
+        args: { path: ref },
       }),
     );
+    const observation = shellRun({
+      ref,
+      status: 'failed',
+      stdout: 'starting\n' + 'failure detail\n'.repeat(900),
+      updatedAt: 5_000,
+    });
+    const read = buildBuiltinTools({
+      runtimeResources: { readRuntimeResource: async () => observation },
+    }).find((tool) => tool.name === 'Read')!;
+    const args = { path: ref };
+    const result = await read.impl(args, {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: 'read-bg',
+      cwd: '/repo',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    });
+    assert.deepEqual(result, observation);
+    const modelOutput = read.toModelOutput!({ toolCallId: 'read-bg', input: args, output: result });
+    assert.equal(modelOutput?.type, 'json');
+    if (modelOutput?.type === 'json') {
+      assert.ok(JSON.stringify(modelOutput.value).length <= 7_500);
+      assert.ok((modelOutput.value as { next: unknown }).next);
+    }
     applyMakaSessionEventToTranscript(
       state,
       event({
         type: 'tool_result',
         toolUseId: 'read-bg',
         isError: false,
-        content: shellRun({
-          ref,
-          status: 'running',
-          stdout: 'starting\nstill running\n',
-          updatedAt: 5_000,
-        }),
+        content: result as ToolResultContent,
       }),
     );
 
@@ -3967,14 +4006,15 @@ describe('Maka Pi TUI transcript', () => {
       tools[0]?.result?.kind === 'shell_run' && tools[0].result.output?.mode === 'pipes'
         ? tools[0].result.output.stdout
         : '',
-      'starting\nstill running\n',
+      observation.output?.mode === 'pipes' ? observation.output.stdout : '',
     );
+    assert.equal(tools[0]?.result?.kind === 'shell_run' && tools[0].result.status, 'failed');
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(rendered, /● Read/);
     // Running card keeps the live tail in the expanded card.
     assert.equal(toggleAllToolExpansion(state), true);
     const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /still running/);
+    assert.match(expanded, /failure detail/);
   });
 
   test('shows polled background output instead of a stale live delta', () => {

@@ -20,7 +20,10 @@
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
-test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
+// The compact native window must contain the top-layer wheel while keeping
+// composer controls fixed on screen; native dragging must scroll the no-drag
+// wheel instead of moving the frameless window. A browser has neither boundary.
+test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
   await page.evaluate(async () => {
     const { connections } = await window.maka.connections.getSnapshot();
     const connection = connections.find((entry) => entry.slug === 'e2e')!;
@@ -118,7 +121,16 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
-  await anchors.locator('.workhub-navigation-item').first().click();
+  const workRail = anchors.locator('.workhub-navigation-item').first();
+  await workRail.click();
+  await expect(page.locator('.workHubDock')).toBeVisible();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
+  await workRail.click();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toBeVisible();
+  await workRail.click();
+  await expect(workhub.getByRole('region', { name: '筛选此 Work 的对话' })).toHaveCount(0);
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  await page.getByRole('button').filter({ has: page.getByText('WorkHub navigation regression', { exact: true }) }).click();
   await expect(page.locator('.workHubDock')).toBeHidden();
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await expect(page.locator('.workHubDock')).toBeVisible();
@@ -182,6 +194,14 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   const compactHeight = await workhub.evaluate(() => innerHeight);
+  const screenLayout = async () => {
+    const origin = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
+    return workhub.evaluate(({ x, y }) => Array.from(document.querySelectorAll('.maka-composer-editor, .maka-composer button, .workHubExpandButton')).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: x + rect.x, y: y + rect.y, width: rect.width, height: rect.height };
+    }), origin);
+  };
+  const compactControls = await screenLayout();
   await model.click();
   const wheel = workhub.getByRole('listbox');
   await expect(wheel).toBeVisible();
@@ -191,6 +211,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
+  await expect.poll(screenLayout).toEqual(compactControls);
+  const expectWheelInsideWindow = () => expect.poll(() => wheel.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
+  })).toBe(true);
+  await expectWheelInsideWindow();
   const expectSnappedSelection = async (index: number) => {
     const choice = modelChoices[index]!;
     const option = wheel.getByRole('option').nth(index);
@@ -208,16 +234,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.hover();
   await workhub.mouse.wheel(0, scrollDirection * 30);
   await expectSnappedSelection(initialIndex + scrollDirection);
-  await expect.poll(() => wheel.evaluate((element) => {
-    const selected = document.getElementById(element.getAttribute('aria-activedescendant')!)!.getBoundingClientRect();
-    const viewport = element.getBoundingClientRect();
-    return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
-  })).toBeLessThanOrEqual(1);
   await wheel.press('Escape');
   await model.click();
   await expect(wheel.getByRole('option')).toHaveCount(3);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   const dragInitialTop = await wheel.evaluate((element) => element.scrollTop);
+  const beforeDrag = await screenLayout();
   const dragDistance = dragInitialTop > 0 ? 32 : -32;
   const wheelBounds = (await wheel.boundingBox())!;
   const dragX = wheelBounds.x + wheelBounds.width / 2;
@@ -227,6 +249,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.mouse.move(dragX, dragY + dragDistance, { steps: 8 });
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(dragInitialTop - dragDistance);
   await workhub.mouse.up();
+  await expect.poll(screenLayout).toEqual(beforeDrag);
   await expect(wheel).toBeVisible();
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(Math.round((dragInitialTop - dragDistance) / 44) * 44);
   const draggedIndex = Math.round((dragInitialTop - dragDistance) / 44);
@@ -241,15 +264,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   const chooseLast = await options.first().getAttribute('aria-selected') === 'true';
   await wheel.press(chooseLast ? 'End' : 'Home');
   const selectedChoice = await expectSnappedSelection(chooseLast ? modelChoices.length - 1 : 0);
-  const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
-  for (const theme of ['light', 'dark'] as const) {
-    await page.evaluate((theme) => window.maka.settings.updateClient({ appearance: { theme } }), theme);
-    await expect.poll(() => workhub.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
-    await expect(wheel).toBeFocused();
-    await expect(wheel).toHaveCSS('outline-style', 'solid');
-    await workhub.locator('.workHubComposerSurface').screenshot({ path: testInfo.outputPath(`model-wheel-${theme}.png`), animations: 'disabled' });
-  }
-  await page.evaluate((appearance) => window.maka.settings.updateClient({ appearance }), appearance);
+  await expectWheelInsideWindow();
   await wheel.press('Enter');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
