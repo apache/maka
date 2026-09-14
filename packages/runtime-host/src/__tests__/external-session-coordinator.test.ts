@@ -28,7 +28,6 @@ import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   ExternalSessionLimitError,
-  pageExternalSessionSummaries,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
 import { type SessionHeader } from '@maka/core/session';
@@ -93,7 +92,7 @@ test('advances the catalog cursor by source rows when an adapter row is not wire
     updatedAt: index,
   }));
   const adapter = adapterFixture();
-  adapter.listSessions = async (query) => pageExternalSessionSummaries(summaries, query);
+  adapter.listSessions = async (query) => pageFixtureSummaries(summaries, query);
   const fixture = coordinatorFixture([adapter]);
 
   const first = await fixture.coordinator.handlers['external-session.catalog.query'](
@@ -258,7 +257,7 @@ test('reports an unresolved import independently from durable import history', a
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
   adapter.listSessions = async (query) =>
-    pageExternalSessionSummaries(
+    pageFixtureSummaries(
       Array.from({ length: 20 }, (_, index) => ({
         id: `source-${index}`,
         name: `Source ${index}`,
@@ -878,7 +877,7 @@ function adapterFixture(
     id: options.id ?? 'codex',
     detect: async () => options.detected ?? true,
     listSessions: async (query) =>
-      pageExternalSessionSummaries(
+      pageFixtureSummaries(
         Array.from({ length: count }, (_, index) => ({
           id: `source-${index}`,
           name: `Source ${index}`,
@@ -928,4 +927,23 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     orchestrationMode: 'default',
     schemaVersion: 1,
   };
+}
+
+/**
+ * One page of a fixture source, the way a real adapter answers a query.
+ *
+ * The fixture materialises its rows and slices them; a real adapter pages
+ * inside its own store, which is the property the coordinator's cursor is not
+ * allowed to depend on.
+ */
+function pageFixtureSummaries<T>(
+  summaries: readonly T[],
+  query: { readonly offset?: number; readonly limit?: number } = {},
+): readonly T[] {
+  const offset = query.offset ?? 0;
+  const limit = query.limit ?? summaries.length;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error('Invalid external Session adapter page');
+  }
+  return summaries.slice(offset, offset + limit);
 }
