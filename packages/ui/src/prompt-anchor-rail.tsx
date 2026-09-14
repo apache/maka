@@ -19,6 +19,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   memo,
   useEffect,
@@ -272,7 +273,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     return observeActivePromptRailVisibility(rail);
   }, [orderedTurnIds, host]);
 
-  function jumpTo(turn: PromptAnchorRailTurn): void {
+  const jumpTo = useCallback((turn: PromptAnchorRailTurn): void => {
     const root = scrollRef.current;
     const el = root?.querySelector(`[data-turn-id="${CSS.escape(turn.turnId)}"]`);
     // Before the scroll, not after: the tail has to be released while the
@@ -292,7 +293,12 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     } else if (!el) {
       onNavigateTurn?.(turn);
     }
-  }
+  }, [scrollRef, onNavigateStart, onNavigateTurn]);
+
+  const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
+    setHoveredIndex(index);
+    onHighlightTurn?.(turn);
+  }, [onHighlightTurn]);
 
   // A rail is only useful once there are a few prompts to jump between.
   if (railTurns.length < 3 || !host) return null;
@@ -317,56 +323,79 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
-          const preview = turn.label.trim() || copy.emptyPrompt;
-          const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
           const proximity =
             hoveredIndex === null
               ? HOVER_FALLOFF_TICKS
               : Math.min(Math.abs(index - hoveredIndex), HOVER_FALLOFF_TICKS);
           const scale = (14 + ((HOVER_FALLOFF_TICKS - proximity) * 3)) / 26;
           return (
-            <HoverCard
+            <PromptRailTick
               key={turn.turnId}
-              placement="start"
-              delay={PREVIEW_DELAY_MS}
-              content={
-                <span className="maka-prompt-rail-preview">
-                  <span className="maka-prompt-rail-preview-prompt">{preview}</span>
-                  {replyPreview ? (
-                    <span className="maka-prompt-rail-preview-reply">{replyPreview}</span>
-                  ) : null}
-                </span>
-              }
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                label={copy.jumpToPrompt(preview)}
-                className="maka-prompt-rail-tick"
-                data-prompt-turn-id={turn.turnId}
-                data-highlighted={turn.highlighted || undefined}
-                data-active={isActive ? 'true' : undefined}
-                aria-current={isActive ? 'true' : undefined}
-                onClick={() => jumpTo(turn)}
-                onPointerEnter={() => { setHoveredIndex(index); onHighlightTurn?.(turn); }}
-                onFocus={() => onHighlightTurn?.(turn)}
-                onBlur={() => onHighlightTurn?.(undefined)}
-                style={
-                  {
-                    color: turn.accentColor,
-                    '--maka-prompt-rail-index': index,
-                    '--maka-prompt-rail-scale': scale,
-                  } as CSSProperties
-                }
-              >
-                <span className="maka-prompt-rail-tick-bar" />
-              </Button>
-            </HoverCard>
+              turn={turn}
+              index={index}
+              isActive={isActive}
+              scale={scale}
+              onNavigate={jumpTo}
+              onHover={hoverTurn}
+              onHighlight={onHighlightTurn}
+            />
           );
         })}
       </nav>
     </div>
   );
   return createPortal(rail, host);
+});
+
+// Reading-position updates change the active ticks, not every preview. Keep
+// each tick's interaction tree reusable; content and locale changes still render.
+const PromptRailTick = memo(function PromptRailTick({
+  turn, index, isActive, scale, onNavigate, onHover, onHighlight,
+}: {
+  turn: PromptAnchorRailTurn;
+  index: number;
+  isActive: boolean;
+  scale: number;
+  onNavigate(turn: PromptAnchorRailTurn): void;
+  onHover(turn: PromptAnchorRailTurn, index: number): void;
+  onHighlight: PromptAnchorRailProps['onHighlightTurn'];
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const preview = turn.label.trim() || copy.emptyPrompt;
+  const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+  return (
+    <HoverCard
+      placement="start"
+      delay={PREVIEW_DELAY_MS}
+      content={
+        <span className="maka-prompt-rail-preview">
+          <span className="maka-prompt-rail-preview-prompt">{preview}</span>
+          {replyPreview ? <span className="maka-prompt-rail-preview-reply">{replyPreview}</span> : null}
+        </span>
+      }
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={copy.jumpToPrompt(preview)}
+        className="maka-prompt-rail-tick"
+        data-prompt-turn-id={turn.turnId}
+        data-highlighted={turn.highlighted || undefined}
+        data-active={isActive ? 'true' : undefined}
+        aria-current={isActive ? 'true' : undefined}
+        onClick={() => onNavigate(turn)}
+        onPointerEnter={() => onHover(turn, index)}
+        onFocus={() => onHighlight?.(turn)}
+        onBlur={() => onHighlight?.(undefined)}
+        style={{
+          color: turn.accentColor,
+          '--maka-prompt-rail-index': index,
+          '--maka-prompt-rail-scale': scale,
+        } as CSSProperties}
+      >
+        <span className="maka-prompt-rail-tick-bar" />
+      </Button>
+    </HoverCard>
+  );
 });
