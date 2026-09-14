@@ -20,7 +20,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ComputerHistoryApplication, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
-import { filterHistoryEntries, intersectHistoryDays } from '../../renderer/features/module-hub/testing.js';
+import { computerHistorySearchExcerpt } from '@maka/core/computer-history';
+import { filterHistoryEntries, historySearchHint, intersectHistoryDays } from '../../renderer/features/module-hub/testing.js';
 
 function entry(id: string, start: string, overrides: Partial<ComputerHistoryTimelineEntry> = {}): ComputerHistoryTimelineEntry {
   return {
@@ -99,6 +100,63 @@ test('date filtering uses half-open overlap, including containing intervals and 
   assert.deepEqual(ids(filterHistoryEntries(entries, '2026-09-13', '', '')), [
     'crosses-end', 'ends-at-end', 'point-at-start', 'crosses-start', 'contains-day',
   ]);
+});
+
+test('normalized whitespace tokens AND across metadata, actual filename and on-demand full-body excerpts', () => {
+  const prefix = 'Observed context. '.repeat(800);
+  const body = `${prefix}\n<AXWebArea> unique-tail Ｃａｆé`;
+  const activity = Object.freeze(entry('full', '2026-09-13T10:00:00Z', {
+    title: 'API review', description: 'Saved investigation',
+    keywords: Object.freeze(['任务评测', 'Agent Native']),
+    summaryText: prefix.slice(0, 12_000),
+    documentName: '2026-09-13_10-00_10min_review-notes.md',
+    contextMarkdown: 'private-draft-only',
+    suggestion: { type: 'skill', name: 'suggestion-only', description: 'hidden suggestion' },
+  }));
+  const apps = new Map([['com.example.Editor', {
+    bundleIdentifier: 'com.example.Editor', name: 'Visual Studio Code', iconDataUrl: null,
+  }]]);
+  for (const query of [
+    'ＡＰＩ\t任务评测\nunique-tail   <axwebarea>  review-notes.md　VISUAL',
+    'native agent', 'ＣＡＦＥ\u0301', 'unique-tail unique-tail',
+  ]) {
+    const projected = { ...activity, searchText: computerHistorySearchExcerpt(body, query) };
+    assert.ok(projected.searchText.length <= 2048);
+    assert.deepEqual(filterHistoryEntries([projected], '', query, '', apps), [projected], query);
+  }
+  for (const query of ['API nonexistent', 'private-draft-only', 'suggestion-only', 'full', '48KiB']) {
+    assert.deepEqual(filterHistoryEntries([activity], '', query, '', apps), [], query);
+  }
+  assert.deepEqual(filterHistoryEntries([activity], '', 'unique-tail', 'wrong-source', apps), []);
+  assert.deepEqual(filterHistoryEntries([activity], '2026-09-14', 'unique-tail', '', apps), []);
+  assert.equal(activity.searchText, undefined, 'idle entries do not project full bodies');
+});
+
+test('legacy previews still match, explicit empty body excerpts take precedence, and results remain chronological', () => {
+  const old = entry('old', '2026-09-13T08:00:00Z', { summaryText: 'legacy café body' });
+  const newest = entry('new', '2026-09-13T10:00:00Z', { searchText: 'body café' });
+  const empty = { ...newest, id: 'empty', searchText: '', summaryText: 'must-not-match' };
+  assert.deepEqual(ids(filterHistoryEntries([old, newest, empty], '', 'cafe\u0301 body', '')), ['new', 'old']);
+  assert.deepEqual(filterHistoryEntries([empty], '', 'must-not-match', ''), []);
+  assert.deepEqual(ids(filterHistoryEntries([old, newest], '', '\t \n　', '')), ['new', 'old']);
+});
+
+test('match hints identify hidden-field hits without labeling nonmatching parents or obvious title hits', () => {
+  const activity = entry('one', '2026-09-13T10:00:00Z', {
+    title: 'API review', keywords: ['Agent Native'], searchText: '<AXWebArea> evidence',
+    documentName: 'review-notes.md',
+  });
+  const apps = new Map();
+  assert.equal(historySearchHint(activity, 'API', apps), undefined);
+  assert.equal(historySearchHint(activity, '\n　', apps), undefined);
+  assert.equal(historySearchHint(activity, 'API missing', apps), undefined);
+  assert.deepEqual(historySearchHint(activity, 'API native', apps), { kind: 'keywordMatch', text: 'Agent Native' });
+  assert.deepEqual(historySearchHint(activity, 'API <axwebarea>', apps), { kind: 'bodyMatch', text: '<AXWebArea> evidence' });
+  assert.deepEqual(historySearchHint(activity, 'API notes.md', apps), { kind: 'filenameMatch', text: 'review-notes.md' });
+  const tail = historySearchHint({ ...activity, searchText: `${'Résumé ＡＰＩ e\u0301 '.repeat(900)}\n<Script>TailOnly</Script>  exact evidence` }, 'tailonly', apps);
+  assert.equal(tail?.kind, 'bodyMatch');
+  assert.ok(tail?.text.includes('<Script>TailOnly</Script> exact evidence'));
+  assert.ok(tail!.text.length < 200);
 });
 
 test('local day intersection handles an exclusive end, point, invalid and backwards ranges', () => {

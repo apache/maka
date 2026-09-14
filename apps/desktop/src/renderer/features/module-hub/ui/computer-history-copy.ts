@@ -19,6 +19,13 @@
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ComputerHistoryApplication, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
+import {
+  computerHistorySearchNormalize as normalizeSearch,
+  computerHistorySearchTerms as searchTokens,
+  COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS,
+  COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS,
+  COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS,
+} from '@maka/core/computer-history';
 
 const EN = {
   granularity: 'View by', tenMinutes: '10 minutes', sixHours: '6 hours', oneDay: '1 day',
@@ -33,7 +40,10 @@ const EN = {
   removeDescription: 'This deletes raw records in this interval, overlapping summaries, and dependent later summaries. For older summary formats, later documents with unknown dependencies may also be deleted. This may include evidence shared with other activities. This cannot be undone.',
   clearDescription: 'The selected period and overlapping summaries will be permanently deleted. This cannot be undone.',
   cancel: 'Cancel', confirm: 'Delete permanently', previous: 'Previous day', next: 'Next day',
-  date: 'Activity date', today: 'Today', search: 'Search summaries or apps',
+  date: 'Activity date', today: 'Today', search: 'Search history',
+  keywords: 'Keywords', searchKeyword: 'Search keyword',
+  keywordMatch: 'Keyword match', bodyMatch: 'Body match', filenameMatch: 'Filename match',
+  invalidSearch: `Search is too long. Use at most ${COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS} characters, ${COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS} words, and ${COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS} characters per word (after text normalization too).`,
   source: 'Application', allSources: 'All applications', reset: 'Clear filters',
   activities: 'activities', records: 'events', minutes: 'min', list: 'Activity list',
   summaryWaiting: 'Waiting for activity summaries', summaryWaitingHelp: 'Activity summaries appear after each ten-minute recording window is processed.',
@@ -95,7 +105,10 @@ const ZH: Copy = {
   removeDescription: '将删除这段时间的原始记录、重叠摘要及依赖它们的后续摘要。旧版摘要中，依赖关系不明的后续文档也可能被删除。删除范围可能包含其他活动共用的证据。此操作无法撤销。',
   clearDescription: '将永久删除所选时段的记录及重叠摘要。此操作无法撤销。',
   cancel: '取消', confirm: '永久删除', previous: '前一天', next: '后一天',
-  date: '活动日期', today: '今天', search: '搜索摘要或应用',
+  date: '活动日期', today: '今天', search: '搜索历史',
+  keywords: '关键词', searchKeyword: '搜索关键词',
+  keywordMatch: '关键词匹配', bodyMatch: '正文匹配', filenameMatch: '文件名匹配',
+  invalidSearch: `搜索内容过长。最多 ${COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS} 个字符、${COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS} 个词，每词最多 ${COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS} 个字符；标准化后也需满足限制。`,
   source: '应用来源', allSources: '所有应用', reset: '清除筛选',
   activities: '段活动', records: '条事件', minutes: '分钟', list: '活动列表',
   summaryWaiting: '等待活动摘要', summaryWaitingHelp: '每段十分钟的记录完成整理后，摘要会显示在这里。',
@@ -155,7 +168,10 @@ const TW: Copy = {
   removeDescription: '將刪除這段時間的原始記錄、重疊摘要及依賴它們的後續摘要。舊版摘要中，依賴關係不明的後續文件也可能被刪除。刪除範圍可能包含其他活動共用的證據。此操作無法復原。',
   clearDescription: '將永久刪除所選時段的記錄及重疊摘要。此操作無法復原。',
   cancel: '取消', confirm: '永久刪除', previous: '前一天', next: '後一天',
-  date: '活動日期', today: '今天', search: '搜尋摘要或應用程式',
+  date: '活動日期', today: '今天', search: '搜尋歷史',
+  keywords: '關鍵字', searchKeyword: '搜尋關鍵字',
+  keywordMatch: '關鍵字相符', bodyMatch: '內文相符', filenameMatch: '檔名相符',
+  invalidSearch: `搜尋內容過長。最多 ${COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS} 個字元、${COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS} 個詞，每詞最多 ${COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS} 個字元；標準化後也需符合限制。`,
   source: '應用程式來源', allSources: '所有應用程式', reset: '清除篩選',
   activities: '段活動', records: '筆事件', minutes: '分鐘', list: '活動列表',
   summaryWaiting: '等待活動摘要', summaryWaitingHelp: '每段十分鐘的記錄完成整理後，摘要會顯示在這裡。',
@@ -239,16 +255,71 @@ export function historyAppName(application: string, ...names: (string | undefine
   return names.find((name) => name && name !== application) || application.split('.').at(-1) || application;
 }
 
+function searchFields(
+  entry: ComputerHistoryTimelineEntry,
+  applications: ReadonlyMap<string, ComputerHistoryApplication>,
+) {
+  return {
+    visible: normalizeSearch([entry.title, entry.description,
+      ...entry.applications.flatMap((id) => [id, applications.get(id)?.name])].join('\n')),
+    keywords: normalizeSearch((entry.keywords ?? []).join('\n')),
+    body: normalizeSearch(entry.searchText ?? entry.summaryText ?? ''),
+    filename: normalizeSearch(entry.documentName ?? ''),
+  };
+}
+
+function searchExcerpt(text: string, term: string): string {
+  const normalized = normalizeSearch(text);
+  const matchStart = normalized.indexOf(term);
+  const matchEnd = matchStart + term.length;
+  let start = matchStart;
+  let end = matchEnd;
+  // Width/composition/case normalization can change offsets; map only those hits back to source.
+  if (text.normalize('NFKC') !== text || text.toLowerCase().length !== text.length) {
+    let offset = 0;
+    for (const { segment, index } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+      const next = offset + normalizeSearch(segment).length;
+      if (offset <= matchStart && next > matchStart) start = index;
+      if (next >= matchEnd) { end = index + segment.length; break; }
+      offset = next;
+    }
+  }
+  const from = Math.max(0, start - 28);
+  const to = Math.min(text.length, Math.max(start + 96, Math.min(end, start + 160)));
+  return `${from ? '…' : ''}${text.slice(from, to).replace(/\s+/gu, ' ').trim()}${to < text.length ? '…' : ''}`;
+}
+
+/** Explain a hidden-field hit only when the entry itself matches every query token. */
+export function historySearchHint(
+  entry: ComputerHistoryTimelineEntry, query: string,
+  applications: ReadonlyMap<string, ComputerHistoryApplication>,
+): { kind: 'keywordMatch' | 'bodyMatch' | 'filenameMatch'; text: string } | undefined {
+  const tokens = searchTokens(query);
+  if (!tokens.length) return undefined;
+  const fields = searchFields(entry, applications);
+  if (!tokens.every((term) => Object.values(fields).some((field) => field.includes(term)))) return undefined;
+  const hidden = tokens.filter((term) => !fields.visible.includes(term));
+  const keyword = entry.keywords?.find((value) => hidden.some((term) => normalizeSearch(value).includes(term)));
+  if (keyword) return { kind: 'keywordMatch', text: keyword };
+  const bodyTerm = hidden.find((term) => fields.body.includes(term));
+  if (bodyTerm) return { kind: 'bodyMatch', text: searchExcerpt(entry.searchText ?? entry.summaryText ?? '', bodyTerm) };
+  const filenameTerm = hidden.find((term) => fields.filename.includes(term));
+  if (filenameTerm) return { kind: 'filenameMatch', text: searchExcerpt(entry.documentName ?? '', filenameTerm) };
+  return undefined;
+}
+
 export function filterHistoryEntries(
   entries: readonly ComputerHistoryTimelineEntry[], day: string, query: string, source: string,
   applications: ReadonlyMap<string, ComputerHistoryApplication> = new Map(),
 ): readonly ComputerHistoryTimelineEntry[] {
-  const term = query.trim().toLocaleLowerCase();
-  return entries.filter((entry) =>
-    (!day || intersectHistoryDays(entry).includes(day))
-    && (!source || entry.applications.includes(source))
-    && (!term || [entry.title, entry.description, entry.summaryText, ...entry.applications.flatMap((id) => [id, applications.get(id)?.name])].join('\n').toLocaleLowerCase().includes(term)),
-  ).sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || a.id.localeCompare(b.id));
+  const tokens = searchTokens(query);
+  return entries.filter((entry) => {
+    if (day && !intersectHistoryDays(entry).includes(day)) return false;
+    if (source && !entry.applications.includes(source)) return false;
+    if (!tokens.length) return true;
+    const fields = Object.values(searchFields(entry, applications));
+    return tokens.every((term) => fields.some((field) => field.includes(term)));
+  }).sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || a.id.localeCompare(b.id));
 }
 
 export function historySuggestionDraft(entry: ComputerHistoryTimelineEntry, locale: UiLocale): string {

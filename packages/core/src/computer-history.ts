@@ -72,6 +72,12 @@ export interface ComputerHistoryTimelineEntry {
   readonly documentRevision?: string;
   /** Bounded model-written observation data, never instructions or verified facts. */
   readonly summaryText?: string;
+  /** Validated summary keywords, at most 10 strings of 96 UTF-8 bytes each. Omitted for legacy or raw entries. */
+  readonly keywords?: readonly string[];
+  /** Main-owned readable summary filename, never a filesystem path or model-generated name. */
+  readonly documentName?: string;
+  /** Main-produced normalized body match excerpts, at most 2048 characters. Absent without a query; empty means no body hit. Never Composer context or a full-body projection. */
+  readonly searchText?: string;
   readonly suggestion?: ComputerHistorySuggestion;
 }
 
@@ -140,6 +146,8 @@ export interface ComputerHistorySummaryContent {
   readonly title: string;
   readonly description: string;
   readonly body: string;
+  /** Optional for legacy summaries; empty when evidence is sparse. At most 10 trimmed NFKC strings of 96 UTF-8 bytes each, deduplicated case-insensitively while preserving the first spelling. */
+  readonly keywords?: readonly string[];
   readonly suggestion?: ComputerHistorySuggestion;
 }
 
@@ -149,3 +157,62 @@ export interface ComputerHistoryTimeline {
 }
 
 export type ComputerHistoryClearScope = 'last_10_minutes' | 'last_hour' | 'today' | 'all';
+
+export const COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS = 512;
+export const COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS = 16;
+export const COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS = 128;
+export const COMPUTER_HISTORY_SEARCH_EXCERPT_MAX_CHARS = 2048;
+
+/** Shared substring matching form for summary bodies, metadata and renderer-resolved app names. */
+export function computerHistorySearchNormalize(text: string): string {
+  return text.normalize('NFKC').toLowerCase().normalize('NFKC');
+}
+
+/** Throws for invalid queries instead of silently dropping terms; limits use UTF-16 string length. */
+export function computerHistorySearchTerms(query: string): readonly string[] {
+  if (typeof query !== 'string' || query.length > COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS) {
+    throw new Error('Invalid Computer History search query');
+  }
+  const normalized = computerHistorySearchNormalize(query);
+  const terms = [...new Set(normalized.split(/\s+/u).filter(Boolean))];
+  if (
+    normalized.length > COMPUTER_HISTORY_SEARCH_QUERY_MAX_CHARS ||
+    terms.length > COMPUTER_HISTORY_SEARCH_TERMS_MAX_ITEMS ||
+    terms.some((term) => term.length > COMPUTER_HISTORY_SEARCH_TERM_MAX_CHARS)
+  ) {
+    throw new Error('Invalid Computer History search query');
+  }
+  return terms;
+}
+
+/**
+ * Searches the complete validated body and returns normalized excerpts for every matching term.
+ * Terms absent from the body may match renderer metadata. Newline separators cannot create a
+ * cross-excerpt token hit. Query length plus 80 context characters per term stays below 2048.
+ */
+export function computerHistorySearchExcerpt(body: string, query: string): string {
+  const terms = computerHistorySearchTerms(query);
+  if (!terms.length) return '';
+  const text = computerHistorySearchNormalize(body);
+  const ranges = terms
+    .flatMap((term) => {
+      const match = text.indexOf(term);
+      if (match < 0) return [];
+      let start = Math.max(0, match - 40);
+      let end = Math.min(text.length, match + term.length + 40);
+      if (start > 0 && /[\uDC00-\uDFFF]/u.test(text[start] ?? '')) start--;
+      if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1] ?? '')) end++;
+      return [{ start, end }];
+    })
+    .sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged.map(({ start, end }) => text.slice(start, end)).join('\n');
+}

@@ -27,6 +27,7 @@ import type { ModuleHubServices } from '../ports.js';
 import { useModuleHubServices } from '../services-context.js';
 import { computerHistoryCopy, localHistoryDay } from './computer-history-copy.js';
 import { ComputerHistoryDocument } from './computer-history-document.js';
+import { ComputerHistoryKeywords } from './computer-history-keywords.js';
 
 type SavedDocument = NonNullable<ComputerHistoryDetail['document']>;
 type ReadFailure = { kind: 'read'; message?: string } | { kind: 'missing' | 'noDocument' };
@@ -51,13 +52,15 @@ function sourceRevision(entry: ComputerHistoryTimelineEntry): string {
     entry.title, entry.description, entry.start, entry.end, entry.applications,
     entry.eventCount, entry.suppressedEventCount, entry.summaryLevel,
     entry.summaryChildren, entry.summaryText, entry.contextMarkdown,
+    entry.keywords, entry.documentName,
     entry.suggestion?.type, entry.suggestion?.name, entry.suggestion?.description,
   ]);
 }
 
-export function ComputerHistoryDayDocument({ entries, onOpenEntry }: {
+export function ComputerHistoryDayDocument({ entries, onOpenEntry, onSearchKeyword }: {
   entries: readonly ComputerHistoryTimelineEntry[];
   onOpenEntry(entry: ComputerHistoryTimelineEntry): void;
+  onSearchKeyword(keyword: string): void;
 }) {
   const { computerHistory, clipboard } = useModuleHubServices();
   const locale = useUiLocale();
@@ -164,6 +167,7 @@ export function ComputerHistoryDayDocument({ entries, onOpenEntry }: {
             <Button label={entry.title} variant="ghost" aria-describedby={descriptionId} onClick={() => onOpenEntry(entry)} />
           </h3>
           <p id={descriptionId} className="computer-history-day-document-description">{entry.description}</p>
+          <ComputerHistoryKeywords keywords={entry.keywords} onSearch={onSearchKeyword} />
         </header>
         <div className="computer-history-day-document-content" aria-busy={loading}>
           {loading ? <div className="computer-history-day-document-loading" role="status">

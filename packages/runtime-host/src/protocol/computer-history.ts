@@ -37,6 +37,8 @@ export const COMPUTER_HISTORY_EVIDENCE_TEXT_MAX_BYTES = 32 * 1024;
 export const COMPUTER_HISTORY_PRIOR_CONTEXT_MAX_ITEMS = 2;
 export const COMPUTER_HISTORY_RESULT_MAX_BYTES = 64 * 1024;
 export const COMPUTER_HISTORY_BODY_MAX_BYTES = 48 * 1024;
+export const COMPUTER_HISTORY_KEYWORDS_MAX_ITEMS = 10;
+export const COMPUTER_HISTORY_KEYWORD_MAX_BYTES = 96;
 
 export const COMPUTER_HISTORY_OPERATION_SPECS = {
   'computer-history.summarize': defineOperation<
@@ -142,13 +144,22 @@ export function decodeComputerHistorySummaryContent(value: unknown): ComputerHis
     value,
     'Computer History summary content',
     ['title', 'description', 'body'],
-    ['suggestion'],
+    ['keywords', 'suggestion'],
   );
   requireEncodedByteLimit(
     output,
     'Computer History summary content',
     COMPUTER_HISTORY_RESULT_MAX_BYTES,
   );
+  const keywords = output.keywords === undefined ? undefined : decodeKeywords(output.keywords);
+  if (keywords !== undefined) {
+    // NFKC may expand terms, so the normalized wire result must fit the same budget.
+    requireEncodedByteLimit(
+      { ...output, keywords },
+      'Computer History summary content',
+      COMPUTER_HISTORY_RESULT_MAX_BYTES,
+    );
+  }
   const content = {
     title: requireText(output.title, 'Computer History summary title', 512),
     description: requireText(output.description, 'Computer History summary description', 2 * 1024),
@@ -157,6 +168,7 @@ export function decodeComputerHistorySummaryContent(value: unknown): ComputerHis
       'Computer History summary body',
       COMPUTER_HISTORY_BODY_MAX_BYTES,
     ),
+    ...(keywords === undefined ? {} : { keywords }),
   };
   if (output.suggestion === undefined) return content;
   const suggestion = requireExactRecord(output.suggestion, 'Computer History suggestion', [
@@ -179,6 +191,35 @@ export function decodeComputerHistorySummaryContent(value: unknown): ComputerHis
       ),
     },
   };
+}
+
+function decodeKeywords(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > COMPUTER_HISTORY_KEYWORDS_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid Computer History keyword count');
+  }
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+  const forbidden = /[\p{Cc}\p{Cf}<>]/u;
+  for (const entry of value) {
+    // Reject controls before trimming and delimiters exposed by normalization.
+    if (typeof entry !== 'string' || forbidden.test(entry)) {
+      throw invalidProtocolFrame('Invalid Computer History keyword');
+    }
+    const keyword = requireText(
+      entry.normalize('NFKC').trim(),
+      'Computer History keyword',
+      COMPUTER_HISTORY_KEYWORD_MAX_BYTES,
+    );
+    if (forbidden.test(keyword)) {
+      throw invalidProtocolFrame('Invalid Computer History keyword');
+    }
+    const key = keyword.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      keywords.push(keyword);
+    }
+  }
+  return keywords;
 }
 
 function requireTimestamp(value: unknown): string {

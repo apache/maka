@@ -263,7 +263,7 @@ export interface ModuleHubComputerHistoryService {
   getViewGranularity(): '10min' | '6h' | 'day';
   setViewGranularity(value: '10min' | '6h' | 'day'): void;
   status(): Promise<ComputerHistoryStatus>;
-  timeline(days?: number): Promise<ComputerHistoryTimeline>;
+  timeline(days?: number, query?: string): Promise<ComputerHistoryTimeline>;
   /** Local application metadata for at most 32 bundle identifiers per request. */
   applications(bundleIds: readonly string[]): Promise<readonly ComputerHistoryApplication[]>;
   detail(id: string): Promise<ComputerHistoryDetail | null>;

@@ -113,13 +113,14 @@ test('closed UTC windows use allowlisted evidence and survive restart without re
     'documentRevision',
     'end',
     'eventCount',
+    'filename',
     'generation',
     'id',
     'level',
     'sourceIds',
     'start',
   ]);
-  const markdown = await readFile(join(home, 'summaries', `${stored[0]!.id}.md`), 'utf8');
+  const markdown = await readFile(join(home, 'summaries', stored[0]!.filename!), 'utf8');
   assert.equal(serializeComputerHistorySummary(stored[0]!), markdown);
   assert.equal(JSON.parse(markdown.split('\n')[1]!).id, stored[0]!.id);
   assert.ok(markdown.endsWith(`${CONTENT.body}\n`));
@@ -154,9 +155,101 @@ test('application provenance prefers native bundle IDs and preserves name-only f
     ]);
     assert.equal(
       serializeComputerHistorySummary(summary),
-      await readFile(join(home, 'summaries', `${summary.id}.md`), 'utf8'),
+      await readFile(join(home, 'summaries', summary.filename!), 'utf8'),
     );
   }
+});
+
+test('readable filenames and keywords survive title changes, restart, reveal and interval deletion', async (t) => {
+  const home = await fixture(t);
+  let title = 'Maka / \u7535\u8111\u5386\u53f2: permission <review>';
+  const keywords = ['Maka', 'Computer History', '\u6743\u9650\u7ba1\u7406'];
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const create = () => new ComputerHistorySummaries({
+    home, now: () => BASE + SIX_HOURS,
+    generate: async (input) => {
+      inputs.push(input);
+      return { ...CONTENT, title, keywords };
+    },
+  });
+  const summaries = create();
+  const events = [event(BASE + MINUTE)];
+  await summaries.run(events);
+  const first = (await summaries.get(`10min-${BASE}`))!;
+  assert.match(first.filename!, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}__10min__Maka-\u7535\u8111\u5386\u53f2-permission-review\.md$/u);
+  assert.deepEqual(first.content.keywords, keywords);
+  assert.match(inputs.find(({ level }) => level === '6h')!.evidence[0]!.text, /Keywords: Maka, Computer History/);
+  title = 'Changed task title';
+  events.push(event(BASE + 2 * MINUTE));
+  await summaries.run(events);
+  const updated = (await create().get(first.id))!;
+  assert.equal(updated.filename, first.filename);
+  assert.equal(updated.content.title, title);
+  assert.notEqual(updated.documentRevision, first.documentRevision);
+  const shown: string[] = [];
+  await create().reveal(first.id, (path) => { shown.push(path); });
+  assert.deepEqual(shown, [join(home, 'summaries', first.filename!)]);
+  const markdown = await readFile(shown[0]!, 'utf8');
+  assert.deepEqual(JSON.parse(markdown.split('\n')[1]!).content.keywords, keywords);
+  await create().clearInterval(BASE + MINUTE, BASE + MINUTE);
+  assert.deepEqual(await readdir(join(home, 'summaries')), []);
+});
+
+test('legacy ID-named documents stay readable and keep their names on regeneration', async (t) => {
+  const home = await fixture(t);
+  const directory = join(home, 'summaries');
+  await mkdir(directory);
+  const id = `10min-${BASE}`;
+  const source = event(BASE + MINUTE);
+  await writeFile(join(directory, `${id}.md`), serializeComputerHistorySummary({
+    id, level: '10min', start: new Date(BASE).toISOString(),
+    end: new Date(BASE + TEN_MINUTES).toISOString(),
+    applications: ['com.example.editor'], eventCount: 1,
+    sourceIds: [summaryEventId(source)!], content: CONTENT,
+  }));
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => BASE + TEN_MINUTES,
+    generate: async () => ({ ...CONTENT, keywords: ['Maka'] }),
+  });
+  assert.equal((await summaries.get(id))!.filename, undefined);
+  assert.equal((await summaries.get(id))!.content.keywords, undefined);
+  await summaries.run([source]);
+  assert.equal((await summaries.get(id))!.filename, undefined);
+  assert.deepEqual((await summaries.get(id))!.content.keywords, ['Maka']);
+  assert.deepEqual(await readdir(directory), [`${id}.md`]);
+  const shown: string[] = [];
+  await summaries.reveal(id, (path) => { shown.push(path); });
+  assert.deepEqual(shown, [join(directory, `${id}.md`)]);
+});
+
+test('local clock collisions cannot overwrite a different summary and filenames remain bounded', async (t) => {
+  const home = await fixture(t);
+  const before = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  t.after(() => {
+    if (before === undefined) delete process.env.TZ;
+    else process.env.TZ = before;
+  });
+  const start = Date.parse('2025-11-02T05:00:00.000Z');
+  const summaries = new ComputerHistorySummaries({
+    home, now: () => start + 2 * 60 * MINUTE,
+    generate: async () => ({ ...CONTENT, title: '\u5386\u53f2'.repeat(80) }),
+  });
+  await summaries.run([event(start + MINUTE), event(start + 61 * MINUTE)]);
+  const leaves = (await summaries.list()).filter(({ level }) => level === '10min');
+  assert.equal(leaves.length, 2);
+  assert.ok(leaves.every(({ filename }) => filename!.startsWith('2025-11-02_01-00__10min__')));
+  assert.notEqual(leaves[0]!.filename, leaves[1]!.filename);
+  assert.ok(leaves.every(({ filename }) => Buffer.byteLength(filename!) <= 200));
+  const names = leaves.map(({ filename }) => filename);
+  process.env.TZ = 'Asia/Shanghai';
+  const reopened = new ComputerHistorySummaries({
+    home, now: () => start + 2 * 60 * MINUTE,
+    generate: async () => assert.fail('a local timezone change must not regenerate documents'),
+  });
+  await reopened.run([event(start + MINUTE), event(start + 61 * MINUTE)]);
+  assert.deepEqual((await reopened.list()).filter(({ level }) => level === '10min').map(({ filename }) => filename), names);
+  for (const leaf of leaves) assert.equal((await reopened.get(leaf.id))!.filename, leaf.filename);
 });
 
 test('bounded catch-up is oldest first, creates full 6h rollups only after all known children', async (t) => {
@@ -442,7 +535,8 @@ test('text consent defaults off, preserves rich documents and excludes rich prio
   await summaries.run([rich], { includeText: true });
   assert.equal(inputs[1]!.evidence[0]!.id, summaryEventId(rich, { includeText: true }));
   const original = await summaries.get(`10min-${BASE}`);
-  const bytes = await readFile(join(home, 'summaries', `10min-${BASE}.md`));
+  const path = join(home, 'summaries', original!.filename!);
+  const bytes = await readFile(path);
   now = BASE + SIX_HOURS;
   await summaries.run([rich, event(BASE + 11 * MINUTE)]);
   assert.equal(inputs.length, 3);
@@ -450,7 +544,7 @@ test('text consent defaults off, preserves rich documents and excludes rich prio
   assert.doesNotMatch(JSON.stringify(inputs[2]), /RICH_SECRET/);
   assert.equal((await summaries.list()).length, 2);
   assert.deepEqual(await summaries.get(`10min-${BASE}`), original);
-  assert.deepEqual(await readFile(join(home, 'summaries', `10min-${BASE}.md`)), bytes);
+  assert.deepEqual(await readFile(path), bytes);
   await summaries.run([rich, event(BASE + 11 * MINUTE)], { includeText: true });
   const rollup = (await summaries.list()).find(({ level }) => level === '6h')!;
   assert.equal(rollup.generation!.includesText, true);
@@ -472,7 +566,7 @@ test('text revocation preserves a rich rollup across late children and restart w
   const rich = { ...event(BASE + MINUTE), content: 'RICH_ARCHIVE' };
   await summaries.run([rich], { includeText: true, scopeKey: 'a' });
   const rollupId = `6h-${BASE}`;
-  const path = join(home, 'summaries', `${rollupId}.md`);
+  const path = join(home, 'summaries', (await summaries.get(rollupId))!.filename!);
   const bytes = await readFile(path);
   assert.equal((await summaries.get(rollupId))!.generation!.includesText, true);
   const late = event(BASE + 11 * MINUTE);
@@ -515,7 +609,7 @@ for (const includeText of [false, true]) test(`scope changes preserve a rich par
   const rich = { ...event(BASE + MINUTE), content: 'OLD_SCOPE_CANARY' };
   await summaries.run([rich], { includeText: true, scopeKey: 'a' });
   const parentId = `6h-${BASE}`;
-  const path = join(home, 'summaries', `${parentId}.md`);
+  const path = join(home, 'summaries', (await summaries.get(parentId))!.filename!);
   const saved = await summaries.get(parentId);
   const bytes = await readFile(path);
   const late = event(BASE + 11 * MINUTE);
@@ -624,7 +718,7 @@ test('reasonable complete child bodies survive rollup and generation versions mi
   assert.ok(rollupInput.evidence.every(({ text }) => text.includes(body)));
   const leaf = (await summaries.get(`10min-${BASE}`))!;
   const { generation: _generation, ...legacy } = leaf;
-  const path = join(home, 'summaries', `${leaf.id}.md`);
+  const path = join(home, 'summaries', leaf.filename!);
   await writeFile(path, serializeComputerHistorySummary(legacy));
   assert.equal((await summaries.get(leaf.id))!.generation, undefined);
   await summaries.run(events, { locale: 'zh-CN' });
@@ -684,7 +778,7 @@ test('failed, invalid and cancelled leaf refreshes preserve saved leaf and rollu
   const events = [event(BASE + MINUTE)];
   await summaries.run(events);
   const original = await summaries.list();
-  const paths = original.map(({ id }) => join(home, 'summaries', `${id}.md`));
+  const paths = original.map(({ filename }) => join(home, 'summaries', filename!));
   const bytes = await Promise.all(paths.map((path) => readFile(path)));
   events.push(event(BASE + 2 * MINUTE));
   for (const failure of ['failure', 'invalid'] as const) {
@@ -986,9 +1080,9 @@ for (const missingSource of [false, true]) test(`persisted prior dependencies de
   await summaries.run([event(BASE + SIX_HOURS + 21 * MINUTE)], { scopeKey: 'independent' });
   const independent = (await summaries.get(`10min-${BASE + SIX_HOURS + 2 * TEN_MINUTES}`))!;
   assert.deepEqual(independent.generation!.priorContextIds, []);
-  const independentPath = join(home, 'summaries', `${independent.id}.md`);
+  const independentPath = join(home, 'summaries', independent.filename!);
   const bytes = await readFile(independentPath);
-  if (missingSource) await rm(join(home, 'summaries', `10min-${BASE}.md`));
+  if (missingSource) await rm(join(home, 'summaries', (await summaries.get(`10min-${BASE}`))!.filename!));
   now = BASE + 72 * 60 * MINUTE;
   const reopened = new ComputerHistorySummaries({
     home, now: () => now, generate: async () => assert.fail('deleted dependencies must not be reused'),
@@ -1022,7 +1116,8 @@ for (const missingIntermediates of [false, true]) test(`immutable ancestry delet
   const next = event(BASE + SIX_HOURS + MINUTE);
   await summaries.run([next], { scopeKey: 'a', includeText: true });
   const richIds = [`10min-${BASE + 3 * TEN_MINUTES}`, `6h-${BASE}`, `10min-${BASE + SIX_HOURS}`];
-  const bytes = await Promise.all(richIds.map((id) => readFile(join(home, 'summaries', `${id}.md`))));
+  const richPaths = await Promise.all(richIds.map(async (id) => join(home, 'summaries', (await summaries.get(id))!.filename!)));
+  const bytes = await Promise.all(richPaths.map((path) => readFile(path)));
   assert.deepEqual((await summaries.get(richIds[0]!))!.generation!.rawEvidenceRanges, [[BASE, BASE + 4 * TEN_MINUTES]]);
   const beforeRewrite = inputs.length;
   const replacements = events.slice(1, 3);
@@ -1031,9 +1126,10 @@ for (const missingIntermediates of [false, true]) test(`immutable ancestry delet
   const independentEvent = event(BASE + SIX_HOURS + 21 * MINUTE);
   await summaries.run([independentEvent], { scopeKey: 'b' });
   const independent = (await summaries.get(`10min-${BASE + SIX_HOURS + 2 * TEN_MINUTES}`))!;
-  const independentBytes = await readFile(join(home, 'summaries', `${independent.id}.md`));
+  const independentPath = join(home, 'summaries', independent.filename!);
+  const independentBytes = await readFile(independentPath);
   assert.deepEqual(
-    await Promise.all(richIds.map((id) => readFile(join(home, 'summaries', `${id}.md`)))),
+    await Promise.all(richPaths.map((path) => readFile(path))),
     bytes,
   );
   assert.doesNotMatch(JSON.stringify(inputs.slice(beforeRewrite)), /ANCESTOR_CANARY|rawEvidenceRanges/);
@@ -1043,7 +1139,7 @@ for (const missingIntermediates of [false, true]) test(`immutable ancestry delet
   const replacementIds = [1, 2].map((index) => `10min-${BASE + index * TEN_MINUTES}`);
   if (missingIntermediates) {
     for (const id of [`10min-${BASE}`, ...replacementIds, `6h-${BASE}`]) {
-      await rm(join(home, 'summaries', `${id}.md`));
+      await rm(join(home, 'summaries', (await summaries.get(id))!.filename!));
     }
   }
   now = BASE + 72 * 60 * MINUTE;
@@ -1051,7 +1147,7 @@ for (const missingIntermediates of [false, true]) test(`immutable ancestry delet
   await reopened.clearInterval(BASE + MINUTE, BASE + MINUTE);
   assert.deepEqual((await reopened.list()).map(({ id }) => id),
     [...(missingIntermediates ? [] : replacementIds), independent.id]);
-  assert.deepEqual(await readFile(join(home, 'summaries', `${independent.id}.md`)), independentBytes);
+  assert.deepEqual(await readFile(independentPath), independentBytes);
   assert.equal(inputs.length, calls, 'deletion uses the consumer snapshot without a provider call');
 });
 
@@ -1071,11 +1167,12 @@ test('sparse raw ancestry preserves gaps even when deleting an overlapping paren
     [BASE + 2 * TEN_MINUTES, BASE + 3 * TEN_MINUTES],
     [BASE + SIX_HOURS, BASE + SIX_HOURS + TEN_MINUTES],
   ]);
-  const bytes = await readFile(join(home, 'summaries', `${descendantId}.md`));
+  const path = join(home, 'summaries', descendant.filename!);
+  const bytes = await readFile(path);
   now = BASE + 72 * 60 * MINUTE;
   await summaries.clearInterval(BASE + TEN_MINUTES, BASE + 2 * TEN_MINUTES);
   assert.equal(await summaries.get(`6h-${BASE}`), null, 'the selected interval still removes its enclosing document');
-  assert.deepEqual(await readFile(join(home, 'summaries', `${descendantId}.md`)), bytes);
+  assert.deepEqual(await readFile(path), bytes);
   await summaries.clearInterval(BASE + TEN_MINUTES, BASE + TEN_MINUTES);
   assert.deepEqual(await summaries.get(descendantId), descendant, 'half-open ancestry excludes the gap boundary');
   await summaries.clearInterval(BASE + 2 * TEN_MINUTES, BASE + 2 * TEN_MINUTES);
@@ -1097,7 +1194,7 @@ test('ancestry overflow preserves all sources, coarsens only oldest gaps and con
     const start = BASE - (255 - index) * 2 * TEN_MINUTES;
     return [start, start + TEN_MINUTES] as const;
   });
-  await writeFile(join(home, 'summaries', `${original.id}.md`), serializeComputerHistorySummary({
+  await writeFile(join(home, 'summaries', original.filename!), serializeComputerHistorySummary({
     ...original, generation: { ...original.generation!, rawEvidenceRanges },
   }));
   now += 2 * TEN_MINUTES;
@@ -1110,7 +1207,7 @@ test('ancestry overflow preserves all sources, coarsens only oldest gaps and con
   assert.ok(rawEvidenceRanges.every(([from, to]) => coverage.some(([a, b]) => a <= from && b >= to)));
   assert.deepEqual(coverage[0], [rawEvidenceRanges[0]![0], rawEvidenceRanges[1]![1]]);
   assert.deepEqual(coverage.slice(1), [...rawEvidenceRanges.slice(2), [BASE + 2 * TEN_MINUTES, BASE + 3 * TEN_MINUTES]]);
-  assert.ok((await readFile(join(home, 'summaries', `${descendantId}.md`))).length < 128 * 1024);
+  assert.ok((await readFile(join(home, 'summaries', descendant.filename!))).length < 128 * 1024);
   assert.ok(inputs.every((input) => Buffer.byteLength(JSON.stringify(input)) < 256 * 1024));
   assert.doesNotMatch(JSON.stringify(inputs), /rawEvidenceRanges/);
   await create().run([next]);
@@ -1134,6 +1231,7 @@ for (const version of [1, 2, 3]) test(`v${version} unknown ancestry propagates t
   const { priorContextIds: _prior, rawEvidenceRanges: _ranges, ...generation } = original.generation!;
   const legacy = (start: number) => ({
     ...original,
+    filename: undefined,
     id: `10min-${start}`,
     start: new Date(start).toISOString(),
     end: new Date(start + TEN_MINUTES).toISOString(),
@@ -1172,7 +1270,7 @@ test('nongeneration legacy summaries remain usable with interval coverage after 
   await summaries.run([event(BASE + MINUTE)]);
   const original = (await summaries.list())[0]!;
   const { generation: _generation, ...legacy } = original;
-  await writeFile(join(home, 'summaries', `${legacy.id}.md`), serializeComputerHistorySummary(legacy));
+  await writeFile(join(home, 'summaries', legacy.filename!), serializeComputerHistorySummary(legacy));
   const savedLegacy = (await summaries.get(legacy.id))!;
   assert.notEqual(savedLegacy.documentRevision, original.documentRevision);
   assert.deepEqual(savedLegacy, { ...legacy, documentRevision: savedLegacy.documentRevision });
@@ -1182,7 +1280,7 @@ test('nongeneration legacy summaries remain usable with interval coverage after 
   assert.deepEqual(rollup.generation!.rawEvidenceRanges, [[BASE, BASE + TEN_MINUTES]]);
   await summaries.clearInterval(BASE - MINUTE, BASE - MINUTE);
   assert.deepEqual(await summaries.list(), [savedLegacy, rollup]);
-  await rm(join(home, 'summaries', `${legacy.id}.md`));
+  await rm(join(home, 'summaries', legacy.filename!));
   await summaries.clearInterval(BASE + MINUTE, BASE + MINUTE);
   assert.deepEqual(await summaries.list(), []);
 });
@@ -1354,12 +1452,13 @@ test('reveal resolves only a canonical persisted document, including old or roll
   await summaries.run([event(BASE + MINUTE)]);
   const directory = join(home, 'summaries');
   const leaf = `10min-${BASE}`;
+  const leafPath = join(directory, (await summaries.get(leaf))!.filename!);
   assert.equal((await summaries.list()).length, 2);
   const reopened = new ComputerHistorySummaries({
     home, now: () => BASE + 90 * 86_400_000,
     generate: async () => assert.fail('reveal must not generate'),
   });
-  // An unrelated damaged file must not turn exact-ID lookup into a directory scan.
+  // An unrelated damaged file must not prevent resolving the selected document.
   await writeFile(join(directory, `10min-${BASE + TEN_MINUTES}.md`), 'unrelated corrupt summary');
   const shown: string[] = [];
   const showItemInFolder = (path: string) => { shown.push(path); };
@@ -1368,24 +1467,24 @@ test('reveal resolves only a canonical persisted document, including old or roll
   assert.equal(await reopened.get(`10min-${BASE + 2 * TEN_MINUTES}`), null);
   await assert.rejects(reopened.get(`10min-${BASE + TEN_MINUTES}`));
   await assert.rejects(reopened.get('../notes'));
-  assert.deepEqual(shown, [join(directory, `${leaf}.md`)]);
+  assert.deepEqual(shown, [leafPath]);
   for (const id of [
     '../notes', `${leaf}.md`, '0000000000000000', '10min-00', '10min-1',
     `10min-${'1'.repeat(1_000)}`, `10min-${BASE + TEN_MINUTES}`, `10min-${BASE + 2 * TEN_MINUTES}`,
   ]) {
     await assert.rejects(reopened.reveal(id, showItemInFolder));
   }
-  await rm(join(directory, `${leaf}.md`));
+  await rm(leafPath);
   assert.equal(await reopened.get(leaf), null);
   await assert.rejects(reopened.reveal(leaf, showItemInFolder));
-  await mkdir(join(directory, `${leaf}.md`));
+  await mkdir(leafPath);
   await assert.rejects(reopened.get(leaf));
   await assert.rejects(reopened.reveal(leaf, showItemInFolder));
-  await rm(join(directory, `${leaf}.md`), { recursive: true });
-  await writeFile(join(directory, `${leaf}.md`), Buffer.from([0xff, 0xfe]));
+  await rm(leafPath, { recursive: true });
+  await writeFile(leafPath, Buffer.from([0xff, 0xfe]));
   await assert.rejects(reopened.get(leaf));
   await assert.rejects(reopened.reveal(leaf, showItemInFolder));
-  assert.deepEqual(shown, [join(directory, `${leaf}.md`)]);
+  assert.deepEqual(shown, [leafPath]);
   assert.equal(generate.mock.callCount(), 2);
 });
 
@@ -1393,9 +1492,15 @@ test('all-clear removes only canonical owned summary filenames', async (t) => {
   const home = await fixture(t);
   const directory = join(home, 'summaries');
   await mkdir(directory);
-  const owned = [`10min-${BASE}.md`, `6h-${BASE}.md`, '10min-0.md', '10min--600000.md'];
+  const owned = [
+    `10min-${BASE}.md`, `6h-${BASE}.md`, '10min-0.md', '10min--600000.md',
+    '2026-09-14_11-00__10min__Maka-review.md',
+    '2026-09-14_12-00__6h__Review.md',
+  ];
   const unrelated = [
     'notes.md',
+    '2026-09-99_11-00__10min__Invalid-date.md',
+    '2026-09-14_11-00__10min__escape..md',
     `10min-${BASE + 1}.md`,
     `6h-${BASE + TEN_MINUTES}.md`,
     '10min-00.md',

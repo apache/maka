@@ -46,13 +46,14 @@ import { useComputerHistoryController } from '../controller/use-computer-history
 import { useComputerHistoryApplications } from '../controller/use-computer-history-applications.js';
 import { useModuleHubServices } from '../services-context.js';
 import {
-  computerHistoryCopy, filterHistoryEntries, historyAppName, historySuggestionDraft, intersectHistoryDays, localHistoryDay, shiftHistoryDay,
+  computerHistoryCopy, filterHistoryEntries, historyAppName, historySearchHint, historySuggestionDraft, intersectHistoryDays, localHistoryDay, shiftHistoryDay,
 } from './computer-history-copy.js';
 import { ComputerHistoryAppIcon } from './computer-history-app-icon.js';
 import { ComputerHistoryDocument } from './computer-history-document.js';
 import { useHistorySettingsFocus } from './use-history-settings-focus.js';
 import { groupHistoryEntries, type HistoryGranularity, type HistoryViewGroup } from './computer-history-view.js';
 import { ComputerHistoryDayDocument } from './computer-history-day-document.js';
+import { ComputerHistoryKeywords } from './computer-history-keywords.js';
 
 export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSettings, isObscured }: {
   onCreateDraft(text: string): void;
@@ -75,10 +76,11 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   const [expandedGroups, setExpandedGroups] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<ComputerHistoryTimelineEntry | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
-  const controller = useComputerHistoryController(detailOpen ? selectedId : null);
+  const controller = useComputerHistoryController(detailOpen ? selectedId : null, query);
   const { status, service, run, busy, loading } = controller;
   const entries = useMemo(() => controller.entries.filter((entry) => entry.summaryLevel), [controller.entries]);
   const listRef = useRef<HTMLElement>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const wasObscured = useRef(isObscured);
@@ -97,7 +99,9 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
     ...applications, ...(status?.settings.blockedApplications ?? []),
   ]);
   const appName = (app: string) => historyAppName(app, applicationMetadata.applications.get(app)?.name);
-  const filtered = useMemo(() => filterHistoryEntries(entries, day, query, source, applicationMetadata.applications), [entries, day, query, source, applicationMetadata.applications]);
+  const filtered = useMemo(() => controller.searchReady
+    ? filterHistoryEntries(entries, day, query, source, applicationMetadata.applications) : [],
+  [controller.searchReady, entries, day, query, source, applicationMetadata.applications]);
   const selected = entries.find((entry) => entry.id === selectedId) ?? null;
   const groups = useMemo(() => groupHistoryEntries(entries, filtered, granularity)
     .filter((group) => !day || granularity !== 'day' || group.day === day), [entries, filtered, granularity, day]);
@@ -219,9 +223,22 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
         <span className="computer-history-row-body">
           <span className="computer-history-row-title">{entry.title}</span>
           <span className="computer-history-row-description">{entry.description}</span>
+          {matchHint(entry)}
           {entryApps(entry.applications)}
         </span>
       </span>} />;
+  }
+
+  function matchHint(entry: ComputerHistoryTimelineEntry) {
+    const hint = historySearchHint(entry, query, applicationMetadata.applications);
+    return hint ? <span className="computer-history-search-hint"><Search size={12} aria-hidden /><span>{copy[hint.kind]} · {hint.text}</span></span> : null;
+  }
+
+  function searchKeyword(keyword: string) {
+    setQuery(keyword);
+    setDetailOpen(false);
+    if (listRef.current) listRef.current.scrollTop = 0;
+    requestAnimationFrame(() => searchRef.current?.querySelector('input')?.focus({ preventScroll: true }));
   }
 
   function entryApps(apps: readonly string[]) {
@@ -286,14 +303,14 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
       </div>
 
       {entries.length > 0 || query || source || day ? <div className="computer-history-filters">
-        <div className="computer-history-search"><TextInput label={copy.search} isLabelHidden placeholder={copy.search} startIcon={<Search size={16} aria-hidden />} value={query} hasClear onChange={setQuery} /></div>
+        <div className="computer-history-search" ref={searchRef}><TextInput label={copy.search} isLabelHidden placeholder={copy.search} startIcon={<Search size={16} aria-hidden />} value={query} hasClear onChange={setQuery} /></div>
         <Selector label={copy.date} isLabelHidden width={148} value={day} options={[{ value: '', label: copy.allDays }, ...days.map((value) => ({ value, label: formatDay(value) }))]} onChange={setDay} />
         <Selector label={copy.source} isLabelHidden width={160} hasSearch value={source} options={[{ value: '', label: copy.allSources }, ...applications.map((app) => ({ value: app, label: appName(app) }))]} onChange={setSource} />
       </div> : null}
 
       {status?.state === 'needs_permission' ? <div className="computer-history-notice" role="status"><span>{copy.permissionHelp}</span><Button label={copy.repair} variant="ghost" size="sm" onClick={onOpenSettings} /></div> : null}
 
-      {controller.error || status?.error ? <div className="computer-history-error" role="alert"><span>{controller.error ?? status?.error}</span></div> : null}
+      {controller.error || status?.error ? <div className="computer-history-error" role="alert"><span>{controller.queryError ? copy.invalidSearch : controller.error ?? status?.error}</span></div> : null}
       {status?.summaryError ? (
         <div className="computer-history-error" role="alert"><span>{copy.summaryError}: {status.summaryError}</span><Button label={copy.retry} size="sm" variant="ghost" isDisabled={busy || !status.settings.summariesEnabled} onClick={() => void run(() => service.retrySummary(), { preserveDetail: true })} /></div>
       ) : null}
@@ -303,8 +320,8 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
       ) : null}
 
       <div className="computer-history-workspace">
-        <aside className="computer-history-master" aria-label={copy.list} ref={listRef} {...roving} aria-busy={loading}>
-          {loading && entries.length === 0 ? Array.from({ length: 6 }, (_, index) => (
+        <aside className="computer-history-master" aria-label={copy.list} ref={listRef} {...roving} aria-busy={loading || controller.searchPending}>
+          {controller.searchPending || loading && entries.length === 0 ? Array.from({ length: 6 }, (_, index) => (
             <div key={index} className="computer-history-list-skeleton"><Skeleton width="34%" height={12} /><Skeleton width="88%" height={16} /><Skeleton width="60%" height={12} /></div>
           )) : groups.map((group) => {
             const expanded = expandedGroups.get(group.id) ?? (granularity === '10min' || !group.summary && granularity === '6h');
@@ -330,6 +347,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                   {group.summary ? <>
                     <span className="computer-history-row-title">{group.summary.title}</span>
                     <span className="computer-history-row-description">{group.summary.description}</span>
+                    {matchHint(group.summary)}
                     {entryApps(group.summary.applications)}
                   </> : granularity === 'day' ? <>
                     <span className="computer-history-row-title">{collectionLabel(group)}</span>
@@ -343,7 +361,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
               </List>
             </section>;
           })}
-          {!loading && groups.length === 0 && !controller.error ? (
+          {!loading && !controller.searchPending && groups.length === 0 && !controller.error ? (
             <div className="computer-history-empty"><EmptyState headingLevel={2}
               title={emptyTitle}
               description={emptyHelp}
@@ -364,6 +382,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                 <div className="computer-history-detail-meta"><Clock size={15} aria-hidden /><span>{rangeLabel(selected.start, selected.end)}</span><span>{Math.max(1, Math.round((Date.parse(selected.end) - Date.parse(selected.start)) / 60_000))} {copy.minutes}</span></div>
                 <Heading level={2}>{selected.title}</Heading>
                 <p className="computer-history-description">{selected.description}</p>
+                <ComputerHistoryKeywords keywords={selected.keywords} onSearch={searchKeyword} />
                 <div className="computer-history-detail-meta computer-history-detail-apps">
                   {selected.applications.map((app) => <span className="computer-history-app-name" key={app} title={app}><ComputerHistoryAppIcon application={app} metadata={applicationMetadata.applications.get(app)} size={24} />{appName(app)}</span>)}
                   <span>{selected.eventCount} {copy.records}</span>
@@ -417,7 +436,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
           <div className="computer-history-detail-content">
             <div className="computer-history-detail-meta"><Clock size={15} aria-hidden /><span>{selectedCollection.entries.length} {copy.activities}</span></div>
             <Heading level={2}>{collectionLabel(selectedCollection)}</Heading>
-            <ComputerHistoryDayDocument entries={selectedCollection.entries} onOpenEntry={chooseEntry} />
+            <ComputerHistoryDayDocument entries={selectedCollection.entries} onOpenEntry={chooseEntry} onSearchKeyword={searchKeyword} />
           </div>
         </section> : null}
       </div>

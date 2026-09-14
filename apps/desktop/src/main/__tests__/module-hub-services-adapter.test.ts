@@ -227,6 +227,22 @@ describe('createDesktopModuleHubServices', () => {
     await assert.rejects(services.computerHistory.applications(['com.example.editor']), (error) => error === failure);
   });
 
+  it('forwards optional on-demand timeline queries unchanged through the local bridge', async () => {
+    const calls: Call[] = [];
+    const bridge = new Proxy({} as DesktopModuleHubBridge, {
+      get: (_target, domain) => methodRecorder(calls, String(domain)),
+    });
+    const history = createDesktopModuleHubServices(bridge).computerHistory;
+    await history.timeline(30);
+    await history.timeline(30, 'ＡＰＩ  tail-only');
+    await history.timeline(7, '');
+    assert.deepEqual(calls, [
+      { name: 'computerHistory.timeline', args: [30, undefined] },
+      { name: 'computerHistory.timeline', args: [30, 'ＡＰＩ  tail-only'] },
+      { name: 'computerHistory.timeline', args: [7, ''] },
+    ]);
+  });
+
   it('keeps history operations local and status/clear usable after a failed timeline', async () => {
     const calls: Call[] = [];
     const history = Object.assign(methodRecorder(calls, 'history'), {

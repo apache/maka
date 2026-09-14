@@ -1730,7 +1730,7 @@ export interface MakaBridge {
     /** At most 32 requested bundle IDs, deduplicated in first-request order. Local metadata only. */
     applications(bundleIds: readonly string[]): Promise<readonly ComputerHistoryApplication[]>;
     status(): Promise<ComputerHistoryStatus>;
-    timeline(days?: number): Promise<ComputerHistoryTimeline>;
+    timeline(days?: number, query?: string): Promise<ComputerHistoryTimeline>;
     /** Resolves an authoritative timeline ID; null means the entry is no longer available. */
     detail(id: string): Promise<ComputerHistoryDetail | null>;
     /** Reveal an owned saved summary by ID; rejects unavailable files and never exposes paths. */

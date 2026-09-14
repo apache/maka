@@ -19,6 +19,41 @@
 
 # Computer History UI Evidence
 
+## Metadata And Search Follow-Up
+
+Captured on September 14, 2026 from the production Computer History page and
+reader with synthetic services. The baseline source is revision
+`839113807cd9776ff10f7640752f7106094cc3dc`. Both sides use the same invented
+activities and Markdown, selected 08:30 entry, Preview mode, scroll position 0,
+zh-CN, Asia/Shanghai, DPR 1, 100% zoom, and a fixed 08:40 clock.
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `metadata-before-1240-light-reader.png` | 1240 x 820 | Previous reader, same selected entry |
+| `metadata-after-1240-light-reader.png` | 1240 x 820 | Keywords below the description |
+| `metadata-before-390-dark-reader.png` | 390 x 844 | Previous narrow reader |
+| `metadata-after-390-dark-reader.png` | 390 x 844 | Wrapping keywords in the narrow reader |
+| `metadata-after-1240-light-body-search-6h.png` | 1240 x 820 | Complete-body matches in six-hour view |
+| `metadata-after-1240-light-filename.png` | 1240 x 820 | Main-owned readable filename |
+| `metadata-after-390-dark-day.png` | 390 x 844 | Keywords within a day collection |
+
+The long keyword intentionally exercises wrapping. The day view is a collection
+of existing documents, not a separately generated daily summary. Application
+icons use the existing synthetic fixtures. These are isolated page captures,
+not full mobile-shell support or evidence of real application-icon lookup.
+
+The final browser matrix passed 16 before and 48 after captures with no page
+errors, broken images, unexpected external requests or overflowing tracked
+regions. It covers all three granularities, filename and body matches beyond
+the 12,000-character context preview, keyboard keyword activation, search focus,
+legacy entries, invalid queries and source/copy behavior. Query responses are
+bounded excerpts; idle polling does not include full document search text.
+
+These PNGs are copied without retouching. No actual history, private screenshot,
+credential or live provider result is included. The installed GitHub CLI has
+no native image attachment option; this uses the existing feature-branch asset
+convention.
+
 Captured on September 13, 2026 from actual production components in
 `apps/desktop/stories/computer-history.stories.tsx`, with synthetic service
 responses. No private history, user avatar, real Electron session, recorder,

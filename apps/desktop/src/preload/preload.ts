@@ -3541,8 +3541,8 @@ const makaBridge = {
     status(): Promise<ComputerHistoryStatus> {
       return ipcRenderer.invoke('computer-history:status');
     },
-    timeline(days = 7): Promise<ComputerHistoryTimeline> {
-      return ipcRenderer.invoke('computer-history:timeline', days);
+    timeline(days = 7, query = ''): Promise<ComputerHistoryTimeline> {
+      return ipcRenderer.invoke('computer-history:timeline', days, query);
     },
     detail(id: string): Promise<ComputerHistoryDetail | null> {
       return ipcRenderer.invoke('computer-history:detail', id);

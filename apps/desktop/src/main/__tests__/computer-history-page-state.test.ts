@@ -24,6 +24,7 @@ import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { ComputerHistoryStatus, ComputerHistoryTimeline, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
+import { computerHistorySearchExcerpt } from '@maka/core/computer-history';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import {
   ComputerHistoryPage, ComputerHistorySettingsPage, createFakeComputerHistoryAnalysisModel, createFakeModuleHubServices,
@@ -129,7 +130,7 @@ function renderer(t: TestContext) {
     },
     rows: () => [...document.querySelectorAll<HTMLButtonElement>('.computer-history-row button')],
     groupButtons: () => [...document.querySelectorAll<HTMLButtonElement>('.computer-history-group-open')],
-    async search(value: string) {
+    async search(value: string, pending = false) {
       const input = document.querySelector<HTMLInputElement>('.computer-history-search input');
       assert.ok(input);
       // Linkedom does not synthesize React's input change tracking.
@@ -143,6 +144,7 @@ function renderer(t: TestContext) {
         input.value = value;
         props.onChange?.({ target: input, defaultPrevented: false });
       });
+      if (!pending && value) await act(async () => t.mock.timers.tick(200));
     },
     frames: () => { for (const callback of frames.splice(0)) callback(0); },
     dialog: () => document.querySelector<HTMLDialogElement>('dialog[role="alertdialog"][open]'),
@@ -432,6 +434,7 @@ test('a saved summary replaces the pending empty state on the 15-second refresh'
 
 for (const summariesEnabled of [true, false]) {
   test(`list, date, application and search filters exclude raw entries with summaries ${summariesEnabled ? 'on' : 'off'}`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const h = renderer(t);
     const status: ComputerHistoryStatus = {
       ...RECORDING_STATUS, summaryState: summariesEnabled ? 'idle' : 'disabled',
@@ -606,6 +609,92 @@ test('granularity loads and persists every supported choice through its service 
   }
   assert.deepEqual(writes, ['10min', '6h', 'day'], 'only explicit choices persist the preference');
   assert.equal(createFakeModuleHubServices().computerHistory.getViewGranularity(), '6h', 'a separate service keeps its own default');
+});
+
+test('detail keyword activation searches exact text and returns focus without changing settings or draft content', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = renderer(t);
+  const activity = { ...entry('keywords'), keywords: ['Agent Native', '任务评测'],
+    contextMarkdown: 'Reviewed bounded context' };
+  const body = '<script>full-only</script> token';
+  const reads: string[] = [];
+  const services = createFakeModuleHubServices({
+    computerHistory: {
+      ...createFakeModuleHubServices().computerHistory,
+      getViewGranularity: () => '10min',
+      status: async () => STATUS,
+      timeline: async (_days, query) => ({ status: STATUS, entries: [activity, entry('legacy')]
+        .map((value) => query ? { ...value, searchText: computerHistorySearchExcerpt(value.id === activity.id ? body : '', query) } : value) }),
+      applications: async () => [],
+      detail: async (id) => {
+        reads.push(id);
+        return { entry: activity, events: [], eventTotal: 0, rawAvailable: false, truncated: false,
+          document: { name: 'actual-stored-name.md', body, markdown: body } };
+      },
+      updateSettings: async () => { throw new Error('Keyword search must not change settings'); },
+    },
+  });
+  await renderHistory(h, services);
+  await h.click(h.rows().find((row) => row.textContent?.includes(activity.title))!);
+  const keywords = h.document.querySelector('.computer-history-keywords');
+  assert.ok(keywords?.previousElementSibling?.classList.contains('computer-history-description'));
+  await h.click(h.button('Add to chat draft'));
+  assert.equal(h.document.querySelector('textarea')?.value, activity.contextMarkdown, 'full search body is never inserted into a draft');
+  await h.click(h.button('Cancel'));
+  await h.click(h.button('Search keyword: Agent Native', keywords!));
+  h.frames();
+  const input = h.document.querySelector<HTMLInputElement>('.computer-history-search input')!;
+  assert.equal(input.value, 'Agent Native');
+  assert.equal(h.document.activeElement, input);
+  assert.equal(h.document.querySelector('.computer-history-detail'), null);
+  assert.equal(h.rows().length, 0, 'old results are hidden while the keyword query is pending');
+  await act(async () => t.mock.timers.tick(200));
+  assert.equal(h.rows().length, 1);
+  assert.match(h.rows()[0].textContent ?? '', /Keyword match/);
+  assert.deepEqual(reads, [activity.id]);
+  await h.search('full-only');
+  assert.match(h.rows()[0].textContent ?? '', /Body match/);
+  assert.match(h.rows()[0].textContent ?? '', /<script>full-only<\/script>/);
+  assert.equal(h.rows()[0].querySelector('script'), null, 'body excerpts render as text, never markup');
+  await h.search('Activity');
+  assert.equal(h.document.querySelector('.computer-history-search-hint'), null);
+});
+
+test('query pending and invalid input hide old results, preserve the reader and explain limits without truncation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = renderer(t);
+  let reads = 0;
+  const services = createFakeModuleHubServices({
+    computerHistory: {
+      ...createFakeModuleHubServices().computerHistory,
+      getViewGranularity: () => '10min',
+      status: async () => STATUS,
+      timeline: async () => { reads++; return { status: STATUS, entries: [entry('a')] }; },
+      detail: async () => ({
+        entry: entry('a'), events: [], eventTotal: 0, rawAvailable: false, truncated: false,
+        document: { name: 'a.md', body: '# Saved body', markdown: '# Saved body' },
+      }),
+    },
+  });
+  await renderHistory(h, services);
+  await h.click(h.rows()[0]);
+  const reader = h.document.querySelector('.computer-history-detail');
+  await h.search('Activity', true);
+  assert.equal(h.rows().length, 0);
+  assert.equal(h.document.querySelector('.computer-history-master')?.getAttribute('aria-busy'), 'true');
+  assert.equal(h.document.querySelector('.computer-history-detail'), reader);
+  await act(async () => t.mock.timers.tick(200));
+  assert.equal(h.rows().length, 1);
+  await h.search('x'.repeat(129));
+  assert.match(h.document.querySelector('[role="alert"]')?.textContent ?? '', /512 characters, 16 words, and 128 characters/);
+  assert.equal(h.document.querySelector<HTMLInputElement>('.computer-history-search input')?.value.length, 129);
+  assert.equal(h.rows().length, 0);
+  assert.equal(h.document.querySelector('.computer-history-master')?.getAttribute('aria-busy'), 'false');
+  assert.equal(h.document.querySelector('.computer-history-detail'), reader);
+  assert.equal(reads, 2, 'invalid input must not issue a timeline request');
+  await h.search('');
+  assert.equal(h.document.querySelector('[role="alert"]'), null);
+  assert.equal(h.rows().length, 1);
 });
 
 test('switching 10min, 6h and day preserves the selected Source DOM and reader scroll without history or model operations', async (t) => {
@@ -895,7 +984,7 @@ test('a UTC-aligned ten-minute activity crossing Kathmandu midnight remains visi
 });
 
 test('a day collection opened from a parent-only search keeps that saved parent after clearing search and receiving late leaves', async (t) => {
-  t.mock.timers.enable({ apis: ['setInterval'] });
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
   const h = renderer(t);
   const a = entry('a');
   const b: ComputerHistoryTimelineEntry = {
@@ -962,7 +1051,7 @@ test('a day collection opened from a parent-only search keeps that saved parent 
   late = true;
   await act(async () => t.mock.timers.tick(15_000));
   h.frames();
-  assert.equal(timelineCalls, 2);
+  assert.equal(timelineCalls, 4, 'initial, query, clear and background refresh');
   assertParentPreserved();
   assert.deepEqual([...collection.querySelectorAll('.computer-history-day-document-title')]
     .map((title) => title.textContent?.trim()).sort(), [a.title, b.title, parent.title].sort(),

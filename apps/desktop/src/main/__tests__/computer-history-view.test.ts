@@ -255,6 +255,25 @@ test('a parent-only match stays visible without admitting nonmatching children',
   assert.deepEqual(groupHistoryEntries(all, [], '6h'), []);
 });
 
+test('metadata matches preserve child provenance and parent-only results in every granularity', () => {
+  const matching = leaf('2026-09-13T06:10:00Z', {
+    keywords: ['Agent Native'], documentName: 'review-notes.md', searchText: '<AXWebArea> tail',
+  });
+  const other = leaf('2026-09-13T06:20:00Z');
+  const parent = rollup('2026-09-13T06:00:00Z', [matching, other], { keywords: ['RollupOnly'] });
+  const all = [other, parent, matching];
+  const childMatch = filterHistoryEntries(all, '', 'ＮＡＴＩＶＥ notes.md <axwebarea>', '');
+  for (const kind of ['10min', '6h', 'day'] as const) {
+    const groups = groupHistoryEntries(all, childMatch, kind);
+    assert.deepEqual(groups.flatMap(({ entries }) => entries), [matching]);
+    if (kind === '6h') assert.equal(groups[0].summary, parent);
+  }
+  const parentMatch = filterHistoryEntries(all, '', 'rolluponly', '');
+  assert.deepEqual(groupHistoryEntries(all, parentMatch, '10min'), []);
+  assert.deepEqual(groupHistoryEntries(all, parentMatch, '6h')[0].entries, []);
+  assert.deepEqual(groupHistoryEntries(all, parentMatch, 'day').flatMap(({ entries }) => entries), [parent]);
+});
+
 test('canonical children exclude unrelated same-window leaves without hiding them', () => {
   const child = leaf('2026-09-13T06:10:00Z');
   const unrelated = leaf('2026-09-13T06:20:00Z', { title: 'Later independent work' });

@@ -44,6 +44,10 @@ import type {
   ComputerHistorySummaryInput,
   ComputerHistorySummaryContent,
 } from '@maka/core/computer-history';
+import {
+  computerHistorySearchExcerpt,
+  computerHistorySearchTerms,
+} from '@maka/core/computer-history';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ComputerHistoryApplications } from './computer-history-applications.js';
 import { projectHistorySummaryEvent, summaryScopeKey } from './computer-history-evidence.js';
@@ -472,10 +476,15 @@ export class ComputerHistoryService {
     };
   }
 
-  async timeline(days = 7): Promise<ComputerHistoryTimeline> {
+  async timeline(days = 7, query = ''): Promise<ComputerHistoryTimeline> {
+    const terms = computerHistorySearchTerms(query);
     return {
       status: await this.status(),
-      entries: (await this.#entries(days)).map(({ entry }) => entry),
+      entries: (await this.#entries(days)).map(({ entry, summary }) =>
+        terms.length && summary
+          ? { ...entry, searchText: computerHistorySearchExcerpt(summary.content.body, query) }
+          : entry,
+      ),
     };
   }
 
@@ -521,7 +530,7 @@ export class ComputerHistoryService {
         entry: resolved.entry,
         ...(resolved.summary ? {
           document: {
-            name: `${resolved.summary.id}.md`,
+            name: resolved.summary.filename ?? `${resolved.summary.id}.md`,
             markdown: serializeComputerHistorySummary(resolved.summary),
             body: resolved.summary.content.body,
           },
@@ -1067,7 +1076,11 @@ export function registerComputerHistoryIpc(input: {
 }): () => void {
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
     'computer-history:status': () => input.service.status(),
-    'computer-history:timeline': (days) => input.service.timeline(integer(days, 7)),
+    'computer-history:timeline': (days, query = '') => {
+      if (typeof query !== 'string') throw new Error('Invalid Computer History search query');
+      computerHistorySearchTerms(query);
+      return input.service.timeline(integer(days, 7), query);
+    },
     'computer-history:applications': (ids) => input.service.applications(ids as readonly string[]),
     'computer-history:detail': (id) => input.service.detail(requireEntryId(id)),
     'computer-history:reveal-summary': (id) => input.service.revealSummary(requireEntryId(id)),
@@ -1191,6 +1204,8 @@ function summaryEntry(summary: StoredComputerHistorySummary): ComputerHistoryTim
     id: summary.id,
     title: content.title,
     description: content.description,
+    ...(content.keywords ? { keywords: content.keywords } : {}),
+    documentName: summary.filename ?? `${summary.id}.md`,
     start: summary.start,
     end: summary.end,
     applications: summary.applications,

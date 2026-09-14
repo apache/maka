@@ -90,7 +90,7 @@ Selecting an activity opens a side-by-side reader; closing it restores the
 feed. On narrow screens the reader replaces the feed and has a back action.
 List rows
 show time, title, a short summary, and native application icons. The detail
-surface shows the title, description, interval, contributing applications, and
+surface shows the title, description, clickable keywords, interval, contributing applications, and
 the complete saved Markdown body. Rendered Markdown is the default, with
 headings, lists, tables, quotations, and syntax-highlighted code blocks. A source
 mode shows the complete serialization, including frontmatter. The reader maps
@@ -111,6 +111,19 @@ The history page includes:
 - per-activity deletion with confirmation;
 - explicit selection of one activity for an editable chat draft;
 - user-reviewed workflow suggestions.
+
+Local search matches all whitespace-separated query terms across title,
+description, keywords, the complete validated summary body, application names
+and IDs, and the actual stored filename. Matching normalizes NFKC and case,
+preserves chronological ordering, and intersects the existing date/application
+filters. Hidden-field matches have a compact explanation. Clicking a keyword
+returns to the filtered feed. Full-body matching runs in main only for an active
+query; normal timeline refreshes omit body search data. Query responses retain
+both levels and return at most 2,048 characters of matching body excerpts per
+summary, so application labels and granularity can still be resolved locally.
+Queries are limited to 512 characters and 16 terms, with at most 128 characters
+per term. This does not enlarge the Composer context or
+give the bundled skill autonomous archive access.
 
 Settings > Computer History owns recording enablement, separate text and model
 consent, application/domain exclusions, retention information,
@@ -314,7 +327,24 @@ content, and application/source identifiers computed outside the model.
 The model cannot choose filesystem paths. Clear and shutdown abort in-flight
 analysis and fence late output before persistence.
 
-Summary details include a document named `<summary-id>.md`, its canonical
+New summaries include up to ten evidence-backed `content.keywords`, normally
+five to ten only when observations support them. Terms are trimmed,
+NFKC-normalized, deduplicated case-insensitively, and bounded to 96 UTF-8 bytes
+each. Sparse evidence may produce an empty list. Legacy documents without
+keywords stay readable; metadata rollout alone does not trigger regeneration.
+The same evidence and privacy restrictions apply to keywords as to prose.
+Each saved level produces its own terms; parent keywords are not copied into
+every ten-minute child. The day view remains a collection, not a generated file.
+
+New documents use `YYYY-MM-DD_HH-mm__<level>__<short-topic>.md`, with local
+time at creation and no timezone suffix. Main sanitizes and bounds the topic,
+persists the chosen basename, and preserves it across title/locale/timezone
+changes. A rare same-name collision gains a stable numeric discriminator
+instead of overwriting another summary. Canonical IDs remain unchanged.
+Legacy `<summary-id>.md` documents retain their filenames, even when refreshed.
+No rename-only migration or additional model calls are performed.
+
+Summary details include the actual stored basename, its canonical
 serialization including JSON frontmatter, and the validated, unescaped Markdown
 body. Storage and detail projection share one serializer. Raw entries have no
 document. The body is bounded to 48 KiB and the serialized file to 128 KiB; readers

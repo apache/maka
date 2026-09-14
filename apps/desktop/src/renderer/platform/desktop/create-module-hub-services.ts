@@ -200,7 +200,7 @@ export function createDesktopModuleHubServices(
         }
       },
       status: () => bridge.computerHistory.status(),
-      timeline: (days) => bridge.computerHistory.timeline(days),
+      timeline: (days, query) => bridge.computerHistory.timeline(days, query),
       applications: (bundleIds) => bridge.computerHistory.applications(bundleIds),
       detail: (id) => bridge.computerHistory.detail(id),
       revealSummary: (id) => bridge.computerHistory.revealSummary(id),

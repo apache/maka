@@ -27,7 +27,7 @@ export { ComputerHistoryPage } from "./ui/computer-history-page.js";
 export { ComputerHistoryAppIcon } from "./ui/computer-history-app-icon.js";
 export { ComputerHistoryDocument } from "./ui/computer-history-document.js";
 export { ComputerHistoryDayDocument } from "./ui/computer-history-day-document.js";
-export { filterHistoryEntries, intersectHistoryDays } from "./ui/computer-history-copy.js";
+export { filterHistoryEntries, historySearchHint, intersectHistoryDays } from "./ui/computer-history-copy.js";
 export { groupHistoryEntries, type HistoryGranularity, type HistoryViewGroup } from "./ui/computer-history-view.js";
 export { ComputerHistorySettingsPage } from "./ui/computer-history-settings-page.js";
 export { useComputerHistorySettings, useRecentHistoryApplications } from "./controller/use-computer-history-settings.js";

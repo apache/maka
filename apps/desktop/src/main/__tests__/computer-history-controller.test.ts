@@ -80,15 +80,15 @@ function harness(service: ModuleHubServices) {
   const { root } = installReactRenderer();
   let current: Controller | undefined;
   let renders = 0;
-  function Probe({ selectedId }: { selectedId: string | null }) {
-    current = useComputerHistoryController(selectedId);
+  function Probe({ selectedId, query }: { selectedId: string | null; query: string }) {
+    current = useComputerHistoryController(selectedId, query);
     renders += 1;
     return null;
   }
   return {
     root,
-    render(selectedId: string | null, nextService = service) {
-      root.render(createElement(ModuleHubServicesProvider, { services: nextService }, createElement(Probe, { selectedId })));
+    render(selectedId: string | null, nextService = service, query = '') {
+      root.render(createElement(ModuleHubServicesProvider, { services: nextService }, createElement(Probe, { selectedId, query })));
     },
     controller() {
       assert.ok(current);
@@ -482,4 +482,158 @@ test('recording controls preserve the open document until refreshed evidence arr
   evidence.resolve({ ...detail('a'), eventTotal: 4 });
   await act(async () => evidence.promise);
   assert.equal(h.controller().detail?.eventTotal, 4);
+});
+
+test('query refresh debounces, fences an in-flight poll immediately and preserves the open reader', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const poll = deferred<ComputerHistoryTimeline>();
+  const search = deferred<ComputerHistoryTimeline>();
+  const calls: (string | undefined)[] = [];
+  const h = harness(services({
+    timeline: async (days, query) => {
+      assert.equal(days, 30);
+      calls.push(query);
+      if (calls.length === 2) return poll.promise;
+      if (query) return search.promise;
+      return { status: STATUS, entries: [entry('a')] };
+    },
+  }));
+  await act(async () => h.render('a'));
+  const cached = h.controller().entries;
+  const reader = h.controller().detail;
+  assert.equal(h.controller().searchReady, true);
+  await act(async () => t.mock.timers.tick(15_000));
+  assert.deepEqual(calls, [undefined, undefined], 'idle polls never request body matches');
+  await act(async () => h.render('a', undefined, 'ＡＧＥＮＴ'));
+  assert.equal(h.controller().searchReady, false);
+  assert.equal(h.controller().searchPending, true);
+  assert.equal(h.controller().entries, cached);
+  assert.equal(h.controller().detail, reader);
+  poll.resolve({ status: STATUS, entries: [entry('stale-poll')] });
+  await act(async () => poll.promise);
+  assert.equal(h.controller().entries, cached, 'the old poll cannot publish in the debounce window');
+  await act(async () => t.mock.timers.tick(199));
+  await act(async () => h.render('a', undefined, 'ＡＧＥＮＴ \tNative'));
+  await act(async () => t.mock.timers.tick(199));
+  assert.equal(calls.length, 2);
+  await act(async () => t.mock.timers.tick(1));
+  assert.deepEqual(calls, [undefined, undefined, 'agent native']);
+  search.resolve({ status: STATUS, entries: [{ ...entry('a'), searchText: 'agent native match excerpt' }] });
+  await act(async () => search.promise);
+  assert.equal(h.controller().searchReady, true);
+  assert.equal(h.controller().searchPending, false);
+  assert.equal(h.controller().entries[0].searchText, 'agent native match excerpt');
+  await act(async () => t.mock.timers.tick(15_000));
+  assert.equal(calls.at(-1), 'agent native');
+});
+
+for (const completion of ['success', 'failure'] as const) {
+  test(`clearing search immediately requests metadata and ignores late query ${completion}`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const pending = deferred<ComputerHistoryTimeline>();
+    const calls: (string | undefined)[] = [];
+    const h = harness(services({
+      timeline: async (_days, query) => {
+        calls.push(query);
+        return query ? pending.promise : { status: STATUS, entries: [entry('a')] };
+      },
+    }));
+    await act(async () => h.render(null));
+    await act(async () => h.render(null, undefined, 'older'));
+    await act(async () => t.mock.timers.tick(200));
+    await act(async () => h.render(null, undefined, ''));
+    assert.deepEqual(calls, [undefined, 'older', undefined]);
+    if (completion === 'success') pending.resolve({ status: STATUS, entries: [{ ...entry('old'), searchText: 'older' }] });
+    else pending.reject(new Error('obsolete query error'));
+    await act(async () => { await pending.promise.catch(() => {}); });
+    assert.equal(h.controller().searchReady, true);
+    assert.equal(h.controller().error, null);
+    assert.deepEqual(h.controller().entries.map(({ id }) => id), ['a']);
+    assert.equal(h.controller().entries[0].searchText, undefined);
+  });
+}
+
+test('failed current search hides old-query results and invalid queries do not call the service', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let reads = 0;
+  const h = harness(services({
+    timeline: async (_days, query) => {
+      reads++;
+      if (query) throw new Error('Search unavailable');
+      return { status: STATUS, entries: [entry('a')] };
+    },
+  }));
+  await act(async () => h.render(null));
+  await act(async () => h.render(null, undefined, 'failed'));
+  await act(async () => t.mock.timers.tick(200));
+  assert.equal(h.controller().searchReady, false);
+  assert.equal(h.controller().searchPending, false);
+  assert.equal(h.controller().error, 'Search unavailable');
+  assert.equal(h.controller().entries[0].id, 'a', 'cached data stays available to readers');
+  for (const query of ['x'.repeat(513), 'x'.repeat(129), Array.from({ length: 17 }, (_, i) => `word${i}`).join(' '), '㍿'.repeat(40)]) {
+    await act(async () => h.render(null, undefined, query));
+    await act(async () => t.mock.timers.tick(15_000));
+    assert.equal(h.controller().searchReady, false);
+    assert.equal(h.controller().searchPending, false);
+    assert.equal(h.controller().queryError, 'Invalid Computer History search query');
+    assert.equal(reads, 2);
+  }
+  await act(async () => h.render(null, undefined, ''));
+  assert.equal(h.controller().error, null);
+  assert.equal(h.controller().searchReady, true);
+});
+
+test('query debounce is cancelled on unmount and new service queries replace old ones', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const old = deferred<ComputerHistoryTimeline>();
+  const h = harness(services({ timeline: async () => old.promise }));
+  await act(async () => h.render(null, undefined, 'old'));
+  await act(async () => t.mock.timers.tick(200));
+  const next = services({
+    timeline: async (_days, query) => ({ status: STATUS, entries: [{ ...entry('new'), searchText: query }] }),
+  });
+  await act(async () => h.render(null, next, 'new'));
+  await act(async () => t.mock.timers.tick(200));
+  old.resolve({ status: STATUS, entries: [entry('obsolete')] });
+  await act(async () => old.promise);
+  assert.equal(h.controller().entries[0].id, 'new');
+  assert.equal(h.controller().searchReady, true);
+  await act(async () => h.render(null, next, 'unmounted'));
+  await act(async () => h.root.unmount());
+  const renders = h.renderCount();
+  await act(async () => t.mock.timers.tick(200));
+  assert.equal(h.renderCount(), renders);
+});
+
+test('invalid queries keep health polling and pause/resume readback live without requesting timeline bodies', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let state = STATUS;
+  let healthReads = 0;
+  let timelineReads = 0;
+  const h = harness(services({
+    status: async () => { healthReads++; return state; },
+    timeline: async () => { timelineReads++; return { status: state, entries: [entry('a')] }; },
+    pause: async () => { state = { ...state, state: 'paused' }; return state; },
+    resume: async () => { state = { ...state, state: 'running' }; return state; },
+  }));
+  await act(async () => h.render('a'));
+  await act(async () => h.render('a', undefined, 'x'.repeat(129)));
+  assert.equal(h.controller().loading, false);
+  assert.ok(h.controller().queryError);
+  for (const action of ['resume', 'pause'] as const) {
+    await act(async () => assert.equal(await h.controller().run(
+      () => action === 'resume' ? h.controller().service.resume() : h.controller().service.pause('1h'),
+      { preserveDetail: true },
+    ), true));
+    assert.equal(h.controller().status?.state, action === 'resume' ? 'running' : 'paused');
+    assert.ok(h.controller().queryError, 'actions must not clear the invalid-input error');
+  }
+  const beforePoll = healthReads;
+  state = { ...state, state: 'running' };
+  await act(async () => t.mock.timers.tick(15_000));
+  assert.equal(healthReads, beforePoll + 1);
+  assert.equal(h.controller().status?.state, 'running');
+  assert.equal(h.controller().loading, false);
+  assert.equal(timelineReads, 1);
+  assert.equal(h.controller().detail?.entry.id, 'a');
 });

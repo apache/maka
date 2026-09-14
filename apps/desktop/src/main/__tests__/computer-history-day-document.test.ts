@@ -92,14 +92,15 @@ function reader(t: TestContext) {
     }
   });
   const opened: ComputerHistoryTimelineEntry[] = [];
+  const searches: string[] = [];
   return {
-    container, document, opened,
+    container, document, opened, searches,
     render: (services: ModuleHubServices, entries: readonly ComputerHistoryTimelineEntry[], locale: UiLocale = 'en', observe?: () => void) =>
       act(async () => root.render(createElement(StrictMode, null, createElement(CommitObserver, { observe, children: createElement(LocaleProvider, {
         locale,
         children: createElement(AstryxLocaleProvider, {
           children: createElement(ToastProvider, { children: createElement(ModuleHubServicesProvider, { services },
-            createElement(ComputerHistoryDayDocument, { entries, onOpenEntry: (value) => opened.push(value) })) }),
+            createElement(ComputerHistoryDayDocument, { entries, onOpenEntry: (value) => opened.push(value), onSearchKeyword: (value) => searches.push(value) })) }),
         }),
       }) })))),
     remove: () => act(async () => root.render(null)),
@@ -287,6 +288,7 @@ test('legacy entries without a document revision use preview metadata without de
     { start: '2026-09-13T09:50:00Z' }, { end: '2026-09-13T10:20:00Z' },
     { applications: ['com.example.Terminal'] }, { eventCount: 5 }, { suppressedEventCount: 1 },
     { summaryLevel: '6h' }, { summaryChildren: ['child-1'] },
+    { keywords: ['Agent Native'] }, { documentName: 'renamed-summary.md' },
     { contextMarkdown: 'Updated context' }, { suggestion: { type: 'skill', name: 'Review', description: 'Observed repetition' } },
   ];
   for (const change of changes) {
@@ -302,6 +304,27 @@ test('legacy entries without a document revision use preview metadata without de
     suggestion: { description: value.suggestion!.description, name: value.suggestion!.name, type: value.suggestion!.type },
   }]);
   assert.equal(a.requests.length, count);
+  for (const searchText of ['First query excerpt', '', 'A different query excerpt', undefined]) {
+    await h.render(a.services, [{ ...value, searchText }]);
+    assert.equal(a.requests.length, count, 'query-only excerpts must not invalidate a saved document');
+  }
+});
+
+test('collection keywords follow descriptions, activate exact search text and leave legacy entries unchanged', async (t) => {
+  const h = reader(t);
+  const a = archive();
+  const one = entry('one', { keywords: ['Agent Native', '任务评测'] });
+  await h.render(a.services, [one, entry('legacy')]);
+  await a.resolve(0, detail(one));
+  await a.resolve(1, detail(entry('legacy')));
+  const keywords = h.section('one').querySelector('.computer-history-keywords');
+  assert.ok(keywords);
+  assert.ok(keywords.previousElementSibling?.classList.contains('computer-history-day-document-description'));
+  await h.click(h.button('Search keyword: Agent Native', keywords));
+  assert.deepEqual(h.searches, ['Agent Native']);
+  assert.equal(h.section('legacy').querySelector('.computer-history-keywords'), null);
+  assert.deepEqual(a.requests.map(({ id }) => id), ['one', 'legacy']);
+  assert.deepEqual(a.unexpected, []);
 });
 
 test('day changes discard queued entries and fence departed completions while sharing the physical read limit', async (t) => {

@@ -45,6 +45,8 @@ export interface ComputerHistorySummaryEvent {
 
 export interface StoredComputerHistorySummary {
   readonly id: string;
+  /** Main-owned basename chosen once; absent on legacy ID-named documents. */
+  readonly filename?: string;
   /** Read-time file version, excluded from persisted documents and model inputs. */
   readonly documentRevision?: string;
   readonly level: ComputerHistorySummaryLevel;
@@ -120,6 +122,7 @@ export class ComputerHistorySummaries {
     signal: AbortSignal,
   ) => Promise<ComputerHistorySummaryContent>;
   readonly #now: () => number;
+  readonly #filenames = new Map<string, string>();
   #epoch = 0;
   #closed = false;
   #active?: { controller: AbortController; promise: Promise<void> };
@@ -166,20 +169,39 @@ export class ComputerHistorySummaries {
     validateSummaryId(id);
     await this.#maintenance;
     if (!(await this.#directoryExists())) return null;
-    try {
-      return await this.#readFile(`${id}.md`);
-    } catch (error) {
-      if (isMissing(error)) return null;
-      throw error;
+    const known = this.#filenames.get(id);
+    if (known) {
+      try {
+        return await this.#readFile(known, undefined, id);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
     }
+    // The timeline normally warms this map. A cold direct lookup must also find
+    // a readable archive when an unrelated document is corrupt.
+    let found: StoredComputerHistorySummary | null = null;
+    for (const name of await readdir(this.#directory)) {
+      if (name !== `${id}.md` && !isReadableSummaryFilename(name)) continue;
+      let candidate: StoredComputerHistorySummary;
+      try {
+        candidate = await this.#readFile(name);
+      } catch (error) {
+        if (name === `${id}.md` && !isMissing(error)) throw error;
+        continue;
+      }
+      if (candidate.id !== id) continue;
+      if (found) throw invalidSummary();
+      found = candidate;
+    }
+    if (found) this.#filenames.set(id, found.filename ?? `${id}.md`);
+    return found;
   }
 
   /** Main-only reveal of a validated persisted document, independent of timeline filtering. */
   async reveal(id: string, showItemInFolder: (path: string) => void): Promise<void> {
-    validateSummaryId(id);
-    await this.#maintenance;
-    if (!(await this.#directoryExists())) throw invalidSummary();
-    await this.#readFile(`${id}.md`, showItemInFolder);
+    const summary = await this.get(id);
+    if (!summary) throw invalidSummary();
+    await this.#readFile(summary.filename ?? `${id}.md`, showItemInFolder, id);
   }
 
   /** Abort and drain, then delete overlapping summaries. -Infinity also removes corrupt owned files. */
@@ -191,7 +213,8 @@ export class ComputerHistorySummaries {
       if (fromMs === Number.NEGATIVE_INFINITY) return this.#clearAll();
       for (const summary of await this.#read()) {
         if (Date.parse(summary.end) > fromMs) {
-          await removeIfPresent(join(this.#directory, `${summary.id}.md`));
+          await removeIfPresent(join(this.#directory, summary.filename ?? `${summary.id}.md`));
+          this.#filenames.delete(summary.id);
         }
       }
     });
@@ -206,9 +229,12 @@ export class ComputerHistorySummaries {
       return Promise.reject(new Error('Invalid history clear interval'));
     }
     return this.#interrupt(async () => {
-      for (const id of deletionIds(await this.#read(), start, end).reverse()) {
+      const summaries = await this.#read();
+      const filenames = new Map(summaries.map((summary) => [summary.id, summary.filename ?? `${summary.id}.md`]));
+      for (const id of deletionIds(summaries, start, end).reverse()) {
         // Delete consumers before their persisted inputs, including when an unlink fails partway.
-        await removeIfPresent(join(this.#directory, `${id}.md`));
+        await removeIfPresent(join(this.#directory, filenames.get(id)!));
+        this.#filenames.delete(id);
       }
     });
   }
@@ -277,7 +303,16 @@ export class ComputerHistorySummaries {
       }
       if (!current()) return;
       const { evidence: _evidence, priorContext: _priorContext, ...provenance } = pending;
-      const summary = { ...provenance, content: decodeComputerHistorySummaryContent(generated) };
+      const content = decodeComputerHistorySummaryContent(generated);
+      const existing = stored.get(provenance.id);
+      const filename = existing
+        ? existing.filename
+        : this.#filenames.get(provenance.id) ?? await this.#availableFilename(provenance, content.title);
+      const summary: StoredComputerHistorySummary = {
+        ...provenance,
+        content,
+        ...(filename && isReadableSummaryFilename(filename) ? { filename } : {}),
+      };
       const parentId = summary.level === '10min'
         ? summaryId('6h', Math.floor(Date.parse(summary.start) / SIX_HOURS) * SIX_HOURS)
         : undefined;
@@ -290,6 +325,21 @@ export class ComputerHistorySummaries {
       if (invalidatedParent) stored.delete(invalidatedParent);
       stored.set(summary.id, summary);
     }
+  }
+
+  async #availableFilename(summary: Pick<StoredComputerHistorySummary, 'id' | 'start' | 'level'>, title: string): Promise<string> {
+    const preferred = readableSummaryFilename(summary, title);
+    const alternatives = [preferred, preferred.replace(/\.md$/u, `-${Date.parse(summary.start)}.md`)];
+    for (const name of alternatives) {
+      try {
+        // Filesystem occupancy also covers case-insensitive aliases and symlinks.
+        await lstat(join(this.#directory, name));
+      } catch (error) {
+        if (isMissing(error)) return name;
+        throw error;
+      }
+    }
+    throw invalidSummary();
   }
 
   async #directoryExists(create = false): Promise<boolean> {
@@ -323,6 +373,7 @@ export class ComputerHistorySummaries {
         await removeIfPresent(join(this.#directory, name));
       }
     }
+    this.#filenames.clear();
   }
 
   async #read(): Promise<StoredComputerHistorySummary[]> {
@@ -335,15 +386,26 @@ export class ComputerHistorySummaries {
       throw error;
     }
     const summaries: StoredComputerHistorySummary[] = [];
+    const ids = new Set<string>();
     for (const entry of entries) {
       if (entry.isSymbolicLink()) throw invalidSummary();
       if (!entry.name.endsWith('.md')) continue;
       if (!entry.isFile()) throw invalidSummary();
       try {
-        summaries.push(await this.#readFile(entry.name));
+        const summary = await this.#readFile(entry.name);
+        if (ids.has(summary.id)) {
+          this.#filenames.delete(summary.id);
+          throw invalidSummary();
+        }
+        ids.add(summary.id);
+        summaries.push(summary);
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
+    }
+    // Only publish lookups after the complete archive passes uniqueness checks.
+    for (const summary of summaries) {
+      this.#filenames.set(summary.id, summary.filename ?? `${summary.id}.md`);
     }
     return summaries.sort(compareSummaries);
   }
@@ -351,6 +413,7 @@ export class ComputerHistorySummaries {
   async #readFile(
     filename: string,
     showItemInFolder?: (path: string) => void,
+    expectedId?: string,
   ): Promise<StoredComputerHistorySummary> {
     const path = join(this.#directory, filename);
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -367,6 +430,7 @@ export class ComputerHistorySummaries {
       if (size > MAX_FILE_BYTES) throw invalidSummary();
       const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, size));
       const summary = decodeSummary(text, filename);
+      if (expectedId !== undefined && summary.id !== expectedId) throw invalidSummary();
       const documentRevision = summaryFileRevision(info);
       if (summaryFileRevision(await file.stat({ bigint: true })) !== documentRevision) throw invalidSummary();
       if (showItemInFolder) {
@@ -386,7 +450,8 @@ export class ComputerHistorySummaries {
     const text = serializeComputerHistorySummary(summary);
     await this.#directoryExists(true);
     if (!current()) return;
-    const target = join(this.#directory, `${summary.id}.md`);
+    const filename = summary.filename ?? `${summary.id}.md`;
+    const target = join(this.#directory, filename);
     const temporary = join(this.#directory, `.${summary.id}.${randomUUID()}.tmp`);
     try {
       await writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
@@ -394,14 +459,16 @@ export class ComputerHistorySummaries {
       try {
         const info = await lstat(target);
         if (!info.isFile() || info.isSymbolicLink()) throw invalidSummary();
+        await this.#readFile(filename, undefined, summary.id);
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
       if (!current()) return;
       // Invalidate before publishing a child so restart cannot reuse a stale same-ID rollup.
-      if (parentId) await removeIfPresent(join(this.#directory, `${parentId}.md`));
+      if (parentId) await removeIfPresent(join(this.#directory, this.#filenames.get(parentId) ?? `${parentId}.md`));
       if (!current()) return;
       await rename(temporary, target);
+      this.#filenames.set(summary.id, filename);
       if (!current()) await removeIfPresent(target);
     } finally {
       await removeIfPresent(temporary);
@@ -420,6 +487,7 @@ export function serializeComputerHistorySummary(summary: StoredComputerHistorySu
   const header = {
     version: 1,
     id: summary.id,
+    ...(summary.filename ? { filename: summary.filename } : {}),
     level: summary.level,
     start: summary.start,
     end: summary.end,
@@ -657,6 +725,7 @@ function encodedSize(item: Evidence): number {
 function summaryEvidence(summary: StoredComputerHistorySummary): string {
   return `Summary interval: ${summary.start} to ${summary.end}; ${summary.eventCount} events\n` +
     `Title: ${summary.content.title}\nDescription: ${summary.content.description}\n` +
+    (summary.content.keywords?.length ? `Keywords: ${summary.content.keywords.join(', ')}\n` : '') +
     `Body:\n${summary.content.body}`;
 }
 
@@ -782,6 +851,7 @@ function deletionIds(summaries: readonly StoredComputerHistorySummary[], start: 
 }
 
 function isOwnedSummaryFilename(name: string): boolean {
+  if (isReadableSummaryFilename(name)) return true;
   const match = /^(10min|6h)-(-?\d+)\.md$/u.exec(name);
   if (!match) return false;
   const level = match[1] as ComputerHistorySummaryLevel;
@@ -794,7 +864,31 @@ function isOwnedSummaryFilename(name: string): boolean {
 }
 
 function validateSummaryId(id: string): void {
-  if (typeof id !== 'string' || id.length > 23 || !isOwnedSummaryFilename(`${id}.md`)) throw invalidSummary();
+  if (typeof id !== 'string' || id.length > 23 || !/^(10min|6h)--?\d+$/u.test(id) ||
+      !isOwnedSummaryFilename(`${id}.md`)) throw invalidSummary();
+}
+
+function isReadableSummaryFilename(name: string): boolean {
+  if (Buffer.byteLength(name) > 200) return false;
+  const match = /^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})__(10min|6h)__([\p{L}\p{N}][\p{L}\p{N}-]*)\.md$/u.exec(name);
+  if (!match) return false;
+  const stamp = `${match[1]}T${match[2]}:${match[3]}:00.000Z`;
+  const date = new Date(stamp);
+  return Number.isFinite(date.getTime()) && date.toISOString() === stamp;
+}
+
+function readableSummaryFilename(summary: Pick<StoredComputerHistorySummary, 'id' | 'start' | 'level'>, title: string): string {
+  const date = new Date(summary.start);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const stamp = `${String(date.getFullYear()).padStart(4, '0')}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
+  const words = title.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/gu, '');
+  let topic = '';
+  for (const char of words) {
+    if (Buffer.byteLength(topic + char) > 108 || [...topic].length >= 48) break;
+    topic += char;
+  }
+  const name = `${stamp}__${summary.level}__${topic.replace(/-$/u, '') || 'Activity-summary'}.md`;
+  return isReadableSummaryFilename(name) ? name : `${summary.id}.md`;
 }
 
 function compareSummaries(
@@ -837,6 +931,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
   const data = record(JSON.parse(text.slice(4, delimiter)), [
     'version',
     'id',
+    'filename',
     'level',
     'start',
     'end',
@@ -855,7 +950,10 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
     data.id !== expected.id ||
     data.start !== expected.start ||
     data.end !== expected.end ||
-    filename !== `${expected.id}.md`
+    (data.filename === undefined
+      ? filename !== `${expected.id}.md`
+      : data.filename !== filename || !isReadableSummaryFilename(filename) ||
+        !filename.includes(`__${data.level}__`))
   ) {
     throw invalidSummary();
   }
@@ -884,7 +982,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
       }
     }
   }
-  const headerContent = record(data.content, ['title', 'description', 'suggestion']);
+  const headerContent = record(data.content, ['title', 'description', 'keywords', 'suggestion']);
   let generation: StoredComputerHistorySummary['generation'];
   if (data.generation !== undefined) {
     const value = record(data.generation, ['version', 'locale', 'sourceRevision', 'includesText', 'scopeKey', 'priorContextIds', 'rawEvidenceRanges']);
@@ -939,6 +1037,7 @@ function decodeSummary(text: string, filename: string): StoredComputerHistorySum
   }
   return {
     ...expected,
+    ...(data.filename === undefined ? {} : { filename }),
     applications,
     eventCount: data.eventCount as number,
     sourceIds,

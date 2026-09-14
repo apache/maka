@@ -34,6 +34,7 @@ import type {
   ComputerHistorySettings,
   ComputerHistoryTimelineEntry,
 } from '@maka/core/computer-history';
+import { computerHistorySearchExcerpt } from '@maka/core/computer-history';
 import { ToastProvider } from '@maka/ui';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import {
@@ -209,6 +210,8 @@ function fixtureEntries(): readonly ComputerHistoryTimelineEntry[] {
   summaryLevel: '10min',
   contextMarkdown: `<computer-history-context trust="untrusted-observed-ui">\n${activity.title}\n${activity.description}\n</computer-history-context>`,
   ...(activity.id === 'layout' ? {
+    keywords: ['Computer History', '可访问性', '界面回归'],
+    documentName: '2026-09-14_12-20__10min__界面布局-synthetic.md',
     suggestion: {
       type: 'skill' as const,
       name: '界面回归检查',
@@ -383,11 +386,12 @@ function fixtureDocument(entry: ComputerHistoryTimelineEntry): ComputerHistoryDe
   ].join('\n');
   const header = {
     version: 1, id: entry.id, level: entry.summaryLevel,
+    ...(entry.documentName ? { filename: entry.documentName } : {}),
     start: entry.start, end: entry.end, applications: entry.applications,
     eventCount: entry.eventCount, sourceIds: entry.summaryChildren ?? [`synthetic-${entry.id}-segment`],
-    content: { title: entry.title, description: entry.description, ...(entry.suggestion ? { suggestion: entry.suggestion } : {}) },
+    content: { title: entry.title, description: entry.description, ...(entry.keywords ? { keywords: entry.keywords } : {}), ...(entry.suggestion ? { suggestion: entry.suggestion } : {}) },
   };
-  return { name: `${entry.summaryLevel}-${Date.parse(entry.start)}.md`, markdown: `---\n${JSON.stringify(header)}\n---\n${body}\n`, body };
+  return { name: entry.documentName ?? `${entry.summaryLevel}-${Date.parse(entry.start)}.md`, markdown: `---\n${JSON.stringify(header)}\n---\n${body}\n`, body };
 }
 
 function fixtureDetail(entry: ComputerHistoryTimelineEntry): ComputerHistoryDetail {
@@ -461,10 +465,11 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
     applications: async (bundleIds) => bundleIds.map((bundleIdentifier) =>
       applications?.find((application) => application.bundleIdentifier === bundleIdentifier)
       ?? { bundleIdentifier, name: APP_NAMES[bundleIdentifier] ?? bundleIdentifier, iconDataUrl: null }),
-    timeline: async () => {
+    timeline: async (_days, query) => {
       probes.onTimelineRead();
       if (corrupt) throw new Error('Synthetic summary archive could not be read.');
-      return { status: structuredClone(status), entries: [...entries] };
+      return { status: structuredClone(status), entries: entries.map((entry) => query
+        ? { ...entry, searchText: computerHistorySearchExcerpt(fixtureDocument(entry)?.body ?? '', query) } : entry) };
     },
     detail: async (id) => {
       probes.onDetailRead(id);
@@ -678,9 +683,10 @@ export const Populated: Story = {
       expect(next.scrollTop).toBe(0);
     });
     await closeReader(canvasElement);
-    const search = canvas.getByRole('textbox', { name: /搜索摘要或应用|搜尋摘要或應用程式|Search summaries or apps/ });
+    const search = canvas.getByRole('textbox', { name: /搜索历史|搜尋歷史|Search history/ });
     await userEvent.type(search, 'nothing-matches-this-fixture');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0));
+    await waitFor(() => expect(canvasElement.querySelector('.computer-history-master')).toHaveAttribute('aria-busy', 'false'));
+    expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0);
     await userEvent.click(canvas.getByRole('button', { name: /清除筛选|清除篩選|Clear filters/ }));
     expect(search).toHaveValue('');
     await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6));
@@ -694,7 +700,15 @@ export const Populated: Story = {
     await waitFor(() => expect(syntaxTokens(document)).toContain('const'));
     const page = canvasElement.querySelector('.computer-history-page')!;
     expect(page.scrollWidth).toBeLessThanOrEqual(page.clientWidth + 1);
-    await closeReader(canvasElement);
+    const keyword = canvas.getByRole('button', { name: /^(搜索关键词|搜尋關鍵字|Search keyword): 可访问性$/ });
+    keyword.focus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(search).toHaveFocus());
+    expect(search).toHaveValue('可访问性');
+    expect(canvasElement.querySelector('.computer-history-detail')).toBeNull();
+    await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(1));
+    expect(canvasElement.querySelector('.computer-history-search-hint')).toHaveTextContent('可访问性');
+    await userEvent.clear(search);
     expect(args.onSettingsWrite).not.toHaveBeenCalled();
     expect(args.onCreateDraft).not.toHaveBeenCalled();
   },
@@ -859,9 +873,10 @@ export const MixedPending: Story = {
     expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6);
     expect(canvas.queryByRole('button', { name: /VS Code · computer-history-page\.tsx|Chrome · Computer History · 390px/ })).toBeNull();
     expect(canvas.getByRole('button', { name: /恢复记录|恢復記錄|Resume recording/ })).toBeVisible();
-    const search = canvas.getByRole('textbox', { name: /搜索摘要或应用|搜尋摘要或應用程式|Search summaries or apps/ });
-    await userEvent.type(search, 'computer-history-page.tsx');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0));
+    const search = canvas.getByRole('textbox', { name: /搜索历史|搜尋歷史|Search history/ });
+    await userEvent.type(search, '窗口切换、快捷键与鼠标点击');
+    await waitFor(() => expect(canvasElement.querySelector('.computer-history-master')).toHaveAttribute('aria-busy', 'false'));
+    expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(0);
     await userEvent.click(canvas.getByRole('button', { name: /清除筛选|清除篩選|Clear filters/ }));
     await waitFor(() => expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6));
     expect(search).toHaveValue('');

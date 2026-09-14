@@ -84,6 +84,9 @@
 .computer-history-row-rail i { position: relative; display: block; width: 7px; height: 7px; top: 7px; left: 3px; border-radius: 50%; background: var(--muted-foreground); }
 .computer-history-row-title { font: var(--maka-text-heading-4); }
 .computer-history-row-description { font: var(--maka-text-supporting); color: var(--muted-foreground); line-height: 1.65; max-width: 85ch; }
+.computer-history-search-hint { display: flex; align-items: center; gap: 5px; color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-search-hint > svg { flex-shrink: 0; }
+.computer-history-search-hint > span { min-width: 0; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .computer-history-page[data-detail-open="true"] .computer-history-row-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .computer-history-page[data-detail-open="true"] .computer-history-row-content { grid-template-columns: 43px 16px minmax(0, 1fr); }
 .computer-history-page[data-detail-open="true"] .computer-history-row-title { font: var(--maka-text-body); font-weight: 600; }
@@ -128,6 +131,10 @@
 .computer-history-detail-meta > svg { flex-shrink: 0; }
 .computer-history-detail-content > h2 { margin-block: 16px 12px; }
 .computer-history-description { margin: 0 0 18px; font: var(--maka-text-body); line-height: 1.7; }
+.computer-history-description:has(+ .computer-history-keywords) { margin-bottom: 6px; }
+.computer-history-keywords { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; margin-block: 6px 16px; min-width: 0; }
+.computer-history-keywords > button { max-width: 100%; min-width: 0; height: auto; min-height: 28px; padding: 2px 0; border-radius: 2px; white-space: normal; overflow-wrap: anywhere; text-align: start; justify-content: start; font: var(--maka-text-supporting); color: var(--muted-foreground); text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+.computer-history-keywords > button:hover { color: var(--foreground); text-decoration-color: currentColor; }
 .computer-history-app-name { gap: 6px; min-width: 0; }
 .computer-history-document { min-width: 0; margin-top: 22px; }
 .computer-history-document-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding-block: 12px; margin-bottom: 20px; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }

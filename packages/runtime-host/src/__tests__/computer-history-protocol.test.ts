@@ -240,3 +240,145 @@ test('Computer History accepts richer bodies while bounding UTF-8 and escaped re
   assert.ok(Buffer.byteLength(JSON.stringify(escaped)) > COMPUTER_HISTORY_RESULT_MAX_BYTES);
   assert.throws(() => decodeComputerHistorySummaryContent(escaped));
 });
+
+test('Computer History keyword responses normalize search terms without changing legacy summaries', () => {
+  const { suggestion: _suggestion, ...withoutSuggestion } = CONTENT;
+  for (const content of [CONTENT, withoutSuggestion]) {
+    assert.deepEqual(decodeComputerHistorySummaryContent(content), content);
+    assert.deepEqual(decodeComputerHistorySummaryContent({ ...content, keywords: [] }), {
+      ...content,
+      keywords: [],
+    });
+    const keywords = ['  Ｍａｋａ  ', 'maka', '回归测试', 'Cafe\u0301', 'CAFÉ', ' TypeScript '];
+    const frame = {
+      requestId: 'keywords-1',
+      operation: 'computer-history.summarize',
+      ok: true,
+      result: { ...content, keywords },
+    };
+    const decoded = decodeResponseFrame(JSON.parse(JSON.stringify(frame)));
+    assert.deepEqual(decoded, {
+      ...frame,
+      result: { ...content, keywords: ['Maka', '回归测试', 'Café', 'TypeScript'] },
+    });
+    assert.deepEqual(decodeResponseFrame(JSON.parse(JSON.stringify(decoded))), decoded);
+    assert.deepEqual(keywords, [
+      '  Ｍａｋａ  ',
+      'maka',
+      '回归测试',
+      'Cafe\u0301',
+      'CAFÉ',
+      ' TypeScript ',
+    ]);
+  }
+});
+
+test('Computer History keyword bounds apply to input count and normalized UTF-8 bytes', () => {
+  const keywords = Array.from({ length: 10 }, (_, index) => `Project ${index}`);
+  assert.deepEqual(
+    decodeComputerHistorySummaryContent({ ...CONTENT, keywords }).keywords,
+    keywords,
+  );
+  assert.throws(() =>
+    decodeComputerHistorySummaryContent({ ...CONTENT, keywords: [...keywords, 'Project 10'] }),
+  );
+  assert.throws(() =>
+    decodeComputerHistorySummaryContent({ ...CONTENT, keywords: Array(11).fill('Maka') }),
+  );
+  for (const keyword of ['x'.repeat(96), '界'.repeat(32), '𠮷'.repeat(24)]) {
+    assert.deepEqual(
+      decodeComputerHistorySummaryContent({ ...CONTENT, keywords: [keyword] }).keywords,
+      [keyword],
+    );
+    assert.throws(() =>
+      decodeComputerHistorySummaryContent({ ...CONTENT, keywords: [`${keyword}x`] }),
+    );
+  }
+  // Canonical byte limits apply after compatibility normalization, which can shrink or grow text.
+  assert.deepEqual(
+    decodeComputerHistorySummaryContent({ ...CONTENT, keywords: [` ${'Ｍ'.repeat(96)} `] })
+      .keywords,
+    ['M'.repeat(96)],
+  );
+  assert.throws(() =>
+    decodeComputerHistorySummaryContent({ ...CONTENT, keywords: ['㍿'.repeat(9)] }),
+  );
+});
+
+test('Computer History rejects malformed or unsafe keywords instead of dropping them', () => {
+  for (const keywords of [
+    null,
+    'Maka',
+    {},
+    [null],
+    [undefined],
+    [1],
+    [true],
+    [{}],
+    [['Maka']],
+    [''],
+    ['   '],
+    ['\u3000'],
+    ['Maka', ''],
+    ['Maka', '\tMaka'],
+    ['Maka\n'],
+    ['Ma\u0000ka'],
+    ['Ma\u001bka'],
+    ['Ma\u007fka'],
+    ['Ma\u0085ka'],
+    ['Ma\u009fka'],
+    ['Ma\u200bka'],
+    ['Ma\u202eka'],
+    ['<Maka>'],
+    ['Maka>'],
+    ['＜Maka＞'],
+    ['﹤Maka﹥'],
+  ]) {
+    assert.throws(
+      () =>
+        decodeResponseFrame({
+          requestId: 'keywords-invalid',
+          operation: 'computer-history.summarize',
+          ok: true,
+          result: { ...CONTENT, keywords },
+        }),
+      JSON.stringify(keywords),
+    );
+  }
+  for (const extra of [
+    { documentName: 'Invented summary.md' },
+    { searchText: 'Invented search text' },
+    { timestamp: INPUT.start },
+    { id: 'model-selected-id' },
+  ]) {
+    assert.throws(() =>
+      decodeComputerHistorySummaryContent({ ...CONTENT, keywords: ['Maka'], ...extra }),
+    );
+  }
+});
+
+test('Computer History keywords share the existing encoded result budget', () => {
+  const content = {
+    ...CONTENT,
+    body: 'x'.repeat(COMPUTER_HISTORY_BODY_MAX_BYTES),
+    keywords: ['Maka'],
+  };
+  assert.deepEqual(decodeComputerHistorySummaryContent(content), content);
+  const escaped = {
+    ...CONTENT,
+    body: 'x' + '\n'.repeat(32_000),
+    keywords: Array.from({ length: 10 }, (_, index) => String(index) + '"'.repeat(95)),
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(escaped), 'utf8') > COMPUTER_HISTORY_RESULT_MAX_BYTES);
+  assert.throws(() => decodeComputerHistorySummaryContent(escaped));
+  const expanding = {
+    ...CONTENT,
+    body: '',
+    keywords: Array.from({ length: 10 }, (_, index) => `${index}${'㍿'.repeat(7)}`),
+  };
+  const available =
+    COMPUTER_HISTORY_RESULT_MAX_BYTES - Buffer.byteLength(JSON.stringify(expanding));
+  expanding.body = 'x' + '\n'.repeat(Math.floor((available - 1) / 2));
+  assert.ok(Buffer.byteLength(JSON.stringify(expanding)) <= COMPUTER_HISTORY_RESULT_MAX_BYTES);
+  assert.throws(() => decodeComputerHistorySummaryContent(expanding));
+});

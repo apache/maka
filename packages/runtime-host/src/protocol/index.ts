@@ -107,7 +107,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 153 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 154 as const;
+// 154: Computer History summaries add bounded, normalized keyword metadata.
+// Epoch-153 peers reject the new output field even though legacy summaries remain valid.
 // 153: Computer History adds locale/prior context and larger evidence/result limits.
 // Epoch-152 peers reject these strict input fields and previously oversized results.
 // 152: Computer History adds bounded summaries, accounting, and request-bound cancellation.
