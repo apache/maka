@@ -69,6 +69,25 @@ const CLAUDE_TRANSCRIPT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CLAUDE_TRANSCRIPT_MAX_MESSAGES = 250_000;
 const CLAUDE_TRANSCRIPT_MAX_RECORDS = 1_000_000;
 
+/**
+ * How much of one transcript a catalog summary may scan.
+ *
+ * A summary needs the head — cwd, the first prompt, when the session started —
+ * and the tail, where the source writes the titles it later gave the session.
+ * Everything between the two is conversation no catalog row shows. Reading to
+ * EOF instead made one page cost the whole corpus: a query that matches late,
+ * or nothing at all, paid for every transcript before it could answer.
+ *
+ * The two windows are disjoint and together bound one candidate at 512 KiB, plus
+ * at most one record when the opening window cuts one in half. A page therefore
+ * costs at most its own candidates and never a transcript's length. A title the
+ * source wrote into the middle is the price: the closer title, or the head's
+ * first prompt, stands in for it.
+ */
+const CLAUDE_CATALOG_SUMMARY_HEAD_BYTES = 256 * 1024;
+const CLAUDE_CATALOG_SUMMARY_TAIL_BYTES = 256 * 1024;
+const CLAUDE_CATALOG_SUMMARY_MAX_RECORDS = 1024;
+
 /** Session ids are the transcript's filename stem, and reach the filesystem.
  *  A uuid is what Claude Code writes; anything else is refused rather than
  *  joined onto a path. */
@@ -514,42 +533,32 @@ function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined 
   }
 }
 
+/**
+ * The catalog's view of one transcript, read within the summary budget above.
+ *
+ * Only the head and the tail are read, and `records === 0` still means "no
+ * transcript here". Everything the summary reports is derived the way a full
+ * read derived it — last title wins, first timestamp is `createdAt` — so a
+ * transcript inside the budget reads exactly as it did before.
+ */
 async function readTranscriptSummary(path: string): Promise<TranscriptSummary | undefined> {
   const handle = await open(path, 'r').catch(() => undefined);
   if (!handle) return undefined;
-  const titles: ClaudeTitleCandidates = {};
-  let cwd = '';
-  let isSidechain = false;
-  let createdAt: number | undefined;
-  let updatedAt: number | undefined;
-  let records = 0;
+  const scan: TranscriptSummaryScan = { titles: {}, cwd: '', isSidechain: false };
   let mtimeMs: number | undefined;
   try {
     const info = await handle.stat();
     if (!info.isFile()) return undefined;
     mtimeMs = info.mtimeMs;
-    for await (const record of readClaudeTranscriptRecords(handle, info.size, path, {
-      maxRecordBytes: CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES,
-      maxRecords: CLAUDE_TRANSCRIPT_MAX_RECORDS,
-    })) {
-      records += 1;
-      collectClaudeTitle(record, titles);
-      collectLegacyClaudeTitle(record, titles);
-      if (record.isSidechain === true) isSidechain = true;
-      if (!cwd && typeof record.cwd === 'string' && record.cwd) cwd = record.cwd;
-      const ts = timestampMs(record);
-      if (ts !== undefined) {
-        createdAt ??= ts;
-        if (updatedAt === undefined || ts > updatedAt) updatedAt = ts;
-      }
-    }
-    if (records === 0) return undefined;
+    const head = await readSummaryHead(handle, path, info.size, scan);
+    if (head.end < info.size) await readSummaryTail(handle, info.size, head.end, scan);
+    if (head.records === 0) return undefined;
     return {
-      cwd,
-      title: pickClaudeTitle(titles),
-      ...(createdAt !== undefined ? { createdAt } : {}),
-      ...(updatedAt !== undefined ? { updatedAt } : {}),
-      isSidechain,
+      cwd: scan.cwd,
+      title: pickClaudeTitle(scan.titles),
+      ...(scan.createdAt !== undefined ? { createdAt: scan.createdAt } : {}),
+      ...(scan.updatedAt !== undefined ? { updatedAt: scan.updatedAt } : {}),
+      isSidechain: scan.isSidechain,
     };
   } catch (error) {
     if (error instanceof ClaudeTranscriptReadLimitError && mtimeMs !== undefined) {
@@ -558,17 +567,161 @@ async function readTranscriptSummary(path: string): Promise<TranscriptSummary | 
       // any metadata already observed and use the file mtime for a stable,
       // sortable fallback row; selecting it then surfaces the precise limit.
       return {
-        cwd,
-        title: pickClaudeTitle(titles),
-        ...(createdAt !== undefined ? { createdAt } : {}),
+        cwd: scan.cwd,
+        title: pickClaudeTitle(scan.titles),
+        ...(scan.createdAt !== undefined ? { createdAt: scan.createdAt } : {}),
         updatedAt: mtimeMs,
-        isSidechain,
+        isSidechain: scan.isSidechain,
       };
     }
     return undefined;
   } finally {
     await handle.close();
   }
+}
+
+interface TranscriptSummaryScan {
+  readonly titles: ClaudeTitleCandidates;
+  cwd: string;
+  isSidechain: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+function observeSummaryRecord(record: TranscriptRecord, scan: TranscriptSummaryScan): void {
+  collectClaudeTitle(record, scan.titles);
+  collectLegacyClaudeTitle(record, scan.titles);
+  if (record.isSidechain === true) scan.isSidechain = true;
+  if (!scan.cwd && typeof record.cwd === 'string' && record.cwd) scan.cwd = record.cwd;
+  const ts = timestampMs(record);
+  if (ts !== undefined) {
+    scan.createdAt ??= ts;
+    if (scan.updatedAt === undefined || ts > scan.updatedAt) scan.updatedAt = ts;
+  }
+}
+
+/**
+ * The transcript's opening window, plus whichever record the window cut in
+ * half.
+ *
+ * A window that ends mid-record leaves that record unparsable, and a transcript
+ * whose first record is larger than the whole window would then read as no
+ * transcript at all — which is how a session that opens on one long prompt
+ * disappears from the catalog. The record is finished instead, under the same
+ * per-record bound the import keeps, so the file is still read in full only
+ * when a single record is.
+ */
+async function readSummaryHead(
+  handle: FileHandle,
+  path: string,
+  size: number,
+  scan: TranscriptSummaryScan,
+): Promise<{ records: number; end: number }> {
+  const window = Math.min(size, CLAUDE_CATALOG_SUMMARY_HEAD_BYTES);
+  const buffer = Buffer.allocUnsafe(window);
+  const { bytesRead } = await handle.read(buffer, 0, window, 0);
+  let text = buffer.subarray(0, bytesRead);
+  let end = bytesRead;
+  if (end < size && text[text.length - 1] !== 0x0a) {
+    const rest = await readToRecordEnd(handle, path, size, end, text.lastIndexOf(0x0a) + 1);
+    text = Buffer.concat([text, rest]);
+    end += rest.length;
+  }
+  return { records: observeSummaryLines(transcriptLines(text), scan), end };
+}
+
+/**
+ * The transcript's closing window, which is where the source writes the titles
+ * it gave the session after the fact.
+ *
+ * A window that opens inside a record starts on a fragment the head already
+ * read past, and that fragment is dropped rather than parsed. A window that
+ * opens where the head stopped opens on a record boundary and keeps its first
+ * line.
+ */
+async function readSummaryTail(
+  handle: FileHandle,
+  size: number,
+  after: number,
+  scan: TranscriptSummaryScan,
+): Promise<void> {
+  const start = Math.min(size, Math.max(after, size - CLAUDE_CATALOG_SUMMARY_TAIL_BYTES));
+  if (start >= size) return;
+  const buffer = Buffer.allocUnsafe(size - start);
+  const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+  const lines = transcriptLines(buffer.subarray(0, bytesRead));
+  observeSummaryLines(start === after ? lines : lines.slice(1), scan);
+}
+
+/**
+ * Bytes from `offset` to the end of the record `recordStart` opened.
+ *
+ * Reaching the import's per-record bound means the transcript holds a record
+ * no import could read either, and that is reported the way the import reports
+ * it — as a limit — rather than answered as a row with no title.
+ */
+async function readToRecordEnd(
+  handle: FileHandle,
+  path: string,
+  size: number,
+  offset: number,
+  recordStart: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  const chunk = Buffer.allocUnsafe(CLAUDE_TRANSCRIPT_READ_BYTES);
+  let read = offset;
+  for (;;) {
+    if (read >= size) break;
+    if (read - recordStart >= CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES) {
+      throw new ClaudeTranscriptReadLimitError(
+        'record_bytes',
+        CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES,
+        `Claude Code transcript record exceeds ${CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES} bytes: ${path}`,
+      );
+    }
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, read);
+    if (bytesRead === 0) break;
+    const slice = Buffer.from(chunk.subarray(0, bytesRead));
+    const newline = slice.indexOf(0x0a);
+    read += bytesRead;
+    if (newline !== -1) {
+      chunks.push(slice.subarray(0, newline + 1));
+      break;
+    }
+    chunks.push(slice);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Splits a byte range into records.
+ *
+ * The split is on `0x0a`, which never appears inside a multi-byte UTF-8
+ * sequence, so a record boundary is a record boundary whatever it holds.
+ */
+function transcriptLines(buffer: Buffer): Buffer[] {
+  const lines: Buffer[] = [];
+  let start = 0;
+  for (;;) {
+    const newline = buffer.indexOf(0x0a, start);
+    if (newline === -1) break;
+    lines.push(buffer.subarray(start, newline));
+    start = newline + 1;
+  }
+  if (start < buffer.length) lines.push(buffer.subarray(start));
+  return lines;
+}
+
+function observeSummaryLines(lines: readonly Buffer[], scan: TranscriptSummaryScan): number {
+  let records = 0;
+  for (const line of lines) {
+    if (records === CLAUDE_CATALOG_SUMMARY_MAX_RECORDS) break;
+    const record = parseClaudeTranscriptLine(line);
+    if (!record) continue;
+    records += 1;
+    observeSummaryRecord(record, scan);
+  }
+  return records;
 }
 
 function collectLegacyClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {

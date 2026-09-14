@@ -609,7 +609,7 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('uses a custom title outside the catalog head and tail windows', async () => {
+  test('a custom title beyond the head is read from the tail', async () => {
     await withClaudeHome(async (home) => {
       const sessionId = 'aaaaaaaa-0000-4000-8000-000000000034';
       await seed(home, sessionId, [
@@ -623,6 +623,28 @@ describe('ClaudeCodeSessionAdapter', () => {
 
       assert.equal((await adapter.listSessions())[0]?.name, 'Middle title');
       assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Middle title');
+    });
+  });
+
+  test('a title between the catalog windows falls back to the first prompt', async () => {
+    // The summary scan reads a bounded head and tail, so the price is exactly
+    // this: a title the source wrote into the middle of a large transcript is
+    // not seen. The row still names the session — from the first prompt the
+    // head holds — and the import, which reads the transcript whole, still
+    // names it the way the source did.
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000036';
+      await seed(home, sessionId, [
+        userRecord('first prompt'),
+        { type: 'progress', padding: 'x'.repeat(1024 * 1024) },
+        { type: 'custom-title', customTitle: 'Buried title' },
+        { type: 'progress', padding: 'y'.repeat(1024 * 1024) },
+        assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.equal((await adapter.listSessions())[0]?.name, 'first prompt');
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Buried title');
     });
   });
 
