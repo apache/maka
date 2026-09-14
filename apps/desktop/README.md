@@ -31,8 +31,10 @@ Save As and Show in Folder still export the original, unrestricted file.
 
 Snapshots support self-contained interactive HTML: inline scripts/styles and
 embedded images/fonts. A response CSP sandbox blocks same-origin authority,
-network requests, remote assets, forms, frames and popups. Referenced workspace
-files are not served. Use Save As for documents requiring external resources.
+fetch requests, remote subresources, forms, frames and popups. This is not an
+OS network sandbox: an external browser can still navigate away from the
+document. Referenced workspace files are not served. Use Save As for documents
+requiring external resources.
 
 Each snapshot gets its own loopback port and a 256-bit bearer URL. Do not share
 the URL. There is no directory listing, CORS access, persistent disk copy or

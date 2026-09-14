@@ -27,7 +27,7 @@ export function buildManagedArtifactPreviewTools(
   const tool: MakaTool<{ artifactId: string }, ArtifactPreviewEndpoint> = {
     name: 'ArtifactPreview',
     displayName: 'Prepare HTML preview',
-    description: 'Create a Desktop-managed, temporary HTTP URL for an HTML Artifact in the current session. No shell server or file:// navigation is needed. The URL is a bearer capability: do not share it. It expires after 30 minutes or when the client disconnects. Only self-contained HTML is supported: inline scripts/styles and embedded images; remote resources, network requests, forms and local file access are blocked. reachable confirms a Desktop HTTP check, NOT browser load. Use browser navigation and observation to verify rendering and interactions. On failure, use Generated Files → Save As or Show in Folder; do not claim the preview opened.',
+    description: 'Create a Desktop-managed, temporary HTTP URL for an HTML Artifact in the current session. No shell server or file:// navigation is needed. The URL is a bearer capability: do not share it. It expires after 30 minutes or when the client disconnects. Only self-contained HTML is supported: inline scripts/styles and embedded images; remote subresources, fetch requests, forms and local file access are blocked. This is not OS network isolation: an external browser can navigate away from the document. reachable confirms a Desktop HTTP check, NOT browser load. Use browser navigation and observation to verify rendering and interactions. On failure, use Generated Files → Save As or Show in Folder; do not claim the preview opened.',
     parameters: z.object({ artifactId: z.string().min(1).max(128) }).strict(),
     categoryHint: 'custom_tool',
     recoveryMode: 'never_auto_retry',
