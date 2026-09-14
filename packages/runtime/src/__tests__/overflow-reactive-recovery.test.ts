@@ -124,6 +124,7 @@ type CallKind =
   | 'terminated'
   | 'terminatedMidBody'
   | 'partialThenTerminated'
+  | 'partialToolInputThenOverflow'
   | 'partialThenOverflowPart';
 
 const RETRY_STEP_TEXT_SENTINEL = 'RETRY_STEP_TEXT_SENTINEL reasoning before the big read';
@@ -344,6 +345,18 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
             finishReason: { unified: 'error', raw: undefined },
             usage: usage(0, 0),
           },
+        ],
+        initialDelayInMs: null,
+        chunkDelayInMs: null,
+      });
+    }
+    if (kind === 'partialToolInputThenOverflow') {
+      return simulateReadableStream({
+        chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'tool-input-start', id: 'unfinished', toolName: 'Read' },
+          { type: 'tool-input-delta', id: 'unfinished', delta: '{"path":"' },
+          { type: 'error', error: { message: 'Bad Request', code: 'context_length_exceeded' } },
         ],
         initialDelayInMs: null,
         chunkDelayInMs: null,
@@ -1152,16 +1165,34 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
   });
 
-  test('surfaces the tenth transport failure without spending another sample', async () => {
+  test('counts overflow recovery within the ten-request budget', async () => {
+    const failures = Array.from({ length: 10 }, () => 'terminated' as const);
+    const scripts: CallKind[][] = [
+      ['overflow', ...failures],
+      [...failures.slice(1), 'overflow', 'done'],
+    ];
+    for (const script of scripts) {
+      const fixture = buildReactiveFixture({
+        script: ['tool', ...script],
+      });
+      await runTurn(fixture);
+
+      assert.equal(fixture.model.doStreamCalls.length, 11);
+      assert.equal(complete(fixture)?.stopReason, 'error');
+      assert.deepEqual(fixture.toolExecutions, ['one.md']);
+      assert.equal(fixture.recorded.length, script[0] === 'overflow' ? 1 : 0);
+    }
+  });
+
+  test('recovers after partial tool arguments without treating missing usage as complete', async () => {
     const fixture = buildReactiveFixture({
-      script: ['tool', ...Array.from({ length: 10 }, () => 'terminated' as const)],
+      script: ['tool', 'partialToolInputThenOverflow', 'done'],
     });
     await runTurn(fixture);
-
-    assert.equal(fixture.model.doStreamCalls.length, 11);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
-    assert.equal(fixture.recorded.length, 0);
+    assert.equal(fixture.llmCalls.length, 0);
   });
 
   test('compacts once and retries after a mid-stream context-length overflow', async () => {

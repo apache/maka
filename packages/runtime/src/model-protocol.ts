@@ -406,8 +406,8 @@ export type ModelStreamEvent =
       providerOptionsOrigin?: 'maka_transport';
     }
   | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
-  /** Provider-side tool execution has begun, but no replayable call exists yet. */
-  | { kind: 'provider-tool-input' }
+  /** Tool input was sampled; only providerExecuted also implies external activity. */
+  | { kind: 'tool-input'; providerExecuted: boolean }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
   | {
       kind: 'provider-tool-result';

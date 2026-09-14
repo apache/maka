@@ -1544,12 +1544,13 @@ export class AiSdkTurn {
               : undefined;
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
-          let providerAttempt = 1;
+          let providerAttempt = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
+            providerAttempt += 1;
             // Local calls are only admitted after a successful provider outcome.
             // A new physical request must not inherit the failed one's intents.
             returnedToolCalls.length = 0;
@@ -1562,6 +1563,7 @@ export class AiSdkTurn {
             let attemptSawText = false;
             let attemptSawThinking = false;
             let attemptSawToolActivity = false;
+            let attemptSawToolInput = false;
             let attemptSawContinuationMetadata = false;
             let attemptReachedStepBoundary = false;
             const attemptHasNoObservableOutput = () =>
@@ -1942,11 +1944,12 @@ export class AiSdkTurn {
                   }
                 }
                 part.signature = event.signature;
-              } else if (event.kind === 'provider-tool-input') {
+              } else if (event.kind === 'tool-input') {
+                attemptSawToolInput = true;
                 // The provider has started its own tool. Even without a
                 // final tool-call/result event, retrying can repeat external
                 // work that the Runtime cannot observe or reconcile.
-                attemptSawToolActivity = true;
+                if (event.providerExecuted) attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
                 if (event.toolCall.providerExecuted) {
                   attemptSawToolActivity = true;
@@ -2034,6 +2037,7 @@ export class AiSdkTurn {
                 !(
                   failure.kind === 'context_overflow' &&
                   attemptHasNoObservableOutput() &&
+                  !attemptSawToolInput &&
                   returnedToolCalls.length === 0
                 )
               )
@@ -2051,7 +2055,9 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
-                stepBudgetRemains && attemptHasNoObservableOutput()
+                stepBudgetRemains &&
+                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
+                attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
                       error: attemptFailure,
                       retryAlreadyUsed:
@@ -2163,14 +2169,13 @@ export class AiSdkTurn {
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.deps.providerRetrySleep(delayMs, turnAbortController.signal);
-                providerAttempt = nextAttempt;
                 queue.push({
                   type: 'provider_retry',
                   id: this.deps.newId(),
                   turnId,
                   ts: this.deps.now(),
                   phase: 'started',
-                  attempt: providerAttempt,
+                  attempt: nextAttempt,
                   maxAttempts,
                   reason,
                 } satisfies ProviderRetryEvent);
