@@ -2048,10 +2048,9 @@ function PartialHistoryHarness() {
         // it: the range moves to the Turn and a scroll target names it.
         onLoadTranscriptTurn: (loaded) => {
           setRange({ from: loaded.sequence, count: 4 });
-          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+          setTarget((previous) => ({ turnId: loaded.turnId, nonce: (previous?.nonce ?? 0) + 1 }));
         },
         scrollTargetTurn: target,
-        onScrollTargetHandled: () => setTarget(undefined),
         hasOlderHistory: range.from > 1,
         hasNewerHistory: range.from + range.count <= PARTIAL_HISTORY_INDEX.length,
         // A fill extends the window; it never replaces what the reader jumped
@@ -3192,10 +3191,9 @@ function PromptRailNavigationHarness() {
         transcriptTurnIndex: promptRailIndex,
         onLoadTranscriptTurn: (loaded) => {
           setFirstIndex(loaded.sequence);
-          setTarget({ turnId: loaded.turnId, nonce: Date.now() });
+          setTarget((previous) => ({ turnId: loaded.turnId, nonce: (previous?.nonce ?? 0) + 1 }));
         },
         scrollTargetTurn: target,
-        onScrollTargetHandled: () => setTarget(undefined),
       }}
     />
   );

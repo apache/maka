@@ -31,7 +31,7 @@
  * compensates for content that lands above them; that belongs to the authority.
  */
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
@@ -48,7 +48,6 @@ export function useChatScroll(input: {
    */
   target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
-  onTargetHandled?(nonce: number): void;
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
@@ -68,8 +67,6 @@ export function useChatScroll(input: {
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
-  const targetHandledRef = useRef(input.onTargetHandled);
-  targetHandledRef.current = input.onTargetHandled;
   const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
   const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
   const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
@@ -264,7 +261,7 @@ export function useChatScroll(input: {
     return () => window.cancelAnimationFrame(frame);
   }, [input.messages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const explicitTarget = input.target?.turnId
       ? {
           kind: 'search' as const,
@@ -294,7 +291,7 @@ export function useChatScroll(input: {
       : restoreCommandKey(input.sessionId, target.turnId, target.unavailable);
     if (handledTarget.current === chosen) return;
     authority.releasePin();
-    const frame = window.requestAnimationFrame(() => {
+    const reveal = () => {
       if (commandTarget.current !== chosen) return;
       // A reader who asked for the tail while this frame was queued outranks it:
       // the bookmark describes where they were, the pin where they said to be.
@@ -316,7 +313,7 @@ export function useChatScroll(input: {
       handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
       const alignToStart = target.kind !== 'search' || target.align === 'start';
-      targetElement.scrollIntoView({
+      authority.revealTurn(targetElement, {
         // A reveal that agrees with a requester already aiming this turn has to
         // be instant too: an animated one is a second writer moving the
         // scroller for a second after the requester has landed it.
@@ -331,15 +328,18 @@ export function useChatScroll(input: {
       targetElement.setAttribute('tabindex', '-1');
       targetElement.focus({ preventScroll: true });
       setHighlightedTurnId(target.turnId);
-      targetHandledRef.current?.(target.nonce);
-    });
+    };
+    // A newly published range and its explicit reveal must reach the screen
+    // together. Only initial attachment waits for the ancestor's ref.
+    const frame = input.scrollRef.current ? undefined : window.requestAnimationFrame(reveal);
+    if (input.scrollRef.current) reveal();
     const clear = target.kind === 'search'
       ? window.setTimeout(() => {
           setHighlightedTurnId((current) => (current === target.turnId ? null : current));
         }, 2200)
       : undefined;
     return () => {
-      window.cancelAnimationFrame(frame);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
       if (clear !== undefined) window.clearTimeout(clear);
     };
   });

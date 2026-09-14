@@ -36,16 +36,7 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
     turnId: string;
     sequence?: number;
     nonce: number;
-    handled?: boolean;
   } | null>(null);
-
-  const consumeSearchScrollTarget = useCallback((nonce: number) => {
-    setSearchScrollTarget((current) =>
-      current?.nonce === nonce && !current.handled
-        ? { ...current, handled: true }
-        : current,
-    );
-  }, []);
 
   function closeSearchModal() {
     setSearchModalOpen(false);
@@ -65,7 +56,6 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
     setSearchModalOpen,
     searchScrollTarget,
     setSearchScrollTarget,
-    consumeSearchScrollTarget,
     closeSearchModal,
     searchModalDeps,
     searchModalOnNavigate,

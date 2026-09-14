@@ -117,8 +117,8 @@ export interface PromptAnchorRailProps {
   onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
-  /** When the indexed Turn is outside the Host's active transcript range. */
-  onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
+  /** Owns indexed navigation, including superseding pending range reads. */
+  onNavigateTurn?: (turn: PromptAnchorRailTurn) => void;
   /**
    * Stop following the tail, before a jump scrolls.
    *
@@ -161,7 +161,7 @@ export function selectPromptRailTick(input: {
 export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
 
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
   const authority = useTranscriptScrollAuthority();
@@ -279,7 +279,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     // transcript is still where the reader left it, or the release lands after
     // the next growth has already written the view back to the bottom.
     onNavigateStart?.();
-    if (el && 'scrollIntoView' in el) {
+    if (turn.sequence !== undefined && onNavigateTurn) {
+      onNavigateTurn(turn);
+    } else if (el && 'scrollIntoView' in el) {
       // Instant, whatever the app's scroll-motion policy says. A jump is a
       // teleport the reader asked for, not a journey — and an animated one
       // does not survive this surface: traced against a 30-prompt session, the
@@ -288,7 +290,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // unreliably.
       (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
     } else if (!el) {
-      onNavigateFallback?.(turn);
+      onNavigateTurn?.(turn);
     }
   }
 

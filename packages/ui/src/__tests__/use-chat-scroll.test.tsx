@@ -649,6 +649,9 @@ test('the retained window is the band around the reader, and an unmounted bookma
   const transcript = createTranscript(document, window, {
     clientHeight: 600, turnHeight: 600, turnCount: 20,
   });
+  // Start at the existing reading position. A pending bookmark need not visit
+  // the tail as a side effect of attaching the scroll authority.
+  transcript.scroller.scrollTop = 11_400;
 
   const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
   function Harness({
@@ -848,7 +851,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   };
 
   const anchors = new Map<string, string>();
-  const handledTargets: number[] = [];
   const viewportNavigation = createTranscriptViewportNavigation();
   const unavailableRestores = new Map<string, string>();
   let authority: TranscriptScrollAuthority | undefined;
@@ -868,7 +870,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       messages: [{ id: `message-${messageRevision}` }] as StoredMessage[],
       target,
       restoreTarget,
-      onTargetHandled: (nonce) => handledTargets.push(nonce),
       viewportNavigation,
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
@@ -967,10 +968,10 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await renderSession('session-b');
   await flushFrames();
   assert.equal(anchors.get('session-b'), 'turn-b-1');
-  assert.deepEqual(handledTargets, [1]);
+  scroller.scrollTop = 100;
   await renderSession('session-b');
   await flushFrames();
-  assert.deepEqual(handledTargets, [1]);
+  assert.equal(scroller.scrollTop, 100, 'a completed navigation must not repeat on render');
 
   target = undefined;
   // With no resident Turn to re-anchor to, abandoning the restore falls back
@@ -1034,7 +1035,6 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
   // The Renderer owns the window now: a jump to an unloaded Turn changes the
   // resident range without touching the message list the shell passes down.
   const messages = [{ id: 'message-1' }] as StoredMessage[];
-  const handledTargets: number[] = [];
   let highlighted: string | null = null;
   function Harness() {
     const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
@@ -1043,7 +1043,6 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
       sessionId: 'session-jump',
       messages,
       target: { turnId: 'turn-5', nonce: 7 },
-      onTargetHandled: (nonce) => handledTargets.push(nonce),
       behavior: 'auto',
     });
     highlighted = result.highlightedTurnId;
@@ -1064,12 +1063,10 @@ test('a target lands on the render that mounts its Turn, whatever moved the rang
   await render();
   await flushFrames();
   assert.equal(highlighted, null, 'a Turn that is not mounted cannot be revealed yet');
-  assert.deepEqual(handledTargets, []);
 
   transcript.setTurnCount(8);
   await render();
   await flushFrames();
   assert.equal(highlighted, 'turn-5');
-  assert.deepEqual(handledTargets, [7]);
   assert.equal(transcript.scrollTop, 3_000, 'the reveal puts the Turn at the top edge');
 });

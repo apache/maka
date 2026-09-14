@@ -126,7 +126,9 @@ function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: (
   const observers = new Set<() => void>();
   const mutations = new Set<() => void>();
   const frames: FrameRequestCallback[] = [];
-  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
+  const globals = globalThis as { CSS?: unknown; ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
+  const originalCss = globals.CSS;
+  globals.CSS = { escape: (value: string) => value };
   const originalResize = globals.ResizeObserver;
   const originalMutation = globals.MutationObserver;
   const originalFrame = globals.requestAnimationFrame;
@@ -161,6 +163,7 @@ function withObservers<T>(run: (resize: () => void, frame: () => void, mutate: (
       for (const mutation of [...mutations]) mutation();
     });
   } finally {
+    globals.CSS = originalCss;
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
     globals.requestAnimationFrame = originalFrame;
@@ -202,6 +205,29 @@ test('available rows publish during wheel, touch and scrollbar input without end
       assert.equal(authority.isInputActive(), true, 'publication does not retire native input');
       detach();
     }
+  });
+});
+
+test('an explicit reveal during range publication outranks the old reading anchor', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    root.turns = [{ turnId: 'old', top: 0, height: 400 }];
+    const anchor = {
+      dataset: { turnId: 'old' },
+      getBoundingClientRect: () => ({ top: -root.scrollTop, bottom: 400 - root.scrollTop }),
+    };
+    root.querySelectorAll = () => [anchor];
+    Object.assign(root, { querySelector: () => anchor });
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+    authority.releasePin();
+    root.scrollTop = 0;
+    authority.commitRange(() => {
+      authority.revealTurn({ scrollIntoView: () => { root.scrollTop = 1_200; } } as unknown as HTMLElement,
+        { block: 'start' });
+    });
+    assert.equal(root.scrollTop, 1_200);
+    detach();
   });
 });
 

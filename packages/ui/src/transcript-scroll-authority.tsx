@@ -65,6 +65,8 @@ export interface TranscriptScrollAuthority {
   isInputActive(): boolean;
   /** Publish available rows and preserve the current reading anchor. */
   commitRange(commit: () => void): void;
+  /** Explicit navigation outranks preservation during the same publication. */
+  revealTurn(element: HTMLElement, options: ScrollIntoViewOptions): void;
   /** Take the scroller. Returns the detach for the effect that called it. */
   attach(root: HTMLElement | null): () => void;
   /** One-shot: put the tail back under the reader and follow it again. */
@@ -117,10 +119,16 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let pointer: number | undefined;
   let touchHeld = false;
   const isInputActive = (): boolean => gesture !== undefined || pointer !== undefined || touchHeld;
+  let revealVersion = 0;
   const commitRange = (commit: () => void): void => {
     const target = root;
     if (!target) { commit(); return; }
-    if (pinned) { flushSync(commit); writeToTail(); return; }
+    const version = revealVersion;
+    if (pinned) {
+      flushSync(commit);
+      if (version === revealVersion) writeToTail();
+      return;
+    }
     const top = target.getBoundingClientRect().top;
     const anchor = [...target.querySelectorAll<HTMLElement>('[data-turn-id]')]
       .find((turn) => turn.getBoundingClientRect().bottom > top);
@@ -132,6 +140,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     target.style.overflowAnchor = 'none';
     try {
       flushSync(commit);
+      if (version !== revealVersion) return;
       const next = target.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(anchor.dataset.turnId!)}"]`);
       if (next) target.scrollTop += next.getBoundingClientRect().top - before;
     } finally {
@@ -178,6 +187,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   return {
     isInputActive,
     commitRange,
+    revealTurn(element, options) {
+      revealVersion += 1;
+      element.scrollIntoView(options);
+    },
     attach(next) {
       root = next;
       const target = root;
