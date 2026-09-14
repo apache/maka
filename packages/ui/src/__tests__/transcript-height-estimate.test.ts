@@ -52,7 +52,7 @@ test('unsupported structures and unfinished fences leave sizing to the fallback 
   ]) assert.equal(estimateTranscriptText(text, profile), undefined, text);
 });
 
-test('range trimming preserves measurements while new estimates affect only unmeasured rows', async () => {
+test('trimming and disjoint jumps preserve measurements until the session changes', async () => {
   const old = { window: globalThis.window, document: globalThis.document };
   const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   const oldAct = environment.IS_REACT_ACT_ENVIRONMENT;
@@ -88,6 +88,17 @@ test('range trimming preserves measurements while new estimates affect only unme
     assert.equal(sizes.height('b'), 0);
     await render([['c', 600]], 'two');
     assert.equal(sizes.beforeHeight, 0);
+    sizes.measure('c', 520);
+    await render([['d', 200]], 'two');
+    assert.equal(sizes.beforeHeight, 0);
+    assert.equal(sizes.afterHeight, 0);
+    await render([['b', 400], ['c', 600]], 'two');
+    assert.equal(sizes.height('b'), 0);
+    assert.equal(sizes.height('c'), 520);
+    assert.equal(sizes.beforeHeight, 0);
+    assert.equal(sizes.afterHeight, 0);
+    await render([['c', 600]], 'three');
+    assert.equal(sizes.height('c'), 600);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, old);
