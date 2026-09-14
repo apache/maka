@@ -89,6 +89,7 @@ import { SettingsSkeleton } from './settings-skeleton';
 import {
   SETTINGS_NAV,
   groupedNav,
+  navLabel,
   readLastSettingsSection,
   settingsSectionScope,
 } from './settings-nav';
@@ -1290,7 +1291,9 @@ function SettingsPageBody(props: {
             fallback: (
               <div className="settingsRows">
                 <SettingRow
-                  title={props.section}
+                  title={isBuiltInSettingsSection(props.section)
+                    ? navLabel(props.section, locale)
+                    : props.section}
                   detail={copy.unavailablePage}
                   value={copy.ready}
                 />
