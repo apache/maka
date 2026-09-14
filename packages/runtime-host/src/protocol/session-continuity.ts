@@ -142,6 +142,7 @@ export interface SessionProjectionFrame extends SubscriptionEnvelope {
 }
 
 export interface SessionAssistantDelta {
+  interrupted?: true;
   kind: 'text' | 'thinking';
   turnId: string;
   runId: string;
@@ -739,6 +740,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     'text',
     'reset',
     'complete',
+    'interrupted',
   ]);
   assertRequiredKeys(record, 'Session assistant delta', [
     'kind',
@@ -753,6 +755,12 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   }
   if (record.complete !== undefined && record.complete !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta completion');
+  }
+  if (
+    record.interrupted !== undefined &&
+    (record.interrupted !== true || record.complete !== true)
+  ) {
+    throw invalidProtocolFrame('Interrupted assistant delta must be complete');
   }
   if (record.reset !== undefined && record.reset !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta reset');
@@ -779,6 +787,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
           ),
     ...(record.reset === true ? { reset: true as const } : {}),
     ...(record.complete === true ? { complete: true as const } : {}),
+    ...(record.interrupted === true ? { interrupted: true as const } : {}),
   };
 }
 

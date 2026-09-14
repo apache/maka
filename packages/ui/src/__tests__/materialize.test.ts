@@ -19,7 +19,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
+import { foldTimeline } from '../timeline-fold.js';
 import {
   materializeChat,
   materializeTools,
@@ -37,6 +38,25 @@ const originalUser = {
   ts: 1,
   text: "request",
 };
+
+test('keeps interrupted and replacement responses distinct live and after reload', () => {
+  const failed = { type: 'assistant', id: 'failed', turnId: 't1', ts: 2, text: 'Partial answer', modelId: 'fixture', interrupted: true };
+  const recovered = { ...failed, id: 'recovered', ts: 3, text: 'Recovered answer', interrupted: undefined };
+  const reloaded = JSON.parse(JSON.stringify([originalUser, failed, recovered])).map(decodeCanonicalMessage);
+  let live = armLiveTurn('t1');
+  for (const message of [failed, recovered]) {
+    live = applyLiveTurnEvent(live, {
+      type: 'text_complete', id: message.id, turnId: 't1', messageId: message.id,
+      ts: message.ts, text: message.text, ...(message.interrupted ? { interrupted: true } : {}),
+    })!;
+  }
+  for (const turn of [materializeTurns(reloaded, 'en')[0], overlayLiveTurn(materializeTurns([originalUser], 'en'), live, 'en')[0]]) {
+    const responses = foldTimeline(turn!.timeline).filter((entry) => entry.kind === 'text');
+    assert.deepEqual(responses.map((entry) => [entry.text, entry.interrupted === true]), [
+      ['Partial answer', true], ['Recovered answer', false],
+    ]);
+  }
+});
 const beforeAssistant = {
   type: "assistant" as const,
   id: "before-steer",

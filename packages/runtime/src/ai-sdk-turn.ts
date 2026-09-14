@@ -41,7 +41,6 @@ import type {
 } from '@maka/core/events';
 import type {
   AssistantMessage,
-  AssistantStepContentKind,
   AssistantThinkingPart,
   RuntimeSystemNoteKind,
   SessionHeader,
@@ -573,13 +572,6 @@ function joinPromptFragments(fragments: readonly (string | undefined)[]): string
 const MAX_WAITING_CODE_MODE_CELLS = 1;
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
-const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
-const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
-// A mid-stream cut after partial thinking seals one transcript fragment per
-// retry. A gateway that systematically kills long thinking streams (the
-// 2026-08-28 incident shape) would otherwise spend the full attempt budget
-// accumulating fragments before failing anyway, so fail fast after one.
-const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -890,10 +882,6 @@ export class AiSdkTurn {
     let stepTextPartStartOffset = 0;
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
-    let stepContentOrder: AssistantStepContentKind[] = [];
-    const recordStepContent = (kind: AssistantStepContentKind): void => {
-      if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
-    };
     // Flush the current step's AssistantMessage (text + thinking) and the paired
     // terminal thinking/text events, then clear the per-step accumulators.
     // Persist when the step produced text OR reasoning — a thinking-only step
@@ -909,9 +897,8 @@ export class AiSdkTurn {
       stepTextPartStartOffset = 0;
       stepThinkingParts = [];
       stepThinkingPartsById = new Map();
-      stepContentOrder = [];
     };
-    const flushStep = async (): Promise<void> => {
+    const flushStep = async (interrupted = false): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
       if (stepText.length === 0 && !hasThinking) {
         resetStep();
@@ -927,6 +914,7 @@ export class AiSdkTurn {
             ts: this.deps.now(),
             messageId: stepId,
             text: part.text,
+            ...(interrupted ? { interrupted: true } : {}),
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
             // No sanitiser here, unlike the tool call below: these options are
             // not the provider's object. `translateChunk` rebuilds reasoning
@@ -947,6 +935,7 @@ export class AiSdkTurn {
         ts: this.deps.now(),
         messageId: stepId,
         text: stepText,
+        ...(interrupted ? { interrupted: true } : {}),
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
@@ -1534,9 +1523,6 @@ export class AiSdkTurn {
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
-          let idleWatchdogRetryCount = 0;
-          let incompleteStreamRetryCount = 0;
-          let sealedThinkingRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -1562,14 +1548,7 @@ export class AiSdkTurn {
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
               !attemptReachedStepBoundary;
-            // Thinking is the only output that can be sealed into its own
-            // message before a retry: flushStep() closes the fragment under
-            // the current message id and the retry streams into a fresh one,
-            // so the user never sees spliced or duplicated content. Text,
-            // tool activity, continuation metadata, and step boundaries stay
-            // non-recoverable for the reasons each of them is tracked.
-            const attemptCanRecoverWithSealedThinking = () =>
-              !attemptSawText &&
+            const attemptCanReplay = () =>
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
               !attemptReachedStepBoundary;
@@ -1817,12 +1796,12 @@ export class AiSdkTurn {
               }
               if (event.kind === 'text-start') {
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
+                  attemptSawContinuationMetadata = true;
                   await flushStep();
                   currentStepMessageId = this.deps.newId();
                 }
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
-                if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
                 if (event.text.length > 0) attemptSawText = true;
                 queue.push({
@@ -1863,7 +1842,6 @@ export class AiSdkTurn {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
-                if (event.text.length > 0) recordStepContent('thinking');
                 if (event.text.length > 0) attemptSawThinking = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
@@ -1948,7 +1926,6 @@ export class AiSdkTurn {
                 // work that the Runtime cannot observe or reconcile.
                 attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
-                recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
                   attemptSawToolActivity = true;
                   providerToolActivityCount += 1;
@@ -2019,17 +1996,12 @@ export class AiSdkTurn {
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
-            const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal &&
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
 
             if (attemptFailure && !this.aborted) {
+              if (!providerOutcome.usage) sawUnusableStepUsage = true;
               const failure =
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.deps.modelAdapter.normalizeFailure(attemptFailure)
@@ -2115,37 +2087,10 @@ export class AiSdkTurn {
                 contextOverflowAfterCompactionNoteWritten = true;
                 await this.recordSystemNote('context_overflow_after_compaction', turnId);
               }
-              const idleWatchdogRecovery =
-                settledWatchdogTimeout?.phase === 'idle' &&
-                idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
-                attemptCanRecoverWithSealedThinking();
-              const incompleteStreamRecovery =
-                incompleteStreamTerminal &&
-                incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
-                incompleteStreamHasNoObservableOutput;
-              // Same seal-and-retry contract as the watchdog path, entered when
-              // the failure arrives as a retryable provider/network error
-              // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
-              // every watchdog-shaped outcome on its existing path, and
-              // `!attemptHasNoObservableOutput()` keeps no-output retries on
-              // the plain budget so this one is spent only on sealed fragments.
-              const sealedThinkingRecovery =
-                !idleWatchdogRecovery &&
-                failure.retryable &&
-                sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
-                attemptCanRecoverWithSealedThinking() &&
-                !attemptHasNoObservableOutput();
               // The stopping gate also supplies the durable reason. An absent
               // decision means this attempt is allowed to retry.
               let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
-              if (
-                !(
-                  attemptHasNoObservableOutput() ||
-                  idleWatchdogRecovery ||
-                  incompleteStreamRecovery ||
-                  sealedThinkingRecovery
-                )
-              ) {
+              if (!attemptCanReplay()) {
                 retry = {
                   decision: 'declined',
                   because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
@@ -2156,33 +2101,22 @@ export class AiSdkTurn {
                 retry = { decision: 'exhausted', attempts: providerAttempt };
               } else if (failure.kind === 'context_overflow') {
                 retry = { decision: 'declined', because: 'policy' };
-              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
-                retry =
-                  incompleteStreamTerminal &&
-                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
-                    ? { decision: 'exhausted', attempts: providerAttempt }
-                    : { decision: 'declined', because: 'policy' };
+              } else if (
+                !(failure.retryable || settledWatchdogTimeout || incompleteStreamTerminal)
+              ) {
+                retry = { decision: 'declined', because: 'policy' };
               }
               if (!retry) {
-                if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
-                if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
-                if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
-                if (
-                  (idleWatchdogRecovery || sealedThinkingRecovery) &&
-                  stepThinkingParts.length > 0
-                ) {
-                  await flushStep();
-                  currentStepMessageId = this.deps.newId();
-                }
+                // Preserve the failed fragment for the transcript, but exclude
+                // it from model history when a later tool step reloads the ledger.
+                await flushStep(true);
+                currentStepMessageId = this.deps.newId();
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
-                const maxAttempts =
-                  idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
-                    ? nextAttempt
-                    : MAX_PROVIDER_ATTEMPTS_PER_STEP;
+                const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
@@ -2216,6 +2150,7 @@ export class AiSdkTurn {
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
               terminalRetry = { error: terminalProviderError, retry };
+              if (attemptCanReplay()) await flushStep(true);
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'

@@ -775,7 +775,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const textKey = assistantStreamKey('text', event.messageId);
         const text = state.assistantStreams.get(textKey);
-        if (text || event.text.length > 0) {
+        if (text || event.text.length > 0 || event.interrupted) {
           const current =
             text ??
             ({
@@ -792,6 +792,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               current,
               'text',
               event.text,
+              event.interrupted,
             );
           }
           state.assistantStreams.delete(textKey);
@@ -1631,6 +1632,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     current: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
     kind: SessionAssistantDelta['kind'],
     finalText: string,
+    interrupted?: true,
   ): void {
     const extendsPrefix = finalText.startsWith(current.text);
     const suffix = extendsPrefix ? finalText.slice(current.text.length) : finalText;
@@ -1662,6 +1664,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         text: '',
         ...(!extendsPrefix && finalText.length === 0 ? { reset: true as const } : {}),
         complete: true,
+        ...(interrupted ? { interrupted: true } : {}),
       },
     });
   }

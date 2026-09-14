@@ -382,6 +382,7 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      interrupted?: true;
       text: string;
       messageId: string;
       ts?: number;
@@ -590,10 +591,11 @@ export function overlayLiveTurn(
           live: step.thinking.complete !== true,
           truncated: step.thinking.truncated,
         });
-      } else if (kind === "text" && step.text?.text) {
+      } else if (kind === "text" && step.text && (step.text.text || step.text.interrupted)) {
         liveTimeline.push({
           kind: "text",
           text: step.text.text,
+          ...(step.text.interrupted ? { interrupted: true } : {}),
           messageId: step.stepId,
           live: true,
           complete: step.text.complete,
@@ -1121,10 +1123,11 @@ function buildTurnTimeline(
               text: message.thinking.text,
               messageId: rowId,
             });
-          } else if (kind === "text" && message.text.length > 0) {
+          } else if (kind === "text" && (message.text.length > 0 || message.interrupted)) {
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
             });
@@ -1144,10 +1147,11 @@ function buildTurnTimeline(
           });
         }
         flushTools(legacy);
-        if (message.text.length > 0) {
+        if (message.text.length > 0 || message.interrupted) {
           raw.push({
             kind: "text",
             text: message.text,
+            ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,
           });
