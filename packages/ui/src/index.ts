@@ -52,9 +52,11 @@ export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
 export * from './materialize.js';
 export * from './live-turn-projection.js';
+export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
+export * from './model-wheel-picker.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
@@ -190,3 +192,5 @@ export {
 } from '@astryxdesign/core';
 
 export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
+
+export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';

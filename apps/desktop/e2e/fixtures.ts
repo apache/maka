@@ -81,7 +81,7 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
  * Merely mounting the editor does not mean target selection has finished.
  */
 export async function awaitSendReady(page: Page): Promise<void> {
-  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
+  await expect(page.locator('.maka-composer button[type="submit"]')).toBeEnabled({
     timeout: 20_000,
   });
 }
@@ -524,7 +524,6 @@ export async function withE2eWindow(
 type E2eTestFixtures = {
   sessionLocalWindow: { page: Page; app: ElectronApplication; restart(): Promise<Page> };
   window: Page;
-  botOnboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   projectSidebarWindow: Page;
@@ -533,7 +532,6 @@ type E2eTestFixtures = {
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
-  requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -566,14 +564,6 @@ export const test = base.extend<E2eTestFixtures>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
-  },
-  botOnboardingWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsSurface',
-      e2eFixtureScenario: 'settings-bots-onboarding',
-      locale: 'zh-CN',
-    }, use);
   },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
@@ -682,19 +672,6 @@ export const test = base.extend<E2eTestFixtures>({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
-  // the connection type whose detail page owns the custom request headers
-  // editor. Shown, because what this window is for is a rendered box
-  // measurement and a throttled compositor is not a layout the user has.
-  requestHeaderRowWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsSurface',
-      e2eFixtureScenario: 'settings-models',
       locale: 'zh-CN',
       showWindow: true,
     }, use);

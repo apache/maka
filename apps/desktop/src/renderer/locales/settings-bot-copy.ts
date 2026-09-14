@@ -20,7 +20,7 @@
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { BotStatusCode, BotTestErrorCode, WechatBridgeQrHintCode } from '@maka/runtime/bots';
-import type { BotOnboardingErrorCode } from '@maka/core/bot-onboarding';
+import type { BotOnboardingErrorCode, BotOnboardingProvider, BotOnboardingSnapshot, BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
 import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
@@ -177,7 +177,7 @@ const zhCopy = {
     connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
     generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
     done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZh(category)}；连续失败 ${count} 次，约 ${seconds} 秒后自动重试。`, expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
     savedNotConnected: '凭据已保存，但连接未建立，可稍后在设置中重试。',
     savedNotConnectedDetail: (detail: string) => `凭据已保存，但连接未建立：${detail}，可稍后在设置中重试。`,
     errors: {
@@ -316,7 +316,7 @@ const zhTwCopy = {
     connectedRefreshFailed: (message: string) => `連線已完成，但狀態重新整理失敗：${message}`, close: (title: string) => `關閉${title}`,
     generatingAria: '正在生成二維碼', privacy: '憑證僅儲存在本機，不會傳給 renderer 或 Maka 雲端。', openBrowser: '無法掃碼？在瀏覽器中開啟',
     done: '完成', regenerate: '重新生成', refreshQr: '重新整理二維碼', cancel: '取消', generating: '正在生成安全二維碼…', connecting: '授權完成，正在儲存憑證並啟動連線…',
-    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', retrying: (category: string, count: number, seconds: number) => `${retryCategoryZhTw(category)}；連續失敗 ${count} 次，約 ${seconds} 秒後自動重試。`, expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
+    connected: (name: string) => `${name} 已連線`, connectedWarning: '憑證已儲存，但連線尚未成功啟動。', retrying: (category: BotOnboardingRetryFailureCategory, count: number, seconds: number) => `${retryCategoryZhTw(category)}；連續失敗 ${count} 次，約 ${seconds} 秒後自動重試。`, expired: '二維碼已過期，請重新生成', denied: '授權已取消，請重新生成二維碼', cancelled: '掃碼串接已取消', failed: '掃碼串接失敗，請重試', preparing: '準備掃碼串接…',
     savedNotConnected: '憑證已儲存，但連線未建立，可稍後在設定中重試。',
     savedNotConnectedDetail: (detail: string) => `憑證已儲存，但連線未建立：${detail}，可稍後在設定中重試。`,
     errors: {
@@ -429,7 +429,7 @@ export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
 }
 
-function retryCategoryZh(category: string): string {
+function retryCategoryZh(category: BotOnboardingRetryFailureCategory): string {
   switch (category) {
     case 'timeout': return '请求超时';
     case 'network': return '网络暂时异常';
@@ -439,7 +439,7 @@ function retryCategoryZh(category: string): string {
   }
 }
 
-function retryCategoryZhTw(category: string): string {
+function retryCategoryZhTw(category: BotOnboardingRetryFailureCategory): string {
   switch (category) {
     case 'timeout': return '請求逾時';
     case 'network': return '網路暫時異常';
@@ -449,7 +449,7 @@ function retryCategoryZhTw(category: string): string {
   }
 }
 
-function retryCategoryEn(category: string): string {
+function retryCategoryEn(category: BotOnboardingRetryFailureCategory): string {
   switch (category) {
     case 'timeout': return 'The request timed out';
     case 'network': return 'The network is temporarily unavailable';
@@ -511,4 +511,42 @@ export function botStatusReasonCopy(reason: string, locale: UiLocale): string | 
 export function botOnboardingErrorMessage(errorCode: string | undefined, locale: UiLocale): string {
   const shared = BOT_SETTINGS_COPY[locale].onboarding;
   return lookupCopy(shared.errors, errorCode) ?? shared.failed;
+}
+
+export function botOnboardingStatusCopy(
+  snapshot: BotOnboardingSnapshot | null,
+  starting: boolean,
+  error: string | null,
+  copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
+  locale: 'zh-CN' | 'zh-TW' | 'en',
+): string {
+  const shared = getBotSettingsCopy(locale).onboarding;
+  if (starting) return shared.generating;
+  if (error) return error;
+  if (snapshot?.retryHealth) {
+    const seconds = Math.max(1, Math.ceil(snapshot.nextPollAfterMs / 1_000));
+    const retry = shared.retrying(
+      snapshot.retryHealth.category,
+      snapshot.retryHealth.consecutiveFailures,
+      seconds,
+    );
+    return snapshot.state === 'scanned' ? `${copy.scanned} ${retry}` : retry;
+  }
+  switch (snapshot?.state) {
+    case 'waiting': return copy.waiting;
+    case 'scanned': return copy.scanned;
+    case 'connecting': return shared.connecting;
+    // PR1197 review (P0-3): honour the honest "saved but not connected" notice
+    // instead of claiming a healthy connection.
+    case 'connected': return snapshot.warningCode
+      ? (snapshot.warningDetail
+          ? shared.savedNotConnectedDetail(botStatusReasonMessage(snapshot.warningDetail, locale))
+          : shared.savedNotConnected)
+      : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
+    case 'expired': return shared.expired;
+    case 'denied': return shared.denied;
+    case 'cancelled': return shared.cancelled;
+    case 'error': return botOnboardingErrorMessage(snapshot.errorCode, locale);
+    default: return shared.preparing;
+  }
 }

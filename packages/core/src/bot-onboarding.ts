@@ -49,22 +49,12 @@ export interface BotOnboardingStartInput {
   brand?: BotOnboardingBrand;
 }
 
-export const BOT_ONBOARDING_RETRY_FAILURE_CATEGORIES = [
-  'timeout',
-  'network',
-  'rate_limited',
-  'server',
-] as const;
-
-export type BotOnboardingRetryFailureCategory =
-  (typeof BOT_ONBOARDING_RETRY_FAILURE_CATEGORIES)[number];
+export type BotOnboardingRetryFailureCategory = 'timeout' | 'network' | 'rate_limited' | 'server';
 
 export interface BotOnboardingRetryHealth {
   /** Finite, renderer-safe classification. Raw provider failures never cross IPC. */
   category: BotOnboardingRetryFailureCategory;
   consecutiveFailures: number;
-  nextRetryAt: number;
-  nextRetryAfterMs: number;
 }
 
 /**

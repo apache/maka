@@ -74,6 +74,7 @@ export interface LiveTurnStepProjection {
 export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
+  interrupted?: true;
   text: string;
   truncated: boolean;
   complete: boolean;
@@ -91,7 +92,6 @@ export interface LiveSteeringProjection {
 
 export interface LiveTurnProjection {
   turnId: string;
-  phase: 'waiting' | 'streamed';
   terminal?: true;
   /**
    * Set when this live Turn is a host-owned explicit context-compaction run.
@@ -107,7 +107,7 @@ export interface LiveTurnProjection {
   pendingSteering?: LiveSteeringProjection[];
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
-   * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
+   * this turn (any event carrying the same turnId).
    *
    * A client that just sent cannot tell "the authority has not reached my turn
    * yet" from "my turn is over" by reading session status: it reads the same
@@ -176,7 +176,7 @@ function appendContentKind(
 }
 
 export function armLiveTurn(turnId: string): LiveTurnProjection {
-  return { turnId, phase: 'waiting', steps: [], unconfirmed: true };
+  return { turnId, steps: [], unconfirmed: true };
 }
 
 /** Drop the `unconfirmed` claim; identity-preserving when there is none. */
@@ -184,19 +184,6 @@ function confirmed(projection: LiveTurnProjection): LiveTurnProjection {
   if (!projection.unconfirmed) return projection;
   const { unconfirmed: _unconfirmed, ...rest } = projection;
   return rest;
-}
-
-/**
- * The authority answered about `turnId`: clear the arm's pending claim so a
- * later snapshot may retire it. A different turn's answer says nothing about
- * this one, so the projection is returned unchanged (same reference).
- */
-export function confirmLiveTurn(
-  current: LiveTurnProjection | undefined,
-  turnId: string,
-): LiveTurnProjection | undefined {
-  if (!current || current.turnId !== turnId) return current;
-  return confirmed(current);
 }
 
 export function applyLiveTurnEvent(
@@ -217,7 +204,7 @@ export function applyLiveTurnEvent(
   if (event.type === 'steering_message') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+      : { turnId: event.turnId, steps: [] };
     if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
       return confirmed(prior);
     }
@@ -236,7 +223,7 @@ export function applyLiveTurnEvent(
   if (event.type === 'provider_retry') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+      : { turnId: event.turnId, steps: [] };
     return { ...confirmed(prior), providerRetry: { event, receivedAtMs: Date.now() } };
   }
   if (event.type === 'error' || event.type === 'abort') {
@@ -262,7 +249,7 @@ export function applyLiveTurnEvent(
     const prior =
       current?.turnId === event.turnId
         ? current
-        : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+        : { turnId: event.turnId, steps: [] };
     return { ...confirmed(prior), rootExecutionKind: 'context_compact', startedAt: event.ts };
   }
   if (
@@ -280,7 +267,7 @@ export function applyLiveTurnEvent(
   }
   const prior = current?.turnId === event.turnId
     ? current
-    : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
+    : { turnId: event.turnId, steps: [] };
   const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
@@ -375,6 +362,7 @@ export function applyLiveTurnEvent(
     nextStep = {
       ...step,
       text: {
+        ...(event.interrupted ? { interrupted: true } : {}),
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
@@ -530,7 +518,6 @@ export function applyLiveTurnEvent(
   const { pendingSteering: _pendingSteering, ...withoutPendingSteering } = priorWithoutRetry;
   return {
     ...(claimsPendingSteering ? withoutPendingSteering : priorWithoutRetry),
-    phase: 'streamed',
     steps,
   };
 }

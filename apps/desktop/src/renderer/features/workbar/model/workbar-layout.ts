@@ -28,6 +28,7 @@ import {
   type SessionWorkbarPanelsState,
   type SessionWorkbarPlacement,
   type WorkbarPanelsAction,
+  type SessionWorkbarTab,
 } from './workbar-tabs.js';
 
 /**
@@ -59,6 +60,8 @@ export interface WorkbarLayoutState {
 
 export type WorkbarLayoutAction =
   | WorkbarPanelsAction
+  | { type: 'restore-terminals'; tabs: readonly SessionWorkbarTab[] }
+  | { type: 'close-terminal'; sessionId: string; ref: string }
   | {
       type: 'remove-stale';
       placement: SessionWorkbarPlacement;
@@ -203,18 +206,48 @@ export function reduceWorkbarLayout(
   state: WorkbarLayoutState,
   action: WorkbarLayoutAction,
 ): WorkbarLayoutState {
+  if (action.type === 'close-terminal') {
+    for (const placement of ['right', 'bottom'] as const) {
+      const tabIds = state.panels[placement].tabs.filter((tab) =>
+        tab.kind === 'terminal' && tab.ownerSessionId === action.sessionId && tab.resourceRef === action.ref,
+      ).map((tab) => tab.id);
+      if (tabIds.length) state = reduceWorkbarLayout(state, {
+        type: state.activeSessionId === action.sessionId ? 'close' : 'remove-stale', placement, tabIds,
+      });
+    }
+    return state;
+  }
+  if (action.type === 'restore-terminals') {
+    const existing = new Set([...state.panels.right.tabs, ...state.panels.bottom.tabs].map((tab) => tab.id));
+    const missing = action.tabs.filter((tab) => !existing.has(tab.id));
+    if (!missing.length) return state;
+    const right = state.panels.right;
+    return { ...state, panels: { ...state.panels, right: {
+      ...right,
+      tabs: [...right.tabs, ...missing],
+      activeTabId: right.activeTabId ?? missing[0]!.id,
+      launcherOpen: right.tabs.length === 0 ? false : right.launcherOpen,
+    } } };
+  }
   if (action.type === 'activate-session') {
     return state.activeSessionId === action.sessionId
       ? state
       : { ...state, activeSessionId: action.sessionId };
   }
   if (action.type === 'retain-sessions') {
+    let panels = state.panels;
+    for (const placement of ['right', 'bottom'] as const) {
+      const tabIds = panels[placement].tabs.filter((tab) =>
+        tab.kind === 'terminal' && tab.ownerSessionId && !action.sessionIds.has(tab.ownerSessionId),
+      ).map((tab) => tab.id);
+      if (tabIds.length) panels = reduceWorkbarPanels(panels, { type: 'close', placement, tabIds });
+    }
     const entries = Object.entries(state.collapsedBySession).filter(
       ([id]) => id === state.activeSessionId || action.sessionIds.has(id),
     );
-    return entries.length === Object.keys(state.collapsedBySession).length
+    return panels === state.panels && entries.length === Object.keys(state.collapsedBySession).length
       ? state
-      : { ...state, collapsedBySession: Object.fromEntries(entries) };
+      : { ...state, panels, collapsedBySession: Object.fromEntries(entries) };
   }
   if (action.type === 'collapse') {
     if (action.placement === 'right') {
@@ -253,6 +286,16 @@ export function reduceWorkbarLayout(
       : action,
   );
   if (panels === state.panels) return state;
+  // A resource may finish opening after navigation. It belongs to the request's
+  // Session and must not reveal a panel in whichever Session is now selected.
+  if (action.type === 'open' && action.tab.ownerSessionId &&
+    action.tab.ownerSessionId !== state.activeSessionId) {
+    return { ...state, panels,
+      ...(action.placement === 'right' ? {
+        collapsedBySession: { ...state.collapsedBySession, [action.tab.ownerSessionId]: false },
+      } : {}),
+    };
+  }
   let rightCollapsed = isSessionWorkbarCollapsed(state);
   let bottomOpen = state.bottomOpen;
   if (action.type === 'open' || action.type === 'open-launcher') {

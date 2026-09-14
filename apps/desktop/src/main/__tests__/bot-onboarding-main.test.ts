@@ -554,8 +554,6 @@ describe('BotOnboardingService', () => {
     assert.deepEqual(afterFirst.retryHealth, {
       category: 'timeout',
       consecutiveFailures: 1,
-      nextRetryAt: 13_000,
-      nextRetryAfterMs: 7_000,
     });
 
     let last = afterFirst;
@@ -586,8 +584,6 @@ describe('BotOnboardingService', () => {
     assert.deepEqual(backingOff.retryHealth, {
       category: 'server',
       consecutiveFailures: 1,
-      nextRetryAt: 13_000,
-      nextRetryAfterMs: 7_000,
     });
     assert.equal(JSON.stringify(backingOff).includes('super-secret'), false);
     assert.equal(JSON.stringify(backingOff).includes('provider.example'), false);
@@ -644,6 +640,30 @@ describe('BotOnboardingService', () => {
     assert.equal(superseded.state, 'cancelled');
     assert.equal(superseded.retryHealth, undefined);
     assert.equal(JSON.stringify(superseded).includes('late-super-secret'), false);
+  });
+
+  it('clears network retry health when the next poll fails authentication', async () => {
+    let attempts = 0;
+    const adapter: BotOnboardingProviderAdapter = {
+      async start() { return startResult(); },
+      async poll() {
+        attempts += 1;
+        throw new Error(attempts === 1 ? 'fetch failed' : 'HTTP 401 unauthorized');
+      },
+    };
+    const test = harness(adapter);
+    const started = await test.service.start({ provider: 'dingtalk' });
+    test.advance(5_000);
+    const retry = await test.service.poll(started.sessionId);
+    assert.equal(retry.state, 'waiting');
+    assert.equal(retry.retryHealth?.category, 'network');
+    test.advance(retry.nextPollAfterMs);
+    const failed = await test.service.poll(started.sessionId);
+    assert.equal(failed.state, 'error');
+    assert.equal(failed.errorCode, 'auth_failed');
+    assert.equal(failed.retryHealth, undefined);
+    await test.service.poll(started.sessionId);
+    assert.equal(attempts, 2);
   });
 
   it('fails immediately on a fatal (non-transient) poll error', async () => {

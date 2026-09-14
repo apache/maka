@@ -49,7 +49,6 @@ describe('stream graph supervisor tools', () => {
       assert.equal(viewTool.recoveryMode, 'replay_safe');
       assert.equal(updateTool.recoveryMode, 'idempotent');
       assert.equal(yieldTool.recoveryMode, 'replay_safe');
-      assert.equal(yieldTool.nesting, 'direct_only');
 
       await assert.rejects(
         async () =>

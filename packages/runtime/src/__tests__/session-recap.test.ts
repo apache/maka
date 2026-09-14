@@ -117,7 +117,7 @@ test('session recap budgets only the evidence it sends', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-16k-model',
-      relayModelProfiles: { 'declared-16k-model': { contextWindow: 16_384 } },
+      models: [{ id: 'declared-16k-model', contextWindow: 16_384 }],
     },
     modelId: 'declared-16k-model',
   });
@@ -125,6 +125,29 @@ test('session recap budgets only the evidence it sends', () => {
 
   assert.equal(serialized.includes(earlierSentinel), true);
   assert.equal(serialized.includes(oversizedArgs), false);
+});
+
+test('session recap carries the quoted excerpt of a structured-only message', () => {
+  const quotedText = 'QUOTED-EXCERPT-SENTINEL the deploy failed at step three';
+  const messages = buildSessionRecapMessages({
+    events: [
+      {
+        ...textEvent('quoted-user', 'turn-1', 'user', ''),
+        content: {
+          kind: 'text',
+          text: '',
+          quotes: [{ text: quotedText, sourceTurnId: 'turn-0' }],
+        },
+      },
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+  const serialized = JSON.stringify(messages);
+
+  assert.equal(serialized.includes(quotedText), true);
+  assert.equal(serialized.includes('<quoted_excerpt>'), true);
+  assert.equal(serialized.includes('[message carried'), false);
 });
 
 test('session recap excludes model-hidden tool outcomes', () => {
@@ -144,7 +167,7 @@ test('session recap excludes model-hidden tool outcomes', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });
@@ -171,7 +194,7 @@ test('session recap treats a zero evidence budget as no evidence, not unbounded 
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });

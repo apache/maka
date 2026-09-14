@@ -127,14 +127,14 @@ test('delegation content is optional, bounded, and unavailable to stop or resume
         actionId: 'stop-content',
         turnId: 'active-turn',
         delegationText: 'Unrelated work',
-        proposal: { disposition: 'stop_work', expects: { targetSessionId: 'payments' } },
+        proposal: { operation: 'stop', expects: { targetSessionId: 'payments' } },
       }),
     RuntimeHostProtocolError,
   );
 });
 
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
-  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 110);
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 136);
   const result = decodeWorkHubCoordinationCandidatesResult({
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [
@@ -179,16 +179,16 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
     {
       proposal: {
-        disposition: 'replace',
+        operation: 'correct',
         replacesActionId: 'source',
         target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
       },
       candidateSetId,
     },
-    { proposal: { disposition: 'stop_work', expects: { targetSessionId: 'target' } } },
+    { proposal: { operation: 'stop', expects: { targetSessionId: 'target' } } },
     {
       proposal: {
-        disposition: 'resume_work',
+        operation: 'resume',
         resumesActionId: 'source',
         expects: { targetSessionId: 'target' },
       },
@@ -208,13 +208,13 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
     {
       proposal: {
-        disposition: 'stop_work',
+        operation: 'stop',
         expects: { targetSessionId: 'target', activeActionIds: ['forged'] },
       },
     },
     {
       proposal: {
-        disposition: 'resume_work',
+        operation: 'resume',
         resumesActionId: 'source',
         expects: { targetSessionId: 'target' },
       },
@@ -222,6 +222,23 @@ test('model actions retain closed task inputs and bounded answer content', () =>
     },
   ])
     assert.throws(() => decodeWorkHubCoordinationActFromTurnInput({ ...base, ...fields }));
+  for (const legacyProposal of [
+    {
+      disposition: 'replace',
+      replacesActionId: 'source',
+      target: { disposition: 'create_new', title: 'Legacy' },
+    },
+    { disposition: 'stop_work', expects: { targetSessionId: 'target' } },
+    {
+      disposition: 'resume_work',
+      resumesActionId: 'source',
+      expects: { targetSessionId: 'target' },
+    },
+  ])
+    assert.throws(
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...base, proposal: legacyProposal }),
+      RuntimeHostProtocolError,
+    );
   const attachments = [
     {
       name: 'brief.txt',
@@ -291,4 +308,33 @@ test('action outcomes cannot invent a target Turn or revive removed local dispos
     { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target' },
   ])
     assert.throws(() => decodeWorkHubCoordinationActResult(result));
+});
+
+test('target choice accepts only bounded candidate offers, never caller-supplied authority', () => {
+  const spec = HOST_OPERATION_SPECS['workhub.coordination.selectAndDelegate'];
+  const input = {
+    turnId: 'turn',
+    actionId: 'action',
+    candidateSetId: `sha256:${'0'.repeat(64)}`,
+    candidateRefs: ['candidate-a', 'candidate-b'],
+    delegationText: 'Continue the selected work',
+  };
+  assert.deepEqual(spec.decodeInput(input), input);
+  assert.equal(
+    REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.selectAndDelegate'),
+    true,
+  );
+  for (const invalid of [
+    { ...input, selectedTarget: { sessionId: 'forged', workspaceDigest: 'forged' } },
+    { ...input, userText: 'forged authorization' },
+    { ...input, candidateRefs: [] },
+    { ...input, candidateRefs: ['same', 'same'] },
+    { ...input, candidateRefs: Array.from({ length: 33 }, (_, index) => `candidate-${index}`) },
+  ])
+    assert.throws(() => spec.decodeInput(invalid), RuntimeHostProtocolError);
+  assert.deepEqual(spec.decodeOutput({ kind: 'cancelled' }), { kind: 'cancelled' });
+  assert.throws(
+    () => spec.decodeOutput({ kind: 'cancelled', result: {} }),
+    RuntimeHostProtocolError,
+  );
 });

@@ -478,8 +478,6 @@ export class BotOnboardingService {
             retryHealth: {
               category: session.pollFailureCategory,
               consecutiveFailures: session.pollFailures,
-              nextRetryAt: session.nextPollAt,
-              nextRetryAfterMs: Math.max(0, session.nextPollAt - this.now()),
             },
           }
         : {}),

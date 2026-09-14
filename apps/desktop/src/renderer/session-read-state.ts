@@ -23,16 +23,15 @@ export interface SessionListRefresher<T extends SessionSummary = SessionSummary>
   refresh(): Promise<T[]>;
 }
 
-export interface SessionListRefresherOptions<T extends SessionSummary, TRequestContext> {
-  captureRequestContext: () => TRequestContext;
+export interface SessionListRefresherOptions<T extends SessionSummary> {
   listSessions: () => Promise<T[]>;
   currentSessions: () => T[];
-  commitSessions: (sessions: T[], requestContext: TRequestContext) => void;
+  commitSessions: (sessions: T[]) => void;
   onError: (error: unknown) => void;
 }
 
-export function createSessionListRefresher<T extends SessionSummary, TRequestContext>(
-  options: SessionListRefresherOptions<T, TRequestContext>,
+export function createSessionListRefresher<T extends SessionSummary>(
+  options: SessionListRefresherOptions<T>,
 ): SessionListRefresher<T> {
   let requestedGeneration = 0;
   let completedGeneration = 0;
@@ -43,12 +42,11 @@ export function createSessionListRefresher<T extends SessionSummary, TRequestCon
       let result = options.currentSessions();
       while (completedGeneration < requestedGeneration) {
         const generation = requestedGeneration;
-        const requestContext = options.captureRequestContext();
         try {
           const listed = await options.listSessions();
           if (generation === requestedGeneration) {
             result = listed;
-            options.commitSessions(result, requestContext);
+            options.commitSessions(result);
           } else {
             result = options.currentSessions();
           }

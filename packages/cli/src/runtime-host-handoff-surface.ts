@@ -75,7 +75,7 @@ export function createCliHostHandoffSurface(
         if (view.actions.length === 0) return;
         const options = copy.actions.map(
           ({ action, label }) =>
-            `${action === 'interrupt' ? 'stop' : action === 'retry' ? 'r' : 'Enter'}: ${label}`,
+            `${action === 'interrupt' ? 'stop' : action === 'retry' ? 'r' : action === 'replace' ? 'update' : 'Enter'}: ${label}`,
         );
         // Create the reader only after the explanation is visible, with the
         // final action prompt already installed. Never draw readline's default >.
@@ -96,13 +96,15 @@ export function createCliHostHandoffSurface(
           if (readline !== reader || current?.revision !== view.revision) return;
           const answer = line.trim().toLowerCase();
           const action =
-            answer === 'r'
-              ? 'retry'
-              : answer === 'stop'
-                ? 'interrupt'
-                : answer === ''
-                  ? 'cancel'
-                  : undefined;
+            answer === 'update'
+              ? 'replace'
+              : answer === 'r'
+                ? 'retry'
+                : answer === 'stop'
+                  ? 'interrupt'
+                  : answer === ''
+                    ? 'cancel'
+                    : undefined;
           if (!action || !view.actions.includes(action)) {
             reader.prompt();
             return;

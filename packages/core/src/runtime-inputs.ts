@@ -70,6 +70,8 @@ export interface CreateSessionInput {
   thinkingLevel?: ThinkingLevel;
   /** Immutable versioned prompt/tool contract for this Session. */
   toolProfile?: SessionToolProfile;
+  /** Internal creation-time choice; not a per-task UI control. */
+  toolMode?: ToolMode;
   permissionMode: PermissionMode;
   /** Defaults to `agent`. */
   collaborationMode?: CollaborationMode;

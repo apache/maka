@@ -18,9 +18,9 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
+import type { BotOnboardingSnapshot } from '@maka/core/bot-onboarding';
+import { botOnboardingStatusCopy, getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
 
 test('provides concise localized retry health without provider error text', () => {
   const zh = getBotSettingsCopy('zh-CN');
@@ -35,12 +35,24 @@ test('provides concise localized retry health without provider error text', () =
   );
 });
 
-test('the existing onboarding status surface prefers retry health while present', async () => {
-  const source = await readFile(
-    new URL('../../../src/renderer/settings/bot-onboarding-modal.tsx', import.meta.url),
-    'utf8',
-  );
-  assert.match(source, /if \(snapshot\?\.retryHealth\)/);
-  assert.match(source, /shared\.retrying\(/);
-  assert.match(source, /case 'waiting': return copy\.waiting/);
-});
+for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+  test(`retry presentation preserves scanned instructions and clears on recovery (${locale})`, () => {
+    const shared = getBotSettingsCopy(locale).onboarding;
+    const copy = shared.providers.dingtalk;
+    const snapshot: BotOnboardingSnapshot = {
+      sessionId: 'onboarding', provider: 'dingtalk', state: 'waiting',
+      nextPollAfterMs: 7_000, canOpenInBrowser: false,
+      retryHealth: { category: 'network', consecutiveFailures: 2 },
+    };
+    const retry = shared.retrying('network', 2, 7);
+    assert.equal(botOnboardingStatusCopy(snapshot, false, null, copy, locale), retry);
+    snapshot.state = 'scanned';
+    assert.equal(botOnboardingStatusCopy(snapshot, false, null, copy, locale), `${copy.scanned} ${retry}`);
+    assert.equal(botOnboardingStatusCopy(snapshot, true, null, copy, locale), shared.generating);
+    assert.equal(botOnboardingStatusCopy(snapshot, false, 'failed', copy, locale), 'failed');
+    delete snapshot.retryHealth;
+    assert.equal(botOnboardingStatusCopy(snapshot, false, null, copy, locale), copy.scanned);
+    snapshot.state = 'waiting';
+    assert.equal(botOnboardingStatusCopy(snapshot, false, null, copy, locale), copy.waiting);
+  });
+}

@@ -30,7 +30,6 @@ import { isPathInside } from '@maka/runtime/path-containment';
 import {
   createLedgerArchivePreparer,
   createLedgerArchiveResourceReader,
-  createLedgerToolResultArchiveReader,
 } from '@maka/runtime/ledger-tool-result-archive-reader';
 import type { ToolResultArchiveEvidenceReader } from '@maka/core/tool-result-archive-evidence';
 import { type ToolArtifactRecorderInput } from '@maka/runtime/tool-artifacts';
@@ -100,9 +99,6 @@ export function createHostExecutionArtifactServices(input: {
   const prepareLedger = input.archiveEvidence
     ? createLedgerArchivePreparer(input.archiveEvidence)
     : undefined;
-  const readLedger = input.archiveEvidence
-    ? createLedgerToolResultArchiveReader(input.archiveEvidence)
-    : undefined;
   const readLedgerResource = input.archiveEvidence
     ? createLedgerArchiveResourceReader(input.archiveEvidence)
     : undefined;
@@ -143,12 +139,8 @@ export function createHostExecutionArtifactServices(input: {
     },
     toolResultArchive: createToolResultArchiveCapability({
       archiveToolResult: prepareLedgerForCommit,
-      readToolResultArchive: (event: ToolResultArchiveReaderInput) =>
-        event.rewriteVersion === 2
-          ? (readLedger?.(event) ?? { ok: false, reason: 'read_failed' })
-          : readArchive(input.artifacts, event),
       readArchivedToolResultResource: (event: ToolResultArchiveResourceReadInput) =>
-        event.storage === 'ledger'
+        event.storage === 'ledger' || event.storage === 'event'
           ? (readLedgerResource?.(event) ?? { ok: false, reason: 'read_failed' })
           : readArchive(input.artifacts, event),
     }),

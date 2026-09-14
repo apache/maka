@@ -25,3 +25,5 @@ export {
   useTranscriptScrollAuthority,
   type TranscriptScrollAuthority,
 } from './transcript-scroll-authority.js';
+
+export { foldTimeline } from './timeline-fold.js';

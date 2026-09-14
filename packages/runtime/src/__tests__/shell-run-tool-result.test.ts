@@ -33,7 +33,20 @@ import {
   terminalContent,
 } from '../shell-run-tool-result.js';
 
-describe('PTY model output projection', () => {
+describe('shell result projection', () => {
+  test('foreground terminal results retain executor output for durable Read recovery', () => {
+    const record = failedShellRun();
+    record.output = {
+      mode: 'pipes',
+      stdout: `FRONT\n${'x'.repeat(100_000)}\nTAIL`,
+      stderr: 'ERROR',
+      stdoutTruncated: true,
+      stderrTruncated: false,
+      redacted: false,
+    };
+    assert.deepEqual(terminalContent(record).output, record.output);
+  });
+
   test('shares one UTF-8 budget in screen, alternate, then latest scrollback priority', () => {
     const output = ptyOutput({
       screen: 'SCREEN',
@@ -131,8 +144,8 @@ describe('shell run sandbox denial projection', () => {
 
   test('round-trips the producer sandbox denial through strict FileSessionStore recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-shell-result-recovery-'));
+    const store = createSessionStore(root);
     try {
-      const store = createSessionStore(root);
       const session = await store.create({
         cwd: '/workspace',
         llmConnectionSlug: 'fake',
@@ -158,6 +171,7 @@ describe('shell run sandbox denial projection', () => {
       const result = messages.find((message) => message.id === 'tool-result-1');
       assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, content);
     } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
