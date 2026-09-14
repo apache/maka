@@ -563,7 +563,7 @@ const CONVERSATION_COPY = {
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
         contextProviderDropping: (used, prior) =>
-          `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
+          `追加内容后，供应商报告的输入 token 数没有增长，可能发生了上下文裁剪或改写（${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长）。如果持续出现，请检查模型实际支持的上下文容量与连接设置是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
@@ -721,7 +721,7 @@ const CONVERSATION_COPY = {
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
         contextProviderDropping: (used, prior) =>
-          `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`,
+          `追加內容後，供應商回報的輸入 token 數沒有成長，可能發生了上下文裁剪或改寫（${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長）。如果持續出現，請檢查模型實際支援的上下文容量與連線設定是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供應商拒絕了這次請求。該模型未宣告上下文視窗；上次成功的用量約 ${tokens} tokens，可將視窗設為該值讓 Maka 先行壓縮。`
@@ -905,7 +905,7 @@ const CONVERSATION_COPY = {
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
         contextProviderDropping: (used, prior) =>
-          `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
+          `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used.toLocaleString('en-US')} tokens versus ${prior.toLocaleString('en-US')} before). If this persists, check that the model's actual context capacity and the connection settings agree.`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`

@@ -35,6 +35,7 @@ export {
   selectAvailableProfile,
   taskEntryDraftKey,
 } from './model/task-entry-selection.js';
+export { resolveWorkBoardStartTarget } from './model/work-board-target.js';
 export type {
   TaskEntryCatalog,
   TaskEntryHost,

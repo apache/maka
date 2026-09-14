@@ -210,11 +210,13 @@ function mapBackendSessionEvent(
     case 'text_complete':
       return {
         ...base,
+        ...(event.interrupted ? { modelVisibility: 'hidden' as const } : {}),
         role: 'model',
         author: 'agent',
         content: {
           kind: 'text',
           text: event.text,
+          ...(event.interrupted ? { interrupted: true } : {}),
           ...(event.providerOptions !== undefined
             ? { providerOptions: structuredClone(event.providerOptions) }
             : {}),
@@ -235,6 +237,7 @@ function mapBackendSessionEvent(
     case 'thinking_complete':
       return {
         ...base,
+        ...(event.interrupted ? { modelVisibility: 'hidden' as const } : {}),
         role: 'model',
         author: 'agent',
         content: {

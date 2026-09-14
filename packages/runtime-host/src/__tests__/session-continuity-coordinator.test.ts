@@ -361,12 +361,17 @@ test('publishes a non-prefix final value as an authoritative replacement', async
     ...textEvent(1),
     text: 'draft',
   });
-  await coordinator.acceptRuntimeEvent(
-    SESSION_ID,
-    'run-1',
-    textCompleteEvent('message-1', 'final'),
-  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textCompleteEvent('message-1', 'final'),
+    interrupted: true,
+  });
   await waitFor(() => sink.frames.length === 3);
+  const interrupted = decodeSubscriptionFrame(
+    JSON.parse(encodeProtocolMessage(sink.frames[2]!).toString('utf8')),
+  );
+  assert.ok(
+    interrupted.kind === 'subscription.session_delta' && interrupted.delta.interrupted === true,
+  );
 
   assert.deepEqual(
     sink.frames.map((frame) =>

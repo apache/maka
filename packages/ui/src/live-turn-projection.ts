@@ -74,6 +74,7 @@ export interface LiveTurnStepProjection {
 export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
+  interrupted?: true;
   text: string;
   truncated: boolean;
   complete: boolean;
@@ -361,6 +362,7 @@ export function applyLiveTurnEvent(
     nextStep = {
       ...step,
       text: {
+        ...(event.interrupted ? { interrupted: true } : {}),
         text: applied.text,
         truncated: applied.truncated,
         complete: true,

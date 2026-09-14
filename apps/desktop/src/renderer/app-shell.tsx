@@ -317,6 +317,7 @@ function AppShellContent({
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     captureSelection,
     isSessionSelected,
@@ -371,7 +372,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
-  const { selectLocalProject } = taskEntry.commands;
+  const { selectLocalProject, resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -1241,7 +1242,7 @@ function AppShellContent({
   });
   const openNewTaskSurface = useCallback(() => {
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
-    startNewSession();
+    const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
     setNewChatPlanModeActive(false);
@@ -1250,6 +1251,7 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
+    return ownerToken;
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
@@ -1334,11 +1336,6 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const reportWorkbarError = useCallback(
-    (title: string, description: string, sessionId: string) =>
-      toastApi.error(title, description, undefined, { sessionId }),
-    [toastApi],
-  );
   const workbarAvailable =
     sessionsSelected && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
@@ -1350,7 +1347,12 @@ function AppShellContent({
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
-    reportError: reportWorkbarError,
+    toastApi,
+    composerRef,
+    openNewTaskSurface,
+    openSessionInChat,
+    resolveWorkBoardTarget,
+    prepareWorkBoardDraft,
   });
   const { commands, selectors, LiveContextUsageProbe } = workbar;
 
@@ -1461,6 +1463,7 @@ function AppShellContent({
     },
     activeIdRef,
     captureComposerImportOwner,
+    captureSelection,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -1783,6 +1786,7 @@ function AppShellContent({
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
+      onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length
@@ -2781,8 +2785,7 @@ function AppShellContent({
                 ) : null}
               </ChatSurfaceLayout>
             </div>
-            {/* Collapse hides the Workbar surface without unmounting its tools;
-                dynamic resources therefore keep their existing lifecycle. */}
+            {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>

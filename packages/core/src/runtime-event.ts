@@ -182,6 +182,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 
 export interface RuntimeEventTextContent extends MessageContent {
   kind: 'text';
+  /** Failed response fragment retained for display, never for model replay. */
+  interrupted?: true;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
   /** Durable provenance for a host-authored user-role turn. */
@@ -724,6 +726,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
     'displayText',
+    'interrupted',
     'origin',
     'attachments',
     'directoryReferences',
@@ -1046,6 +1049,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.interrupted !== undefined && value.interrupted !== true) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
         return false;
