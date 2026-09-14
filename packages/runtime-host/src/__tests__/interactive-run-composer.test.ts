@@ -19,7 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { PlanEvent, PlanMutationResult, PlanSessionState, PlanStore } from '@maka/core/plan';
+import type {
+  PlanEvent,
+  PlanExecution,
+  PlanExecutionStep,
+  PlanMutationResult,
+  PlanSessionState,
+  PlanStore,
+} from '@maka/core/plan';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
@@ -257,7 +264,7 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
   );
 });
 
-test('a committed Plan execution tool publishes the plan invalidation while the Turn runs', async () => {
+test('a committed Plan execution tool publishes the plan invalidation for its Session', async () => {
   const notifications: string[] = [];
   const composer = createFixtureComposer({
     plan: {
@@ -302,18 +309,28 @@ test('a rejected Plan execution write publishes no invalidation', async () => {
   assert.deepEqual(notifications, []);
 });
 
-function activePlanState(): PlanSessionState {
-  const step = {
+function planStep(status: PlanExecutionStep['status']): PlanExecutionStep {
+  return {
     id: 'step-1',
     title: 'Step one',
     description: 'Do the first step.',
-    status: 'pending' as const,
-    updatedAt: 1,
+    status,
+    updatedAt: 2,
   };
+}
+
+function activePlanState(
+  overrides: {
+    storeVersion?: number;
+    status?: PlanExecution['status'];
+    step?: PlanExecutionStep;
+  } = {},
+): PlanSessionState {
+  const step = overrides.step ?? planStep('pending');
   return {
     schemaVersion: 1,
     sessionId: 'session-1',
-    storeVersion: 2,
+    storeVersion: overrides.storeVersion ?? 2,
     proposals: [
       {
         planId: 'plan-1',
@@ -333,7 +350,7 @@ function activePlanState(): PlanSessionState {
         planId: 'plan-1',
         proposalId: 'proposal-1',
         sessionId: 'session-1',
-        status: 'active',
+        status: overrides.status ?? 'active',
         steps: [step],
         startedAt: 1,
         updatedAt: 2,
@@ -344,9 +361,19 @@ function activePlanState(): PlanSessionState {
   };
 }
 
+/**
+ * Mirrors the store's own contract: the returned event type matches the
+ * mutation, the event and state agree on one storeVersion, and the state carries
+ * the steps the mutation asked for. A stub that drifts from those invariants
+ * would let the invalidation wiring pass while the store contract is broken.
+ */
 function planStoreStub(failure?: Error): PlanStore {
-  const mutate = async (): Promise<PlanMutationResult> => {
+  const updateExecution = async (input: {
+    steps: Array<{ id: string; status: PlanExecutionStep['status'] }>;
+  }): Promise<PlanMutationResult> => {
     if (failure) throw failure;
+    const requested = input.steps[0];
+    const steps = [planStep(requested?.status ?? 'in_progress')];
     const event: PlanEvent = {
       id: 'event-1',
       sessionId: 'session-1',
@@ -354,14 +381,27 @@ function planStoreStub(failure?: Error): PlanStore {
       storeVersion: 3,
       type: 'plan_progress_updated',
       executionId: 'execution-1',
-      steps: activePlanState().executions[0]!.steps,
+      steps,
     };
-    return { event, state: activePlanState() };
+    return { event, state: activePlanState({ storeVersion: 3, step: steps[0] }) };
   };
-  return {
-    updateExecution: mutate,
-    cancelExecution: mutate,
-  } as unknown as PlanStore;
+  const cancelExecution = async (): Promise<PlanMutationResult> => {
+    if (failure) throw failure;
+    const event: PlanEvent = {
+      id: 'event-2',
+      sessionId: 'session-1',
+      ts: 4,
+      storeVersion: 4,
+      type: 'plan_execution_cancelled',
+      executionId: 'execution-1',
+      reason: 'User abandoned the plan.',
+    };
+    return {
+      event,
+      state: activePlanState({ storeVersion: 4, status: 'cancelled' }),
+    };
+  };
+  return { updateExecution, cancelExecution } as unknown as PlanStore;
 }
 
 function toolContext(): MakaToolContext {
