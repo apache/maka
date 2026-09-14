@@ -50,12 +50,6 @@ import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export const VIEW_AGENT_GRAPH_TOOL_NAME = 'view_agent_graph';
 export const UPDATE_AGENT_GRAPH_TOOL_NAME = 'update_agent_graph';
 export const YIELD_AGENT_GRAPH_TOOL_NAME = 'yield_agent_graph';
-export const AGENT_GRAPH_SUPERVISOR_TOOL_NAMES = [
-  VIEW_AGENT_GRAPH_TOOL_NAME,
-  UPDATE_AGENT_GRAPH_TOOL_NAME,
-  YIELD_AGENT_GRAPH_TOOL_NAME,
-] as const;
-
 const TOOL_VIEW_MAX_TERMINAL_WORK = 64;
 const TOOL_VIEW_MAX_STOPPED_TARGETS = 64;
 const TOOL_VIEW_MAX_INSTRUCTION_CHARS = 2_000;
@@ -559,7 +553,6 @@ export function buildAgentGraphSupervisorTools(
       'Inspect the durable graph. Use mode=latest without a cursor for the current view; use mode=page only with a nextCursor returned by an earlier view.',
     parameters: viewSchema,
     categoryHint: 'read',
-    nesting: 'direct_only',
     recoveryMode: 'replay_safe',
     impl: async (toolInput) => {
       const view = await readToolGraphView(
@@ -583,7 +576,6 @@ export function buildAgentGraphSupervisorTools(
       'Adjust the graph durably. Always set operation. Prefer target_kind=new_preset with a user-approved subagent_id from agent_list; legacy agent_id remains supported. Unrelated provider-filled optional fields are ignored.',
     parameters: updateSchema,
     categoryHint: 'subagent',
-    nesting: 'direct_only',
     recoveryMode: 'idempotent',
     impl: async (toolInput, context) => {
       const request = compileAgentGraphScheduleUpdate({
@@ -620,7 +612,6 @@ export function buildAgentGraphSupervisorTools(
     categoryHint: 'subagent',
     recoveryMode: 'replay_safe',
     executionSemantics: 'exclusive_step',
-    nesting: 'direct_only',
     impl: async ({ reason }) => {
       const permit = input.prepareYieldPermit?.();
       try {

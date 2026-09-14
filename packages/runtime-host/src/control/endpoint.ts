@@ -22,6 +22,7 @@ import { chmod, lstat, mkdtemp, readdir, rm, rmdir, unlink } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { isNodeError } from '../node-error.js';
 
 const FALLBACK_ENDPOINT_ROOT = '/tmp';
 const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
@@ -377,10 +378,4 @@ function currentUid(): number {
     );
   }
   return process.getuid();
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code
-  );
 }

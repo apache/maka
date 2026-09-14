@@ -25,6 +25,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { meteringCheckpointMacMatches } from '../metering-checkpoint.js';
 
@@ -76,7 +77,7 @@ test('provider metering checkpoint records admission before the request settles'
   const wrapperProcess = spawn(
     process.execPath,
     [
-      wrapper.pathname,
+      fileURLToPath(wrapper),
       'opencode',
       `http://127.0.0.1:${address.port}`,
       root,
@@ -163,7 +164,7 @@ test('provider failures remain infrastructure failures until inference admission
       const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
       const { stdout, exitCode } = await runWrapper(
         [
-          wrapper.pathname,
+          fileURLToPath(wrapper),
           'opencode',
           `http://127.0.0.1:${address.port}`,
           root,
@@ -292,7 +293,14 @@ async function executePiWithTerminalRecord(contentBytes: number): Promise<{
   try {
     const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
     const { stdout } = await runWrapper(
-      [wrapper.pathname, 'pi', `http://127.0.0.1:${address.port}`, root, process.execPath, child],
+      [
+        fileURLToPath(wrapper),
+        'pi',
+        `http://127.0.0.1:${address.port}`,
+        root,
+        process.execPath,
+        child,
+      ],
       { OPENAI_API_KEY: 'upstream-test-key', MAKA_EVAL_RESULT_TOKEN: RESULT_TOKEN },
     );
     return decodeResultFrame(stdout) as Awaited<ReturnType<typeof executePiWithTerminalRecord>>;
@@ -388,7 +396,7 @@ process.exit(1);
     const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
     const { stdout } = await runWrapper(
       [
-        wrapper.pathname,
+        fileURLToPath(wrapper),
         'opencode',
         `http://127.0.0.1:${address.port}`,
         root,

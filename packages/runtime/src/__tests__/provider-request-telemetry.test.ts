@@ -806,7 +806,7 @@ describe('canonical model-call accounting', () => {
 
     const attempt = decodeModelCallAttempt(recorded[0]);
     assert.equal(attempt.historyCompactRoute, 'provider_native');
-    assert.equal(attempt.errorClass, 'RateLimit');
+    assert.equal(attempt.errorClass, 'rate_limit');
     assert.equal(attempt.httpStatus, 429);
     assert.equal(attempt.providerCode, 'rate_limit_exceeded');
     assert.equal(attempt.providerRequestId, 'req-compact-1');

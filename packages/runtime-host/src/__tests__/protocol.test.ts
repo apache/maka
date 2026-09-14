@@ -259,6 +259,13 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
   });
 
+  test('publishes a new compatibility epoch for named OAuth identity and slug failures', () => {
+    // Epoch 109 is the current main boundary. Named create inputs and the
+    // slug_taken output extend closed wire shapes, so older peers must be
+    // rejected during handshake rather than failing midway through setup.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 109);
+  });
+
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
     // Epoch 50 is already used by WorkHub coordination summaries on main.
     // The context-budget detail therefore needs its own strictly newer
@@ -441,6 +448,14 @@ describe('Runtime Host bootstrap protocol', () => {
     // model_unavailable / source_unreadable let the shell classify import
     // failures by stable code; older peers cannot decode the new codes.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 117);
+  });
+
+  test('publishes a new compatibility epoch for event-addressed transcript cursors', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 118);
+  });
+
+  test('publishes a new compatibility epoch for context-compaction transcript state', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 124);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1497,7 +1512,9 @@ describe('Runtime Host bootstrap protocol', () => {
         originHostEpoch: 'epoch-1',
         sessionId: 'session-1',
         messageId: 'message-1',
-        content: { text: 'adjust the active turn' },
+        content: {
+          text: 'adjust the active turn',
+        },
         placement: 'current_turn' as const,
       },
     };
@@ -1915,6 +1932,81 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(
       () => submit({ text: 'a'.repeat(TURN_MESSAGE_CONTENT_MAX_BYTES), displayText: 'also large' }),
       isInvalidFrame,
+    );
+  });
+
+  test('admits structured-only Messages: empty inline text with quotes or attachments (#4804)', () => {
+    const submit = (content: unknown) =>
+      decodeClientFrame({
+        requestId: 'submit-structured-only',
+        operation: 'turn.message.submit',
+        input: {
+          originHostEpoch: 'epoch-1',
+          sessionId: 'session-1',
+          messageId: 'message-1',
+          content,
+          placement: 'next_turn',
+        },
+      });
+    // A quote or an attachment carries the turn by itself: empty inline text
+    // is admissible when either is present.
+    assert.doesNotThrow(() =>
+      submit({ text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] }),
+    );
+    assert.doesNotThrow(() =>
+      submit({
+        text: '',
+        attachments: [attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' })],
+      }),
+    );
+    // A Message with nothing but empty text is still an invalid frame.
+    // Whitespace-only text stays admissible: replay visibility must remain
+    // compatible with everything admission has ever accepted, so the
+    // predicate does not trim (#4815 review).
+    assert.throws(() => submit({ text: '' }), isInvalidFrame);
+    assert.doesNotThrow(() => submit({ text: '   ' }));
+  });
+
+  test('admitted structured-only Messages survive queue and steering read-back (#4804)', () => {
+    const admitted = { text: '', quotes: [{ text: 'pasted reference-sized excerpt' }] };
+    // A queued next_turn entry carries content admission already accepted at
+    // submit; the read-back decoders must apply the same rule or the whole
+    // snapshot frame breaks around one admitted entry.
+    const projectionWire = {
+      hostEpoch: 'epoch-1',
+      queueRevision: 7,
+      steering: [],
+      followup: [
+        {
+          ...queuedMessage('later', 'next_turn'),
+          entryId: 'entry-9',
+          messageId: 'm-9',
+          content: admitted,
+        },
+      ],
+    };
+    assert.deepEqual(
+      decodeSessionMessageQueueProjection(JSON.parse(JSON.stringify(projectionWire))),
+      projectionWire,
+    );
+    // The durable steering echo reads back through the session-event frame.
+    assert.doesNotThrow(() =>
+      decodeHostFrame({
+        kind: 'subscription.session_event' as const,
+        hostEpoch: 'epoch-1',
+        subscriptionId: 'subscription-1',
+        sequence: 1,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        event: {
+          type: 'steering_message' as const,
+          id: 'steering-event-9',
+          turnId: 'turn-1',
+          ts: 7,
+          messageId: 'steering-message-9',
+          content: admitted,
+        },
+      }),
     );
   });
 

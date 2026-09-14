@@ -35,7 +35,6 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
   const turn: TurnViewModel = {
     turnId: 'turn-1',
     status: 'running',
-    partialOutputRetained: false,
     tools,
     notes: [],
     startedAt: 1,
@@ -54,7 +53,6 @@ function runningStatusText(locale: 'en' | 'zh-CN'): string {
   const turn: TurnViewModel = {
     turnId: 'turn-1',
     status: 'running',
-    partialOutputRetained: false,
     tools: [],
     notes: [],
     startedAt: 1,

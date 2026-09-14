@@ -35,7 +35,6 @@ import {
   ToolRuntime,
   type MakaTool,
   type RuntimeManagedMutationAdmission,
-  type ToolRuntimeInput,
 } from '../tool-runtime.js';
 
 describe('ToolRuntime durable boundary', () => {
@@ -1726,7 +1725,7 @@ function makeHarness(
   sink: RuntimeCommitSink,
   order?: string[],
   runId: string | null = 'run-1',
-  overrides: Partial<ToolRuntimeInput> = {},
+  overrides: Partial<Parameters<typeof createTestToolRuntime>[0]> = {},
 ) {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];

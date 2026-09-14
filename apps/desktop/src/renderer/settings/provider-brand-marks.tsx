@@ -31,6 +31,7 @@
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import { GenericProviderMark } from '../features/connection-settings';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
@@ -338,15 +339,6 @@ function MiniMaxMark(): ReactElement {
   return (
     <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
       <path fill={`#${siMinimax.hex}`} d={siMinimax.path} />
-    </svg>
-  );
-}
-
-function GenericProviderMark(): ReactElement {
-  return (
-    <svg viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="8" />
-      <path d="M8 9.5h6.5a2 2 0 010 4H9.5a2 2 0 000 4H16" />
     </svg>
   );
 }

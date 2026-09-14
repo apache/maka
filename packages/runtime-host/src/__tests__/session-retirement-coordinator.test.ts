@@ -167,7 +167,7 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
-  test('retires context refs before draining every physical garbage batch', async () => {
+  test('retires only its own context refs without draining global garbage', async () => {
     const contextActions: string[] = [];
     let garbageBatches = 0;
     await purgeSessionSidecars(
@@ -179,10 +179,12 @@ describe('Host Session retirement coordinator', () => {
             contextActions.push(`retire:${sessionId}`);
             return { releasedReferences: 1, releasedLogicalBytes: 10 };
           },
-          collectGarbage: async (input) => {
-            contextActions.push(`collect:${input.maxBlobs}`);
-            garbageBatches += 1;
-            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          ...{
+            collectGarbage: async (input: { maxBlobs: number }) => {
+              contextActions.push(`collect:${input.maxBlobs}`);
+              garbageBatches += 1;
+              return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+            },
           },
         },
         purgeOperationalState: async () => {},
@@ -190,12 +192,8 @@ describe('Host Session retirement coordinator', () => {
       'session-context',
     );
 
-    assert.deepEqual(contextActions, [
-      'retire:session-context',
-      'collect:64',
-      'collect:64',
-      'collect:64',
-    ]);
+    assert.deepEqual(contextActions, ['retire:session-context']);
+    assert.equal(garbageBatches, 0);
   });
 
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
@@ -743,6 +741,32 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('archives a Session whose Agent Graph is stopped but remains open', async () => {
+    await withHarness(async (harness) => {
+      harness.quiescentGraphs.add(harness.rootId);
+      harness.blockers.graphWake.add(harness.rootId);
+
+      const busy = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(busy.ok, false);
+      if (busy.ok) assert.fail('An active supervisor wake must block Session retirement');
+      assert.equal(busy.error.code, 'session_busy');
+      await assertFamilyLifecycle(harness, false);
+
+      harness.blockers.graphWake.clear();
+
+      const outcome = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(outcome.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
   test('retires a bound child worktree only after the Session tombstone commits', async () => {
     await withHarness(async (harness) => {
       const binding = {
@@ -1237,6 +1261,7 @@ async function withHarness(
       graphWake: new Set<string>(),
       scheduledTasks: new Set<string>(),
     };
+    const quiescentGraphs = new Set<string>();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     const admission = new SessionAdmissionGate();
     const harness: RetirementHarness = {
@@ -1248,6 +1273,7 @@ async function withHarness(
       familyIds: [rootSession.id, revision.id],
       actions,
       blockers,
+      quiescentGraphs,
       admission,
       memoryExtractionLane,
       failRemoveCommit: false,
@@ -1327,7 +1353,12 @@ async function withHarness(
         hasLiveSessionState: (sessionId) => blockers.effect.has(sessionId),
       },
       graph: {
-        hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
+        readRetirementDisposition: async (sessionId) =>
+          blockers.graph.has(sessionId)
+            ? ({ kind: 'busy', status: 'active' } as const)
+            : quiescentGraphs.has(sessionId)
+              ? ({ kind: 'quiescent_open' } as const)
+              : ({ kind: 'clear' } as const),
         listGraphIds: async (sessionId) => [agentGraphIdForRootSession(sessionId)],
       },
       graphWake: {
@@ -1384,7 +1415,6 @@ async function withHarness(
           actions.retiredContext.push(sessionId);
           return { releasedReferences: 0, releasedLogicalBytes: 0 };
         },
-        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
@@ -1432,6 +1462,7 @@ interface RetirementHarness {
     readonly graphWake: Set<string>;
     readonly scheduledTasks: Set<string>;
   };
+  readonly quiescentGraphs: Set<string>;
   readonly admission: SessionAdmissionGate;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
   coordinator: HostSessionRetirementCoordinator;

@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   abortable,
   decodeRemoteRuntimeHostProfile,
@@ -655,8 +656,8 @@ export function createDesktopGuestSessionMountService(input: {
     if (!retained) {
       return {
         kind: 'error',
-        reason: 'connection_failed',
-        message: `At most ${MAX_MOUNTS} shared Sessions can be retained`,
+        reason: 'mount_limit_reached',
+        params: { max: MAX_MOUNTS },
       };
     }
     let reconcile = false;
@@ -673,6 +674,8 @@ export function createDesktopGuestSessionMountService(input: {
         mountId: mount.mountId,
       };
     } catch (error) {
+      const importWasCancelled = activation.controller.signal.aborted;
+      const peerPathUnavailable = isPeerPathUnavailable(error);
       if (
         (activation.stage === 'finalizing' &&
           error instanceof RuntimeHostPairingFinalizationInterruptedError) ||
@@ -689,13 +692,22 @@ export function createDesktopGuestSessionMountService(input: {
         await input.unmount(mount.mountId).catch(() => undefined);
         invalidatingAccess.delete(mount.mountId);
       }
+      if (!reconcile && !importWasCancelled && !peerPathUnavailable) {
+        const diagnostic = asError(error);
+        console.error(
+          '[session-collaboration] import failed:',
+          redactSecrets(diagnostic.stack ?? diagnostic.message),
+        );
+      }
       return reconcile
         ? { kind: 'recovering', mountId: mount.mountId }
         : {
             kind: 'error',
-            reason: error instanceof RuntimeHostRemoteCompatibilityError ? 'incompatible_host'
-              : isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
-            message: asError(error).message,
+            reason: error instanceof RuntimeHostRemoteCompatibilityError
+              ? 'incompatible_host'
+              : peerPathUnavailable
+                ? 'peer_path_unavailable'
+                : 'connection_failed',
           };
     } finally {
       activations.delete(activation);

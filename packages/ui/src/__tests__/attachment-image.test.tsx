@@ -83,7 +83,6 @@ async function renderAttachmentMarkdown(text: string, readBytes: ReadAttachmentB
 const TURN_WITH_IMAGE: TurnViewModel = {
   turnId: 'turn-1',
   status: 'completed',
-  partialOutputRetained: false,
   user: {
     id: 'ask',
     role: 'user',

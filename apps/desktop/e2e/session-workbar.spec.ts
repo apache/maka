@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, test, expect } from './fixtures';
+import { awaitSendReady, COMPOSER_INPUT, test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,6 +25,7 @@ import { join } from 'node:path';
 async function openGitChanges(page: Page) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create review session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: create review session/)).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
@@ -36,6 +37,7 @@ async function openGitChanges(page: Page) {
 async function createSession(page: Page, prompt: string) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(prompt);
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
@@ -51,22 +53,6 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
-test('the composer usage action opens Task trace in the right workbar', async ({
-  accessibilityNarrativeWindow: page,
-}) => {
-  const action = page.getByRole('button', { name: '打开用量追踪' });
-  await expect(action).toBeVisible();
-
-  await action.click();
-
-  const rightPanel = page.locator(
-    '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
-  );
-  await expect(
-    rightPanel.locator('[data-maka-contract="session-inspector"]'),
-  ).toBeVisible();
-});
-
 test('right workbar visibility belongs to each Session and survives reload', async ({
   window: page,
 }) => {
@@ -77,8 +63,10 @@ test('right workbar visibility belongs to each Session and survives reload', asy
     .getByRole('list', { name: '打开工具' })
     .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
-  await page.getByRole('menu').getByRole('menuitem', { name: '追踪', exact: true }).click();
+  await page.getByRole('button', { name: '打开用量追踪' }).click();
+  await expect(page.locator(
+    '.maka-session-workbar-panel[data-overlay][data-placement="right"] [data-maka-contract="session-inspector"]',
+  )).toBeVisible();
   await expect(panel).toBeVisible();
   await first.sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   const second = await createSession(page, 'second workbar owner');
@@ -184,7 +172,10 @@ test('Git changes re-read the workspace after the app regains focus', async ({
   await expect(panel.getByText('新增 5 行')).toBeVisible();
 });
 
-test('Terminal ownership follows the active Session and stops the old resource', async ({
+// Exercises the real Electron preload/main controller lease across renderer
+// replacement and native PTY Stop/exit delivery to the mounted xterm. Node
+// controller tests cover ordering; they do not mount the production bridge.
+test('Terminal survives navigation and reload, then stops on explicit close', async ({
   window: page,
 }) => {
   const { composer, sessionId, sidebar } = await createSession(
@@ -216,13 +207,45 @@ test('Terminal ownership follows the active Session and stops the old resource',
         .find((update) => update.result.ref === terminalRef)
         ?.result.status,
     )
-    .not.toBe('running');
+    .toBe('running');
 
   await composer.fill('create replacement session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: create replacement session')).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+  await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveAttribute('data-terminal-ref', terminalRef!);
+  await page.reload();
+  await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveAttribute('data-terminal-ref', terminalRef!);
+  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
+  await page.getByRole('menu').getByRole('menuitem', { name: /终端/ }).click();
+  await expect(terminal).toHaveCount(0);
+  await expect.poll(async () =>
+    (await page.evaluate((id) => window.maka.shellRuns.list(id), sessionId))
+      .find((update) => update.result.ref === terminalRef)?.result.status,
+  ).not.toBe('running');
+
+  // Natural exit ends live controls while the local picture remains. Reload
+  // does not promise to recover a completed terminal's contents or its tab.
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await page.getByRole('button', { name: /终端.*查看当前任务的终端运行和实时输出/ }).click();
+  await expect(terminal).toBeVisible();
+  const completedRef = await terminal.getAttribute('data-terminal-ref');
+  await page.evaluate(async ({ sessionId, ref }) => {
+    await window.maka.shellRuns.write({ sessionId, ref: ref!, input: 'exit 0\r' });
+  }, { sessionId, ref: completedRef });
+  await expect.poll(async () => page.evaluate(async ({ sessionId, ref }) =>
+    (await window.maka.shellRuns.list(sessionId)).find((update) => update.result.ref === ref)?.result,
+  { sessionId, ref: completedRef })).toMatchObject({ status: 'completed', exitCode: 0 });
+  await expect(terminal).toBeVisible();
+  await page.reload();
+  await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect(terminal).toHaveCount(0);
 });
 
 test('Side Chat survives collapse, confirms close, and cleans up on source switch', async ({

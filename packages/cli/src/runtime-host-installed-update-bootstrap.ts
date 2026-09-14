@@ -26,6 +26,7 @@ import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-inst
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 import { resolveRuntimeHostRegistryUpdateCandidate } from './runtime-host-registry-update.js';
 import { withRuntimeHostRegistryUpdateArchive } from './runtime-host-update-package.js';
+import type { RuntimeHostInstalledUpdateExpectedSource } from './runtime-host-installed-update-coordinator.js';
 
 interface RuntimeHostInstalledUpdateBootstrapDeps {
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
@@ -45,6 +46,7 @@ interface RuntimeHostInstalledUpdateCoordinatorLaunch {
   readonly targetIntegrity: string;
   readonly targetCompatibility?: number;
   readonly allowInterruptActiveTasks: boolean;
+  readonly expectedSource?: RuntimeHostInstalledUpdateExpectedSource;
 }
 
 export async function runRuntimeHostInstalledUpdateBootstrap(
@@ -52,6 +54,7 @@ export async function runRuntimeHostInstalledUpdateBootstrap(
     readonly rootPath: string;
     readonly selector: RuntimeHostUpdateSelector;
     readonly allowInterruptActiveTasks: boolean;
+    readonly expectedSource?: RuntimeHostInstalledUpdateExpectedSource;
   },
   overrides: Partial<RuntimeHostInstalledUpdateBootstrapDeps> = {},
 ): Promise<number> {
@@ -97,6 +100,7 @@ export async function runRuntimeHostInstalledUpdateBootstrap(
           ? {}
           : { targetCompatibility: target.compatibility }),
         allowInterruptActiveTasks: input.allowInterruptActiveTasks,
+        ...(input.expectedSource ? { expectedSource: input.expectedSource } : {}),
       });
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -127,6 +131,18 @@ function launchCoordinator(input: RuntimeHostInstalledUpdateCoordinatorLaunch): 
       ? []
       : ['--target-compatibility', String(input.targetCompatibility)]),
     ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+    ...(input.expectedSource
+      ? [
+          '--expected-root-id',
+          input.expectedSource.rootId,
+          '--expected-deployment-revision',
+          input.expectedSource.deploymentRevision,
+          '--expected-owner-installation-id',
+          input.expectedSource.ownerInstallationId,
+          '--expected-host-epoch',
+          input.expectedSource.hostEpoch,
+        ]
+      : []),
   ];
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { stdio: 'inherit', windowsHide: false });

@@ -43,9 +43,8 @@ import type {
   AssistantMessage,
   AssistantStepContentKind,
   AssistantThinkingPart,
+  RuntimeSystemNoteKind,
   SessionHeader,
-  SystemNoteMessage,
-  TokenUsageMessage,
 } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -58,6 +57,7 @@ import {
 } from '@maka/core/orchestration';
 import type { ContextBudgetDiagnostic, LlmCallRecord } from '@maka/core/usage-stats/types';
 import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
+import type { RequestProjectionStage } from './request-projection.js';
 import type { PlanToolResult } from './plan-tools.js';
 import {
   YIELD_AGENT_GRAPH_TOOL_NAME,
@@ -103,7 +103,6 @@ import {
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
-import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -113,7 +112,6 @@ import {
   decodePlaintextResponsesReasoningState,
   responsesReasoningItemId,
 } from './responses-reasoning-state.js';
-import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { finitePositive } from './context-budget-helpers.js';
 import type {
   AutomaticMemoryCompactionDecision,
@@ -124,11 +122,7 @@ import {
   contextDiagnosticsCompactionOf,
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
-import {
-  AiSdkCompaction,
-  hasActiveToolResultPruneDiagnosticPatch,
-  hasBlockingReplayDiagnostics,
-} from './ai-sdk-compaction.js';
+import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -146,7 +140,13 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import { toolSchemaCharsForDiagnostics } from './request-shape.js';
+import {
+  toolSchemaCharsForDiagnostics,
+  requestCompositionToolSchemas,
+  stableHash,
+  toolCatalogHash,
+} from './request-shape.js';
+import { toolAvailabilityHash } from './tool-availability.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityPlan } from './tool-availability.js';
@@ -158,7 +158,7 @@ import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
   mergeContextBudgetDiagnostic,
-  mergeContextBudgetDiagnosticPatches,
+  addToolResultPruneStats,
   minimalContextBudgetDiagnostic,
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
@@ -173,7 +173,7 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
-import type { AiSdkBackendInput } from './ai-sdk-backend.js';
+import type { AiSdkBackendInput, ResolvedSystemPrompt } from './ai-sdk-backend.js';
 import {
   INVALID_TOOL_NAME,
   isProviderSandboxBoundaryAttempt,
@@ -191,7 +191,10 @@ export interface AiSdkTurnDependencies {
   messageProjection: AiSdkMessageProjection;
   providerTelemetry: ProviderRequestTelemetry;
   compaction: AiSdkCompaction;
-  toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  snapshotToolAvailability: () => {
+    hostTools: readonly MakaTool[];
+    runtime: ToolAvailabilityRuntime;
+  };
   codeCellAdmission: AdmissionLimiter;
   resolvedProviderOptions: Record<string, unknown>;
   session: AiSdkSessionState;
@@ -416,44 +419,31 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
+  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const withExec = (names: readonly string[]): string[] =>
-    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
-  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
-  const visible = [
-    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
-    execTool,
-  ].sort((a, b) => a.name.localeCompare(b.name));
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  const projectedExec = {
+    ...execTool,
+    description: [
+      execTool.description,
+      'This is the only callable tool. Call the following tools from inside exec.',
+      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+      JSON.stringify(catalog),
+    ].join('\n'),
+  };
   return {
     ...plan,
-    providerTools: [...visible, ...invalid],
-    activeTools: withExec(plan.activeTools),
+    providerTools: [
+      projectedExec,
+      ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
+    ],
+    activeTools: [execTool.name],
     ...(plan.projectActiveTools
-      ? {
-          projectActiveTools: (options) => ({
-            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
-          }),
-        }
+      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
       : {}),
-    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
-    diagnostics: (activeTools, visibleToolSchemaChars) => {
-      const baseActive = activeTools.filter((name) => name !== execTool.name);
-      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
-      const diagnostic = plan.diagnostics(baseActive, baseChars);
-      if (!diagnostic) return undefined;
-      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
-      return {
-        ...diagnostic,
-        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
-        fullToolCount:
-          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
-        visibleToolSchemaChars,
-        fullToolSchemaChars:
-          (diagnostic.fullToolSchemaChars ??
-            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
-      };
-    },
+    currentRepairToolNames: () => [execTool.name],
+    diagnostics: () => undefined,
   };
 }
 
@@ -605,6 +595,7 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
 
 function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
   switch (kind) {
+    case 'stream_truncated':
     case 'network':
     case 'provider_unavailable':
     case 'rate_limit':
@@ -637,10 +628,11 @@ function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined)
 
 export class AiSdkTurn {
   readonly abortController = new AbortController();
-  readonly activeTools = new Map<string, MakaTool>();
+  readonly activeTools = new Map<string, string>();
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
   readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
@@ -836,7 +828,9 @@ export class AiSdkTurn {
       : { disposition: 'policy_denied', dispatch: false };
   }
 
-  private createCodeModeExecTool(eventSink: DurableSessionEventSink): MakaTool<{ code: string }> {
+  private createCodeModeExecTool(
+    eventSink: AsyncEventQueue<SessionEvent>,
+  ): MakaTool<{ code: string }> {
     return {
       name: 'exec',
       description: [
@@ -853,13 +847,31 @@ export class AiSdkTurn {
     };
   }
 
+  /**
+   * A note about what happened inside this invocation, written to the
+   * invocation's own ledger. Fail-open: the note explains a turn, it is not
+   * what the turn did, so losing it must never end a send that is otherwise
+   * fine. Returns whether the note landed.
+   */
+  private async recordSystemNote(
+    kind: RuntimeSystemNoteKind,
+    turnId: string,
+    data?: unknown,
+  ): Promise<boolean> {
+    if (!this.deps.backend.recordSystemNote) return false;
+    return await this.deps.backend
+      .recordSystemNote(kind, turnId, data)
+      .then(() => true)
+      .catch(() => false);
+  }
+
   // --------------------------------------------------------------------------
   // manual history compaction
   // --------------------------------------------------------------------------
 
   private async *runWithinScope(input: BackendSendInput): AsyncIterable<SessionEvent> {
     const turnId = input.turnId;
-    const maxSteps = input.maxSteps ?? this.deps.maxSteps;
+    const maxSteps = input.maxSteps === null ? undefined : (input.maxSteps ?? this.deps.maxSteps);
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
@@ -906,36 +918,6 @@ export class AiSdkTurn {
         return;
       }
       const stepId = currentStepMessageId;
-      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
-      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
-      const msg: AssistantMessage = {
-        type: 'assistant',
-        id: stepId,
-        turnId,
-        ts: this.deps.now(),
-        text: stepText,
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-        ...(contentOrder ? { contentOrder } : {}),
-        modelId: this.deps.backend.modelId,
-        ...(hasThinking
-          ? {
-              thinking: {
-                text: thinkingText,
-                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
-                  ? { signature: stepThinkingParts[0]!.signature }
-                  : {}),
-                ...(stepThinkingParts.length === 1 &&
-                stepThinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
-                  : {}),
-                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
-              },
-            }
-          : {}),
-      };
-      await this.deps.backend.appendMessage(msg);
       if (hasThinking) {
         for (const part of stepThinkingParts) {
           queue.push({
@@ -1026,33 +1008,16 @@ export class AiSdkTurn {
               decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
           )
           .at(-1)?.failOpenReason;
-        const note: SystemNoteMessage = {
-          type: 'system_note',
-          id: this.deps.newId(),
-          turnId,
-          ts: this.deps.now(),
-          kind: 'context_compaction_failed_open',
-          ...(failOpenReason !== undefined ? { data: { failOpenReason } } : {}),
-        };
         // Mark written only after the append lands: a failed write must leave
         // the flag down so the settlement fallback can still record the note.
-        contextCompactionFailedOpenNoteWritten = await this.deps.backend
-          .appendMessage(note)
-          .then(() => true)
-          .catch(() => false);
+        contextCompactionFailedOpenNoteWritten = await this.recordSystemNote(
+          'context_compaction_failed_open',
+          turnId,
+          failOpenReason !== undefined ? { failOpenReason } : undefined,
+        );
       }
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
-        const note: SystemNoteMessage = {
-          type: 'system_note',
-          id: this.deps.newId(),
-          turnId,
-          ts: this.deps.now(),
-          kind: 'context_compacted',
-        };
-        contextCompactedNoteWritten = await this.deps.backend
-          .appendMessage(note)
-          .then(() => true)
-          .catch(() => false);
+        contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
     };
     // Request index (0-based) at which the active prune last rewrote the
@@ -1114,8 +1079,8 @@ export class AiSdkTurn {
     }
 
     // --- Build the provider-visible schema set. Tool execution stays in Runtime. ---
-    // One immutable runtime owns the bound search catalog and cached index.
-    // Mutable activation belongs to this turn.
+    // Each logical step freezes its own scoped catalog and search projection.
+    // Mutable activation belongs to this turn and follows contribution identity.
     const requiredOrchestrationTools =
       this.orchestration.mode === 'swarm'
         ? new Set([
@@ -1136,22 +1101,38 @@ export class AiSdkTurn {
             ])
           : new Set<string>();
     const requestedToolMode: unknown =
-      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
+      input.toolMode ?? this.deps.backend.header.toolMode ?? DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     const toolMode = requestedToolMode;
-    if (toolMode === 'code_mode' && this.deps.backend.tools.some((tool) => tool.name === 'exec')) {
-      throw new Error('Tool name "exec" is reserved for Code Mode.');
-    }
-    const plan = projectToolModePlan(
-      this.deps.toolAvailabilityRuntime.prepare(this.activeTools, requiredOrchestrationTools),
-      toolMode,
-      codeModeExecTool,
-    );
-    const providerTools = plan.providerTools;
-    let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
-    let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
+    const snapshotStepTools = () => {
+      const snapshot = this.deps.snapshotToolAvailability();
+      if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
+        throw new Error('Tool name "exec" is reserved for Code Mode.');
+      }
+      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
+      const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
+      const plan = projectToolModePlan(
+        basePlan,
+        toolMode,
+        codeModeExecTool,
+        toolRuntime.hasSandboxBoundaryDenial()
+          ? new Map(
+              [...nestedTools].filter(([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME),
+            )
+          : nestedTools,
+      );
+      const modelTools: ModelToolSet = {};
+      for (const tool of plan.providerTools) {
+        modelTools[tool.name] = tool.providerTool
+          ? { kind: 'provider', providerTool: tool.providerTool }
+          : { kind: 'function', description: tool.description, inputSchema: tool.parameters };
+      }
+      toolRuntime.setGating(plan.gating);
+      return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
+    };
+    let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
@@ -1162,45 +1143,8 @@ export class AiSdkTurn {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
-    if (plan.gating) {
-      toolRuntime.setGating(plan.gating);
-    }
-
-    const modelTools: ModelToolSet = {};
-    for (const t of providerTools) {
-      modelTools[t.name] = t.providerTool
-        ? { kind: 'provider', providerTool: t.providerTool }
-        : {
-            kind: 'function',
-            description: t.description,
-            inputSchema: t.parameters,
-          };
-    }
-
-    // Resolve the stable Provider envelope before automatic Compaction freezes
-    // its source. The same value is reused by the primary request; Memory does
-    // not resolve or mutate Agent configuration after the checkpoint commits.
+    let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
-    try {
-      systemPrompt = joinPromptFragments([
-        await this.resolveSystemPrompt(),
-        this.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
-        this.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-      ]);
-    } catch (err) {
-      trace.modelStreamFailed(this.deps.modelAdapter.classifyError(err), err);
-      queue.push(this.makeErrorEvent(turnId, err));
-      queue.push({
-        type: 'complete',
-        id: this.deps.newId(),
-        turnId,
-        ts: this.deps.now(),
-        stopReason: 'error',
-      } satisfies CompleteEvent);
-      queue.close();
-      yield* this.drain(queue);
-      return;
-    }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
     const priorReplayResult = await this.buildPriorMessages(input);
@@ -1301,6 +1245,9 @@ export class AiSdkTurn {
       };
       let lastCompletedStepHadToolResult = false;
       let terminalProviderErrorReason: string | undefined;
+      let terminalRetry:
+        | { error: unknown; retry: import('@maka/core/model-failure').ModelRetryDecision }
+        | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -1350,6 +1297,14 @@ export class AiSdkTurn {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
+          const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
+          if (pruned.stats) {
+            if (pruned.stats.prunedToolResults > 0) pruneAppliedAtStep = runtimeSteps;
+            contextBudgetForTelemetry = addToolResultPruneStats(
+              contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
+              pruned.stats,
+            );
+          }
           const projectionCheckpoint = midTurnState?.projectionCheckpoint;
           const rawProjectionEvents = projectionCheckpoint
             ? [
@@ -1375,6 +1330,7 @@ export class AiSdkTurn {
             const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
             const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
+              pruned.projectionSnapshot,
             );
             if (
               pinnedEffectiveDigest === undefined ||
@@ -1397,8 +1353,10 @@ export class AiSdkTurn {
           // folded through the same reducer before it becomes messages. Without
           // this, a result archived at step N is rebuilt in full at step N+1 and
           // the ledger's account of what the model sees stops being true.
-          const foldedReplayEvents =
-            await this.deps.compaction.foldEffectiveModelHistory(replayEvents);
+          const foldedReplayEvents = await this.deps.compaction.foldEffectiveModelHistory(
+            replayEvents,
+            pruned.projectionSnapshot,
+          );
           const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
@@ -1446,16 +1404,17 @@ export class AiSdkTurn {
         });
 
         const onMidTurnDiagnosticPatch = (patch: Partial<ContextBudgetDiagnostic>): void => {
-          midTurnCompactDiagnosticPatch = mergeContextBudgetDiagnosticPatches(
-            midTurnCompactDiagnosticPatch,
+          contextBudgetForTelemetry = mergeContextBudgetDiagnostic(
+            contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
             patch,
           );
         };
+        const capacityProviderTools = [...providerTools];
         const midTurnCapacityHook = this.deps.compaction.buildMidTurnCapacityCompactProjection(
           turnId,
           midTurnState,
           queue,
-          providerTools,
+          capacityProviderTools,
           onMidTurnDiagnosticPatch,
           this,
           this.automaticMemoryCompactionSupported()
@@ -1466,24 +1425,11 @@ export class AiSdkTurn {
             : undefined,
           turnAbortController.signal,
         );
-        // When mid-turn capacity compaction is active, the prune must also cover
-        // the newest completed step; see collectPrunableCompletedStepToolCallIds.
-        const activeToolResultPruneIncludesNewestStep = midTurnState !== undefined;
-        const activeToolResultPruneHook = this.deps.compaction.buildActiveToolResultPruneProjection(
-          turnId,
-          activeToolResultPruneIncludesNewestStep,
-          (patch) => {
-            pruneAppliedAtStep = runtimeSteps;
-            activeToolResultPruneDiagnosticPatch = mergeActiveToolResultPruneDiagnosticPatches(
-              activeToolResultPruneDiagnosticPatch,
-              patch,
-            );
-          },
-        );
+        const projectCurrentToolAvailability: RequestProjectionStage = (options) =>
+          plan.projectActiveTools?.(options);
         const shapedProjection = composeRequestProjection(
-          plan.projectActiveTools,
+          projectCurrentToolAvailability,
           midTurnCapacityHook,
-          activeToolResultPruneHook,
         );
         // Hooks shape; nothing measures the final payload. Whether it fits is
         // the provider's answer (#4559).
@@ -1501,6 +1447,14 @@ export class AiSdkTurn {
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
+          ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
+          resolvedSystemPrompt = await this.resolveSystemPrompt();
+          systemPrompt = joinPromptFragments([
+            resolvedSystemPrompt.text,
+            this.orchestration.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
+            this.orchestration.mode === 'graph' ? renderGraphModePrompt() : undefined,
+          ]);
+          capacityProviderTools.splice(0, capacityProviderTools.length, ...providerTools);
           await this.drainSteeringInto(input, queue);
           if (this.deps.backend.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
@@ -1545,18 +1499,39 @@ export class AiSdkTurn {
                 ? []
                 : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
           });
+          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
+            ({ text }) => ({ role: 'user', content: text }),
+          );
+          const contextualRequestMessages =
+            dynamicContextMessages.length === 0
+              ? requestMessages
+              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: requestMessages,
+                messages: contextualRequestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? requestMessages;
+          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
-          providerRequestTracker?.setStep(runtimeSteps);
+          const requestCompositionId =
+            this.runId && this.deps.backend.recordRequestComposition
+              ? await this.deps.backend.recordRequestComposition(this.runId, {
+                  compositionId: this.deps.newId(),
+                  step: runtimeSteps,
+                  sourceRevisions: resolvedSystemPrompt.sourceRevisions,
+                  systemPromptHash: stableHash(requestSystemPrompt ?? ''),
+                  toolCatalogHash: toolCatalogHash(providerTools),
+                  toolAvailabilityHash: toolAvailabilityHash(this.deps.backend.toolAvailability),
+                  providerOptionsHash: stableHash(this.deps.resolvedProviderOptions),
+                  toolNames: activeToolsForRequest,
+                  toolSchemas: requestCompositionToolSchemas(providerTools, activeToolsForRequest),
+                })
+              : undefined;
+          providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
@@ -1606,13 +1581,9 @@ export class AiSdkTurn {
             // no longer sees it as a direct tool, but a nested retry must still
             // reach ToolRuntime's denial latch instead of becoming an endlessly
             // variable unknown-tool error inside `exec`.
-            const codeModeActiveTools =
-              toolRuntime.hasSandboxBoundaryDenial() && activeToolsForRequest.includes('exec')
-                ? [...activeToolsForRequest, REQUEST_SANDBOX_BOUNDARY_TOOL_NAME]
-                : activeToolsForRequest;
             this.codeModeTools =
-              toolMode === 'code_mode'
-                ? nestableToolSnapshot(providerTools, codeModeActiveTools)
+              toolMode === 'code_mode' && activeToolsForRequest.includes('exec')
+                ? nestedTools
                 : undefined;
             const requestWatchdog = watchdogState.current;
             // Read here, beside the messages it describes: `attemptMessages` is
@@ -1741,15 +1712,10 @@ export class AiSdkTurn {
                       : stepUsage.inputTokens <= priorInput)
                   ) {
                     this.deps.session.contextProviderDroppingReported = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_provider_dropping',
-                      data: { inputTokens: stepUsage.inputTokens, priorInputTokens: priorInput },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_provider_dropping', turnId, {
+                      inputTokens: stepUsage.inputTokens,
+                      priorInputTokens: priorInput,
+                    });
                   }
                   // Fail closed: reset on every step boundary so a missing final
                   // step's usage does not leave a stale value from an earlier step.
@@ -1770,18 +1736,10 @@ export class AiSdkTurn {
                     stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
                   ) {
                     contextWindowOverrunNoteWritten = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_window_overrun',
-                      data: {
-                        usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
-                        declaredContextWindow: midTurnState.capacity,
-                      },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_window_overrun', turnId, {
+                      usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
+                      declaredContextWindow: midTurnState.capacity,
+                    });
                   }
                   // Nothing declared, and the provider accepted a request past
                   // the window this model reports. Every other signal in this
@@ -1823,15 +1781,10 @@ export class AiSdkTurn {
                       (previousTotal === undefined || previousTotal <= reported);
                     if (reported !== undefined && crossedNow) {
                       contextReportedWindowNoteWritten = true;
-                      const note: SystemNoteMessage = {
-                        type: 'system_note',
-                        id: this.deps.newId(),
-                        turnId,
-                        ts: this.deps.now(),
-                        kind: 'context_reported_window_exceeded',
-                        data: { usedTokens: used, reportedContextWindow: reported },
-                      };
-                      await this.deps.backend.appendMessage(note).catch(() => {});
+                      await this.recordSystemNote('context_reported_window_exceeded', turnId, {
+                        usedTokens: used,
+                        reportedContextWindow: reported,
+                      });
                     }
                   }
                   lastStepInputTokens = stepUsage?.inputTokens;
@@ -2117,21 +2070,7 @@ export class AiSdkTurn {
                   : undefined;
               if (recovered) {
                 overflowRetryUsed = true;
-                // Recovery rebuilds the request from the durable ledger, whose
-                // tool results intentionally retain their full bodies. Re-enter
-                // the active-result projection before dispatch so an archived
-                // result cannot reappear in provider context on the retry.
-                const recoveredProjection = activeToolResultPruneHook
-                  ? await activeToolResultPruneHook({
-                      completedSteps: completedProviderSteps,
-                      stepNumber: runtimeSteps,
-                      model,
-                      messages: recovered.messages,
-                      activeTools: activeToolsForRequest,
-                      resolveDispatch,
-                    })
-                  : undefined;
-                attemptMessages = recoveredProjection?.messages ?? recovered.messages;
+                attemptMessages = recovered.messages;
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
@@ -2150,20 +2089,12 @@ export class AiSdkTurn {
                 (midTurnState.capacity === undefined || acceptedTotal < midTurnState.capacity)
               ) {
                 contextWindowSuggestionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_window_suggestion',
-                  data: {
-                    suggestedContextWindow: acceptedTotal,
-                    ...(midTurnState.capacity !== undefined
-                      ? { declaredContextWindow: midTurnState.capacity }
-                      : {}),
-                  },
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_window_suggestion', turnId, {
+                  suggestedContextWindow: acceptedTotal,
+                  ...(midTurnState.capacity !== undefined
+                    ? { declaredContextWindow: midTurnState.capacity }
+                    : {}),
+                });
               }
               // A folded projection was selected in this send and the provider
               // still rejects the request. That is worth saying, because the
@@ -2179,14 +2110,7 @@ export class AiSdkTurn {
                 midTurnState?.compactionAppliedThisSend === true
               ) {
                 contextOverflowAfterCompactionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_overflow_after_compaction',
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_overflow_after_compaction', turnId);
               }
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
@@ -2208,16 +2132,35 @@ export class AiSdkTurn {
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
                 !attemptHasNoObservableOutput();
+              // The stopping gate also supplies the durable reason. An absent
+              // decision means this attempt is allowed to retry.
+              let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
-                failure.kind !== 'context_overflow' &&
-                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
-                stepBudgetRemains &&
-                (attemptHasNoObservableOutput() ||
+                !(
+                  attemptHasNoObservableOutput() ||
                   idleWatchdogRecovery ||
                   incompleteStreamRecovery ||
-                  sealedThinkingRecovery)
+                  sealedThinkingRecovery
+                )
               ) {
+                retry = {
+                  decision: 'declined',
+                  because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
+                };
+              } else if (!stepBudgetRemains) {
+                retry = { decision: 'declined', because: 'budget' };
+              } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
+                retry = { decision: 'exhausted', attempts: providerAttempt };
+              } else if (failure.kind === 'context_overflow') {
+                retry = { decision: 'declined', because: 'policy' };
+              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
+                retry =
+                  incompleteStreamTerminal &&
+                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
+                    ? { decision: 'exhausted', attempts: providerAttempt }
+                    : { decision: 'declined', because: 'policy' };
+              }
+              if (!retry) {
                 if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
                 if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
@@ -2269,6 +2212,7 @@ export class AiSdkTurn {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'
@@ -2365,14 +2309,11 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.map((outcome) => {
-              // A rejected settlement was handled above, so preserving the
-              // original array shape also preserves tool-call identity by index.
+            settlementOutcomes.forEach((outcome, index) => {
+              // All settlements completed and rejection was checked above;
+              // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
-              return outcome.value;
-            });
-            for (let index = 0; index < settlements.length; index += 1) {
-              const settlement = settlements[index]!;
+              const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2384,7 +2325,10 @@ export class AiSdkTurn {
               ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
-            }
+            });
+            // Continuation reads durable events, not raw results. Do not retain
+            // an entire completed batch across the next provider request.
+            settlementOutcomes.length = 0;
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
@@ -2423,6 +2367,16 @@ export class AiSdkTurn {
           }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
             currentStepMessageId = this.deps.newId();
             continue agentLoop;
           }
@@ -2453,6 +2407,17 @@ export class AiSdkTurn {
               !this.loopStopRequested &&
               !this.aborted
             ) {
+              await queue.waitUntilConsumedThroughCurrent();
+              if (
+                (await input.handoffBoundary?.(
+                  turnAbortController.signal,
+                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
+                )) === 'pause'
+              ) {
+                this.handoffPaused = true;
+                break agentLoop;
+              }
+              if (this.aborted || this.loopStopRequested) break agentLoop;
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }
@@ -2481,11 +2446,7 @@ export class AiSdkTurn {
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
-            const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
-              contextBudgetForTelemetry,
-              activeToolResultPruneDiagnosticPatch,
-              midTurnCompactDiagnosticPatch,
-            );
+            const contextBudgetForUsage = contextBudgetForTelemetry;
             // Persisted alongside the live event so transcript rebuilds from
             // stored messages keep the TUI ctx segment instead of degrading to
             // `?/<window>` (#4019). Computed once; both writers share it.
@@ -2553,14 +2514,6 @@ export class AiSdkTurn {
                   }
                 : {}),
             };
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.deps.newId(),
-              turnId,
-              ts: this.deps.now(),
-              ...usageFields,
-            };
-            await this.deps.backend.appendMessage(tu).catch(() => {});
             // Settlement fallback: a mid-turn or request-hook fold is only
             // known here. Notes already written at decision time are skipped
             // by the flags inside.
@@ -2581,6 +2534,9 @@ export class AiSdkTurn {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         if (terminalProviderError) throw terminalProviderError;
+        // Usage above still belongs to this physical attempt. Its Runtime owner
+        // seals the drained stream; no complete/abort event ends the logical Turn.
+        if (this.handoffPaused) return;
         const stopReason =
           this.loopStopReason ??
           (maxSteps !== undefined && finishReason === 'tool-calls'
@@ -2615,8 +2571,8 @@ export class AiSdkTurn {
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
         // `finish-step`; this keeps their and this step's streamed-out output on
-        // BOTH exits — user stop and provider error / watchdog timeout — so
-        // partialOutputRetained reflects what the user actually saw.
+        // BOTH exits — user stop and provider error / watchdog timeout — so the
+        // transcript keeps what the user actually saw.
         await flushStep().catch(() => {});
         if (this.aborted) {
           queue.push({
@@ -2635,7 +2591,12 @@ export class AiSdkTurn {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
+          queue.push({
+            ...this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason),
+            ...(terminalRetry && terminalRetry.error === terminalError
+              ? { retry: terminalRetry.retry }
+              : {}),
+          });
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -2652,11 +2613,6 @@ export class AiSdkTurn {
       } finally {
         watchdogState.current?.stop();
         if (this.watchdog === watchdogState.current) this.watchdog = null;
-        contextBudgetForTelemetry = contextBudgetWithRequestProjectionDiagnostics(
-          contextBudgetForTelemetry,
-          activeToolResultPruneDiagnosticPatch,
-          midTurnCompactDiagnosticPatch,
-        );
         // `tokenUsage` still backfills from the completed steps when the send
         // ended without a final `usage`: the terminal outcome and the
         // `token_usage` SessionEvent below both read it. An unusable sample in
@@ -2712,7 +2668,7 @@ export class AiSdkTurn {
   }
 
   private async executeCodeModeCell(
-    eventSink: DurableSessionEventSink,
+    eventSink: AsyncEventQueue<SessionEvent>,
     code: string,
     context: MakaToolContext,
   ): Promise<unknown> {
@@ -2736,15 +2692,9 @@ export class AiSdkTurn {
       },
       pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
     };
-    // A permit is held across the cell's complete lifecycle, not just its
-    // sandbox run: `executeCodeCell` settles only once the cell's host
-    // operations have drained, so releasing on settlement covers the drain.
-    // The sandbox worker cap cannot serve this purpose — on cancellation
-    // `runCodeMode` releases its worker and rejects at once, by design, while
-    // host operations started by the cell may still be running with durable
-    // side effects. Only the Runtime waits for those, so only the Runtime can
-    // bound them; releasing when the worker is released would let repeated
-    // cancellation accumulate host work without bound.
+    // Admission covers the whole cell, including host waits. executeCodeCell
+    // waits for every started host call
+    // on both success and cancellation, so settlement is the release boundary.
     //
     // One cell may wait; the next is turned away rather than queued, which is
     // what the Code Mode adapter did before this moved to the side that owns
@@ -2767,6 +2717,8 @@ export class AiSdkTurn {
         })),
         isFatalToolError: isRuntimeCommitBoundaryError,
         callTool: async (name, input, signal) => {
+          if (this.loopStopRequested)
+            throw new Error('The turn has yielded; no further tools may run.');
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
@@ -2774,6 +2726,7 @@ export class AiSdkTurn {
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.deps.newId()}`,
+            stepId: `${context.toolCallId}:nested`,
             input: parsedInput,
             abortSignal: signal,
             eventSink: nestedEventSink,
@@ -2787,6 +2740,14 @@ export class AiSdkTurn {
           }
           if (nestedOutputLimitExceeded) {
             throw new Error('Code Mode nested output byte limit exceeded');
+          }
+          if (isPlanToolResult(settlement.result))
+            this.handlePlanToolResult(settlement.result, eventSink);
+          if (
+            name === YIELD_AGENT_GRAPH_TOOL_NAME &&
+            isAgentGraphYieldToolResult(settlement.result)
+          ) {
+            this.handleAgentGraphYieldToolResult(settlement.result);
           }
           return settlement.result;
         },
@@ -2865,9 +2826,11 @@ export class AiSdkTurn {
         diagnostics: [],
       };
     }
-    const rawPriorRuntimeContext = input.runtimeContext.filter(
-      (event) => event.turnId !== input.turnId,
-    );
+    // A handoff changes the physical Run, not the logical Turn. Its admitted
+    // replay is all predecessor history, including events with this turnId.
+    const rawPriorRuntimeContext = input.continuation
+      ? input.runtimeContext
+      : input.runtimeContext.filter((event) => event.turnId !== input.turnId);
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
@@ -2895,6 +2858,7 @@ export class AiSdkTurn {
     const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
     let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
       budgeted?.events ?? rawPriorRuntimeContext,
+      preparedContextBudget.projectionSnapshot,
     );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
@@ -3017,18 +2981,26 @@ export class AiSdkTurn {
     };
   }
 
-  private async resolveSystemPrompt(): Promise<string | undefined> {
+  private async resolveSystemPrompt(): Promise<ResolvedSystemPrompt> {
     const turnId = this.turnId;
     if (typeof this.deps.backend.systemPrompt === 'function') {
-      return await this.deps.backend.systemPrompt({
+      const resolved = await this.deps.backend.systemPrompt({
         sessionId: this.deps.backend.sessionId,
         turnId,
         cwd: this.deps.backend.header.cwd,
         emitSkillCatalogTrace: (message, data) =>
           this.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
+      return typeof resolved === 'string' || resolved === undefined
+        ? { ...(resolved === undefined ? {} : { text: resolved }), sourceRevisions: [] }
+        : resolved;
     }
-    return this.deps.backend.systemPrompt;
+    return {
+      ...(this.deps.backend.systemPrompt === undefined
+        ? {}
+        : { text: this.deps.backend.systemPrompt }),
+      sourceRevisions: [],
+    };
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {
@@ -3076,7 +3048,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;
@@ -3200,19 +3172,6 @@ class ContinuationReplayEmptyError extends Error {
   }
 }
 
-function mergeActiveToolResultPruneDiagnosticPatches(
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): ActiveToolResultPruneDiagnosticPatch {
-  return {
-    ...sumOptionalCounts('activePrunedToolResults', left, right),
-    ...sumOptionalCounts('activeSupersededToolResults', left, right),
-    ...sumOptionalCounts('activeDuplicateToolResults', left, right),
-    ...sumOptionalCounts('activeArchiveFailures', left, right),
-    ...sumOptionalCounts('activeEstimatedTokensSaved', left, right),
-  };
-}
-
 function mergeNormalizedUsage(
   current: NormalizedAiSdkUsage | undefined,
   next: NormalizedAiSdkUsage,
@@ -3235,26 +3194,6 @@ function mergeNormalizedUsage(
     ...(next.rawFinishReason !== undefined ? { rawFinishReason: next.rawFinishReason } : {}),
     cachedInputTokens: cacheHitInputTokens,
   };
-}
-
-function sumOptionalCounts<K extends keyof ActiveToolResultPruneDiagnosticPatch>(
-  key: K,
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): Pick<ActiveToolResultPruneDiagnosticPatch, K> | Record<string, never> {
-  const total = (left[key] ?? 0) + (right[key] ?? 0);
-  return total > 0 ? ({ [key]: total } as Pick<ActiveToolResultPruneDiagnosticPatch, K>) : {};
-}
-
-function contextBudgetWithRequestProjectionDiagnostics(
-  base: ContextBudgetDiagnostic | undefined,
-  patch: ActiveToolResultPruneDiagnosticPatch,
-  compactionPatch: Partial<ContextBudgetDiagnostic> | undefined,
-): ContextBudgetDiagnostic | undefined {
-  const prunePatch = hasActiveToolResultPruneDiagnosticPatch(patch) ? patch : undefined;
-  const mergedPatch = mergeContextBudgetDiagnosticPatches(prunePatch, compactionPatch);
-  if (!mergedPatch) return base;
-  return mergeContextBudgetDiagnostic(base ?? minimalContextBudgetDiagnostic(), mergedPatch);
 }
 
 function projectMemoryConversationPrefix(

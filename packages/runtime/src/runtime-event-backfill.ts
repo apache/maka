@@ -19,6 +19,7 @@
 
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { RunIdentity } from './terminal-run-commit.js';
+import { isRuntimeSystemNoteKind } from '@maka/core/session';
 import type {
   PermissionDecisionMessage,
   StoredMessage,
@@ -30,14 +31,13 @@ import type {
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import { createRuntimeEventId } from '@maka/core/runtime-event';
 
-export const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
+const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
 
 export type RuntimeEventBackfillDiagnosticCode =
   | 'skipped_high_risk_message'
   | 'skipped_provider_native_replay_gap'
   | 'skipped_unmatched_tool_result'
-  | 'skipped_unmatched_permission_decision'
-  | 'skipped_unsafe_terminal_state';
+  | 'synthesized_terminal_event';
 
 export interface RuntimeEventBackfillDiagnostic {
   code: RuntimeEventBackfillDiagnosticCode;
@@ -193,14 +193,18 @@ export function backfillRuntimeEventsFromStoredMessages(
 
       case 'tool_call': {
         if (conversationTextOnly) break;
-        if (message.providerExecuted === true && !replayableProviderToolUseIds.has(message.id)) {
+        // A provider-native call whose opaque output was not retained can never
+        // be replayed to a provider again, so it is converted hidden: the
+        // transcript keeps the card, and no model request is built from it.
+        const unreplayable =
+          message.providerExecuted === true && !replayableProviderToolUseIds.has(message.id);
+        if (unreplayable) {
           diagnostics.push({
             code: 'skipped_provider_native_replay_gap',
             message:
               'provider-native tool history requires the opaque provider output for lossless recovery',
             detail: { messageId: message.id, toolUseId: message.id },
           });
-          break;
         }
         const stateDelta = toolCallStateDelta(message);
         events.push({
@@ -209,6 +213,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           role: 'model',
           author: 'agent',
           ...storedToolActivityIdentity(message),
+          ...(unreplayable ? { modelVisibility: 'hidden' as const } : {}),
           content: {
             kind: 'function_call',
             id: message.id,
@@ -242,15 +247,18 @@ export function backfillRuntimeEventsFromStoredMessages(
 
       case 'tool_result': {
         if (conversationTextOnly) break;
-        if (message.providerExecuted === true && message.providerOutput === undefined) {
-          break;
-        }
+        // Same rule as the call it answers: a result the provider cannot be
+        // shown again is kept as a transcript row and hidden from replay. A
+        // result whose call is not in this turn is hidden for the same reason —
+        // a lone result is not a request a provider would accept.
         const call = safePriorToolCall(toolCalls, message);
+        const unreplayable =
+          !call || (message.providerExecuted === true && message.providerOutput === undefined);
         if (!call) {
           diagnostics.push({
             code: 'skipped_unmatched_tool_result',
             message:
-              'tool_result requires an earlier same-turn tool_call to recover RuntimeEvent function_response',
+              'tool_result has no earlier same-turn tool_call, so its RuntimeEvent stays out of model replay',
             detail: {
               messageId: message.id,
               toolUseId: message.toolUseId,
@@ -258,18 +266,18 @@ export function backfillRuntimeEventsFromStoredMessages(
               turnId: input.run.turnId,
             },
           });
-          break;
         }
         events.push({
           ...base,
           id: newId(),
           role: 'tool',
           author: 'tool',
-          ...storedToolActivityIdentity(call),
+          ...storedToolActivityIdentity(call ?? message),
+          ...(unreplayable ? { modelVisibility: 'hidden' as const } : {}),
           content: {
             kind: 'function_response',
             id: message.toolUseId,
-            name: call.toolName,
+            name: call?.toolName ?? '',
             result: message.content,
             isError: message.isError,
             ...(message.providerExecuted !== undefined
@@ -285,10 +293,10 @@ export function backfillRuntimeEventsFromStoredMessages(
           refs: {
             storedMessageId: message.id,
             toolCallId: message.toolUseId,
-            ...(call.parentToolCallId !== undefined
+            ...(call?.parentToolCallId !== undefined
               ? { parentToolCallId: call.parentToolCallId }
               : {}),
-            ...(call.parentOperationId !== undefined
+            ...(call?.parentOperationId !== undefined
               ? { parentOperationId: call.parentOperationId }
               : {}),
           },
@@ -296,23 +304,11 @@ export function backfillRuntimeEventsFromStoredMessages(
         break;
       }
 
-      case 'permission_decision': {
+      // The decision names the tool it answered for, so it converts on its own
+      // evidence; a matching call in the same turn is confirmation, not a
+      // requirement.
+      case 'permission_decision':
         if (conversationTextOnly) break;
-        const call = safePriorToolCall(toolCalls, message);
-        if (!call) {
-          diagnostics.push({
-            code: 'skipped_unmatched_permission_decision',
-            message:
-              'permission_decision requires an earlier same-turn tool_call to recover RuntimeEvent permissionDecision',
-            detail: {
-              messageId: message.id,
-              toolUseId: message.toolUseId,
-              runId: input.run.runId,
-              turnId: input.run.turnId,
-            },
-          });
-          break;
-        }
         events.push({
           ...base,
           id: newId(),
@@ -323,15 +319,19 @@ export function backfillRuntimeEventsFromStoredMessages(
             permissionDecision: {
               requestId: message.id,
               decision: message.decision,
+              toolName: message.toolName,
               ...(message.rememberForTurn !== undefined
                 ? { rememberForTurn: message.rememberForTurn }
                 : {}),
+              ...(message.reviewer !== undefined ? { reviewer: message.reviewer } : {}),
+              ...(message.rationale !== undefined ? { rationale: message.rationale } : {}),
+              ...(message.riskLevel !== undefined ? { riskLevel: message.riskLevel } : {}),
+              ...(message.hint !== undefined ? { hint: message.hint } : {}),
             },
           },
-          refs: { storedMessageId: message.id, toolCallId: call.id },
+          refs: { storedMessageId: message.id, toolCallId: message.toolUseId },
         });
         break;
-      }
 
       case 'token_usage':
         if (conversationTextOnly) break;
@@ -353,21 +353,45 @@ export function backfillRuntimeEventsFromStoredMessages(
         });
         break;
 
+      // Both are already accounted for elsewhere: the turn's ending becomes the
+      // terminal RuntimeEvent below, and a coordination record is the WorkHub's
+      // own durable proof, which no run ledger owns a copy of.
       case 'turn_state':
+      case 'workhub_coordination':
         break;
 
+      // A note that names a turn is that invocation's own fact, so it converts.
+      // A session-level kind that somehow carries a turnId is not: it says
+      // something about the Session, and the Session transcript keeps it.
       case 'system_note':
         if (conversationTextOnly) break;
-        diagnostics.push({
-          code: 'skipped_high_risk_message',
-          message:
-            'system_note is not recovered into a run ledger because session-level notes may not belong to this run',
-          detail: {
-            messageId: message.id,
-            kind: message.kind,
-            runId: input.run.runId,
-            turnId: input.run.turnId,
+        if (!isRuntimeSystemNoteKind(message.kind)) {
+          diagnostics.push({
+            code: 'skipped_high_risk_message',
+            message:
+              'session-level system_note is not recovered into a run ledger because it does not belong to this run',
+            detail: {
+              messageId: message.id,
+              kind: message.kind,
+              runId: input.run.runId,
+              turnId: input.run.turnId,
+            },
+          });
+          break;
+        }
+        events.push({
+          ...base,
+          id: newId(),
+          role: 'system',
+          author: 'system',
+          modelVisibility: 'hidden',
+          content: {
+            kind: 'system_note',
+            note: message.kind,
+            ...(message.data !== undefined ? { data: structuredClone(message.data) } : {}),
           },
+          actions: { stateDelta: recoveryState(now, message) },
+          refs: { storedMessageId: message.id },
         });
         break;
     }
@@ -381,11 +405,8 @@ export function backfillRuntimeEventsFromStoredMessages(
     newId,
     now,
   });
-  if (terminal.event) {
-    events.push(terminal.event);
-  } else if (terminal.diagnostic) {
-    diagnostics.push(terminal.diagnostic);
-  }
+  if (terminal.event) events.push(terminal.event);
+  if (terminal.diagnostic) diagnostics.push(terminal.diagnostic);
 
   return { events, diagnostics };
 }
@@ -448,25 +469,30 @@ function terminalRuntimeEvent(input: {
   now: () => number;
 }): { event?: RuntimeEvent; diagnostic?: RuntimeEventBackfillDiagnostic } {
   const turnState = latestTurnState(input.turnMessages);
-  const status = terminalStatus(input.outcome, turnState);
-  if (!status) {
-    return {
-      diagnostic: {
-        code: 'skipped_unsafe_terminal_state',
+  const readStatus = terminalStatus(input.outcome, turnState);
+  // An invocation with no ending is not a legal ledger state, and leaving one
+  // open would strand the turn in recovery forever. Incomplete legacy evidence
+  // does not get to claim the turn completed, so it ends as the failure it
+  // actually was, marked so a reader can tell it apart from a recorded one.
+  const status = readStatus ?? 'failed';
+  const diagnostic: RuntimeEventBackfillDiagnostic | undefined = readStatus
+    ? undefined
+    : {
+        code: 'synthesized_terminal_event',
         message:
-          'terminal RuntimeEvent was not recovered because legacy terminal evidence is incomplete',
+          'terminal RuntimeEvent was synthesized because legacy terminal evidence is incomplete',
         detail: {
           runId: input.run.runId,
           turnId: input.run.turnId,
           declaredStatus: input.outcome?.status,
           turnStatus: turnState?.status,
         },
-      },
-    };
-  }
+      };
   const ts = turnState?.ts ?? input.outcome?.ts ?? input.now();
   const failureClass =
-    status === 'failed' ? (turnState?.errorClass ?? input.outcome?.failureClass) : undefined;
+    status === 'failed'
+      ? (turnState?.errorClass ?? input.outcome?.failureClass ?? 'missing_terminal_event')
+      : undefined;
   const abortSource =
     status === 'aborted'
       ? (turnState?.abortSource ??
@@ -495,6 +521,7 @@ function terminalRuntimeEvent(input: {
       },
       ...(turnState ? { refs: { storedMessageId: turnState.id } } : {}),
     },
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 

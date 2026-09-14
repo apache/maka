@@ -18,8 +18,12 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { isTerminalShellRunStatus } from '@maka/core/shell-run';
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
 import type { WorkbarServices } from '../../features/workbar';
-import { readSettledMessagesFrom } from '../../session-message-settlement.js';
+import { readSettledMessagesFrom } from './session-message-settlement.js';
+import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
@@ -43,18 +47,75 @@ const DEFAULT_DEPENDENCIES: DesktopWorkbarServiceDependencies = {
   readSettledMessages: readSettledMessagesFrom,
 };
 
+function isDesktopTerminal(update: ShellRunUpdate): boolean {
+  return update.ownership.kind === 'local' &&
+    update.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX) &&
+    update.sourceTurnId === update.sourceToolCallId &&
+    update.result.mode === 'pty';
+}
+
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
 export function createDesktopWorkbarServices(
   bridge: DesktopWorkbarBridge = window.maka,
   dependencies: DesktopWorkbarServiceDependencies = DEFAULT_DEPENDENCIES,
 ): WorkbarServices {
+  const submitSideChatFollowUp: WorkbarServices['sideChat']['submitFollowUp'] = async (
+    sessionId,
+    placement,
+    text,
+    admissionId,
+    content,
+  ) => {
+    const result = await bridge.sessions.submitMessage(
+      sessionId,
+      placement,
+      {
+        messageId: admissionId,
+        text,
+        // A structured-only follow-up (a staged quote or a submitted
+        // attachment with no text) rides the one Message admission channel
+        // with its structured content (#4804).
+        ...(content?.quotes ? { quotes: content.quotes } : {}),
+        ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
+      },
+      { waitForHostAdmission: true },
+    );
+    if (!result.ok) {
+      if (result.reason === 'outcome_unknown') {
+        return { kind: 'outcome_unknown' };
+      }
+      throw new Error('Runtime Host refused the follow-up Message');
+    }
+    return result.disposition === 'turn_started' && result.turnId
+      ? { kind: 'started', turnId: result.turnId }
+      : { kind: 'queued' };
+  };
+
   return {
     review: {
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
-    terminal: bridge.shellRuns,
+    terminal: {
+      start: (sessionId) => bridge.shellRuns.start(sessionId),
+      stop: (input) => bridge.shellRuns.stop(input),
+      attach: (input) => bridge.shellRuns.attach(input),
+      detach: (input) => bridge.shellRuns.detach(input),
+      write: (input) => bridge.shellRuns.write(input),
+      subscribePtyData: (handler) => bridge.shellRuns.subscribePtyData(handler),
+      subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
+      recover: async (sessionId) => {
+        const recovery = await bridge.shellRuns.recover(sessionId);
+        return { ...recovery, resources: recovery.resources.filter((update) =>
+          isDesktopTerminal(update) && !isTerminalShellRunStatus(update.result.status)),
+        };
+      },
+      subscribeCloseChanges: (handler) => bridge.shellRuns.subscribeCloseChanges(handler),
+      subscribeUpdates: (handler) => bridge.shellRuns.subscribeUpdates((update) => {
+        if (isDesktopTerminal(update)) handler(update);
+      }),
+    },
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
@@ -66,7 +127,6 @@ export function createDesktopWorkbarServices(
       close: (sessionId) => bridge.browser.close(sessionId),
       getState: (sessionId) => bridge.browser.getState(sessionId),
       subscribeState: (handler) => bridge.browser.onState(handler),
-      subscribeLive: (handler) => bridge.browser.onLive(handler),
     },
     artifacts: {
       list: (sessionId) => bridge.artifacts.list(sessionId),
@@ -78,6 +138,8 @@ export function createDesktopWorkbarServices(
         bridge.artifacts.delete(sessionId, artifactId),
       openPath: (sessionId, artifactId) =>
         bridge.app.openArtifactPath(sessionId, artifactId),
+      showInFolder: (sessionId, artifactId) =>
+        bridge.app.showArtifactInFolder(sessionId, artifactId),
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
     },
@@ -102,7 +164,7 @@ export function createDesktopWorkbarServices(
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
       readSettledMessages: (sessionId, options) =>
-        dependencies.readSettledMessages(bridge.transcripts, sessionId, options),
+        dependencies.readSettledMessages(bridge, sessionId, options),
       branchFromTurn: (sessionId, input) =>
         bridge.sessions.branchFromTurn(sessionId, input),
       cleanupSessionCopy: (sessionId) =>
@@ -122,29 +184,19 @@ export function createDesktopWorkbarServices(
         );
         return result?.kind === 'retracted' ? result : undefined;
       },
-      // Steering is a Message placed at the current Turn's boundary, so it
-      // rides the one admission channel. Runtime Host names the outcome; this
-      // adapter only renames it for the Side Conversation port.
-      steer: async (sessionId, text, admissionId) => {
-        const messageId = admissionId ?? crypto.randomUUID();
-        const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
-          messageId,
-          text,
-        });
-        if (!result.ok) {
-          if (result.reason === 'outcome_unknown') {
-            return { kind: 'outcome_unknown', messageId };
-          }
-          // No Turn opened and nothing was queued; the caller surfaces it as a
-          // failed send rather than waiting for an admission that never lands.
-          throw new Error('Runtime Host refused the steering Message');
-        }
-        return result.disposition === 'turn_started' && result.turnId
-          ? { kind: 'started', turnId: result.turnId }
-          : { kind: 'queued', messageId };
-      },
-      setPermissionMode: (sessionId, mode) =>
-        bridge.sessions.setPermissionMode(sessionId, mode),
+      submitFollowUp: submitSideChatFollowUp,
+      queryMessageExecutions: (sessionId, messageIds) =>
+        bridge.sessions.queryMessageExecutions(sessionId, messageIds),
+      retractQueueEntry: (sessionId, entryId) =>
+        bridge.sessions.retractQueueEntry(sessionId, entryId),
+      promoteQueueEntry: (sessionId, entryId) =>
+        bridge.sessions.promoteQueueEntry(sessionId, entryId),
+      updateQueueEntry: (sessionId, entryId, expectedQueueRevision, text) =>
+        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
+      reorderQueueEntries: (sessionId, entryIds) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds),
+      setPermissionMode: async (sessionId, mode) =>
+        expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
@@ -155,8 +207,10 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToUserQuestion(sessionId, response),
       respondToUserForm: (sessionId, response) =>
         bridge.sessions.respondToUserForm(sessionId, response),
-      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>
-        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError),
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError, onExecution) =>
+        bridge.sessions.subscribeEvents(sessionId, handler, (phase) => {
+          if (phase === 'ready') onSeeded?.();
+        }, onSeedError, onExecution),
       subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };

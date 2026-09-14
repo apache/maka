@@ -609,7 +609,6 @@ describe('thread search text projection', () => {
         turnId: 't1',
         ts: 1,
         status: 'completed',
-        partialOutputRetained: false,
       },
       {
         type: 'permission_decision',

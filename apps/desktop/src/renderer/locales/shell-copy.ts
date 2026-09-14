@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -28,6 +26,13 @@ import { type SettingsSection } from '@maka/core/settings';
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type GoalStatus } from '@maka/core/goal';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  unexpectedOperationFallback,
+} from '@maka/core/redaction';
+import { AttachmentIngestBlockedError, type AttachmentIngestBlockedCode } from '@maka/core/attachments';
+import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-session-projection.js';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -148,6 +153,7 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
+    backToWorkHub: string;
   };
   actions: {
     retry: string;
@@ -344,6 +350,8 @@ type ShellCopy = {
     bypassCancelLabel: string;
     permissionFailedTitle: string;
     permissionFallback: string;
+    updateFailures: Record<DesktopSessionUpdateFailureCode, string>;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingFailedTitle: string;
@@ -715,10 +723,11 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: '外观',
   projects: '工作区',
   models: '模型',
+  'external-agents': '外部 Agent',
   subagents: '子 Agent',
   usage: '使用统计',
   'archived-tasks': '已归档任务',
-  'import-tasks': '导入任务',
+  'import-tasks': '导入/导出任务',
   memory: '记忆',
   'daily-review': '每日回顾',
   'bot-chat': '远程接入',
@@ -734,10 +743,11 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   appearance: 'Appearance',
   projects: 'Workspace',
   models: 'Models',
+  'external-agents': 'External Agents',
   subagents: 'Subagents',
   usage: 'Usage',
   'archived-tasks': 'Archived tasks',
-  'import-tasks': 'Import tasks',
+  'import-tasks': 'Import/export tasks',
   memory: 'Memory',
   'daily-review': 'Daily Review',
   'bot-chat': 'Remote Access',
@@ -750,7 +760,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
-    navigation: { settings: '设置' },
+    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
@@ -996,6 +1006,20 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自动',
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
+      updateFailures: {
+        session_busy: '当前任务正在运行或有交互待处理，等结束后再改设置。',
+        operation_conflict: '任务状态刚刚变化，请刷新后重试。',
+        operation_unavailable: '当前 Runtime Host 不支持此设置。',
+        not_found: '任务不存在，可能已被删除。',
+      },
+      attachmentIngestBlocked: {
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        total_size_exceeded: '附件总量超出大小限制。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingFailedTitle: '切换思考级别失败',
@@ -1243,7 +1267,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
-    navigation: { settings: '設定' },
+    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
@@ -1489,6 +1513,20 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: '保持自動',
       permissionFailedTitle: '切換權限模式失敗',
       permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      updateFailures: {
+        session_busy: '目前任務正在執行或有互動待處理，等結束後再改設定。',
+        operation_conflict: '任務狀態剛剛變化，請重新整理後重試。',
+        operation_unavailable: '目前 Runtime Host 不支援此設定。',
+        not_found: '任務不存在，可能已被刪除。',
+      },
+      attachmentIngestBlocked: {
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        total_size_exceeded: '附件總量超出大小限制。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
       modelFailedTitle: '切換模型失敗',
       modelFallback: '模型暫時無法切換，請稍後重試。',
       thinkingFailedTitle: '切換思考級別失敗',
@@ -1736,7 +1774,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   en: {
-    navigation: { settings: 'Settings' },
+    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
@@ -1988,6 +2026,20 @@ const SHELL_COPY_BY_LOCALE = {
       bypassCancelLabel: 'Keep Auto',
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
+      updateFailures: {
+        session_busy: 'A task is running or waiting on you. Change this setting after it settles.',
+        operation_conflict: 'The task changed underneath this request. Refresh and try again.',
+        operation_unavailable: 'This Runtime Host does not support that setting.',
+        not_found: 'The task no longer exists.',
+      },
+      attachmentIngestBlocked: {
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        total_size_exceeded: 'The total attachment size exceeds the limit.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingFailedTitle: 'Could not change thinking level',
@@ -2284,7 +2336,13 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+  if (error instanceof AttachmentIngestBlockedError)
+    return getShellCopy(locale).sessionSettingsActions.attachmentIngestBlocked[error.code];
+  // A classified failure (timeout / rate limit / auth / provider / network)
+  // is expected; only an unrecognized one lands the redacted diagnostic.
+  return classifyGeneralizedError(error)
+    ? generalizedErrorMessageForLocale(error, fallback, locale)
+    : unexpectedOperationFallback(error, fallback, 'desktop');
 }
 
 export function sessionSettingFailureCopy(
@@ -2304,8 +2362,14 @@ export function sessionSettingFailureCopy(
           : { title: copy.app.orchestrationModeFailedTitle, fallback: copy.app.orchestrationModeFallback };
   return {
     title: failure.title,
-    description: localizedShellErrorMessage(error, failure.fallback, locale),
+    description:
+      lookupCopy(copy.sessionSettingsActions.updateFailures, expectedOperationCode(error)) ??
+      localizedShellErrorMessage(error, failure.fallback, locale),
   };
+}
+
+function expectedOperationCode(error: unknown): string | undefined {
+  return error instanceof Error && error.name === 'ExpectedOperationError' ? error.message : undefined;
 }
 
 export function confirmBypassPermission(

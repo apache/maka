@@ -159,6 +159,19 @@ test('projects the canonical root lifecycle and the attachment queue from real S
   });
 });
 
+test('returns null when SQLite no longer contains the requested Session', async () => {
+  await withStores(async (_root, stores) => {
+    const sessionId = 'missing-session';
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions: new RootAdmissionOwner(stores.agentRunStore),
+      messages: createMessages(sessionId, stores),
+    });
+
+    assert.equal(await reader.read(sessionId), null);
+  });
+});
+
 test('projects pending Interactions and preflights their combined snapshot capacity', async () => {
   await withStores(async (root, stores) => {
     const session = await stores.sessionStore.create(sessionInput(root));
@@ -606,6 +619,7 @@ function createMessages(
     hostEpoch: 'epoch-1',
     root,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (requestedSessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(requestedSessionId, messageId),
       readImmutableSteeringMessageProof: (requestedSessionId, messageId) =>

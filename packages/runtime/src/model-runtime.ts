@@ -21,15 +21,19 @@ import {
   PROVIDER_REGISTRY,
   effectiveBaseUrl,
   type ModelInfo,
-  type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import {
   lookupModelMetadata,
-  lookupModelProviderOverride,
+  lookupModelRuntimeOverride,
   openAiAdapterApiProtocol,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
+import {
+  anthropicV1BaseUrl,
+  googleV1BetaBaseUrl,
+  openAiResponsesBaseUrl,
+} from './provider-urls.js';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 import {
   resolveRuntimeProviderAdapter,
@@ -51,15 +55,38 @@ export type ReasoningReplayContract =
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
   | { kind: 'responses'; contract: RuntimeProviderResponsesContract };
 
-export interface ResolvedModelRuntime {
-  adapter: RuntimeProviderAdapter;
+type ModelRuntimeCall =
+  | {
+      wire: 'anthropic-messages';
+      adapter: Extract<RuntimeProviderAdapter, { kind: 'anthropic' }>;
+      reasoningReplay: { kind: 'anthropic-signed' };
+    }
+  | {
+      wire: 'openai-chat';
+      adapter: Extract<RuntimeProviderAdapter, { kind: 'openai' | 'openai-compatible' }>;
+      reasoningReplay: Extract<ReasoningReplayContract, { kind: 'none' | 'openai-chat-plaintext' }>;
+    }
+  | {
+      wire: 'openai-responses';
+      adapter: Extract<
+        RuntimeProviderAdapter,
+        { kind: 'openai' | 'openai-compatible' | 'openai-codex' }
+      >;
+      reasoningReplay: Extract<ReasoningReplayContract, { kind: 'responses' }>;
+    }
+  | {
+      wire: 'google-generate';
+      adapter: Extract<RuntimeProviderAdapter, { kind: 'google' }>;
+      reasoningReplay: { kind: 'none' };
+    }
+  | {
+      wire: 'cohere-v2';
+      adapter: Extract<RuntimeProviderAdapter, { kind: 'cohere' }>;
+      reasoningReplay: { kind: 'none' };
+    };
+
+export type ResolvedModelRuntime = ModelRuntimeCall & {
   baseUrl: string;
-  /** Account-advertised request wire for adapters that route per model. */
-  apiProtocol?: ModelInfo['apiProtocol'];
-  /** Effective wire after account, adapter, and model defaults are resolved. */
-  wire: ModelRuntimeWire;
-  /** Durable reasoning replay semantics carried by that wire. */
-  reasoningReplay: ReasoningReplayContract;
   /** Effective parallel-tool-call support after model facts and wire defaults are resolved. */
   parallelToolCalls?: boolean;
   /** Provider-options namespace used by durable plaintext-summary replay. */
@@ -68,7 +95,7 @@ export interface ResolvedModelRuntime {
   responsesReplayProfile?: string;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
-}
+};
 
 export interface ModelRuntimeConnection {
   readonly slug?: string;
@@ -81,64 +108,58 @@ export function resolveModelRuntime(
   connection: ModelRuntimeConnection,
   modelId: string,
 ): ResolvedModelRuntime {
-  // Ahead of the override lookup: an override builds its own active adapter,
-  // so consulting it first would let a per-model entry hand a retired provider
-  // a working adapter and skip the `unavailable` refusal below entirely. No
-  // such entry exists today, but that table is generated from an external
-  // source — one row should not be able to undo a retirement.
+  // Model metadata cannot reactivate a retired provider.
   if (isRetiredProvider(connection.providerType)) {
     throw new Error(
       `"${connection.providerType}" is retired and can no longer resolve a model runtime.`,
     );
   }
-  const override = lookupModelProviderOverride(connection.providerType, modelId);
+  const override = lookupModelRuntimeOverride(connection.providerType, modelId);
   const defaults = PROVIDER_REGISTRY[connection.providerType];
-  // Unknown providerType with no per-model override → can't resolve an adapter.
-  // Throw a clear error rather than crashing on `.runtimeAdapter`. Mirrors
-  // `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!override && !defaults) {
     throw new Error(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,
     );
   }
   const apiProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
-  if (
-    connection.providerType === 'kimi-coding-plan' &&
-    apiProtocol !== undefined &&
-    apiProtocol !== 'anthropic-messages' &&
-    apiProtocol !== 'openai-chat'
-  ) {
-    throw new Error(
-      `Kimi Coding Plan protocol must be openai-chat or anthropic-messages, received ${apiProtocol}`,
-    );
-  }
-  const baseAdapter: ProviderRuntimeAdapter =
-    connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
-      ? ({
-          kind: 'openai-compatible',
-          name: 'provider',
-          includeUsage: true,
-        } as const)
-      : override
-        ? runtimeAdapterOverride(override.npm)
-        : defaults.runtimeAdapter;
-  const adapter = resolveRuntimeProviderAdapter(baseAdapter);
+  const baseAdapter = resolveRuntimeProviderAdapter(override?.adapter ?? defaults.runtimeAdapter);
+  const calls = adapterCalls(baseAdapter);
+  const preferred = openAiAdapterApiProtocol(modelId, connection.providerType);
+  const defaultCall = calls.find((call) => call.wire === preferred) ?? calls[0]!;
+  const declared = apiProtocol ? defaults.protocolAdapters?.[apiProtocol] : undefined;
+  const call =
+    apiProtocol === undefined
+      ? defaultCall
+      : (calls.find((candidate) => candidate.wire === apiProtocol) ??
+        (declared
+          ? adapterCalls(resolveRuntimeProviderAdapter(declared)).find(
+              (candidate) => candidate.wire === apiProtocol,
+            )
+          : undefined) ??
+        adapterCalls(resolveRuntimeProviderAdapter(defaults.runtimeAdapter)).find(
+          (candidate) => candidate.wire === apiProtocol,
+        ));
+  if (!call)
+    throw new Error(`${defaults.label} does not support ${apiProtocol} for model ${modelId}`);
+  const { adapter, wire, reasoningReplay: replay } = call;
   const configuredBaseUrl = connection.baseUrl?.trim();
   const resolvedBaseUrl = configuredBaseUrl
     ? effectiveBaseUrl(connection)
-    : (override?.api ?? effectiveBaseUrl(connection));
-  const wire = resolveModelRuntimeWire(connection.providerType, modelId, adapter, apiProtocol);
-  const parallelToolCalls = resolveParallelToolCalls(connection, modelId, adapter);
-  const replay = reasoningReplayContract(adapter, wire);
+    : ((calls.includes(call) ? override?.baseUrl : undefined) ?? effectiveBaseUrl(connection));
+  const baseUrl =
+    adapter.kind === 'anthropic' && adapter.normalizeBaseUrl
+      ? anthropicV1BaseUrl(resolvedBaseUrl)
+      : adapter.kind === 'google' && adapter.normalizeBaseUrl !== false
+        ? googleV1BetaBaseUrl(resolvedBaseUrl)
+        : adapter.kind === 'openai-compatible' && adapter.normalizeBaseUrl
+          ? anthropicV1BaseUrl(resolvedBaseUrl)
+          : wire === 'openai-responses' && resolvedBaseUrl
+            ? openAiResponsesBaseUrl(resolvedBaseUrl)
+            : resolvedBaseUrl;
+  const parallelToolCalls = resolveParallelToolCalls(connection, modelId, baseAdapter);
   return {
-    adapter,
-    baseUrl:
-      connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
-        ? kimiOpenAiBaseUrl(resolvedBaseUrl)
-        : resolvedBaseUrl,
-    ...(apiProtocol ? { apiProtocol } : {}),
-    wire,
-    reasoningReplay: replay,
+    ...call,
+    baseUrl,
     ...(parallelToolCalls === undefined ? {} : { parallelToolCalls }),
     ...(replay.kind === 'responses' &&
     replay.contract.adapter === 'open-responses' &&
@@ -176,13 +197,6 @@ function resolveParallelToolCalls(
   return adapter.kind === 'openai' || adapter.kind === 'openai-codex' ? true : undefined;
 }
 
-export function modelUsesAnthropicMessages(
-  connection: ModelRuntimeConnection,
-  modelId: string,
-): boolean {
-  return resolveModelRuntime(connection, modelId).wire === 'anthropic-messages';
-}
-
 /** Native OpenAI lanes keep mutable continuation state inside ModelAdapter. */
 export function modelUsesNativeOpenAiResponses(
   connection: ModelRuntimeConnection,
@@ -194,92 +208,62 @@ export function modelUsesNativeOpenAiResponses(
   );
 }
 
-function resolveModelRuntimeWire(
-  providerType: ProviderType,
-  modelId: string,
-  adapter: RuntimeProviderAdapter,
-  apiProtocol: ModelInfo['apiProtocol'] | undefined,
-): ModelRuntimeWire {
+function adapterCalls(adapter: RuntimeProviderAdapter): ModelRuntimeCall[] {
   switch (adapter.kind) {
     case 'anthropic':
-      return 'anthropic-messages';
-    case 'unavailable':
-      // Reached only if something selected a retired provider despite the
-      // pickers filtering it out; failing here beats sending on a wire we
-      // cannot name.
-      throw new Error('This provider has no Runtime adapter and cannot resolve a wire.');
-    case 'openai-codex':
-      return 'openai-responses';
-    case 'github-copilot':
-      return apiProtocol === 'anthropic-messages'
-        ? 'anthropic-messages'
-        : apiProtocol === 'openai-responses'
-          ? 'openai-responses'
-          : 'openai-chat';
-    case 'openai':
-      return (adapter.apiProtocol ??
-        apiProtocol ??
-        openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
-        ? 'openai-responses'
-        : 'openai-chat';
-    case 'openai-compatible':
-      return adapter.responses !== undefined &&
-        (apiProtocol ?? openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
-        ? 'openai-responses'
-        : 'openai-chat';
+      return [
+        { adapter, wire: 'anthropic-messages', reasoningReplay: { kind: 'anthropic-signed' } },
+      ];
     case 'google':
-      return 'google-generate';
+      return [{ adapter, wire: 'google-generate', reasoningReplay: { kind: 'none' } }];
     case 'cohere':
-      return 'cohere-v2';
-  }
-}
-
-function reasoningReplayContract(
-  adapter: RuntimeProviderAdapter,
-  wire: ModelRuntimeWire,
-): ReasoningReplayContract {
-  switch (wire) {
-    case 'anthropic-messages':
-      return { kind: 'anthropic-signed' };
-    case 'openai-responses':
-      return { kind: 'responses', contract: responsesContract(adapter) };
-    case 'openai-chat':
-      return adapter.kind === 'openai-compatible' || adapter.kind === 'github-copilot'
-        ? {
+      return [{ adapter, wire: 'cohere-v2', reasoningReplay: { kind: 'none' } }];
+    case 'openai-codex':
+      return [
+        {
+          adapter,
+          wire: 'openai-responses',
+          reasoningReplay: {
+            kind: 'responses',
+            contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+          },
+        },
+      ];
+    case 'openai': {
+      const calls: ModelRuntimeCall[] = [];
+      if (adapter.apiProtocol !== 'openai-responses')
+        calls.push({ adapter, wire: 'openai-chat', reasoningReplay: { kind: 'none' } });
+      if (adapter.apiProtocol !== 'openai-chat')
+        calls.push({
+          adapter,
+          wire: 'openai-responses',
+          reasoningReplay: {
+            kind: 'responses',
+            contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+          },
+        });
+      return calls;
+    }
+    case 'openai-compatible': {
+      const calls: ModelRuntimeCall[] = [
+        {
+          adapter,
+          wire: 'openai-chat',
+          reasoningReplay: {
             kind: 'openai-chat-plaintext',
-            requestField:
-              adapter.kind === 'openai-compatible' &&
-              adapter.replayAssistantReasoningAs === 'reasoning'
-                ? 'reasoning'
-                : 'observed',
-          }
-        : { kind: 'none' };
-    case 'google-generate':
-    case 'cohere-v2':
-      return { kind: 'none' };
-  }
-}
-
-function responsesContract(adapter: RuntimeProviderAdapter): RuntimeProviderResponsesContract {
-  if (adapter.kind === 'openai-compatible' && adapter.responses) return adapter.responses;
-  return { adapter: 'openai', reasoningReplay: 'encrypted-content' };
-}
-
-function kimiOpenAiBaseUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1`;
-}
-
-function runtimeAdapterOverride(packageName: string): ProviderRuntimeAdapter {
-  switch (packageName) {
-    case '@ai-sdk/anthropic':
-      return { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true };
-    case '@ai-sdk/google':
-      return { kind: 'google', normalizeBaseUrl: false };
-    case '@ai-sdk/openai':
-      return { kind: 'openai' };
-    case '@ai-sdk/openai-compatible':
-      return { kind: 'openai-compatible', name: 'provider' };
-    default:
-      throw new Error(`models.dev model runtime package ${packageName} is unsupported`);
+            requestField: adapter.replayAssistantReasoningAs ?? 'observed',
+          },
+        },
+      ];
+      if (adapter.responses)
+        calls.push({
+          adapter,
+          wire: 'openai-responses',
+          reasoningReplay: { kind: 'responses', contract: adapter.responses },
+        });
+      return calls;
+    }
+    case 'unavailable':
+      throw new Error('This provider has no Runtime adapter and cannot resolve a wire.');
   }
 }

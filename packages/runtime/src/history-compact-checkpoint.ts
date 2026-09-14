@@ -264,7 +264,7 @@ export function buildHistoryCompactCheckpoint(
       anchored.turnId !== input.headAnchor.turnId ||
       anchored.turnId !== lastCovered.turnId ||
       anchored.role !== 'user' ||
-      anchored.author !== 'user'
+      (anchored.author !== 'user' && anchored.author !== 'host')
     ) {
       throw new Error(
         "Mid-turn history compact checkpoint head anchor must be the compacted turn's user event",
@@ -624,7 +624,7 @@ export function matchHistoryCompactCheckpointPrefix(
       anchor.turnId !== checkpoint.headAnchor!.turnId ||
       anchor.turnId !== checkpoint.coverage.through.turnId ||
       anchor.role !== 'user' ||
-      anchor.author !== 'user'
+      (anchor.author !== 'user' && anchor.author !== 'host')
     ) {
       return {
         coveredEventCount: 0,

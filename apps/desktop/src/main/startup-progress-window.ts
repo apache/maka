@@ -19,13 +19,26 @@
 
 import { randomUUID } from 'node:crypto';
 import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
-import type { UiLocale } from '@maka/core/ui-locale';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { formatHostHandoff, type HostHandoffView, type HostHandoffAction } from '@maka/runtime-host/client';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
+import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
 export type StartupPhase =
   | 'prepare' | 'storage' | 'connect' | 'package'
   | 'checking' | 'staging' | 'retiring' | 'replacing' | 'restart'
   | 'attention' | 'renderer';
+
+interface StartupProgressCopy {
+  readonly title: string;
+  readonly detail: string;
+  readonly slow: string;
+  readonly copy: string;
+  readonly copied: string;
+  readonly copyFailed: string;
+  readonly elapsed: string;
+  readonly phases: Record<StartupPhase, string>;
+}
 
 const COPY = {
   en: {
@@ -66,10 +79,12 @@ const COPY = {
       attention: '等待你的確認', renderer: '正在開啟工作區',
     },
   },
-} as const;
+} satisfies UiCatalog<StartupProgressCopy>;
 
 export interface StartupProgressWindow {
   update(phase: StartupPhase): void;
+  handoff(view: HostHandoffView, submit: (revision: string, action: HostHandoffAction) => void, locale: UiLocale): void;
+  clearHandoff(): void;
   focus(): void;
   close(): void;
   window(): BrowserWindow | undefined;
@@ -80,13 +95,15 @@ export function createStartupProgressWindow(input: {
   locale: UiLocale;
   dark: boolean;
   icon: string;
+  /** How far this run may go when the window asks for attention. */
+  revealMode: WindowRevealMode;
   createWindow(options: BrowserWindowConstructorOptions): BrowserWindow;
-  copyDiagnostics(phase: StartupPhase): void | Promise<void>;
+  copyDiagnostics(phase: StartupPhase, handoff?: HostHandoffView): void | Promise<void>;
   onError(error: unknown): void;
 }): StartupProgressWindow {
   const copy = COPY[input.locale];
   const win = input.createWindow({
-    width: 520, height: 390, title: 'Maka', icon: input.icon,
+    width: 520, height: 350, useContentSize: true, title: 'Maka', icon: input.icon,
     show: false, resizable: false, maximizable: false, fullscreenable: false,
     backgroundColor: input.dark ? '#1c1d21' : '#ffffff',
     webPreferences: {
@@ -96,16 +113,37 @@ export function createStartupProgressWindow(input: {
   });
   let closed = false;
   let loaded = false;
+  let presentationRevision = 0;
   let phase: StartupPhase = 'prepare';
-  const execute = (source: string) => {
+  let handoff: { view: HostHandoffView; submit(revision: string, action: HostHandoffAction): void; locale: UiLocale } | undefined;
+  const execute = (source: string, accept?: (result: unknown) => void) => {
     if (!closed && loaded && !win.isDestroyed()) {
-      void win.webContents.executeJavaScript(source).catch(input.onError);
+      void win.webContents.executeJavaScript(source).then(accept).catch(input.onError);
     }
   };
-  const publish = () => execute(
-    'document.getElementById("phase").textContent = ' + JSON.stringify(copy.phases[phase]) +
-    '; document.body.dataset.phase = ' + JSON.stringify(phase) + ';',
-  );
+  const publish = () => {
+    if (closed || !loaded || win.isDestroyed()) return;
+    const revision = ++presentationRevision;
+    const width = handoff ? 560 : 520;
+    const [currentWidth, currentHeight] = win.getContentSize();
+    if (currentWidth !== width) win.setContentSize(width, currentHeight);
+    const fitContent = (height: unknown) => {
+      if (closed || win.isDestroyed() || revision !== presentationRevision ||
+          typeof height !== 'number' || !Number.isFinite(height)) return;
+      const fittedHeight = Math.max(240, Math.min(640, Math.ceil(height)));
+      if (win.getContentSize()[1] !== fittedHeight) win.setContentSize(width, fittedHeight);
+    };
+    if (handoff) {
+      const presentation = formatHostHandoff(handoff.view, handoff.locale);
+      execute('window.renderHandoff(' + JSON.stringify({ ...presentation, revision: handoff.view.revision,
+        state: handoff.view.state, diagnostic: handoff.view.diagnostic }) +
+        '); document.body.getBoundingClientRect().height;', fitContent);
+    } else execute(
+      'window.renderHandoff(null); document.getElementById("phase").textContent = ' + JSON.stringify(copy.phases[phase]) +
+      '; document.body.dataset.phase = ' + JSON.stringify(phase) +
+      '; document.body.getBoundingClientRect().height;', fitContent,
+    );
+  };
   const close = () => {
     if (closed) return;
     closed = true;
@@ -121,8 +159,15 @@ export function createStartupProgressWindow(input: {
   });
   win.webContents.on('will-navigate', (event, url) => {
     event.preventDefault();
+    if (url.startsWith('maka-startup://handoff/')) {
+      const match = /^maka-startup:\/\/handoff\/([a-z0-9-]+)\/(cancel|retry|replace|interrupt)$/.exec(url);
+      if (match && handoff?.view.revision === match[1] && handoff.view.actions.includes(match[2] as HostHandoffAction)) {
+        handoff.submit(match[1], match[2] as HostHandoffAction);
+      }
+      return;
+    }
     if (url !== 'maka-startup://copy') return;
-    void Promise.resolve().then(() => input.copyDiagnostics(phase)).then(
+    void Promise.resolve().then(() => input.copyDiagnostics(phase, handoff?.view)).then(
       () => execute('document.getElementById("copy").textContent = ' + JSON.stringify(copy.copied)),
       (error) => {
         input.onError(error);
@@ -133,6 +178,7 @@ export function createStartupProgressWindow(input: {
   win.webContents.on('will-redirect', (event) => event.preventDefault());
   win.webContents.on('render-process-gone', (_event, details) => {
     input.onError(new Error('Startup renderer exited: ' + details.reason));
+    handoff?.submit(handoff.view.revision, 'cancel');
     close();
   });
   // No await: failure to present progress must never block Host recovery.
@@ -142,19 +188,29 @@ export function createStartupProgressWindow(input: {
     if (closed || win.isDestroyed()) return;
     loaded = true;
     publish();
-    // A confirmation may already be open; never raise progress above it.
-    win.showInactive();
+    if (handoff?.view.state === 'attention') focusWindow(win, input.revealMode);
+    else showWindowInactive(win, input.revealMode);
   }).catch((error) => {
     input.onError(error);
+    handoff?.submit(handoff.view.revision, 'cancel');
     close();
   });
   return {
     update(next) { phase = next; publish(); },
+    handoff(view, submit, locale) {
+      if (closed || win.isDestroyed()) { submit(view.revision, 'cancel'); return; }
+      const needsAttention = handoff?.view.state !== 'attention' && view.state === 'attention';
+      handoff = { view, submit, locale };
+      publish();
+      if (loaded && needsAttention) focusWindow(win, input.revealMode);
+    },
+    clearHandoff() {
+      handoff = undefined;
+      publish();
+    },
     focus() {
       if (closed || !loaded || win.isDestroyed()) return;
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
+      focusWindow(win, input.revealMode);
     },
     close,
     window: () => closed || win.isDestroyed() ? undefined : win,
@@ -180,15 +236,48 @@ footer { display: flex; justify-content: space-between; align-items: center; mar
 #elapsed { opacity: .55; font-variant-numeric: tabular-nums; }
 button { font: inherit; color: inherit; background: transparent; border: 1px solid ${dark ? '#48494f' : '#dedee3'}; border-radius: 7px; padding: 6px 10px; cursor: pointer; }
 button:hover { background: ${dark ? '#303137' : '#f4f4f6'}; } button:focus-visible { outline: 2px solid #788aff; outline-offset: 3px; }
+#handoff-detail { white-space: pre-line; overflow-wrap: anywhere; margin-top: 18px; } #actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+#actions .destructive { border-color: ${dark ? '#c77976' : '#bc443d'}; color: ${dark ? '#ffada7' : '#a42c25'}; }
+#handoff-diagnostic { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70px; overflow: auto; font: 11px/1.4 monospace; opacity: .6; }
+body[data-handoff] #slow, body[data-handoff] .status { display: none; }
+body[data-handoff="attention"] #elapsed { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } } @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style></head><body>
 <svg viewBox="0 0 460 120" role="img" aria-label="Maka"><g transform="translate(0,120) scale(0.1,-0.1)"><path d="${MAKA_WORDMARK_PATH}"/></g></svg>
-<h1>${copy.title}</h1><p>${copy.detail}</p>
+<h1 id="title">${copy.title}</h1><p id="description">${copy.detail}</p>
+<p id="handoff-detail" hidden></p><pre id="handoff-diagnostic" hidden></pre><div id="actions" hidden></div>
 <div class="status" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span id="phase">${copy.phases.prepare}</span></div>
 <p id="slow">${copy.slow}</p>
 <footer><span id="elapsed"></span><button id="copy">${copy.copy}</button></footer>
 <script nonce="${nonce}">
 const started = performance.now();
+let revision;
+window.renderHandoff = (view) => {
+  const changed = revision !== view?.revision;
+  revision = view?.revision;
+  if (view) document.body.dataset.handoff = view.state;
+  else delete document.body.dataset.handoff;
+  document.getElementById('title').textContent = view?.title ?? ${JSON.stringify(copy.title)};
+  document.getElementById('description').textContent = view?.description ?? ${JSON.stringify(copy.detail)};
+  const detail = document.getElementById('handoff-detail');
+  detail.hidden = !view;
+  detail.textContent = view?.detail ?? '';
+  const diagnostic = document.getElementById('handoff-diagnostic');
+  diagnostic.hidden = !view?.diagnostic;
+  diagnostic.textContent = view?.diagnostic ?? '';
+  const actions = document.getElementById('actions');
+  actions.hidden = !view;
+  if (!changed) return;
+  actions.replaceChildren();
+  for (const item of view?.actions ?? []) {
+    const button = document.createElement('button');
+    button.textContent = item.label;
+    if (item.action === 'interrupt') button.className = 'destructive';
+    button.addEventListener('click', () => { location.href = 'maka-startup://handoff/' + view.revision + '/' + item.action; });
+    actions.append(button);
+    if (item.action === 'cancel') button.focus();
+  }
+};
 setInterval(() => {
   const seconds = Math.floor((performance.now() - started) / 1000);
   document.getElementById('elapsed').textContent = ${JSON.stringify(copy.elapsed)} + ' ' + Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');

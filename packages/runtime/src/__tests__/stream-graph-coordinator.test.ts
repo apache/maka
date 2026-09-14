@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import {
   AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
   type AgentGraphIntentClaim,
@@ -975,13 +976,16 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
-  test('advances only a finished and quiescent graph to a deterministic next epoch', async () => {
+  test('advances only a finished and quiescent graph without waiting for old operator cleanup', async (t) => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-epoch-cutover-'));
     const controlStore = createSqliteSessionMetadataStore(
       join(root, OPERATIONAL_STATE_DATABASE_NAME),
     );
     const rootSessionId = 'root-session';
     const graphId = agentGraphIdForRootSession(rootSessionId);
+    const stopStarted = deferred();
+    const releaseStop = deferred();
+    let stopping: Promise<void> | undefined;
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
@@ -1006,7 +1010,10 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('epoch cutover cannot dispatch operators');
         },
-        stopSession: async () => {},
+        stopSession: async () => {
+          stopStarted.resolve();
+          await releaseStop.promise;
+        },
       },
       newId: randomUUID,
     });
@@ -1032,7 +1039,33 @@ describe('host-managed agent graph coordinator', () => {
           context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
         }),
       );
-      const next = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      t.mock.method(controlStore, 'listAgentGraphOperatorProvisions', async (id: string) =>
+        id === graphId
+          ? [
+              {
+                schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+                graphId,
+                provisionId: `graph_provision_${'1'.repeat(32)}`,
+                provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+                workId: `graph_work_${'3'.repeat(32)}`,
+                agentId: 'agent',
+                operatorId: `graph_operator_${'4'.repeat(32)}`,
+                targetSessionId: 'child-session',
+                initialTurnId: 'child-turn',
+                initialRunId: 'child-run',
+                provisionedAt: 1,
+                edges: [],
+              },
+            ]
+          : [],
+      );
+      stopping = coordinator.stop(rootSessionId);
+      await stopStarted.promise;
+      const next = await withTimeout(
+        coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+        5_000,
+        'a terminal epoch must not block the next turn on old operator cleanup',
+      );
       assert.equal(next.epoch, 2);
       assert.equal(next.graphId, agentGraphIdForRootSessionEpoch(rootSessionId, 2));
       assert.equal(suppressions, 1);
@@ -1051,6 +1084,8 @@ describe('host-managed agent graph coordinator', () => {
         ],
       );
     } finally {
+      releaseStop.resolve();
+      await stopping;
       await coordinator.close();
       controlStore.close();
       await rm(root, { recursive: true, force: true });
@@ -1364,7 +1399,7 @@ describe('host-managed agent graph coordinator', () => {
     await coordinator.close();
   });
 
-  test('fences retirement from durable open and closing graph state, not a stale client projection', async () => {
+  test('classifies retirement from durable graph state, not a stale client projection', async () => {
     const rootSessionId = 'root-session';
     const childSessionId = 'child-session';
     const graphId = agentGraphIdForRootSession(rootSessionId);
@@ -1390,6 +1425,19 @@ describe('host-managed agent graph coordinator', () => {
       committedAt: 10,
     };
     const workId = addUpdate.addWork[0]!.workId;
+    const stopRequest = compileAgentGraphScheduleUpdate({
+      graphId,
+      input: {
+        operation: 'stop',
+        stop: [{ target_id: workId, reason: 'The work was stopped by the user.' }],
+      },
+      context: toolContext(rootSessionId, 'root-run', 'root-turn', 'stop-work'),
+    });
+    const stopUpdate: AgentGraphScheduleUpdate = {
+      ...stopRequest,
+      revision: 2,
+      committedAt: 20,
+    };
     const finishRequest = compileAgentGraphScheduleUpdate({
       graphId,
       input: {
@@ -1538,16 +1586,74 @@ describe('host-managed agent graph coordinator', () => {
     try {
       assert.equal((await coordinator.getSnapshot(rootSessionId)).scheduleRevision, 0);
       assert.equal(await coordinator.readSessionState(rootSessionId), 'absent');
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'clear',
+      });
 
       scheduleUpdates = [addUpdate];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'waiting',
+      });
 
-      scheduleUpdates = [addUpdate, finishUpdate];
       provisions = [provision];
       claims = [claim];
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'active',
+      });
+
+      scheduleUpdates = [addUpdate, stopUpdate];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-aborted-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 14,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'aborted',
+          },
+        },
+      ];
+      runtimeEvents = [
+        runningEvent,
+        {
+          id: 'child-aborted',
+          invocationId: 'child-invocation',
+          sessionId: childSessionId,
+          runId,
+          turnId,
+          ts: 14,
+          role: 'system',
+          author: 'system',
+          partial: false,
+          status: 'aborted',
+          actions: { endInvocation: true },
+        },
+      ];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'quiescent_open',
+      });
+
+      scheduleUpdates = [addUpdate, finishUpdate];
+      runs = [runningRun];
+      runtimeEvents = [runningEvent];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
+      assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'busy',
+        status: 'closing',
+      });
 
       runs = [
         {
@@ -1584,6 +1690,47 @@ describe('host-managed agent graph coordinator', () => {
       ];
       assert.equal(await coordinator.readSessionState(rootSessionId), 'terminal');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), false);
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'clear',
+      });
+
+      scheduleUpdates = [addUpdate];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-failed-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 15,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+          },
+        },
+      ];
+      runtimeEvents = [
+        runningEvent,
+        {
+          id: 'child-failed',
+          invocationId: 'child-invocation',
+          sessionId: childSessionId,
+          runId,
+          turnId,
+          ts: 15,
+          role: 'system',
+          author: 'system',
+          partial: false,
+          status: 'failed',
+          actions: { endInvocation: true },
+        },
+      ];
+      assert.deepEqual(await coordinator.readRetirementDisposition(rootSessionId), {
+        kind: 'quiescent_open',
+      });
     } finally {
       await coordinator.close();
     }

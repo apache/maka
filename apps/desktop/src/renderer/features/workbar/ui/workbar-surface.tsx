@@ -54,6 +54,7 @@ import {
   type SessionWorkbarPanelsState,
   type SessionWorkbarPlacement,
   terminalRefFromWorkbarTab,
+  projectWorkbarPanelsForSession,
 } from '../model/workbar-tabs';
 import {
   WORKBAR_TOOL_DEFINITIONS,
@@ -245,6 +246,7 @@ function WorkbarFaceMenu(props: {
         return (
           <DropdownMenuItem
             key={definition.kind}
+            data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
             label={faceLabel(definition.kind, copy)}
             icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
             endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
@@ -302,6 +304,7 @@ function WorkbarTabStrip(props: {
               return (
                 <Tab
                   key={tab.id}
+                  data-maka-assistant-exclude={tab.kind === 'browser' || tab.kind === 'terminal' ? tab.kind : undefined}
                   value={tab.id}
                   label={tabLabel(tab, props.tabs, copy)}
                   panelId={`maka-workbar-panel-${tab.id}`}
@@ -350,6 +353,7 @@ function WorkbarLauncher(props: {
           {WORKBAR_TOOL_DEFINITIONS.map((definition) => (
             <ListItem
               key={definition.kind}
+              data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
               startContent={
                 <Icon icon={FACE_ICON[definition.icon]} size="sm" color="secondary" />
               }
@@ -379,7 +383,7 @@ function launcherCopyKey(
 }
 
 export function WorkbarSurface(props: {
-  sessionId: string;
+  sessionId?: string;
   projectId?: string | null;
   projectAliases?: readonly string[];
   hidden: boolean;
@@ -417,7 +421,11 @@ export function WorkbarSurface(props: {
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
-  const [artifactCount, setArtifactCount] = useState(0);
+  const [artifactCount, setArtifactCount] = useState({ sessionId: props.sessionId, count: 0 });
+  const visiblePanels = projectWorkbarPanelsForSession(
+    props.panelsState, props.sessionId,
+    new Set(props.quotes?.map((quote) => `side-chat:${quote.id}`)),
+  );
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
     props.panelsState[placement].tabs.map((tab) => ({ placement, tab })),
@@ -426,7 +434,7 @@ export function WorkbarSurface(props: {
   return (
     <div className="maka-workbar-workspace-contents">
       {placements.map((placement) => {
-        const panel = props.panelsState[placement];
+        const panel = visiblePanels[placement];
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
         const showingLauncher = panel.launcherOpen || !activeTab;
         const collapsed =
@@ -454,7 +462,7 @@ export function WorkbarSurface(props: {
                 tabs={panel.tabs}
                 activeTabId={showingLauncher ? null : panel.activeTabId}
                 activeSideChatPanelIds={props.activeSideChatPanelIds}
-                artifactCount={artifactCount}
+                artifactCount={artifactCount.sessionId === props.sessionId ? artifactCount.count : 0}
                 sideChatAvailable={props.sourceSession !== undefined}
                 onActivate={(tabId) => props.onActivateTab(placement, tabId)}
                 onOpenKind={(kind) => props.onRequestOpenTab(placement, kind)}
@@ -482,7 +490,7 @@ export function WorkbarSurface(props: {
         );
       })}
       {positionedTabs.map(({ placement, tab }) => {
-        const panel = props.panelsState[placement];
+        const panel = visiblePanels[placement];
         const activeTab = panel.tabs.find((candidate) => candidate.id === panel.activeTabId);
         const showingLauncher = panel.launcherOpen || !activeTab;
         const panelVisible =
@@ -490,11 +498,13 @@ export function WorkbarSurface(props: {
         const selected = !showingLauncher && activeTab?.id === tab.id;
         const active = panelVisible && selected;
         let content: ReactNode = null;
+        if (tab.kind !== 'terminal' && !props.sessionId) return null;
         if (tab.kind === 'review') {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.review} />}>
               <SessionReviewPanel
-                sessionId={props.sessionId}
+                key={props.sessionId}
+                sessionId={props.sessionId!}
                 active={!props.hidden && active}
               />
             </Suspense>
@@ -504,7 +514,7 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.terminal} />}>
               <SessionTerminalPanel
-                sessionId={tab.ownerSessionId ?? props.sessionId}
+                sessionId={tab.ownerSessionId ?? props.sessionId!}
                 terminalRef={terminalRef}
                 active={!props.hidden && active}
               />
@@ -525,7 +535,8 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.browser} />}>
               <BrowserPanel
-                sessionId={props.sessionId}
+                key={props.sessionId}
+                sessionId={props.sessionId!}
                 hidden={props.hidden || !active}
               />
             </Suspense>
@@ -534,9 +545,12 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.files} />}>
               <ArtifactPane
-                sessionId={props.sessionId}
+                key={props.sessionId}
+                sessionId={props.sessionId!}
                 refreshEnabled={!props.hidden && panelVisible}
-                onCountChange={setArtifactCount}
+                onCountChange={(count) => setArtifactCount((current) =>
+                  current.sessionId === props.sessionId && current.count === count
+                    ? current : { sessionId: props.sessionId, count })}
                 onDismiss={() => props.onDismissPanel(placement)}
               />
             </Suspense>
@@ -545,7 +559,8 @@ export function WorkbarSurface(props: {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.inspector} />}>
               <SessionInspectorPanel
-                sessionId={props.sessionId}
+                key={props.sessionId}
+                sessionId={props.sessionId!}
                 active={!props.hidden && active}
               />
             </Suspense>

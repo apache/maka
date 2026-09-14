@@ -28,10 +28,7 @@ import {
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { preparedPromptComposition } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
-import {
-  providerFailureDiagnostic,
-  type ProviderFailureDiagnostic,
-} from './provider-error-classification.js';
+import { providerFailureDiagnostic } from './provider-error-classification.js';
 import { latestContextProjectionInput } from './latest-context-snapshot.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
@@ -65,24 +62,6 @@ export interface ProviderRequestUsageLike {
 }
 
 export type ProviderRequestAttemptStatus = 'completed' | 'failed' | 'interrupted' | 'aborted';
-
-interface SettledProviderAttempt extends ProviderRequestUsage {
-  traceId: string;
-  attemptId: string;
-  turnId: string;
-  step: number;
-  attempt: number;
-  providerId: string;
-  modelId: string;
-  contextWindow?: number;
-  startedAt: number;
-  completedAt: number;
-  status: ProviderRequestAttemptStatus;
-  finishReason?: string;
-  failure?: ProviderFailureDiagnostic;
-  latencyMs: number;
-  timeToFirstTokenMs?: number;
-}
 
 /**
  * Cost resolved at the moment a call settles, plus the basis it was resolved
@@ -370,6 +349,7 @@ export function withProviderStreamTracking(input: {
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
   historyCompactRoute?: HistoryCompactRoute;
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -381,6 +361,9 @@ export function withProviderStreamTracking(input: {
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
+          ...(input.historyCompactBoundary
+            ? { historyCompactBoundary: input.historyCompactBoundary }
+            : {}),
           doStream,
         }),
     },
@@ -443,6 +426,7 @@ export class ProviderRequestTracker {
    * that call, not new calls, so they share this id.
    */
   private readonly logicalCallIdByStep = new Map<number, string>();
+  private readonly requestCompositionIdByStep = new Map<number, string>();
 
   constructor(private readonly input: ProviderRequestTrackerInput) {}
 
@@ -450,8 +434,11 @@ export class ProviderRequestTracker {
     return this.input.traceId;
   }
 
-  setStep(step: number): void {
+  setStep(step: number, requestCompositionId?: string): void {
     this.step = step;
+    if (requestCompositionId !== undefined) {
+      this.requestCompositionIdByStep.set(step, requestCompositionId);
+    }
   }
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
@@ -596,37 +583,81 @@ export class ProviderRequestTracker {
       const contextWindow = positiveInteger(this.input.contextWindow);
       const failure =
         finish?.error !== undefined ? providerFailureDiagnostic(finish.error) : undefined;
-      const record: SettledProviderAttempt = {
-        traceId: this.input.traceId,
-        attemptId,
-        turnId: this.input.turnId,
-        step,
-        attempt,
-        providerId: input.providerId,
-        modelId: input.modelId,
-        ...(contextWindow !== undefined ? { contextWindow } : {}),
-        startedAt,
-        completedAt,
-        status,
-        ...(finish?.reason !== undefined ? { finishReason: finish.reason } : {}),
-        ...(failure !== undefined ? { failure } : {}),
-        latencyMs: Math.max(0, completedAt - startedAt),
-        ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
-        ...(usage ?? {}),
-      };
+      const finishReason = finish?.reason;
+      const firstTokenMs = timeToFirstTokenMs;
       accountingSettlement = accountingSettlement.then(async () => {
-        await this.emitModelCallAttempt(record, {
+        const accounting = this.input.accounting;
+        if (!accounting) return;
+        const runId = accounting.resolveRunId();
+        if (runId === undefined) return;
+
+        const usageBasis = resolveUsageBasis(usage);
+        const cost = usage ? accounting.resolveCost?.(usage) : undefined;
+        const priced = cost?.costUsd !== undefined;
+
+        const record: ModelCallAttempt = {
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
           logicalCallId,
-          usage,
-          contextWindow,
-          promptComposition: composition,
-          // Frozen when THIS request was prepared, so a checkpoint published
-          // mid-flight by another turn cannot be sealed into a prompt built
-          // before it existed.
-          historyCompactBoundary: input.historyCompactBoundary,
-          historyCompactRoute:
-            input.historyCompactRoute ?? this.input.accounting?.historyCompactRoute,
-        });
+          attemptId,
+          traceId: this.input.traceId,
+          sessionId: accounting.sessionId,
+          runId,
+          turnId: this.input.turnId,
+          ...(accounting.connectionSlug !== undefined
+            ? { connectionSlug: accounting.connectionSlug }
+            : {}),
+          step: Math.max(0, step),
+          ...(this.requestCompositionIdByStep.get(step)
+            ? { requestCompositionId: this.requestCompositionIdByStep.get(step) }
+            : {}),
+          attempt: Math.max(0, attempt - 1),
+          callKind: accounting.callKind,
+          ...((input.historyCompactRoute ?? accounting.historyCompactRoute) !== undefined
+            ? { historyCompactRoute: input.historyCompactRoute ?? accounting.historyCompactRoute }
+            : {}),
+          providerId: accounting.providerId ?? input.providerId,
+          modelId: input.modelId,
+          ...(contextWindow !== undefined ? { contextWindow } : {}),
+          ...(composition ? { promptComposition: composition } : {}),
+          startedAt,
+          completedAt,
+          latencyMs: Math.max(0, completedAt - startedAt),
+          ...(firstTokenMs !== undefined ? { timeToFirstTokenMs: firstTokenMs } : {}),
+          status,
+          ...(finishReason !== undefined ? { finishReason } : {}),
+          ...(failure ?? {}),
+          usageBasis,
+          ...(usageBasis === 'missing' ? {} : modelCallUsageFields(usage)),
+          costBasis: priced ? 'priced' : 'unpriced',
+          ...(priced
+            ? {
+                costUsd: cost?.costUsd,
+                ...(cost?.pricingRevision !== undefined
+                  ? { pricingRevision: cost.pricingRevision }
+                  : {}),
+                ...(cost?.pricingRates !== undefined ? { pricingRates: cost.pricingRates } : {}),
+              }
+            : {}),
+        };
+
+        // Only a completed MAIN call describes the conversation's own context, so
+        // only that one carries the derived row. A failed, aborted or compaction
+        // call commits its metering alone and leaves the last answer standing.
+        const latestContext =
+          record.callKind === 'main' && record.status === 'completed'
+            ? latestContextProjectionInput(
+                record,
+                record.promptComposition,
+                input.historyCompactBoundary,
+              )
+            : undefined;
+
+        try {
+          await accounting.record({ attempt: record, ...(latestContext ? { latestContext } : {}) });
+        } catch {
+          // Reported through the run's accounting-incomplete signal by the sink
+          // itself. Settlement must not fail the turn the call already completed.
+        }
       });
       await accountingSettlement;
     };
@@ -646,102 +677,6 @@ export class ProviderRequestTracker {
         });
     }
     return { observeOutput, finalize };
-  }
-
-  /**
-   * Projects a settled attempt into the canonical accounting record.
-   *
-   * Never throws. This runs from the stream's `pull` handler, where a rejection
-   * would reach `controller.error` and fail an otherwise-complete model
-   * response. The dispatch-time gate is `assertAccountingReady`; a failure here
-   * means the call happened and was billed but went unrecorded, which is
-   * reported, not raised.
-   */
-  private async emitModelCallAttempt(
-    record: SettledProviderAttempt,
-    context: {
-      logicalCallId: string;
-      usage: ProviderRequestUsage | undefined;
-      contextWindow: number | undefined;
-      promptComposition: PromptComposition | undefined;
-      historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
-      historyCompactRoute: HistoryCompactRoute | undefined;
-    },
-  ): Promise<void> {
-    const accounting = this.input.accounting;
-    if (!accounting) return;
-    const runId = accounting.resolveRunId();
-    if (runId === undefined) return;
-
-    const usage = context.usage;
-    const usageBasis = resolveUsageBasis(usage);
-    const cost = usage ? accounting.resolveCost?.(usage) : undefined;
-    const priced = cost?.costUsd !== undefined;
-
-    const attempt: ModelCallAttempt = {
-      schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-      logicalCallId: context.logicalCallId,
-      attemptId: record.attemptId,
-      traceId: record.traceId,
-      sessionId: accounting.sessionId,
-      runId,
-      turnId: record.turnId,
-      ...(accounting.connectionSlug !== undefined
-        ? { connectionSlug: accounting.connectionSlug }
-        : {}),
-      // The physical ordinals are one-based on the diagnostic record; the
-      // canonical record counts retries from zero.
-      step: Math.max(0, record.step),
-      attempt: Math.max(0, record.attempt - 1),
-      callKind: accounting.callKind,
-      ...(context.historyCompactRoute !== undefined
-        ? { historyCompactRoute: context.historyCompactRoute }
-        : {}),
-      providerId: accounting.providerId ?? record.providerId,
-      modelId: record.modelId,
-      ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
-      ...(context.promptComposition ? { promptComposition: context.promptComposition } : {}),
-      startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      latencyMs: record.latencyMs,
-      ...(record.timeToFirstTokenMs !== undefined
-        ? { timeToFirstTokenMs: record.timeToFirstTokenMs }
-        : {}),
-      status: record.status,
-      ...(record.finishReason !== undefined ? { finishReason: record.finishReason } : {}),
-      ...(record.failure ?? {}),
-      usageBasis,
-      ...(usageBasis === 'missing' ? {} : modelCallUsageFields(usage)),
-      costBasis: priced ? 'priced' : 'unpriced',
-      ...(priced
-        ? {
-            costUsd: cost?.costUsd,
-            ...(cost?.pricingRevision !== undefined
-              ? { pricingRevision: cost.pricingRevision }
-              : {}),
-            ...(cost?.pricingRates !== undefined ? { pricingRates: cost.pricingRates } : {}),
-          }
-        : {}),
-    };
-
-    // Only a completed MAIN call describes the conversation's own context, so
-    // only that one carries the derived row. A failed, aborted or compaction
-    // call commits its metering alone and leaves the last answer standing.
-    const latestContext =
-      attempt.callKind === 'main' && attempt.status === 'completed'
-        ? latestContextProjectionInput(
-            attempt,
-            attempt.promptComposition,
-            context.historyCompactBoundary,
-          )
-        : undefined;
-
-    try {
-      await accounting.record({ attempt, ...(latestContext ? { latestContext } : {}) });
-    } catch {
-      // Reported through the run's accounting-incomplete signal by the sink
-      // itself. Settlement must not fail the turn the call already completed.
-    }
   }
 }
 

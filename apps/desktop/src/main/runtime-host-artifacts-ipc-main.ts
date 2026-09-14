@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,10 +37,12 @@ import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
 interface RuntimeHostArtifactsIpcDeps {
+  uiLocale(): UiLocale;
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly showItemInFolder: (path: string) => void;
+  readonly openPath?: (path: string) => Promise<string>;
   readonly presentationRoot?: string;
 }
 
@@ -80,6 +83,20 @@ export function registerRuntimeHostArtifactsIpc(
       deps.client.deleteArtifact(sessionId, artifactId),
   );
   registerRuntimeHostAttachmentPreviewIpc(deps);
+  const materializePresentationArtifact = async (
+    sessionId: string,
+    artifactId: string,
+    artifact: Awaited<ReturnType<DesktopRuntimeHostClient['getArtifact']>>,
+  ): Promise<string> => {
+    if (!artifact) throw new Error('Artifact is missing');
+    const path = join(
+      presentationRoot,
+      sessionId,
+      `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
+    );
+    await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+    return path;
+  };
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
@@ -88,12 +105,28 @@ export function registerRuntimeHostArtifactsIpc(
         return { ok: false as const, reason: "missing" as const };
       }
       try {
-        const path = join(
-          presentationRoot,
-          sessionId,
-          `${artifactId}-${sanitizeArtifactName(artifact.name)}`,
-        );
-        await materializeArtifact(deps.client, sessionId, artifactId, path, artifact.sizeBytes);
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
+        if (artifact.kind === 'html' && deps.openPath) {
+          const error = await deps.openPath(path);
+          if (error) return { ok: false as const, reason: "open-failed" as const };
+        } else {
+          deps.showItemInFolder(path);
+        }
+        return { ok: true as const, opened: artifact.name };
+      } catch {
+        return { ok: false as const, reason: "open-failed" as const };
+      }
+    },
+  );
+  deps.ipcMain.handle(
+    "app:showArtifactInFolder",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (!artifact) {
+        return { ok: false as const, reason: "missing" as const };
+      }
+      try {
+        const path = await materializePresentationArtifact(sessionId, artifactId, artifact);
         deps.showItemInFolder(path);
         return { ok: true as const, opened: artifact.name };
       } catch {
@@ -111,7 +144,7 @@ export function registerRuntimeHostArtifactsIpc(
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
       if (!artifact) return { ok: false, reason: "not_found" };
       const result = await deps.mainWindowController.showSaveDialog({
-        title: `另存为 ${artifact.name}`,
+        title: ARTIFACT_DIALOG_COPY[deps.uiLocale()].saveAs(artifact.name),
         defaultPath: artifact.name,
       });
       if (result.canceled || !result.filePath) {
@@ -253,3 +286,9 @@ class ArtifactMaterializationError extends Error {
     this.name = "ArtifactMaterializationError";
   }
 }
+
+const ARTIFACT_DIALOG_COPY = {
+  'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
+  'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
+  en: { saveAs: (name: string) => `Save ${name} as` },
+} satisfies UiCatalog<{ saveAs(name: string): string }>;

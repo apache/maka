@@ -49,10 +49,6 @@ describe('ToolRuntime argument ownership', () => {
       header: testHeader(),
       connection: testConnection(),
       modelId: 'test-model',
-      appendMessage: async (message) => {
-        if (message.type !== 'tool_call') return;
-        observeAndMutate(observed, 'storage', message.args);
-      },
       newId: nextId(),
       now: () => 1,
       getPermissionPauseTarget: () => null,
@@ -90,7 +86,7 @@ describe('ToolRuntime argument ownership', () => {
     });
     mutateArgs(providerArgs, 'provider');
 
-    const owners = ['storage', 'event', 'implementation', 'artifact'];
+    const owners = ['event', 'implementation', 'artifact'];
     for (const owner of owners) {
       assert.deepEqual(observed.get(owner), initialArgs);
     }

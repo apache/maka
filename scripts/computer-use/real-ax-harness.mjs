@@ -550,6 +550,7 @@ const runtime = new AiSdkBackend({
   apiKey,
   modelId,
   readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
+  readPermissionMode: async () => 'bypass',
   modelFactory: (input) => getAIModel(input),
   tools: [computerTool],
   maxSteps: 8,

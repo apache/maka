@@ -31,6 +31,7 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
 } from '@maka/runtime-host/operator';
 import {
@@ -44,6 +45,46 @@ const OPERATOR = {
   nodePath: '/usr/bin/node',
   modulePath: '/tmp/maka/operator.mjs',
 };
+
+test('retirement cancellation sends EOF without terminating or abandoning the operator transaction', async (t) => {
+  const cancellation = new AbortController();
+  const child = new EventEmitter() as ReturnType<typeof spawn>;
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  Object.assign(child, { pid: 1234, stdin, stdout, stderr });
+  let spawned!: () => void;
+  const started = new Promise<void>((resolve) => { spawned = resolve; });
+  const operator = createDesktopRuntimeHostLocalOperator({
+    spawnProcess: ((_command, _args, options) => {
+      assert.equal(options?.env?.[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV], '1');
+      assert.deepEqual(options?.stdio, ['pipe', 'pipe', 'pipe']);
+      spawned();
+      return child;
+    }) as typeof spawn,
+    terminateProcess: async () => assert.fail('cancellation cannot kill the deployment transaction'),
+  });
+  t.after(() => operator.close());
+  let settled = false;
+  const result = operator.runService({
+    operator: OPERATOR, action: 'restart',
+    target: { serviceId: 'a'.repeat(64), rootId: 'a'.repeat(64), rootPath: '/tmp/maka/root' },
+    retirementSignal: cancellation.signal,
+  }).then((frame) => { settled = true; return frame; });
+  await started;
+  cancellation.abort();
+  await Promise.resolve();
+  assert.equal(stdin.writableEnded, true);
+  assert.equal(settled, false);
+  stdout.end(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1, kind: 'result', action: 'restart',
+    service: { platform: 'linux', arch: 'x64', osRelease: 'test', state: 'running',
+      pid: 42, lastExitCode: 0, installedVersion: '0.3.0', projectDirectoryRoots: [] },
+  }));
+  stderr.end();
+  child.emit('close', 0, null);
+  assert.equal((await result).kind, 'result');
+});
 
 test('local setup installs one managed service for the Desktop root with Direct peer enabled', () => {
   assert.deepEqual(
