@@ -1348,7 +1348,7 @@ function AppShellContent({
     sessions,
     projectId: currentProjectId,
     projectAliases: currentProject?.aliases ?? [],
-    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
+    authoritativeSessionIds,
     shellObscured,
     modelChoices: chatModelChoices,
     reportError: reportWorkbarError,
