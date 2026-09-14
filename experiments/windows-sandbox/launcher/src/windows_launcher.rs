@@ -146,6 +146,14 @@ fn launch_appcontainer_with_owner(
     request: &LaunchRequest,
     owner_process: Option<HANDLE>,
 ) -> Result<u8, String> {
+    launch_appcontainer_settled(request, owner_process, false).map_err(LaunchFailure::into_message)
+}
+
+pub(crate) fn launch_appcontainer_settled(
+    request: &LaunchRequest,
+    owner_process: Option<HANDLE>,
+    producer_stdin: bool,
+) -> Result<u8, LaunchFailure> {
     validate_appcontainer_policy(request)?;
     unsafe {
         let job = create_kill_on_close_job()?;
@@ -153,18 +161,18 @@ fn launch_appcontainer_with_owner(
             Ok(profile) => profile,
             Err(error) => {
                 CloseHandle(job);
-                return Err(error);
+                return Err(error.into());
             }
         };
         let sid = match sid_string(profile.sid) {
             Ok(sid) => sid,
             Err(error) => {
                 CloseHandle(job);
-                return Err(error);
+                return Err(error.into());
             }
         };
         let result = with_acl_grants(request, &sid, || {
-            create_appcontainer_child(request, job, profile.sid, owner_process)
+            create_appcontainer_child(request, job, profile.sid, owner_process, producer_stdin)
         });
         // The kill-on-close Job is the kernel backstop either way: closing the
         // last handle terminates whatever the settlement pass could not prove
@@ -172,14 +180,14 @@ fn launch_appcontainer_with_owner(
         CloseHandle(job);
         match result {
             Ok(value) => Ok(value),
-            Err(LaunchFailure::Settled(message)) => Err(message),
+            Err(failure @ LaunchFailure::Settled(_)) => Err(failure),
             Err(failure @ LaunchFailure::Unsettled(_)) => {
                 // Processes may still carry this AppContainer identity, and
                 // its quarantined ledger still names the profile. Deleting
                 // the profile now would strip the only remaining handle on
                 // that authority, so it is preserved alongside the ledger.
                 std::mem::forget(profile);
-                Err(failure.into_message())
+                Err(failure)
             }
         }
     }
@@ -1122,6 +1130,7 @@ unsafe fn create_appcontainer_child(
     job: HANDLE,
     app_container_sid: *mut c_void,
     owner_process: Option<HANDLE>,
+    producer_stdin: bool,
 ) -> Result<u8, LaunchFailure> {
     let mut command = quote_command(&request.executable, &request.arguments);
     let executable = wide(&request.executable);
@@ -1132,7 +1141,14 @@ unsafe fn create_appcontainer_child(
     // function so the desktop outlives the child; if its DACL never grants the
     // AppContainer SID, CreateProcessW below fails ACCESS_DENIED — fail closed.
     let desktop = unsafe { create_confined_desktop(app_container_sid) }?;
-    let stdio = unsafe { InheritableStdio::capture() }?;
+    let mut stdio = unsafe { InheritableStdio::capture() }?;
+    if producer_stdin {
+        // The supervisor owns stdin as a cancellation/owner-liveness channel.
+        // npm must never consume a cancellation byte or inherit that channel.
+        let input = unsafe { open_inheritable_nul(true) }?;
+        unsafe { CloseHandle(stdio.handles[0]) };
+        stdio.handles[0] = input;
+    }
 
     let mut attribute_size = 0usize;
     unsafe { InitializeProcThreadAttributeList(null_mut(), 3, 0, &mut attribute_size) };
@@ -1217,8 +1233,10 @@ unsafe fn create_appcontainer_child(
     startup.StartupInfo.hStdOutput = stdio.handles[1];
     startup.StartupInfo.hStdError = stdio.handles[2];
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
-    let creation_flags =
-        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+    let creation_flags = CREATE_SUSPENDED
+        | EXTENDED_STARTUPINFO_PRESENT
+        | CREATE_UNICODE_ENVIRONMENT
+        | if producer_stdin { CREATE_NO_WINDOW } else { 0 };
     let created = unsafe {
         CreateProcessW(
             executable.as_ptr(),
