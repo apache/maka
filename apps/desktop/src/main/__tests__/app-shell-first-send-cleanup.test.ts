@@ -86,6 +86,86 @@ describe('composer first-send cleanup', () => {
     }
   });
 
+  it('rejects a same-target New Task reopen while readiness is pending', async () => {
+    const readiness = deferred<boolean>();
+    let revision = 1;
+    let creates = 0;
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => { creates += 1; return { id: 'stale-session' }; } },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: 'same-project',
+        }),
+        captureSelection: () => {
+          const captured = revision;
+          return () => captured === revision;
+        },
+        checkTaskSubmissionReadiness: () => readiness.promise,
+      });
+      const sending = actions.send('old draft', undefined, {
+        onSessionResolved: () => { resolved += 1; },
+      });
+      revision += 1;
+      readiness.resolve(true);
+      assert.equal(await sending, false);
+      assert.equal(creates, 0);
+      assert.equal(resolved, 0);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('retires an unsent Session if its New Task surface reopens during creation', async () => {
+    const created = deferred<{ id: string }>();
+    const enteredCreate = deferred<void>();
+    let revision = 1;
+    let activated = 0;
+    let submitted = 0;
+    let resolved = 0;
+    const removed: string[] = [];
+    const restoreWindow = installWindow({
+      newTasks: { create: () => { enteredCreate.resolve(); return created.promise; } },
+      sessions: {
+        remove: async (id: string) => { removed.push(id); },
+        submitMessage: async () => { submitted += 1; },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        captureComposerImportOwner: () => ({
+          sessionId: undefined,
+          navSection: 'sessions',
+          newTaskDraftKey: 'same-project',
+        }),
+        captureSelection: () => {
+          const captured = revision;
+          return () => captured === revision;
+        },
+        activateSessionForFirstSend: async () => { activated += 1; },
+      });
+      const sending = actions.send('old draft', undefined, {
+        onSessionResolved: () => { resolved += 1; },
+      });
+      await enteredCreate.promise;
+      revision += 1;
+      created.resolve({ id: 'stale-session' });
+      assert.equal(await sending, false);
+      assert.deepEqual(removed, ['stale-session']);
+      assert.equal(activated, 0);
+      assert.equal(submitted, 0);
+      assert.equal(resolved, 0);
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('passes the effective offered model when creating the first session', async () => {
     let createInput: unknown;
     const restoreWindow = installWindow({

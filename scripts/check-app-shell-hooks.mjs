@@ -118,7 +118,7 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useCommandPalette: 1,
     useComposerAttachments: 1,
-    useEffect: 14,
+    useEffect: 7,
     useKeyboardHelp: 1,
     useLayoutEffect: 2,
     useNewTaskChoice: 1,
@@ -147,12 +147,8 @@ export const ALLOWED = {
     useShellRunUpdates: 1,
     useShellSearch: 1,
     useStableActions: 6,
-    useState: 15,
+    useState: 11,
     useTaskSubmissionReadiness: 1,
-    // TaskEntry commands and selectors are consumed directly by AppShellContent
-    // across task start, composer, navigation, and Work Board flows; moving the
-    // controller would require threading the full projection through the shell.
-    useTaskEntryController: 1,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry
     // replaces: #4113 moved the other two onto the session UI store, which is

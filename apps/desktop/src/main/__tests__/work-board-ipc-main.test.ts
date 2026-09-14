@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { IpcMain } from 'electron';
+import { createWorkBoardStore, WorkBoardStoreError } from '@maka/storage/work-board-store';
 import { normalizeWorkBoardLinkedSession } from '@maka/core/work-board';
 import {
   registerWorkBoardIpc,
@@ -89,6 +90,55 @@ async function withTempRoot(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('Work Board IPC', () => {
+  for (const [code, detail] of [
+    ['corrupt_record', 'Work Board item item-1 has invalid record_json'],
+    ['corrupt_record', 'Work Board item item-2 failed contract validation'],
+    ['corrupt_record', 'Work Board item item-3 has indexed columns that disagree with record_json'],
+    ['unknown', 'Database read failed'],
+    ['invalid_input', 'Work Board item id is invalid'],
+    ['not_found', 'Work Board item item-4 was not found'],
+    ['operation_conflict', 'Work Board item revision changed'],
+    ['must_archive_first', 'Only archived Work Board items can be deleted'],
+  ] as const) {
+    test(`returns only ${code} and preserves diagnostic policy: ${detail}`, async (t) => {
+      await withTempRoot(async (root) => {
+        const ipc = createFakeIpcMain();
+        const window = createFakeWindowController();
+        const store = createWorkBoardStore(root);
+        const message = `${detail}; token=board-diagnostic-secret`;
+        t.mock.method(store, 'list', async () => {
+          throw code === 'unknown' ? new Error(message) : new WorkBoardStoreError(code, message);
+        });
+        const logger = t.mock.method(console, 'error', () => {});
+        const registration = registerWorkBoardIpc({
+          ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+          workspaceRoot: root,
+          mainWindowController: window,
+          store,
+          validateLinkedSession: async () => true,
+        });
+        try {
+          const response = await ipc.invoke<WorkBoardIpcResult<unknown>>('workBoard:list', {});
+          assert.deepEqual(response, { ok: false, error: { code } });
+          assert.deepEqual(window.events, []);
+          if (code === 'corrupt_record' || code === 'unknown') {
+            assert.equal(logger.mock.callCount(), 1);
+            const [prefix, diagnostic] = logger.mock.calls[0]!.arguments;
+            assert.equal(prefix, '[work-board] operation failed:');
+            assert.equal(typeof diagnostic, 'string');
+            assert.ok(String(diagnostic).includes(detail));
+            assert.match(String(diagnostic), /token=\[redacted\]/);
+            assert.doesNotMatch(JSON.stringify(logger.mock.calls), /board-diagnostic-secret/);
+          } else {
+            assert.equal(logger.mock.callCount(), 0);
+          }
+        } finally {
+          registration.close();
+        }
+      });
+    });
+  }
+
   test('creates and lists items and emits change signals', async () => {
     await withTempRoot(async (root) => {
       const ipc = createFakeIpcMain();
@@ -181,8 +231,10 @@ describe('Work Board IPC', () => {
           { title: 'stale write' },
           { expectedRevision: 1 },
         );
-        assert.equal(staleRename.ok, false);
-        if (!staleRename.ok) assert.equal(staleRename.code, 'operation_conflict');
+        assert.deepEqual(staleRename, {
+          ok: false,
+          error: { code: 'operation_conflict' },
+        });
 
       const removedBeforeArchive = await ipc.invoke<WorkBoardIpcResult<null>>(
         'workBoard:remove',
@@ -190,7 +242,7 @@ describe('Work Board IPC', () => {
       );
       assert.equal(removedBeforeArchive.ok, false);
       if (!removedBeforeArchive.ok) {
-        assert.equal(removedBeforeArchive.code, 'must_archive_first');
+        assert.equal(removedBeforeArchive.error.code, 'must_archive_first');
       }
 
       const archived = await ipc.invoke<
@@ -211,14 +263,14 @@ describe('Work Board IPC', () => {
         { titel: 'x' },
       );
       assert.equal(invalidPatch.ok, false);
-      if (!invalidPatch.ok) assert.equal(invalidPatch.code, 'invalid_input');
+      if (!invalidPatch.ok) assert.equal(invalidPatch.error.code, 'invalid_input');
 
       const invalidCreate = await ipc.invoke<WorkBoardIpcResult<unknown>>(
         'workBoard:create',
         { ...itemInput(), notes: null },
       );
       assert.equal(invalidCreate.ok, false);
-      if (!invalidCreate.ok) assert.equal(invalidCreate.code, 'invalid_input');
+      if (!invalidCreate.ok) assert.equal(invalidCreate.error.code, 'invalid_input');
 
       await ipc.invoke('workBoard:archive', id);
       const removed = await ipc.invoke<WorkBoardIpcResult<null>>('workBoard:remove', id);
@@ -264,7 +316,7 @@ describe('Work Board IPC', () => {
           { profileId: 'profile-1', hostId: 'host-1', sessionId: 'missing', linkedAt: 1 },
         );
         assert.equal(linked.ok, false);
-        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+        if (!linked.ok) assert.equal(linked.error.code, 'invalid_input');
       } finally {
         registration.close();
       }
@@ -293,7 +345,7 @@ describe('Work Board IPC', () => {
           { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 1 },
         );
         assert.equal(linked.ok, false);
-        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+        if (!linked.ok) assert.equal(linked.error.code, 'invalid_input');
       } finally {
         registration.close();
       }
@@ -389,7 +441,7 @@ describe('Work Board IPC', () => {
           { profileId: 'profile-1', hostId: 'host-1', sessionId: 's-p2', linkedAt: 1 },
         );
         assert.equal(linked.ok, false);
-        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+        if (!linked.ok) assert.equal(linked.error.code, 'invalid_input');
 
         // The p1 Session links cleanly.
         const linkedOk = await ipc.invoke<WorkBoardIpcResult<unknown>>(
@@ -439,7 +491,7 @@ describe('Work Board IPC', () => {
           { profileId: 'profile-1', hostId: 'host-1', sessionId: 's-p1', linkedAt: 1 },
         );
         assert.equal(linked.ok, false);
-        if (!linked.ok) assert.equal(linked.code, 'operation_conflict');
+        if (!linked.ok) assert.equal(linked.error.code, 'operation_conflict');
       } finally {
         registration.close();
       }
