@@ -183,6 +183,11 @@ function protectMarkdownMath(
       continue;
     }
     if (link?.kind === 'match') {
+      // A bare closed label with nothing after it can still grow an inline
+      // or reference tail, so it must not settle: resuming after it would
+      // scan that tail without the label context. Once any byte follows the
+      // label the link question is decided and settling is safe again.
+      const mayGrowTail = link.end === link.labelEnd + 1 && link.end >= source.length;
       if (link.isImage) {
         // Image alt text is rendered as a raw attribute, not as Markdown
         // inline content. Leave its source untouched and continue scanning
@@ -190,7 +195,11 @@ function protectMarkdownMath(
         text += source.slice(index, link.end);
         index = link.end;
         atLineStart = false;
-        markSafe();
+        if (mayGrowTail) {
+          canMarkSafe = false;
+        } else {
+          markSafe();
+        }
         continue;
       }
       // Display math renders as a block, which cannot live inside an inline
@@ -206,12 +215,31 @@ function protectMarkdownMath(
         false,
         true,
       );
+      // The explicit identifier of a full reference must go through the same
+      // transform, or use-site and definition IDs diverge and the link breaks.
+      let protectedRefText = '';
+      let refSafe = true;
+      if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
+        const protectedRef = protectMarkdownMath(
+          source.slice(link.refLabelStart, link.refLabelEnd),
+          false,
+          false,
+          true,
+        );
+        protectedRefText = protectedRef.text;
+        refSafe = protectedRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
+      }
+      const refStart = link.refLabelStart ?? link.end;
+      const refEnd = link.refLabelEnd ?? link.end;
       text += source.slice(index, link.labelStart)
         + protectedLabel.text
-        + source.slice(link.labelEnd, link.end);
+        + source.slice(link.labelEnd, refStart)
+        + protectedRefText
+        + source.slice(refEnd, link.end);
       index = link.end;
       atLineStart = source[index - 1] === '\n';
-      if (protectedLabel.safeSourceEnd >= link.labelEnd - link.labelStart) {
+      const labelSafe = protectedLabel.safeSourceEnd >= link.labelEnd - link.labelStart;
+      if (labelSafe && refSafe && !mayGrowTail) {
         markSafe();
       } else {
         canMarkSafe = false;
@@ -370,7 +398,15 @@ const MAX_LINK_TAIL_DEPTH = 32;
 const MAX_LINK_TAIL_LENGTH = 65536;
 
 type MarkdownLinkScan =
-  | { kind: 'match'; labelStart: number; labelEnd: number; end: number; isImage: boolean }
+  | {
+      kind: 'match';
+      labelStart: number;
+      labelEnd: number;
+      end: number;
+      isImage: boolean;
+      refLabelStart?: number;
+      refLabelEnd?: number;
+    }
   | { kind: 'pending'; end: number }
   | undefined;
 
@@ -419,7 +455,11 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
     const refEnd = findLabelEnd(source, labelEnd + 2);
     if (refEnd === 'pending') return { kind: 'pending', end: source.length };
     if (typeof refEnd !== 'number') return match(refEnd.end);
-    return match(refEnd + 1);
+    return {
+      ...match(refEnd + 1),
+      refLabelStart: labelEnd + 2,
+      refLabelEnd: refEnd,
+    };
   }
   return match(labelEnd + 1);
 }

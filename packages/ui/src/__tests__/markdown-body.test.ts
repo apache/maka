@@ -314,6 +314,38 @@ it('preserves escaped brackets across reference link forms', () => {
   }
 });
 
+it('matches escaped reference identifiers between use and definition', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[visible][\\[topic\\]]\n\n[\\[topic\\]]: https://example.com/ref',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/ref"/);
+  assert.match(markup, />visible</);
+  assert.doesNotMatch(markup, /maka-math-display|katex-display/);
+});
+
+it('keeps link targets identical between one-shot and incremental scans', () => {
+  const full = '[label](https://example.com/$$value$$)';
+  const cache = createMarkdownMathCache();
+  let incremental = '';
+  for (let end = 1; end <= full.length; end++) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.doesNotMatch(incremental, /MAKA_MATH/);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/\$\$value\$\$"/);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();
