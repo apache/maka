@@ -1136,14 +1136,18 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
   });
 
-  test('does not retry a terminated request after visible output was emitted', async () => {
+  test('preserves interrupted text while retrying from the completed tool step', async () => {
     const fixture = buildReactiveFixture({ script: ['tool', 'partialThenTerminated', 'done'] });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    assert.equal(JSON.stringify(fixture.model.doStreamCalls[2]?.prompt).includes('partial'), false);
     assert.equal(
-      fixture.events.some((event) => event.type === 'text_delta' && event.text === 'partial'),
+      fixture.events.some(
+        (event) => event.type === 'text_complete' && event.text === 'partial' && event.interrupted,
+      ),
       true,
     );
   });
@@ -1590,18 +1594,18 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
   });
 
-  test('does not recover an overflow after the failed stream emitted a tool call', async () => {
+  test('discards an undispatched tool call before overflow compaction recovery', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'toolThenOverflowPart', 'done'],
       bigPriors: true,
     });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
-    assert.equal(fixture.recorded.length, 0);
-    assert.equal(fixture.summarizerCalls(), 0);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls(), 1);
   });
 
   test('does not recover an overflow after the failed stream emitted visible text', async () => {

@@ -2001,11 +2001,21 @@ export class AiSdkTurn {
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
 
             if (attemptFailure && !this.aborted) {
-              if (!providerOutcome.usage) sawUnusableStepUsage = true;
               const failure =
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.deps.modelAdapter.normalizeFailure(attemptFailure)
                   : providerOutcome.failure;
+              // An output-free context rejection did not sample a response.
+              // Preserve metering for completed steps across compaction recovery.
+              if (
+                !providerOutcome.usage &&
+                !(
+                  failure.kind === 'context_overflow' &&
+                  attemptHasNoObservableOutput() &&
+                  returnedToolCalls.length === 0
+                )
+              )
+                sawUnusableStepUsage = true;
               if (this.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
                 terminalProviderErrorReason =
