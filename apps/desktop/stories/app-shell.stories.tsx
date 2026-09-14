@@ -34,7 +34,8 @@ import {
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
-import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTopbarActions } from '../src/renderer/shell/topbar-actions';
+import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
@@ -413,9 +414,11 @@ function ComposedShell(props: {
     >
       <header className="maka-window-titlebar">
         <AppShellTopbarActions
+          copy={getShellCopy('zh-CN').chrome}
           sidebarCollapsed={collapsed}
           onToggleSidebar={() => setCollapsed((current) => !current)}
           onOpenSearchModal={noop}
+          onNewTask={noop}
         />
         {/* Derived from the same session and project catalog the sidebar reads,
             not hand-passed: a story cannot show a project the session does not
@@ -529,12 +532,22 @@ export const DefaultLayout: Story = {
     if (!actions) throw new Error('Shell topbar rail did not render');
     await expect(sidebar).toBeVisible();
     await expect(actions).toBeVisible();
-    const sidebarBox = sidebar.getBoundingClientRect();
-    const actionsBox = actions.getBoundingClientRect();
-    const trailingInset = sidebarBox.right - actionsBox.right;
-    expect(trailingInset).toBeGreaterThanOrEqual(0);
-    expect(trailingInset).toBeLessThanOrEqual(16);
+    const actionBounds = () => Array.from(actions.querySelectorAll('button'), (button) => {
+      const { x, y, width, height } = button.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+    const expandedBounds = actionBounds();
+    expect(expandedBounds).toHaveLength(3);
+    const titlebar = actions.closest('header')!;
+    const leadingInset = actions.getBoundingClientRect().left - titlebar.getBoundingClientRect().left;
+    expect(leadingInset).toBe(parseFloat(getComputedStyle(titlebar).paddingLeft));
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    await userEvent.click(canvas.getByRole('button', { name: '收起侧边栏' }));
+    await waitFor(() => expect(actionBounds()).toEqual(expandedBounds));
+    expect(canvas.queryByRole('navigation', { name: '任务列表' })).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '展开侧边栏' }));
+    await waitFor(() => expect(canvas.getByRole('navigation', { name: '任务列表' })).toBeVisible());
+    expect(actionBounds()).toEqual(expandedBounds);
   },
 };
 

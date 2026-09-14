@@ -98,7 +98,8 @@ test('an explicit new task survives a renderer reload without reopening history'
   });
 
   await ensureSidebarExpanded(page);
-  await page.getByRole('button', { name: '新任务', exact: true }).click();
+  await page.locator('.maka-shell-topbar-rail')
+    .getByRole('button', { name: '新任务', exact: true }).click();
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   await composer.fill('draft survives renderer replacement');
 

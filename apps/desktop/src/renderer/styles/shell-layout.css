@@ -235,8 +235,7 @@
    neighbours with a hand-summed `margin-left`/`margin-right` ruler. Those
    rulers encoded "how many titlebar buttons exist right now" — state-dependent
    when a third titlebar button (新任务) only appeared while the sidebar was
-   collapsed (that button is gone now; 新任务 stays on the SideNav rail). The
-   sidebar's strip reserved room for two, the third button landed in the space
+   collapsed. The sidebar's strip reserved room for two, the third button landed in the space
    nobody reserved, and clicks on it reached the OS as window drags.
 
    The inset keeps the drag rect off the window frame on the three sides it
@@ -290,10 +289,9 @@
      `--maka-titlebar-gap` (8px) of overhang instead of the intended flush
      start.
 
-     `minmax(..., auto)` rather than a fixed width for the collapsed state,
-     where the navigation column is absent but the two titlebar actions remain:
-     the track grows to those actions and the gap then holds the breadcrumb off
-     them, which is the same clearance by a different measure.
+     Clamp the floor to zero when the sidebar is absent. `max-content` keeps
+     the fixed action cluster in that track without absorbing spare titlebar
+     space; the middle track owns the remaining room for the breadcrumb.
 
      Every child names its own column. Two of the three are conditional — the
      breadcrumb only in a session, the workspace actions only in views that have
@@ -302,11 +300,14 @@
   display: grid;
   grid-template-columns:
     minmax(
-      calc(
-        var(--maka-sidenav-width) - var(--maka-window-resize-edge) -
-          var(--maka-titlebar-gutter-left) - var(--maka-titlebar-gap)
+      max(
+        0px,
+        calc(
+          var(--maka-sidenav-width) - var(--maka-window-resize-edge) -
+            var(--maka-titlebar-gutter-left) - var(--maka-titlebar-gap)
+        )
       ),
-      auto
+      max-content
     )
     minmax(0, 1fr)
     auto;
@@ -342,11 +343,8 @@ dialog:modal {
 
 .maka-shell-topbar-rail {
   grid-column: 1;
-  /* These controls operate on the sidebar, so their anchor is its trailing
-     edge — not the platform-safe area's leading edge beside the traffic
-     lights. The first titlebar grid track already ends one gap before the
-     sidebar seam and follows the user-resized sidebar width. */
-  justify-self: end;
+  /* Collapse and resize move the column edge, never the global actions. */
+  justify-self: start;
   display: flex;
   align-items: center;
   /* Astryx Toolbar spaces independent actions by spacing-1 (4px). */
@@ -466,7 +464,7 @@ dialog:modal {
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
-   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   (shell/topbar-actions.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
    button-level rule cannot reach past that — a child's own `color` always beats
    an inherited one — so the ghost variant's primary text never applied to these

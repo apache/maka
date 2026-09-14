@@ -28,7 +28,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | Path | Role | Astryx used | Gap / note | Severity |
 |------|------|-------------|------------|----------|
 | `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, Selector, Spinner) | aligned |
-| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | Spinner | aligned — uses Astryx (Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
@@ -178,6 +177,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput | aligned — uses Astryx (Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/shell/topbar-actions.tsx` | other | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/styles.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/agent-graph.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/astryx-mount.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
