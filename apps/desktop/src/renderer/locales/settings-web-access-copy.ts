@@ -33,6 +33,8 @@ export type WebAccessSettingsCopy = {
   authenticatorTitle: string;
   authenticatorHelp: string;
   showQr: string;
+  replaceQr: string;
+  replaceQrConfirm: string;
   qrAlt: string;
   confirmCodeLabel: string;
   confirmCodePlaceholder: string;
@@ -67,6 +69,8 @@ const SETTINGS_WEB_ACCESS_COPY = {
     authenticatorTitle: '验证器',
     authenticatorHelp: '用身份验证应用扫描二维码，然后输入 6 位验证码确认。',
     showQr: '显示验证器二维码',
+    replaceQr: '更换验证器',
+    replaceQrConfirm: '更换验证器会生成新密钥。你需要重新扫描二维码并再次启用网页访问。确定继续？',
     qrAlt: '验证器二维码',
     confirmCodeLabel: '6 位验证码',
     confirmCodePlaceholder: '000000',
@@ -99,6 +103,8 @@ const SETTINGS_WEB_ACCESS_COPY = {
     authenticatorTitle: '驗證器',
     authenticatorHelp: '用身份驗證應用掃描 QR 碼，然後輸入 6 位驗證碼確認。',
     showQr: '顯示驗證器 QR 碼',
+    replaceQr: '更換驗證器',
+    replaceQrConfirm: '更換驗證器會產生新金鑰。你需要重新掃描 QR 碼並再次啟用網頁存取。確定繼續？',
     qrAlt: '驗證器 QR 碼',
     confirmCodeLabel: '6 位驗證碼',
     confirmCodePlaceholder: '000000',
@@ -131,6 +137,8 @@ const SETTINGS_WEB_ACCESS_COPY = {
     authenticatorTitle: 'Authenticator',
     authenticatorHelp: 'Scan the QR code with an authenticator app, then enter the 6-digit code to confirm.',
     showQr: 'Show authenticator QR',
+    replaceQr: 'Replace authenticator',
+    replaceQrConfirm: 'Replacing the authenticator mints a new secret. You will need to scan a new QR code and re-enable web access. Continue?',
     qrAlt: 'Authenticator QR code',
     confirmCodeLabel: '6-digit code',
     confirmCodePlaceholder: '000000',

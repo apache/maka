@@ -102,6 +102,7 @@ export function WebAccessSettingsPage() {
   }
 
   async function showQr(): Promise<void> {
+    if (status.enrolled && !window.confirm(copy.replaceQrConfirm)) return;
     await runAction('enroll', async () => {
       try {
         const result = await window.maka.webAccess.enrollTotp();
@@ -160,6 +161,10 @@ export function WebAccessSettingsPage() {
       try {
         const result = await window.maka.webAccess.regenerateRecovery();
         if (!mountedRef.current) return;
+        if (result.codes.length === 0) {
+          toast.error(copy.recoveryFailed);
+          return;
+        }
         setRecoveryCodes(result.codes);
       } catch (error) {
         if (mountedRef.current) {
@@ -205,7 +210,7 @@ export function WebAccessSettingsPage() {
         <SettingsActions>
           <Button
             variant="secondary"
-            label={copy.showQr}
+            label={status.enrolled ? copy.replaceQr : copy.showQr}
             isDisabled={busy}
             onClick={() => void showQr()}
           />
@@ -259,7 +264,7 @@ export function WebAccessSettingsPage() {
             onClick={() => void generateRecovery()}
           />
         </SettingsActions>
-        {recoveryCodes ? (
+        {recoveryCodes && recoveryCodes.length > 0 ? (
           <>
             <div className="settingsQuietCallout">
               <p>{copy.recoveryShownOnce}</p>
