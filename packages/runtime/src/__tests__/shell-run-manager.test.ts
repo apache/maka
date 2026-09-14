@@ -38,6 +38,7 @@ import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
 import { createSqliteShellRunStore } from '@maka/storage/shell-run-store';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
+import { buildBackgroundTaskHealthTool } from '../background-task-health-tool.js';
 import {
   ShellRunPtyControlClosedError,
   type ShellRunPtyDataEvent,
@@ -328,6 +329,94 @@ describe('ShellRunProcessManager', () => {
     );
   });
 
+  for (const observation of ['read', 'exit'] as const) {
+    test(`persists a late ConPTY PID on ${observation} without new output`, async (t) => {
+      const cwd = await workspace();
+      const exitGate = join(cwd, 'exit-gate');
+      const store = sqliteShellRunStore(cwd);
+      const flushes = manualFlushScheduler();
+      const manager = createManager(store, undefined, { scheduleFlush: flushes.schedule });
+      const nativePid = Object.getOwnPropertyDescriptor(PtyProcessDriver.prototype, 'pid')!.get!;
+      let publishPid = false;
+      let driver: PtyProcessDriver | undefined;
+      t.mock.getter(PtyProcessDriver.prototype, 'pid', function (this: PtyProcessDriver) {
+        driver = this;
+        return publishPid ? nativePid.call(this) : 0;
+      });
+      let ref: string | undefined;
+      try {
+        const initial = await manager.runBackgroundBash(
+          shellInput({
+            cwd,
+            command: nodeCommand(`
+              const { existsSync } = require('node:fs');
+              process.stdout.write('READY\\n');
+              setInterval(() => {
+                if (existsSync(${JSON.stringify(exitGate)})) process.exit(0);
+              }, 10);
+            `),
+            pty: true,
+            timeoutMs: 30_000,
+          }),
+        );
+        ref = initial.ref;
+        assert.equal(initial.status, 'running');
+        assert.equal(initial.pid, undefined);
+        await waitForPtyText(manager, ref, /READY/, 15_000);
+        const before = await store.readShellRun('session-1', 'shell-run-1');
+        assert.equal(before.pid, undefined);
+        assert.ok(driver);
+        const expectedPid = nativePid.call(driver);
+        assert.ok(expectedPid > 0, 'the native PTY has published its real PID');
+        publishPid = true;
+
+        if (observation === 'exit') {
+          await writeFile(exitGate, 'exit');
+          await waitUntil(() => manager.liveCount() === 0, 15_000);
+        }
+        const result = await manager.readRuntimeResource('session-1', ref, NO_ABORT);
+        assertShellRun(result);
+        assert.equal(result.pid, expectedPid);
+        assert.equal(result.status, observation === 'exit' ? 'completed' : 'running');
+        const stored = await store.readShellRun('session-1', 'shell-run-1');
+        assert.equal(stored.pid, expectedPid);
+        assert.deepEqual(stored.output, before.output);
+        const tool = buildBackgroundTaskHealthTool(manager, {
+          probe: async () => {
+            throw new Error('must not probe');
+          },
+        });
+        const health = JSON.parse(
+          String(
+            await tool.impl(
+              { ref },
+              {
+                sessionId: 'session-1',
+                turnId: 'turn-1',
+                toolCallId: 'health-1',
+                cwd,
+                abortSignal: NO_ABORT,
+                emitOutput: () => {},
+              },
+            ),
+          ),
+        );
+        assert.equal(health.process.pid, expectedPid);
+        assert.deepEqual(health.endpoint, { state: 'not_checked' });
+        if (observation === 'read') {
+          const repeated = await manager.readRuntimeResource('session-1', ref, NO_ABORT);
+          assertShellRun(repeated);
+          assert.equal(repeated.revision, stored.revision);
+        }
+      } finally {
+        t.mock.restoreAll();
+        if (ref && manager.liveCount() > 0) {
+          await manager.stopBackgroundTask('session-1', ref, NO_ABORT);
+        }
+      }
+    });
+  }
+
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];
     const store = sqliteShellRunStore(await workspace());
@@ -342,7 +431,7 @@ describe('ShellRunProcessManager', () => {
     assert.equal(initial.kind, 'shell_run');
     assert.equal(initial.mode, 'pipes');
     assert.equal(initial.output, undefined);
-    assert.ok(initial.pid === undefined || initial.pid > 0);
+    assert.ok(initial.pid !== undefined && initial.pid > 0);
     assert.equal((await store.readShellRun('session-1', 'shell-run-1')).timeoutMs, undefined);
     await waitForShellRun(
       manager,
@@ -358,7 +447,7 @@ describe('ShellRunProcessManager', () => {
     assert.ok(runningUpdate);
     const running = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
     assertShellRun(running);
-    assert.ok(running.pid === undefined || running.pid > 0);
+    assert.equal(running.pid, initial.pid);
     assert.equal(running.output?.mode, 'pipes');
     if (running.output?.mode !== 'pipes') throw new Error('expected pipes output');
     assert.equal(running.output.stdout, 'start');

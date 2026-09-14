@@ -45,7 +45,9 @@ Shared execution composition — where `BackendRegistry` and `SessionManager` ar
 ## Background-task readiness
 
 `Bash` background runs return a durable runtime-task ref and expose the native
-process id once startup is admitted. `BackgroundTaskHealth` deliberately keeps
+process id when available. A process id published after startup is captured on
+the next task observation, output flush, or finalization.
+`BackgroundTaskHealth` deliberately keeps
 the process lifecycle (`starting`, `running`, or terminal, with timestamps and
 captured output) separate from endpoint readiness. An endpoint is `healthy`
 only after an explicit HTTP(S) probe succeeds; an omitted probe is

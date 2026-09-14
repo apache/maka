@@ -970,10 +970,9 @@ export class ShellRunProcessManager
   }
 
   private async markRunning(live: LiveShellRun): Promise<void> {
-    const pid = live.driver.pid;
     live.record = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
       status: 'running',
-      ...(pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
+      ...this.processPidPatch(live),
       output: (await this.snapshotAtCut(live, false)).output,
       updatedAt: this.input.now(),
     });
@@ -982,6 +981,11 @@ export class ShellRunProcessManager
     } else if (this.currentGeneration(live) > 0) {
       this.scheduleAutomaticFlush(live);
     }
+  }
+
+  private processPidPatch(live: LiveShellRun): Pick<ShellRunPatch, 'pid'> {
+    const pid = live.driver.pid;
+    return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {};
   }
 
   private onPipeData(live: LivePipeShellRun, stream: 'stdout' | 'stderr', data: string): void {
@@ -1143,12 +1147,13 @@ export class ShellRunProcessManager
       failureStage = 'persist';
       if (live.persistFailure && !options.bestEffort) throw live.persistFailure;
       const current = live.record;
-      const candidate: ShellRunRecord = { ...current, ...patch, output: snapshot.output };
+      // ConPTY can publish its PID after admission, even without new output.
+      const update = { ...patch, ...this.processPidPatch(live), output: snapshot.output };
+      const candidate: ShellRunRecord = { ...current, ...update };
       let updated = current;
       if (!isDeepStrictEqual(candidate, current)) {
         updated = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
-          ...patch,
-          output: snapshot.output,
+          ...update,
           updatedAt: this.input.now(),
         });
         live.record = updated;
