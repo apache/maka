@@ -75,7 +75,9 @@ export function VirtualTranscriptTurn({
     if (!enabled || !mounted) return;
     const observer = new ResizeObserver(([entry]) => {
       const next = entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height;
-      if (next <= 0) return;
+      // Empty rendered content has a real zero height. A hidden ancestor,
+      // however, has no layout box and must not overwrite a known size.
+      if (next < 0 || (next === 0 && node.getClientRects().length === 0)) return;
       measure.current(turnId, next);
       node.style.overflowAnchor = 'auto';
     });

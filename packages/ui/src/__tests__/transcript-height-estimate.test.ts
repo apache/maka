@@ -83,6 +83,11 @@ test('range trimming preserves measurements while new estimates affect only unme
     await render([['b', 275], ['c', 600]], 'two');
     assert.equal(sizes.beforeHeight, 0);
     assert.equal(sizes.height('b'), 275);
+    sizes.measure('b', 0);
+    await render([['b', 400], ['c', 600]], 'two');
+    assert.equal(sizes.height('b'), 0);
+    await render([['c', 600]], 'two');
+    assert.equal(sizes.beforeHeight, 0);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, old);

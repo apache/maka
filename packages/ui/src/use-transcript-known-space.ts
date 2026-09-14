@@ -72,7 +72,7 @@ export function useTranscriptKnownSpace(
     before, after,
     beforeHeight: Math.max(0, before - gap),
     afterHeight: Math.max(0, after - gap),
-    height: (id: string) => Math.max(1, heights.get(id)?.height ?? estimate),
+    height: (id: string) => Math.max(0, heights.get(id)?.height ?? estimate),
     measure: (id: string, height: number) => { heights.set(id, { height, measured: true }); },
   };
 }
