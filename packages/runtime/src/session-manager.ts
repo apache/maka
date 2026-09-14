@@ -651,7 +651,17 @@ export interface SessionStore {
     patch: SessionHeaderPatch,
     expectedRevision: number,
   ): Promise<VersionedSessionHeader>;
+  /**
+   * Versioned configuration authority requires both this method and
+   * updateSessionConfiguration. Stores may omit these capabilities when they
+   * do not support configuration changes; Runtime rejects those operations
+   * with operation_unavailable rather than falling back to unversioned writes.
+   */
   readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
+  /**
+   * Atomically check the expected revision and commit configuration, execution
+   * boundary and the new revision. Requires readHeaderRecordSnapshot.
+   */
   updateSessionConfiguration?(
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
@@ -1830,60 +1840,6 @@ export class SessionManager {
   async listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
     await this.deps.store.readHeader(sessionId);
     return this.runtimeKernel.listActiveInteractions?.(sessionId) ?? [];
-  }
-
-  async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
-    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
-      this.deps.store,
-    );
-    if (!readHeaderRecordSnapshot || !this.deps.store.updateSessionConfiguration) {
-      // Temporary compatibility bridge for SessionStore embeddings that predate
-      // versioned configuration authority. A follow-up PR will shortly remove
-      // setPermissionMode and this redundant fallback after callers migrate.
-      return this.setPermissionModeWithLegacyStore(sessionId, mode);
-    }
-    const current = await readHeaderRecordSnapshot(sessionId);
-    const next = await this.transitionSessionConfiguration(sessionId, {
-      expectedRevision: current.revision,
-      clearConnectionBlock: false,
-      permissionModeOnly: true,
-      configuration: sessionConfigurationWithPermissionMode(current.header, mode),
-    });
-    return headerToSummary(next.header);
-  }
-
-  private async setPermissionModeWithLegacyStore(
-    sessionId: string,
-    mode: PermissionMode,
-  ): Promise<SessionSummary> {
-    const previous = await this.deps.store.readHeader(sessionId);
-    const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    if (
-      previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode)
-    ) {
-      return headerToSummary(previous);
-    }
-
-    const labels = previous.labels;
-    const kind = mode === 'bypass' ? 'bypass' : 'managed';
-    await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
-      const current = await this.deps.store.readHeader(sessionId);
-      if (current.status === 'waiting_for_user') {
-        throw new SessionConfigurationTransitionError(
-          'session_busy',
-          'Session has a pending Interaction',
-        );
-      }
-      return () =>
-        this.deps.store.setExecutionBoundaryKind(sessionId, kind, {
-          permissionMode: mode,
-          labels,
-        });
-    });
-    const next = await this.deps.store.readHeader(sessionId);
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    return headerToSummary(next);
   }
 
   async setExecutionBoundaryKind(
@@ -5467,25 +5423,6 @@ function claimedAgentGraphIntentResult(
   };
 }
 
-function sessionConfigurationWithPermissionMode(
-  header: SessionHeader,
-  permissionMode: PermissionMode,
-): SessionConfigurationTransitionRequest['configuration'] {
-  return {
-    backend: header.backend,
-    executorId: header.executorId,
-    executorConfig: header.executorConfig,
-    llmConnectionId: header.llmConnectionId,
-    llmConnectionSlug: header.llmConnectionSlug,
-    connectionLocked: header.connectionLocked,
-    model: header.model,
-    thinkingLevel: header.thinkingLevel,
-    permissionMode,
-    collaborationMode: header.collaborationMode ?? 'agent',
-    orchestrationMode: header.orchestrationMode ?? 'default',
-  };
-}
-
 function sessionConfigurationMatchesExceptPermissionMode(
   header: SessionHeader,
   configuration: SessionConfigurationTransitionRequest['configuration'],
@@ -5512,17 +5449,6 @@ function sessionConfigurationMatches(
     header.permissionMode === configuration.permissionMode &&
     sessionConfigurationMatchesExceptPermissionMode(header, configuration)
   );
-}
-
-function executionBoundaryMatchesPermissionMode(
-  boundary: ExecutionBoundary,
-  mode: PermissionMode,
-): boolean {
-  if (mode === 'bypass') return boundary.kind === 'bypass';
-  if (boundary.kind !== 'managed') return false;
-  return mode === 'explore'
-    ? boundary.profile.name === 'read-only'
-    : boundary.profile.name !== 'read-only';
 }
 
 function narrowsExecutionAuthority(

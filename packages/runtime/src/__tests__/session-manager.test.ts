@@ -5009,25 +5009,12 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
-  for (const route of ['direct', 'legacy'] as const) {
+  for (const route of ['direct', 'configuration'] as const) {
     test(`serializes concurrent ${route} boundary commits before they can become narrowing`, {
       timeout: 10_000,
     }, async (t) => {
       const root = await mkdtemp(join(tmpdir(), 'maka-boundary-commit-race-'));
       const store = createSessionStore(root);
-      // Hide optional capabilities from Runtime, without changing SQLite's own
-      // internal method calls, to exercise the legacy SessionStore contract.
-      const runtimeStore =
-        route === 'legacy'
-          ? new Proxy(store, {
-              get(target, key) {
-                if (key === 'readHeaderRecordSnapshot' || key === 'updateSessionConfiguration')
-                  return undefined;
-                const value = Reflect.get(target, key, target);
-                return typeof value === 'function' ? value.bind(target) : value;
-              },
-            })
-          : store;
       const gate = makeGate();
       t.after(async () => {
         gate.release();
@@ -5039,7 +5026,7 @@ describe('SessionManager permission mode updates', () => {
       let backend: TestBackend | undefined;
       backends.register('ai-sdk', (ctx) => (backend = new TestBackend(ctx, gate)));
       const manager = new SessionManager({
-        store: runtimeStore,
+        store,
         backends,
         newId: nextId(),
         now: nextNow(979),
@@ -5060,10 +5047,20 @@ describe('SessionManager permission mode updates', () => {
         } as never,
       });
       const session = await manager.createSession(makeInput({ permissionMode: 'explore' }));
-      const update = (bypass: boolean) =>
-        route === 'direct'
-          ? manager.setExecutionBoundaryKind(session.id, bypass ? 'bypass' : 'managed')
-          : manager.setPermissionMode(session.id, bypass ? 'bypass' : 'ask');
+      const update = async (bypass: boolean) => {
+        if (route === 'direct') {
+          return manager.setExecutionBoundaryKind(session.id, bypass ? 'bypass' : 'managed');
+        }
+        const current = await store.readHeaderRecordSnapshot(session.id);
+        return manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, {
+            permissionMode: bypass ? 'bypass' : 'ask',
+          }),
+        });
+      };
       const turn = manager
         .sendMessage(session.id, { turnId: 'turn-racing', text: 'keep running' })
         [Symbol.asyncIterator]();
@@ -5078,8 +5075,17 @@ describe('SessionManager permission mode updates', () => {
         );
         const conflict = results[1];
         assert.ok(conflict?.status === 'rejected');
-        assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
-        assert.strictEqual(conflict.reason.code, 'operation_conflict');
+        // Either the configuration revision or the boundary revision can fence
+        // the stale request, depending on when its snapshot was observed.
+        if (
+          route === 'configuration' &&
+          conflict.reason instanceof SessionConfigurationRevisionConflictError
+        ) {
+          assert.strictEqual(conflict.reason.actualRevision, conflict.reason.expectedRevision + 1);
+        } else {
+          assert.ok(conflict.reason instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(conflict.reason.code, 'operation_conflict');
+        }
         assert.deepStrictEqual(await store.readExecutionBoundary(session.id), {
           kind: 'bypass',
           revision: 1,
@@ -5841,15 +5847,21 @@ describe('SessionManager permission mode updates', () => {
         ['turn-2', 'completed'],
       ],
     );
-    const summary = await manager.setPermissionMode(session.id, 'bypass');
-    assert.strictEqual(summary.permissionMode, 'bypass');
+    const afterTurns = await store.readHeaderRecordSnapshot(session.id);
+    const unchanged = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: afterTurns.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(afterTurns.header, { permissionMode: 'bypass' }),
+    });
+    assert.deepStrictEqual(unchanged, afterTurns);
   });
 
   test('legacy research Sessions stay read-only after restart until explicitly changed', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(6_000) });
+    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(6_100) });
     const session = await manager.createSession(
       makeInput({
         permissionMode: 'explore',
@@ -5872,32 +5884,63 @@ describe('SessionManager permission mode updates', () => {
     );
     assert.equal((await store.readHeader(session.id)).permissionMode, 'explore');
     assert.deepEqual(await restarted.readExecutionBoundary(session.id), boundaryBeforeRestart);
-    const summary = await restarted.setPermissionMode(session.id, 'ask');
-
-    assert.strictEqual(summary.permissionMode, 'ask');
-    assert.deepStrictEqual(summary.labels, ['mode:deep_research', 'kept']);
-    assert.deepStrictEqual((await store.readHeader(session.id)).labels, [
-      'mode:deep_research',
-      'kept',
-    ]);
-  });
-
-  test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
-    const store = new MemorySessionStore();
-    const manager = new SessionManager({
-      store,
-      backends: new BackendRegistry(),
-      newId: nextId(),
-      now: nextNow(6_100),
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const next = await restarted.transitionSessionConfiguration(session.id, {
+      expectedRevision: current.revision,
+      clearConnectionBlock: false,
+      permissionModeOnly: true,
+      configuration: configurationForHeader(current.header, { permissionMode: 'ask' }),
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
 
-    const summary = await manager.setPermissionMode(session.id, 'bypass');
-
-    assert.strictEqual(summary.permissionMode, 'bypass');
-    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'bypass');
-    assert.strictEqual((await store.readExecutionBoundary(session.id)).kind, 'bypass');
+    assert.strictEqual(next.header.permissionMode, 'ask');
+    assert.strictEqual(next.revision, current.revision + 1);
+    assert.deepStrictEqual(next.header.labels, ['mode:deep_research', 'kept']);
+    const persisted = await store.readHeaderRecordSnapshot(session.id);
+    assert.deepStrictEqual(persisted.header, next.header);
+    assert.strictEqual(persisted.revision, next.revision);
   });
+
+  for (const missing of [
+    ['readHeaderRecordSnapshot'],
+    ['updateSessionConfiguration'],
+    ['readHeaderRecordSnapshot', 'updateSessionConfiguration'],
+  ] as const) {
+    test(`configuration changes require Store capabilities: missing ${missing.join(', ')}`, async () => {
+      const store = new VersionedConfigurationMemorySessionStore();
+      const manager = new SessionManager({
+        store,
+        backends: new BackendRegistry(),
+        newId: nextId(),
+        now: nextNow(6_100),
+      });
+      const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+      const readSnapshot = store.readHeaderRecordSnapshot.bind(store);
+      const current = await readSnapshot(session.id);
+      const boundary = await store.readExecutionBoundary(session.id);
+      for (const capability of missing) {
+        Object.defineProperty(store, capability, { value: undefined });
+      }
+      store.updateHeader = async () => assert.fail('Must not fall back to header writes');
+      store.setExecutionBoundaryKind = async () =>
+        assert.fail('Must not fall back to boundary writes');
+
+      await assert.rejects(
+        manager.transitionSessionConfiguration(session.id, {
+          expectedRevision: current.revision,
+          clearConnectionBlock: false,
+          permissionModeOnly: true,
+          configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SessionConfigurationTransitionError);
+          assert.strictEqual(error.code, 'operation_unavailable');
+          return true;
+        },
+      );
+      assert.deepStrictEqual(await readSnapshot(session.id), current);
+      assert.deepStrictEqual(await store.readExecutionBoundary(session.id), boundary);
+    });
+  }
 
   test('starts a new turn without workspace identity when safety inspection fails', async () => {
     const store = new MemorySessionStore();
@@ -11670,8 +11713,24 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).status, 'waiting_for_user');
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run?.terminalEvent, undefined);
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /pending Interaction/);
-    assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
+    const current = await store.readHeaderRecordSnapshot(session.id);
+    const boundary = await store.readExecutionBoundary(session.id);
+    await assert.rejects(
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: current.revision,
+        clearConnectionBlock: false,
+        permissionModeOnly: true,
+        configuration: configurationForHeader(current.header, { permissionMode: 'bypass' }),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.strictEqual(error.code, 'session_busy');
+        assert.match(error.message, /pending Interaction/);
+        return true;
+      },
+    );
+    assert.deepStrictEqual(await store.readHeaderRecordSnapshot(session.id), current);
+    assert.deepStrictEqual(await store.readExecutionBoundary(session.id), boundary);
 
     await manager.respondToSandboxBoundary(session.id, {
       requestId: 'boundary-1',
