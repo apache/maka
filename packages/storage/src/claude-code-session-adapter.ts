@@ -21,9 +21,8 @@
 //
 // Transcripts live at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`, one
 // JSON object per line, discriminated by `type`. The parsing primitives are
-// shared with the CLI's foreign-session handoff (`@maka/core/foreign-session`)
-// rather than reimplemented: a scanner and an importer that disagreed about
-// "what did the user actually say" would be a real defect, not a cosmetic one.
+// shared by the external Session adapters rather than reimplemented: catalog
+// titles and imported messages must agree about what the user actually said.
 //
 // The directory name cannot answer which session belongs to which project —
 // it encodes the cwd by replacing separators, so `-Users-a-b` is ambiguous
@@ -40,12 +39,13 @@ import {
   collectClaudeTitle,
   isSyntheticClaudeUserText,
   pickClaudeTitle,
-  sanitizeForeignTitle,
+  sanitizeExternalSessionTitle,
   type ClaudeTitleCandidates,
-} from '@maka/core/foreign-session';
+} from '@maka/core/external-session';
 import {
   ExternalSessionLimitError,
   externalSessionMatchesQuery,
+  pageExternalSessionSummaries,
 } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
@@ -162,7 +162,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
       if (!live.has(path)) this.#summaries.delete(path);
     }
     summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return summaries;
+    return pageExternalSessionSummaries(summaries, query);
   }
 
   /**
@@ -565,7 +565,7 @@ async function readTranscriptSummary(path: string): Promise<TranscriptSummary | 
 
 function collectLegacyClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {
   const take = (value: unknown): string | undefined =>
-    typeof value === 'string' && value.trim() ? sanitizeForeignTitle(value) : undefined;
+    typeof value === 'string' && value.trim() ? sanitizeExternalSessionTitle(value) : undefined;
   if (record.type === 'ai-title') {
     titles.aiTitle = take(record.aiTitle ?? record.title) ?? titles.aiTitle;
   } else if (record.type === 'last-prompt') {

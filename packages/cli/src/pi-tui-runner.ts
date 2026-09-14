@@ -57,12 +57,6 @@ import {
   resolveUiMessageCatalog,
   type UiLocale,
 } from '@maka/core/ui-locale';
-import {
-  buildForeignSessionHandoffMessage,
-  foreignSessionHandoffDisplayText,
-  foreignSourceLabel,
-  type ForeignSessionSummary,
-} from '@maka/core/foreign-session';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
@@ -70,7 +64,7 @@ import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
-  MakaForeignSessionReader,
+  MakaExternalSessionSurface,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   MakaPiTuiHostControl,
@@ -83,6 +77,7 @@ import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type {
   AgentGraphClientSnapshot,
   AgentGraphEpochSummary,
+  ExternalSessionCatalogItem,
   TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -302,13 +297,8 @@ export interface MakaPiTuiInput {
   resumeCwd?: string;
   /** Whether a failed startup resume may continue with a fresh Session. */
   resumeFailure?: 'start_fresh' | 'exit';
-  /**
-   * Read-only store of sessions from other coding agents (Claude Code,
-   * Codex). When present, the session picker lists foreign sessions for the
-   * current cwd; selecting one distills it into a handoff digest and opens a
-   * fresh Maka session seeded with it. Omitting it hides the feature.
-   */
-  foreignSessions?: MakaForeignSessionReader;
+  /** Host-owned catalog and importer shared with Desktop. */
+  externalSessions?: MakaExternalSessionSurface;
   /** Initial Session picker scope when Session paths are not Client-local. */
   sessionListScope?: 'current' | 'all';
   /** Whether editor path completion may inspect the Client filesystem. */
@@ -319,6 +309,34 @@ interface TaskbarProgressEnvironment {
   readonly platform: NodeJS.Platform;
   readonly override?: string;
   readonly windowsTerminalSession?: string;
+}
+
+function externalSourceLabel(adapterId: string): string {
+  switch (adapterId) {
+    case 'claude-code':
+      return 'Claude Code';
+    case 'codex':
+      return 'Codex';
+    case 'opencode':
+      return 'OpenCode';
+    default:
+      return adapterId;
+  }
+}
+
+function isExternalImportOutcomeUnknown(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const value = error as {
+    readonly operation?: unknown;
+    readonly code?: unknown;
+    readonly mode?: unknown;
+    readonly dispatch?: unknown;
+  };
+  if (value.operation !== 'external-session.import') return false;
+  return (
+    value.code === 'commit_outcome_unknown' ||
+    (value.mode === 'command' && value.dispatch === 'dispatched')
+  );
 }
 
 export function resolveTaskbarProgress(
@@ -401,7 +419,20 @@ interface TuiConnectionIdentityCopy {
 }
 
 interface TuiSessionActionsCopy {
-  readonly foreignScanFailed: string;
+  readonly externalCatalogFailed: string;
+  readonly externalImport: string;
+  readonly externalImportDescription: string;
+  readonly externalSourceTitle: string;
+  readonly externalSessionTitle: string;
+  readonly externalLoadMore: string;
+  readonly externalAllWorkspaces: string;
+  readonly externalCurrentWorkspace: string;
+  readonly externalEmpty: string;
+  readonly externalImportedCount: string;
+  readonly externalImportFailed: string;
+  readonly externalImportLimit: string;
+  readonly externalImportUncertain: string;
+  readonly externalOpenFailed: string;
   readonly newSessionFailed: string;
 }
 
@@ -2930,6 +2961,187 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const findImportedExternalSession = async (
+    adapterId: string,
+    sourceSessionId: string,
+    previousIds: ReadonlySet<string>,
+  ): Promise<string | undefined> => {
+    if (!input.externalSessions) return undefined;
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    do {
+      const page = await input.externalSessions.listSessions({
+        adapterId,
+        scope: 'all',
+        ...(cursor ? { cursor } : {}),
+      });
+      const source = page.sessions.find((session) => session.id === sourceSessionId);
+      const imported = source?.importState.importedSessionIds.find((id) => !previousIds.has(id));
+      if (imported) return imported;
+      if (page.nextCursor === null || seenCursors.has(page.nextCursor)) return undefined;
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return undefined;
+  };
+
+  const importExternalSession = async (
+    adapterId: string,
+    source: ExternalSessionCatalogItem,
+  ): Promise<void> => {
+    if (!input.externalSessions) return;
+    const copy = TUI_SESSION_ACTIONS_COPY[locale];
+    const previousIds = new Set(source.importState.importedSessionIds);
+    let importedSessionId: string | undefined;
+    try {
+      const result = await input.externalSessions.importSession({
+        adapterId,
+        sourceSessionId: source.id,
+      });
+      if (result.kind === 'source_limit_exceeded') {
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: formatUiMessage(
+            copy.externalImportLimit,
+            { kind: result.limit.kind, max: result.limit.max },
+            locale,
+          ),
+        });
+        return;
+      }
+      importedSessionId = result.session.id;
+    } catch (error) {
+      if (!isExternalImportOutcomeUnknown(error)) {
+        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
+        return;
+      }
+      importedSessionId = await findImportedExternalSession(
+        adapterId,
+        source.id,
+        previousIds,
+      ).catch(() => undefined);
+      if (!importedSessionId) {
+        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
+        return;
+      }
+    }
+    try {
+      await switchSession(importedSessionId);
+      await discardCurrentSidePair();
+    } catch {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: formatUiMessage(copy.externalOpenFailed, { sessionId: importedSessionId }, locale),
+      });
+    }
+  };
+
+  const showExternalSessionPage = async (
+    adapterId: string,
+    scope: 'current_workspace' | 'all' = 'current_workspace',
+    loaded: readonly ExternalSessionCatalogItem[] = [],
+    cursor?: string,
+  ): Promise<void> => {
+    if (!input.externalSessions || closed) return;
+    const copy = TUI_SESSION_ACTIONS_COPY[locale];
+    let page;
+    try {
+      page = await input.externalSessions.listSessions({
+        adapterId,
+        scope,
+        ...(cursor ? { cursor } : {}),
+      });
+    } catch {
+      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
+      requestRender();
+      return;
+    }
+    if (closed || turnRunning) return;
+    const sessions = [...loaded, ...page.sessions];
+    const byValue = new Map<string, ExternalSessionCatalogItem>(
+      sessions.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
+    );
+    const items: SelectItem[] = sessions.map((session) => ({
+      value: `external:${adapterId}:${session.id}`,
+      label: session.name,
+      description: [
+        session.hostCwd,
+        session.importState.importedCount > 0
+          ? formatUiMessage(
+              copy.externalImportedCount,
+              { count: session.importState.importedCount },
+              locale,
+            )
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    }));
+    if (page.nextCursor) {
+      items.push({ value: 'external:load-more', label: copy.externalLoadMore });
+    }
+    items.push({
+      value: 'external:toggle-workspace',
+      label:
+        scope === 'current_workspace' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
+    });
+    showSelectPicker(
+      formatUiMessage(
+        copy.externalSessionTitle,
+        { source: externalSourceLabel(adapterId) },
+        locale,
+      ),
+      externalSourceLabel(adapterId),
+      items,
+      (item) => {
+        if (item.value === 'external:load-more' && page.nextCursor) {
+          void showExternalSessionPage(adapterId, scope, sessions, page.nextCursor);
+          return;
+        }
+        if (item.value === 'external:toggle-workspace') {
+          void showExternalSessionPage(
+            adapterId,
+            scope === 'current_workspace' ? 'all' : 'current_workspace',
+          );
+          return;
+        }
+        const source = byValue.get(item.value);
+        if (!source) return;
+        if (busy || turnRunning) {
+          state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
+          requestRender();
+          return;
+        }
+        void runControl(() => importExternalSession(adapterId, source));
+      },
+      {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 52,
+        ...(sessions.length === 0 ? { notice: copy.externalEmpty } : {}),
+      },
+    );
+  };
+
+  const showExternalSourcePicker = (adapterIds: readonly string[]): void => {
+    if (adapterIds.length === 1) {
+      void showExternalSessionPage(adapterIds[0]!);
+      return;
+    }
+    const copy = TUI_SESSION_ACTIONS_COPY[locale];
+    showSelectPicker(
+      copy.externalSourceTitle,
+      copy.externalSourceTitle,
+      adapterIds.map((adapterId) => ({
+        value: adapterId,
+        label: externalSourceLabel(adapterId),
+      })),
+      (item) => void showExternalSessionPage(item.value),
+      { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 40 },
+    );
+  };
+
   const showSessionList = async () => {
     const sessions = await input.driver.listSessions();
     const sessionTree = projectRevisionLinkedSessionTree(
@@ -2940,10 +3152,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
-    // Maka-session availability and the foreign scan are independent I/O; run
+    // Maka-session availability and Host source discovery are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
-    const [availabilityEntries, foreignScan] = await Promise.all([
+    const [availabilityEntries, externalSourceQuery] = await Promise.all([
       Promise.all(
         sessions.map(async (session) => {
           return [
@@ -2953,42 +3165,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ] as const;
         }),
       ),
-      // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
-      // Session and hands off a turn, which cannot detach from the running
-      // one (#3380). Skip the scan mid-turn instead of offering rows whose
-      // selection would silently no-op on importForeignSession's busy guard.
-      input.foreignSessions && !turnRunning
-        ? input.foreignSessions.listSessions({ cwd }).then(
-            (summaries) => ({ summaries }),
-            (error: unknown) => ({ error }),
+      input.externalSessions && !turnRunning
+        ? input.externalSessions.listSources().then(
+            (adapterIds) => ({ adapterIds }),
+            () => ({ error: true as const }),
           )
-        : Promise.resolve({ summaries: [] as ForeignSessionSummary[] }),
+        : Promise.resolve({ adapterIds: [] as readonly string[] }),
     ]);
     const availability = new Map(availabilityEntries);
-    // Foreign (Claude Code / Codex) sessions for the current cwd, keyed by a
-    // prefixed select value so they never collide with Maka session ids. A scan
-    // error is surfaced (not silently swallowed): degrade to no rows but tell
-    // the user why, so a real store bug isn't mistaken for "no sessions".
-    // Deliberate #2672 exception: the interpolated detail is a local
-    // file-scan diagnostic (not backend copy) and the TUI has no log channel
-    // to carry it, so dropping it would hide the only debugging signal.
-    const foreignByValue = new Map<string, ForeignSessionSummary>();
-    if ('error' in foreignScan) {
-      const detail =
-        foreignScan.error instanceof Error ? foreignScan.error.message : String(foreignScan.error);
+    if ('error' in externalSourceQuery) {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: formatUiMessage(
-          TUI_SESSION_ACTIONS_COPY[locale].foreignScanFailed,
-          { detail },
-          locale,
-        ),
+        text: TUI_SESSION_ACTIONS_COPY[locale].externalCatalogFailed,
       });
-    } else {
-      for (const summary of foreignScan.summaries) {
-        foreignByValue.set(`foreign:${summary.source}:${summary.id}`, summary);
-      }
     }
     let overlay: OverlayHandle | undefined;
     let sessionSearch: SessionSearchOverlay | undefined;
@@ -3027,17 +3217,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             .toLocaleLowerCase(),
         };
       });
-      // Foreign sessions are cwd-scoped; show them in both scope views (they
-      // belong to this project) so a Tab toggle never makes them vanish.
-      for (const [value, summary] of foreignByValue) {
+      if ('adapterIds' in externalSourceQuery && externalSourceQuery.adapterIds.length > 0) {
         choices.push({
           item: {
-            value,
-            label: summary.title,
-            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+            value: 'external:import',
+            label: TUI_SESSION_ACTIONS_COPY[locale].externalImport,
+            description: TUI_SESSION_ACTIONS_COPY[locale].externalImportDescription,
           },
-          searchText:
-            `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
+          searchText: TUI_SESSION_ACTIONS_COPY[locale].externalImport.toLocaleLowerCase(),
         });
       }
       const closeOverlay = () => {
@@ -3045,10 +3232,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         overlay?.hide();
       };
       const onSelect = (item: SelectItem) => {
-        const foreign = foreignByValue.get(item.value);
-        if (foreign) {
+        if (item.value === 'external:import' && 'adapterIds' in externalSourceQuery) {
           closeOverlay();
-          void importForeignSession(foreign);
+          showExternalSourcePicker(externalSourceQuery.adapterIds);
           return;
         }
         if (availability.get(item.value)?.available === false) return;
@@ -3163,41 +3349,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     await discardCurrentSidePair();
     requestRender();
     return true;
-  };
-
-  // Import a foreign (Claude Code / Codex) session: read its digest, open a
-  // fresh Maka session, and seed the first turn with an untrusted handoff
-  // envelope. Mirrors submitPreparedUserPrompt: claim `busy` + an activity lease
-  // SYNCHRONOUSLY before the async read so no other turn (a Goal auto-
-  // continuation, or a user Enter) can start during it and make the import a
-  // silent no-op. runAgentTurn re-asserts busy for the turn; on any failure the
-  // finally releases the lease. The handoff is the model-facing `sendText`; a
-  // short line shows in the transcript.
-  const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
-    if (busy || input.foreignSessions === undefined) return;
-    busy = true;
-    const activity = beginActivity();
-    editor.disableSubmit = true;
-    let handedOff = false;
-    try {
-      const digest = await input.foreignSessions.readDigest(summary);
-      if (closed) return;
-      if (!(await newSession())) return;
-      submitMessage(foreignSessionHandoffDisplayText(digest), 'current_turn', {
-        modelText: buildForeignSessionHandoffMessage(digest),
-      });
-      handedOff = true;
-    } catch (error) {
-      if (closed) return;
-      reportError(error);
-    } finally {
-      if (!handedOff) {
-        busy = false;
-        editor.disableSubmit = false;
-        requestRender();
-      }
-      activity.finish();
-    }
   };
 
   const showHelp = () => {

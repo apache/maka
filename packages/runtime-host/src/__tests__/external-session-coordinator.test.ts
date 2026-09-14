@@ -28,6 +28,7 @@ import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   ExternalSessionLimitError,
+  pageExternalSessionSummaries,
   type ExternalSessionAdapter,
 } from '@maka/core/external-session';
 import { type SessionHeader } from '@maka/core/session';
@@ -103,7 +104,14 @@ test('resolves a Project filter before calling the Host adapter', async () => {
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
+  assert.deepEqual(filters, [
+    {
+      cwd: '/resolved-project',
+      includeArchived: true,
+      offset: 0,
+      limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+    },
+  ]);
 });
 
 test('projects zero import state for never-imported source Sessions with one batch lookup', async () => {
@@ -216,12 +224,15 @@ test('reports an unresolved import independently from durable import history', a
 
 test('stops catalog pages before the encoded result limit', async () => {
   const adapter = adapterFixture({ count: 20 });
-  adapter.listSessions = async () =>
-    Array.from({ length: 20 }, (_, index) => ({
-      id: `source-${index}`,
-      name: `Source ${index}`,
-      cwd: `/${'\u0000'.repeat(4_000)}`,
-    }));
+  adapter.listSessions = async (query) =>
+    pageExternalSessionSummaries(
+      Array.from({ length: 20 }, (_, index) => ({
+        id: `source-${index}`,
+        name: `Source ${index}`,
+        cwd: `/${'\u0000'.repeat(4_000)}`,
+      })),
+      query,
+    );
   const fixture = coordinatorFixture([adapter], {
     lookupExternalSessionImports: async (_adapterId, sourceSessionIds) =>
       sourceSessionIds.map((sourceSessionId) => ({
@@ -833,13 +844,16 @@ function adapterFixture(
   return {
     id: options.id ?? 'codex',
     detect: async () => options.detected ?? true,
-    listSessions: async () =>
-      Array.from({ length: count }, (_, index) => ({
-        id: `source-${index}`,
-        name: `Source ${index}`,
-        cwd: '/external',
-        updatedAt: index,
-      })),
+    listSessions: async (query) =>
+      pageExternalSessionSummaries(
+        Array.from({ length: count }, (_, index) => ({
+          id: `source-${index}`,
+          name: `Source ${index}`,
+          cwd: '/external',
+          updatedAt: index,
+        })),
+        query,
+      ),
     readSession:
       options.readSession ??
       (async (sourceSessionId) => ({

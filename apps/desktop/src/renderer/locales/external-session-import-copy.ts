@@ -148,7 +148,7 @@ const COPY = {
     bundleUnreadable: '文件无法读取，或它来自这个版本不认识的 Maka。',
     bundleFailed: '操作失败。',
     sourceLabel: '来源',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 会话文件' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 会话文件' },
     includeArchived: '包含已归档的对话',
     searchLabel: '搜索',
     searchHelp: '匹配对话标题与项目路径。留空显示全部。',
@@ -160,11 +160,9 @@ const COPY = {
     emptyDescription: '当前来源中没有找到符合条件的根对话。',
     unavailableTitle: '没有检测到支持的 Agent',
     // The title already says nothing was detected, so this says what to do
-    // about it instead of saying it again. It names Codex because the renderer
-    // only ever learns which sources *were* detected — nothing but a copy
-    // string can tell someone with none what to go install. The second half is
-    // the promise that earns the permission to read another app's files.
-    unavailableDescription: '在本机使用过 Codex 后，它的对话会出现在这里。Maka 只读取这些文件，不会修改。',
+    // about it instead of saying it again. The renderer only learns which
+    // sources were detected, so this copy names the supported local Agents.
+    unavailableDescription: '在本机使用过 Codex、Claude Code 或 OpenCode 后，它们的对话会出现在这里。Maka 只读取这些文件，不会修改。',
     loadFailedTitle: '无法读取外部对话',
     loadFailedFallback: '外部对话目录暂时无法读取，请重试。',
     retry: '重试',
@@ -236,7 +234,7 @@ const COPY = {
     bundleUnreadable: '檔案無法讀取，或它來自這個版本不認識的 Maka。',
     bundleFailed: '操作失敗。',
     sourceLabel: '來源',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka 工作階段檔案' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 工作階段檔案' },
     includeArchived: '包含已歸檔的對話',
     searchLabel: '搜尋',
     searchHelp: '符合對話標題與專案路徑。留空顯示全部。',
@@ -248,11 +246,9 @@ const COPY = {
     emptyDescription: '目前來源中沒有找到符合條件的根對話。',
     unavailableTitle: '沒有檢測到支援的 Agent',
     // The title already says nothing was detected, so this says what to do
-    // about it instead of saying it again. It names Codex because the renderer
-    // only ever learns which sources *were* detected — nothing but a copy
-    // string can tell someone with none what to go install. The second half is
-    // the promise that earns the permission to read another app's files.
-    unavailableDescription: '在本機使用過 Codex 後，它的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
+    // about it instead of saying it again. The renderer only learns which
+    // sources were detected, so this copy names the supported local Agents.
+    unavailableDescription: '在本機使用過 Codex、Claude Code 或 OpenCode 後，它們的對話會出現在這裡。Maka 只讀取這些檔案，不會修改。',
     loadFailedTitle: '無法讀取外部對話',
     loadFailedFallback: '外部對話目錄暫時無法讀取，請重試。',
     retry: '重試',
@@ -326,7 +322,7 @@ const COPY = {
     bundleUnreadable: 'The file could not be read, or it came from a Maka this build does not know.',
     bundleFailed: 'That did not work.',
     sourceLabel: 'Source',
-    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', 'maka-bundle': 'Maka session file' },
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka session file' },
     includeArchived: 'Include archived conversations',
     searchLabel: 'Search',
     searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
@@ -338,7 +334,7 @@ const COPY = {
     emptyDescription: 'No matching root conversations were found in this source.',
     unavailableTitle: 'No supported Agent detected',
     unavailableDescription:
-      'Once Codex has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
+      'Once Codex, Claude Code, or OpenCode has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
     loadFailedTitle: 'Could not read external conversations',
     loadFailedFallback: 'The external session directory is temporarily unavailable. Try again.',
     retry: 'Retry',
