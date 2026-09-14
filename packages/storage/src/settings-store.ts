@@ -17,13 +17,76 @@
  * under the License.
  */
 
-import { mkdir, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
-import { writeAtomicFile } from './atomic-file-write.js';
+import { AtomicFileWriteCommitUnknownError, writeAtomicFile } from './atomic-file-write.js';
+import { syncDirectory } from './stable-storage.js';
+
+export interface CorruptSettingsRecovery {
+  readonly settingsPath: string;
+  readonly backupPath: string;
+  readonly outcome: 'recovered' | 'commit-unknown';
+}
+
+export interface SettingsStoreOptions {
+  /** Observes publication, not delivery of a notification. Never awaited while
+   * holding the store queue; callback failures cannot change the write result. */
+  onCorruptRecovery?: (recovery: CorruptSettingsRecovery) => void | Promise<void>;
+}
+
+export class SettingsRecoveryError extends Error {
+  readonly settingsPath: string;
+  readonly phase: 'backup' | 'reset';
+  /** Present only when a complete backup passed its synchronization steps. */
+  readonly backupPath?: string;
+  /** A file this attempt created but could not finish or remove. */
+  readonly incompleteBackupPath?: string;
+
+  constructor(options: {
+    settingsPath: string;
+    phase: 'backup' | 'reset';
+    backupPath?: string;
+    incompleteBackupPath?: string;
+    cause: unknown;
+  }) {
+    const detail = options.backupPath
+      ? `Original bytes are backed up at ${options.backupPath}.`
+      : 'No complete backup was confirmed.';
+    super(
+      `Cannot recover invalid JSON settings at ${options.settingsPath}: ${options.phase} failed. ` +
+        `The original settings file was not replaced. ${detail}` +
+        (options.incompleteBackupPath
+          ? ` An incomplete backup may remain at ${options.incompleteBackupPath}.`
+          : '') +
+        ' Close the app and check file access and disk space before retrying.',
+      { cause: options.cause },
+    );
+    this.name = 'SettingsRecoveryError';
+    this.settingsPath = options.settingsPath;
+    this.phase = options.phase;
+    this.backupPath = options.backupPath;
+    this.incompleteBackupPath = options.incompleteBackupPath;
+  }
+}
+
+export class SettingsRecoveryCommitUnknownError extends AtomicFileWriteCommitUnknownError {
+  constructor(
+    readonly settingsPath: string,
+    readonly backupPath: string,
+    cause: AtomicFileWriteCommitUnknownError,
+  ) {
+    super({ cause });
+    this.name = 'SettingsRecoveryCommitUnknownError';
+    this.message =
+      `Default settings were published at ${settingsPath}, but durability is unconfirmed. ` +
+      `Original bytes are backed up at ${backupPath}. Reload before retrying; do not replay the update automatically.`;
+  }
+}
 
 /**
  * A conditional write's patch, either fixed or derived from the state the
@@ -68,15 +131,21 @@ export interface SettingsStore {
   clearOnboardingMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
 }
 
-export function createSettingsStore(workspaceRoot: string): SettingsStore {
-  return new FileSettingsStore(workspaceRoot);
+export function createSettingsStore(
+  workspaceRoot: string,
+  options: SettingsStoreOptions = {},
+): SettingsStore {
+  return new FileSettingsStore(workspaceRoot, options);
 }
 
 class FileSettingsStore implements SettingsStore {
   private readonly settingsPath: string;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(workspaceRoot: string) {
+  constructor(
+    workspaceRoot: string,
+    private readonly options: SettingsStoreOptions,
+  ) {
     this.settingsPath = join(workspaceRoot, 'settings.json');
   }
 
@@ -90,19 +159,99 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private async readOrCreate(): Promise<AppSettings> {
+    let bytes: Buffer;
     try {
-      const text = await readFile(this.settingsPath, 'utf8');
-      const persisted: unknown = JSON.parse(text);
-      const settings = normalizeSettings(persisted);
-      if (hasLegacyProxyCredentialFields(persisted)) {
-        await this.write(settings);
-      }
-      return settings;
+      bytes = await readFile(this.settingsPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const settings = createDefaultSettings();
       await this.write(settings);
       return settings;
+    }
+
+    let persisted: unknown;
+    try {
+      persisted = JSON.parse(bytes.toString('utf8'));
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // Never attach the parse error: its message can quote stored secrets.
+      return this.recoverCorruptSettings(bytes);
+    }
+    const settings = normalizeSettings(persisted);
+    if (hasLegacyProxyCredentialFields(persisted)) {
+      await this.write(settings);
+    }
+    return settings;
+  }
+
+  private async recoverCorruptSettings(bytes: Buffer): Promise<AppSettings> {
+    const backupPath = await this.backupCorruptSettings(bytes);
+    const settings = createDefaultSettings();
+    try {
+      await this.write(settings);
+    } catch (error) {
+      if (error instanceof AtomicFileWriteCommitUnknownError) {
+        this.reportRecovery(backupPath, 'commit-unknown');
+        throw new SettingsRecoveryCommitUnknownError(this.settingsPath, backupPath, error);
+      }
+      throw new SettingsRecoveryError({
+        settingsPath: this.settingsPath,
+        phase: 'reset',
+        backupPath,
+        cause: error,
+      });
+    }
+    this.reportRecovery(backupPath, 'recovered');
+    return settings;
+  }
+
+  /** An exclusive byte-for-byte backup, completed before replacing settings.
+   * Keeping the source in place avoids turning a failed recovery into ENOENT.
+   * This has the same platform fsync limits as the shared atomic writer. */
+  private async backupCorruptSettings(bytes: Buffer): Promise<string> {
+    const backupPath = `${this.settingsPath}.corrupt-${Date.now()}-${randomUUID()}`;
+    let created = false;
+    try {
+      const handle = await open(backupPath, 'wx', 0o600);
+      created = true;
+      try {
+        await handle.writeFile(bytes);
+        if (process.platform !== 'win32') await handle.chmod(0o600);
+        await handle.sync();
+        await handle.close();
+      } catch (error) {
+        await handle.close().catch(() => {});
+        throw error;
+      }
+      await syncDirectory(dirname(this.settingsPath));
+      return backupPath;
+    } catch (error) {
+      let incompleteBackupPath: string | undefined;
+      if (created) {
+        await rm(backupPath, { force: true }).catch(() => {
+          incompleteBackupPath = backupPath;
+        });
+      }
+      throw new SettingsRecoveryError({
+        settingsPath: this.settingsPath,
+        phase: 'backup',
+        incompleteBackupPath,
+        cause: error,
+      });
+    }
+  }
+
+  private reportRecovery(backupPath: string, outcome: CorruptSettingsRecovery['outcome']): void {
+    try {
+      void Promise.resolve(
+        this.options.onCorruptRecovery?.({
+          settingsPath: this.settingsPath,
+          backupPath,
+          outcome,
+        }),
+      ).catch(() => {});
+    } catch {
+      // Notification failure must not undo or misclassify a published reset.
     }
   }
 

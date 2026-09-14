@@ -48,6 +48,7 @@ test('applies each client settings snapshot once across local writes and file wa
   });
 
   assert.equal(await effects.refresh(false), true);
+  assert.equal(await effects.refresh(true), true); // First renderer delivery.
   assert.equal(await effects.refresh(true), false);
 
   current = {
@@ -59,10 +60,41 @@ test('applies each client settings snapshot once across local writes and file wa
 
   assert.deepEqual(keepAwake, [false, true]);
   assert.equal(botApplications, 1);
-  assert.equal(rendererEvents, 1);
+  assert.equal(rendererEvents, 2);
   // The shipped default is already on screen before the first snapshot is
   // read, so a run that never leaves it must not touch the OS icon at all.
   assert.deepEqual(appIcons, []);
+});
+
+test('silent refreshes retain an undelivered renderer change without repeating effects', async () => {
+  let current = createDefaultSettings();
+  const keepAwake: boolean[] = [];
+  const deliveredLocales: string[] = [];
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
+    applyKeepSystemAwake: async (enabled) => { keepAwake.push(enabled); },
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async () => undefined,
+    systemPrefersDark: () => false,
+    observeLocale: () => undefined,
+    emitExternalChanged: () => { deliveredLocales.push(current.personalization.uiLocale); },
+  });
+  await effects.refresh(false);
+  current = {
+    ...current,
+    system: { keepSystemAwake: true },
+    personalization: { ...current.personalization, uiLocale: 'zh-CN' },
+  };
+  assert.equal(await effects.refresh(false), true);
+  assert.equal(await effects.refresh(false), false);
+  assert.deepEqual(deliveredLocales, []);
+  // A later write supersedes the silently applied snapshot before delivery.
+  current = { ...current, personalization: { ...current.personalization, uiLocale: 'zh-TW' } };
+  assert.equal(await effects.refresh(true), true);
+  assert.equal(await effects.refresh(true), false);
+  assert.deepEqual(deliveredLocales, ['zh-TW']);
+  assert.deepEqual(keepAwake, [false, true]);
 });
 
 test('applies a chosen app icon once, and again only when the choice changes', async () => {

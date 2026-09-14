@@ -31,6 +31,7 @@ import {
   type MessageBoxOptions,
   type MessageBoxReturnValue,
   nativeTheme,
+  Notification,
 } from "electron";
 import { resolveSystemUiLocale } from "@maka/core/ui-locale";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
@@ -57,7 +58,8 @@ import {
   showMessageBoxWithDiagnostics,
 } from "./native-diagnostic-dialog.js";
 import { resolveShellEnv } from "./shell-env.js";
-import { revealMode } from "./startup-context.js";
+import { createSettingsRecoveryReporter } from "./settings-recovery.js";
+import { isIsolatedE2e, revealMode } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep } from "./startup-step.js";
 import { isDarkAppearance } from "./theme-source.js";
@@ -174,7 +176,22 @@ if (!resolvedLocalStorageRoot) {
   throw new Error("Desktop storage root resolution did not complete");
 }
 export const startupLocalStorageRoot = resolvedLocalStorageRoot;
-export const settingsStore = createSettingsStore(workspaceRoot);
+export const settingsRecovery = createSettingsRecoveryReporter({
+  e2e: isIsolatedE2e,
+  locale: () => resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+  notifications: {
+    isSupported: () => Notification.isSupported(),
+    create: (copy, failed) => {
+      const notification = new Notification(copy);
+      notification.on('failed', failed);
+      return notification;
+    },
+  },
+  log: (message) => console.warn(message),
+});
+export const settingsStore = createSettingsStore(workspaceRoot, {
+  onCorruptRecovery: settingsRecovery.onRecovery,
+});
 export const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
