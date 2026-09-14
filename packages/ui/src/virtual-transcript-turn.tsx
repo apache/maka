@@ -48,9 +48,11 @@ export function VirtualTranscriptTurn({
       setRetained(node.contains(node.ownerDocument.activeElement)
         || Boolean(selection && !selection.isCollapsed && selection.containsNode(node, true)));
     };
-    const observer = new IntersectionObserver(([entry]) => {
+    const observer = new IntersectionObserver((entries) => {
       retainUserState();
-      setNearby(entry.isIntersecting);
+      // One row is observed; a batch may contain several transitions for it.
+      // Consuming the first would discard the newer visibility until it changes again.
+      setNearby(entries.at(-1)!.isIntersecting);
     }, { root: viewport, rootMargin: '800px 0px' });
     observer.observe(node);
     const afterFocus = () => queueMicrotask(retainUserState);

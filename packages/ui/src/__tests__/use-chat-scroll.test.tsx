@@ -30,12 +30,14 @@ import {
 } from '../transcript-scroll-authority.js';
 import { useChatScroll } from '../use-chat-scroll.js';
 import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
+import { VirtualTranscriptTurn } from '../virtual-transcript-turn.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
   document: globalThis.document,
   Element: globalThis.Element,
   HTMLElement: globalThis.HTMLElement,
+  IntersectionObserver: globalThis.IntersectionObserver,
   getComputedStyle: globalThis.getComputedStyle,
   MutationObserver: globalThis.MutationObserver,
   Node: globalThis.Node,
@@ -1021,6 +1023,32 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   assert.equal(authority?.getSnapshot().pinned, false);
   assert.equal(authority?.getSnapshot().awayFromTail, false);
   assert.equal(anchors.get('session-a'), 'turn-a-latest', 'range geometry does not report a new reading intent');
+});
+
+test('a virtual Turn consumes the latest visibility in a batched observer delivery', async () => {
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  installScrollTestEnvironment(document, window);
+  Object.assign(document, { getSelection: () => null });
+  let deliver: IntersectionObserverCallback;
+  globalThis.IntersectionObserver = class {
+    constructor(callback: IntersectionObserverCallback) { deliver = callback; }
+    observe() {}
+    disconnect() {}
+  } as unknown as typeof IntersectionObserver;
+  const mount = document.querySelector('#mount')!;
+  mountedRoot = createRoot(mount);
+  await act(() => mountedRoot!.render(
+    <VirtualTranscriptTurn turnId="turn-0" scrollRef={{ current: document.querySelector('#scroller') }}
+      enabled required={false} getHeight={() => 320} onMeasure={() => {}}>
+      <p>Visible body</p>
+    </VirtualTranscriptTurn>,
+  ));
+  for (const visibility of [[false, true], [true, false]]) {
+    const entries = visibility.map((isIntersecting, time) => ({ isIntersecting, time })) as IntersectionObserverEntry[];
+    await act(() => deliver!(entries, {} as IntersectionObserver));
+    assert.equal(Boolean(mount.querySelector('p')), visibility.at(-1),
+      'the latest entry decides whether the body is mounted');
+  }
 });
 
 test('a target lands on the render that mounts its Turn, whatever moved the range', async () => {
