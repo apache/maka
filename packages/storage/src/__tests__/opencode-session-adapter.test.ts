@@ -180,6 +180,28 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('a long title is still a Session, not a reason to hide it', async () => {
+    // The catalog bound is a memory guard, not a display limit. Bounding the
+    // title at the wire's 320 bytes hid the Session from both pickers and made
+    // its import fail — 320 bytes is 106 Chinese characters, which real titles
+    // reach. The sanitizer and the wire truncate for display; the bound only
+    // has to stop a field nobody typed from being read whole.
+    await withOpenCodeHome(async (home) => {
+      const longTitle = '修'.repeat(110);
+      const fixture = await seed(home, (candidate) => {
+        candidate.session.title = longTitle;
+        return candidate;
+      });
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+
+      const [listed] = await adapter.listSessions();
+      assert.equal(listed?.id, fixture.session.id);
+      assert.ok((listed?.name.length ?? 0) > 0);
+      const imported = await adapter.readSession(fixture.session.id);
+      assert.ok(imported.messages.length > 0);
+    });
+  });
+
   test('an over-budget transcript is refused rather than answered as empty', async () => {
     // The #5055 regression this contract replaced: a session whose message rows
     // alone exhausted the budget returned an empty digest as a success. An

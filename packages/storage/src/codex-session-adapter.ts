@@ -231,9 +231,14 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
         if (head === undefined) continue;
         const entry = catalogEntryFromRolloutHead(head, candidate);
         if (!entry || !matchesQuery(entry, query)) continue;
-        if (matched++ < offset) continue;
+        // Resolved before the page is counted, not after: a candidate the page
+        // cannot deliver is not a row of the source. Counting it here would
+        // advance the Host's cursor past a row the page never returned, and
+        // the next page would repeat this one's last row instead.
         const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-        if (rolloutPath) entries.push({ ...entry, rolloutPath });
+        if (!rolloutPath) continue;
+        if (matched++ < offset) continue;
+        entries.push({ ...entry, rolloutPath });
         if (entries.length === limit) return entries;
       }
     }

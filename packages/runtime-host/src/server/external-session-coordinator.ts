@@ -401,18 +401,19 @@ function boundedCatalogPage(
       candidate.session,
       hasMore || index + 1 < candidates.length ? String(candidate.nextSourceOffset) : null,
     );
-    // The first row is delivered whatever it costs. A row that cannot fit on
-    // its own would otherwise have to be stepped over for the cursor to move,
-    // and the Session the user asked to see would disappear from the catalog
-    // with an empty page in its place. The per-field wire bounds already cap
-    // one row far below this budget.
-    if (!fits && page.length > 0) {
-      return {
-        sessions: page,
-        ...(page.length > 0 ? { nextSourceOffset: candidates[index - 1]?.nextSourceOffset } : {}),
-      };
+    if (fits) {
+      page.push(candidate.session);
+      continue;
     }
-    page.push(candidate.session);
+    // A row that does not fit ends the page. The first one is still delivered
+    // whatever it costs: stepping over it is the only way the cursor could
+    // move, and the Session the user asked to see would vanish behind an empty
+    // page. Delivering it and stopping is also what keeps the overshoot to one
+    // row — an appended row the budget refused would leave the total
+    // under-counted for every row after it. The per-field wire bounds already
+    // cap one row far below this budget.
+    if (page.length === 0) page.push(candidate.session);
+    return { sessions: page, nextSourceOffset: candidates[index - 1]?.nextSourceOffset };
   }
   return { sessions: page };
 }

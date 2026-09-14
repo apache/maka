@@ -619,8 +619,10 @@ function observeSummaryRecord(record: TranscriptRecord, scan: TranscriptSummaryS
  * hold, and none of it exists in a window that stops short of them.
  *
  * Reaching the import's per-record bound instead means the transcript holds a
- * record no import could read either, and that is reported the way the import
- * reports it — as a limit — rather than answered as a row with no title.
+ * record no import could read either, and that is reported as a limit rather
+ * than answered as a row with no title. The bound is checked as chunks are
+ * read, so a record just over it is finished before the limit fires; the
+ * difference is one read chunk, and it errs towards reading.
  */
 async function readSummaryHead(
   handle: FileHandle,
@@ -702,8 +704,13 @@ async function readSummaryTail(
   const from = Math.max(0, start - 1);
   const buffer = Buffer.allocUnsafe(size - from);
   const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
-  const opensOnBoundary = from === start || buffer[0] === 0x0a;
-  observeSummaryLines(transcriptLines(buffer.subarray(opensOnBoundary ? 1 : 0, bytesRead)), scan);
+  // The byte before the window is read so it can be told apart from the window
+  // itself, and dropped either way: it is that record's newline when the window
+  // opens on a boundary, and the byte before a fragment's first line when it
+  // does not. A window at offset 0 has no byte before it, and dropping one there
+  // would eat the first byte of the transcript.
+  const preceding = from < start ? 1 : 0;
+  observeSummaryLines(transcriptLines(buffer.subarray(preceding, bytesRead)), scan);
 }
 
 /**
