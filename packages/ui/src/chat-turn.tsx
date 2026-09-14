@@ -1159,10 +1159,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
 type AssistantAnswerPhase = 'historical' | 'streaming' | 'settled';
 
 type AssistantAnswerBubbleProps =
-  | { text: string; phase: 'historical' }
+  | { text: string; phase: 'historical'; interrupted?: true }
   | {
       text: string;
       phase: 'streaming' | 'settled';
+      interrupted?: true;
       /** Text already streamed before this mount, so a remount does not replay it. */
       settledText?: string;
       truncated?: boolean;
@@ -1197,10 +1198,13 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   }, [props.phase, onSettled]);
 
   return (
+    <>
+    {(!props.interrupted || props.text.length > 0) && (
     <ChatMessageBubble
       variant="ghost"
       data-maka-transcript-boundary=""
       data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
+      data-response-interrupted={props.interrupted ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1247,6 +1251,13 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
         </Tooltip>
       )}
     </ChatMessageBubble>
+    )}
+    {props.interrupted && (
+      <ChatSystemMessage variant="divider">
+        {copy.providerRetryReason.stream_truncated}
+      </ChatSystemMessage>
+    )}
+    </>
   );
 });
 
@@ -1287,10 +1298,11 @@ function TurnTimelineEntry(props: {
     );
   }
   // Same component either way — a type swap here would remount the answer.
-  if (item.live !== true) return <AssistantAnswerBubble text={item.text} phase="historical" />;
+  if (item.live !== true) return <AssistantAnswerBubble text={item.text} interrupted={item.interrupted} phase="historical" />;
   return (
     <AssistantAnswerBubble
       text={item.text}
+      interrupted={item.interrupted}
       phase={item.complete === true ? 'settled' : 'streaming'}
       settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
       truncated={item.truncated === true}

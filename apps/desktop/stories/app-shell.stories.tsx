@@ -881,6 +881,7 @@ export const ProviderRetrying: Story = {
         activeTurn: { turnId: 'turn-rr' },
         messages: [
           user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
+          { ...assistant('failed-rr', 'turn-rr', 0, 'The project aims to improve the reliability of'), interrupted: true } as StoredMessage,
           { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running' },
         ],
         liveTurns: [{
@@ -894,10 +895,10 @@ export const ProviderRetrying: Story = {
               turnId: 'turn-rr',
               ts: NOW - 5_000,
               attempt: 2,
-              maxAttempts: 5,
+              maxAttempts: 10,
               delayMs: 30_000,
               remainingMs: 30_000,
-              reason: 'rate_limit',
+              reason: 'stream_truncated',
             },
             receivedAtMs: NOW - 5_000,
           },
@@ -909,6 +910,19 @@ export const ProviderRetrying: Story = {
     await waitFor(() =>
       expect(canvasElement.querySelector('.maka-turn-provider-retry')).not.toBeNull(),
     );
+  },
+};
+
+export const RecoveredResponse: Story = {
+  render: () => <ComposedShell chat={{ messages: [
+    user('retry-user', 'retry-turn', 1, '把这份长文档翻译成英文。'),
+    { ...assistant('retry-failed', 'retry-turn', 0, 'The project aims to improve the reliability of'), interrupted: true } as StoredMessage,
+    assistant('retry-success', 'retry-turn', 0, 'The project aims to improve the reliability of model responses and preserve completed work when a connection is interrupted.'),
+    { type: 'turn_state', id: 'retry-complete', turnId: 'retry-turn', ts: NOW, status: 'completed' },
+  ] }} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelectorAll('[data-response-interrupted="true"]')).toHaveLength(1));
+    expect(canvasElement.textContent).toContain('preserve completed work');
   },
 };
 

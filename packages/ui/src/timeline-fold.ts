@@ -57,6 +57,10 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
       flush();
       out.push(item);
       anchor = item.messageId;
+    } else if (item.kind === 'text' && item.interrupted) {
+      buffer.push(item);
+      flush();
+      anchor = item.messageId;
     } else {
       buffer.push(item);
     }
