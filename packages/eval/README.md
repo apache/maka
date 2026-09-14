@@ -48,6 +48,11 @@ Maka subjects ask the Runtime Host client to run one owned execution in a dedica
 
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
 
+The mock-backed multi-VM coordinator and deterministic fault simulator are documented in
+[Fleet scheduling](FLEET.md). They expose a separate library API; `maka eval run` retains its
+existing local scheduling and file format. Remote VM transport and real fleet execution adapters
+are not connected yet.
+
 ## Experiment spec format
 
 A spec decodes to the `ExperimentSpec` interface ([`experiment.ts:46-70`](src/experiment.ts)), validated field-by-field by `parseExperimentSpec` ([`spec.ts:22`](src/spec.ts)) — there is no external JSON-schema dependency; the decoder is hand-written and strict (unrecognized top-level keys are rejected).
