@@ -397,12 +397,16 @@ function boundedCatalogPage(
     nextCursor: null,
   });
   for (const [index, candidate] of candidates.entries()) {
-    if (
-      !budget.tryAppend(
-        candidate.session,
-        hasMore || index + 1 < candidates.length ? String(candidate.nextSourceOffset) : null,
-      )
-    ) {
+    const fits = budget.tryAppend(
+      candidate.session,
+      hasMore || index + 1 < candidates.length ? String(candidate.nextSourceOffset) : null,
+    );
+    // The first row is delivered whatever it costs. A row that cannot fit on
+    // its own would otherwise have to be stepped over for the cursor to move,
+    // and the Session the user asked to see would disappear from the catalog
+    // with an empty page in its place. The per-field wire bounds already cap
+    // one row far below this budget.
+    if (!fits && page.length > 0) {
       return {
         sessions: page,
         ...(page.length > 0 ? { nextSourceOffset: candidates[index - 1]?.nextSourceOffset } : {}),

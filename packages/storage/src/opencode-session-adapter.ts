@@ -283,7 +283,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
       while (summaries.length < requestedLimit) {
         const raw = statement.all(batchSize, rawOffset);
         for (const value of raw) {
-          const row = toSessionRow(value);
+          const row = toCatalogSessionRow(value);
           if (!row) continue;
           const summary = toSummary(row);
           if (!externalSessionMatchesQuery(summary, query)) continue;

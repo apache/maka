@@ -814,7 +814,10 @@ export function isUserVisibleSessionSystemNote(kind: string): boolean {
  * before it is persisted rather than published as an empty history.
  */
 export function isConversationTextMessage(message: StoredMessage): boolean {
-  if (message.type === 'user') return true;
+  // A user row the runtime wrote as a steering projection is not a turn of its
+  // own — the Ledger drops it before this rule ever sees it, so counting it as
+  // conversation here would let an import through that materializes nothing.
+  if (message.type === 'user') return message.steeringEventId === undefined;
   return (
     message.type === 'assistant' && typeof message.text === 'string' && message.text.length > 0
   );

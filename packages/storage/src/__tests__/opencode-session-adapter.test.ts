@@ -180,6 +180,59 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('an over-budget transcript is refused rather than answered as empty', async () => {
+    // The #5055 regression this contract replaced: a session whose message rows
+    // alone exhausted the budget returned an empty digest as a success. An
+    // import reads the whole transcript or refuses it — never a partial or
+    // empty one.
+    await withOpenCodeHome(async (home) => {
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        db.exec(`
+          CREATE TABLE session (id text PRIMARY KEY, directory text NOT NULL, title text,
+            parent_id text, time_created integer, time_updated integer, time_archived integer);
+          CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
+            time_created integer NOT NULL, data text NOT NULL);
+          CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL,
+            time_created integer NOT NULL, data text NOT NULL);
+        `);
+        db.prepare(
+          'INSERT INTO session (id, directory, title, parent_id, time_created) VALUES (?, ?, ?, NULL, ?)',
+        ).run('ses_budget', '/repo', 'Budget', 1);
+        const message = db.prepare(
+          'INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)',
+        );
+        const part = db.prepare(
+          'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+        );
+        for (let index = 0; index < 2048; index += 1) {
+          const id = `msg-${index}`;
+          message.run(
+            id,
+            'ses_budget',
+            index,
+            JSON.stringify({ role: 'user', time: { created: index } }),
+          );
+          part.run(
+            `part-${index}`,
+            id,
+            'ses_budget',
+            index,
+            JSON.stringify({ type: 'text', text: 'hello' }),
+          );
+        }
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home, maxRows: 2048 });
+      await assert.rejects(adapter.readSession('ses_budget'), (error: unknown) => {
+        assert.ok(error instanceof ExternalSessionLimitError);
+        assert.equal(error.limit.kind, 'records');
+        return true;
+      });
+    });
+  });
+
   test('a parent_id this build cannot read is a child, not a root', async () => {
     // A BLOB (or any other non-text) decodes through `stringOf` to `undefined`,
     // which reads as "no parent" — and would import another Session's child as
