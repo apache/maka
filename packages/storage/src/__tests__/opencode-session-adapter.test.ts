@@ -18,13 +18,16 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { decodeCanonicalMessage } from '@maka/core/session';
+import { ExternalSessionLimitError } from '@maka/core/external-session';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 import {
   OPENCODE_SESSION_ADAPTER_ID,
@@ -130,6 +133,41 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  test('pages the filtered catalog before returning rows to the Host', async () => {
+    await withOpenCodeHome(async (home) => {
+      await seed(home);
+      const db = new DatabaseSync(join(home, 'opencode.db'));
+      try {
+        const insert = db.prepare(
+          'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, NULL, ?, ?, ?, ?, ?)',
+        );
+        for (let index = 1; index <= 40; index += 1) {
+          insert.run(
+            `ses_page_${index}`,
+            index % 2 === 0 ? '/repo' : '/other',
+            `Page ${index}`,
+            index,
+            index,
+            null,
+          );
+        }
+        insert.run('ses_created_fallback', '/repo', 'Newest fallback', 10_000, null, null);
+        insert.run('ses_archived', '/repo', 'Archived', 20_000, 20_000, 1);
+      } finally {
+        db.close();
+      }
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      const first = await adapter.listSessions({ cwd: '/repo', offset: 0, limit: 3 });
+      const second = await adapter.listSessions({ cwd: '/repo', offset: 3, limit: 3 });
+      assert.equal(first.length, 3);
+      assert.equal(second.length, 3);
+      assert.equal(first[0]?.id, 'ses_created_fallback');
+      assert.equal(first[0]?.updatedAt, 10_000);
+      assert.equal(new Set([...first, ...second].map(({ id }) => id)).size, 6);
+      assert.ok(![...first, ...second].some(({ id }) => id === 'ses_archived'));
+    });
+  });
+
   test('child sessions are neither listed nor readable as conversations', async () => {
     await withOpenCodeHome(async (home) => {
       const fixture = await seed(home, (f) => {
@@ -162,6 +200,114 @@ describe('OpenCodeSessionAdapter', () => {
       assert.ok(kinds.has('tool_call'));
       assert.ok(kinds.has('tool_result'));
       assert.ok(kinds.has('turn_state'));
+    });
+  });
+
+  test('excludes synthetic OpenCode user text before provenance is erased', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = [
+          {
+            id: 'p_synthetic',
+            message_id: 'm_user',
+            time_created: 1,
+            data: { type: 'text', text: 'automatic summary instruction', synthetic: true },
+          },
+          {
+            id: 'p_human',
+            message_id: 'm_user',
+            time_created: 2,
+            data: { type: 'text', text: 'human prompt' },
+          },
+        ];
+        return f;
+      });
+      const session = await new OpenCodeSessionAdapter({ opencodeHome: home }).readSession(
+        fixture.session.id,
+      );
+      const user = session.messages.find((message) => message.type === 'user');
+      assert.equal(user?.text, 'human prompt');
+      assert.ok(!JSON.stringify(session.messages).includes('automatic summary instruction'));
+    });
+  });
+
+  test('rejects row and UTF-8 byte overflow without publishing a partial transcript', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = [
+          {
+            id: 'p_1',
+            message_id: 'm_user',
+            time_created: 1,
+            data: { type: 'text', text: '中'.repeat(100) },
+          },
+        ];
+        return f;
+      });
+      const rowBound = new OpenCodeSessionAdapter({ opencodeHome: home, maxRows: 1 });
+      await assert.rejects(
+        rowBound.readSession(fixture.session.id),
+        (error) => error instanceof ExternalSessionLimitError && error.limit.kind === 'records',
+      );
+      const byteBound = new OpenCodeSessionAdapter({ opencodeHome: home, maxRawBytes: 128 });
+      await assert.rejects(
+        byteBound.readSession(fixture.session.id),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'record_bytes',
+      );
+    });
+  });
+
+  test('rejects aggregate source bytes even when every individual row fits', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home, (f) => {
+        f.messages = [{ id: 'm_user', time_created: 1, data: { role: 'user' } }];
+        f.parts = Array.from({ length: 3 }, (_, index) => ({
+          id: `p_${index}`,
+          message_id: 'm_user',
+          time_created: index + 1,
+          data: { type: 'text', text: 'x'.repeat(80) },
+        }));
+        return f;
+      });
+      await assert.rejects(
+        new OpenCodeSessionAdapter({ opencodeHome: home, maxRawBytes: 180 }).readSession(
+          fixture.session.id,
+        ),
+        (error) =>
+          error instanceof ExternalSessionLimitError && error.limit.kind === 'transcript_bytes',
+      );
+    });
+  });
+
+  test('does not follow an opencode database symlink outside the configured home', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'maka-opencode-outside-'));
+    try {
+      const fixture = await seed(outside);
+      await withOpenCodeHome(async (home) => {
+        await symlink(join(outside, 'opencode.db'), join(home, 'opencode.db'));
+        const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+        assert.equal(await adapter.detect(), false);
+        assert.deepEqual(await adapter.listSessions(), []);
+        await assert.rejects(adapter.readSession(fixture.session.id), /database is unavailable/u);
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the external database byte-identical after catalog and import reads', async () => {
+    await withOpenCodeHome(async (home) => {
+      const fixture = await seed(home);
+      const path = join(home, 'opencode.db');
+      const digest = () => createHash('sha256').update(readFileBytes(path)).digest('hex');
+      const before = digest();
+      const adapter = new OpenCodeSessionAdapter({ opencodeHome: home });
+      await adapter.listSessions();
+      await adapter.readSession(fixture.session.id);
+      assert.equal(digest(), before);
     });
   });
 
@@ -449,6 +595,10 @@ describe('OpenCodeSessionAdapter', () => {
     assert.equal(adapter?.id, OPENCODE_SESSION_ADAPTER_ID);
   });
 });
+
+function readFileBytes(path: string): Buffer {
+  return readFileSync(path);
+}
 
 async function withOpenCodeHome(run: (home: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'maka-opencode-adapter-'));

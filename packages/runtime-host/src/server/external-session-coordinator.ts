@@ -183,11 +183,13 @@ export class HostExternalSessionCoordinator {
               ? {}
               : { includeArchived: input.includeArchived }),
             ...(input.text === undefined ? {} : { text: input.text }),
+            offset,
+            limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
           })
         )
           .map(toWireSummary)
           .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
-      const candidates = sessions.slice(offset, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const candidates = sessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
         candidates.map(({ id }) => id),
@@ -205,13 +207,21 @@ export class HostExternalSessionCoordinator {
           },
         };
       });
-      const page = boundedCatalogPage(enrichedCandidates, offset, sessions.length);
+      const page = boundedCatalogPage(
+        enrichedCandidates,
+        offset,
+        sessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS,
+      );
       const nextOffset = offset + page.length;
       return {
         ok: true,
         result: {
           sessions: page,
-          nextCursor: nextOffset < sessions.length ? String(nextOffset) : null,
+          nextCursor:
+            nextOffset < offset + candidates.length ||
+            sessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS
+              ? String(nextOffset)
+              : null,
         },
       };
     } catch (error) {
@@ -374,7 +384,7 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
 function boundedCatalogPage(
   candidates: readonly ExternalSessionCatalogItem[],
   offset: number,
-  totalCount: number,
+  hasMore: boolean,
 ): ExternalSessionCatalogItem[] {
   const page: ExternalSessionCatalogItem[] = [];
   const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
@@ -383,7 +393,12 @@ function boundedCatalogPage(
   });
   for (const candidate of candidates) {
     const nextOffset = offset + page.length + 1;
-    if (!budget.tryAppend(candidate, nextOffset < totalCount ? String(nextOffset) : null)) {
+    if (
+      !budget.tryAppend(
+        candidate,
+        hasMore || nextOffset < offset + candidates.length ? String(nextOffset) : null,
+      )
+    ) {
       break;
     }
     page.push(candidate);

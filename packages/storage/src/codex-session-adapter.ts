@@ -22,8 +22,11 @@ import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
-import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
-import { externalSessionMatchesQuery } from '@maka/core/external-session';
+import {
+  externalSessionMatchesQuery,
+  isSupportedCodexThreadSource,
+  sanitizeExternalSessionTitle,
+} from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
@@ -140,14 +143,34 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   }
 
   private async listCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error('Invalid Codex catalog page');
+    }
+    if (limit === 0) return [];
     for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
-      const rows = await readCodexThreadRows(dbPath, query);
-      if (rows === undefined) continue;
-      const entries = await Promise.all(rows.map((row) => this.entryFromRow(row)));
-      return entries
-        .filter((entry): entry is CodexCatalogEntry => entry !== undefined)
-        .filter((entry) => matchesQuery(entry, query))
-        .sort(compareCatalogEntries);
+      const page: CodexCatalogEntry[] = [];
+      let matched = 0;
+      let rawOffset = 0;
+      const batchSize = Math.max(32, Math.min(256, limit * 2));
+      while (page.length < limit) {
+        const rows = await readCodexThreadRows(dbPath, query, undefined, {
+          offset: rawOffset,
+          limit: batchSize,
+        });
+        if (rows === undefined) break;
+        for (const row of rows) {
+          const entry = await this.entryFromRow(row);
+          if (!entry || !matchesQuery(entry, query)) continue;
+          if (matched++ < offset) continue;
+          page.push(entry);
+          if (page.length === limit) break;
+        }
+        rawOffset += rows.length;
+        if (rows.length < batchSize) return page;
+      }
+      if (page.length > 0 || rawOffset > 0) return page;
     }
 
     return this.scanRolloutCatalog(query);
@@ -197,7 +220,10 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
         ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
         : []),
     ].sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
     const entries: CodexCatalogEntry[] = [];
+    let matched = 0;
     for (const candidate of candidates) {
       const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
         () => undefined,
@@ -205,10 +231,12 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       if (head === undefined) continue;
       const entry = catalogEntryFromRolloutHead(head, candidate);
       if (!entry || !matchesQuery(entry, query)) continue;
+      if (matched++ < offset) continue;
       const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
       if (rolloutPath) entries.push({ ...entry, rolloutPath });
+      if (entries.length === limit) break;
     }
-    return entries.sort(compareCatalogEntries);
+    return entries;
   }
 
   private async findRolloutEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
@@ -566,8 +594,8 @@ class CodexRolloutConverter {
       throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
     }
     const name =
-      sanitizeForeignTitle(this.fallbackName) ||
-      sanitizeForeignTitle(this.firstUserText) ||
+      sanitizeExternalSessionTitle(this.fallbackName) ||
+      sanitizeExternalSessionTitle(this.firstUserText) ||
       this.expectedSessionId;
     return {
       sourceSessionId: this.expectedSessionId,
@@ -750,7 +778,7 @@ function catalogEntryFromRolloutHead(
   if (!rolloutFilenameMatchesId(basename(candidate.path), id)) return undefined;
   return {
     id,
-    name: sanitizeForeignTitle(firstUserText) || id,
+    name: sanitizeExternalSessionTitle(firstUserText) || id,
     cwd,
     ...(createdAt !== undefined ? { createdAt } : {}),
     updatedAt: candidate.mtimeMs,
@@ -762,6 +790,7 @@ async function readCodexThreadRows(
   dbPath: string,
   query: ExternalSessionQuery,
   exactId?: string,
+  page?: { offset: number; limit: number },
 ): Promise<CodexThreadRow[] | undefined> {
   try {
     const sqlite = await import('node:sqlite');
@@ -806,17 +835,17 @@ async function readCodexThreadRows(
       // belongs to. The archived clause stays: that one is an exact boolean
       // and agrees with the matcher by construction.
       //
-      // The statement has no LIMIT, so dropping the clause widens the read
-      // rather than truncating it.
-      const orderColumn = columns.has('updated_at_ms')
-        ? 'updated_at_ms'
-        : columns.has('updated_at')
-          ? 'updated_at'
-          : 'id';
+      const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
+        (column) => columns.has(column),
+      );
+      const orderExpression =
+        orderColumns.length > 0 ? `coalesce(${orderColumns.join(', ')}, 0)` : '0';
       const sql =
         `SELECT ${wanted.join(', ')} FROM threads` +
         (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-        ` ORDER BY ${orderColumn} DESC`;
+        ` ORDER BY ${orderExpression} DESC, id DESC` +
+        (page ? ' LIMIT ? OFFSET ?' : '');
+      if (page) params.push(page.limit, page.offset);
       return db.prepare(sql).all(...params) as CodexThreadRow[];
     } finally {
       db.close();
@@ -925,7 +954,7 @@ function safeCodexCwd(value: unknown): string {
 
 function firstNonEmptyTitle(...values: unknown[]): string | undefined {
   for (const value of values) {
-    const title = sanitizeForeignTitle(value);
+    const title = sanitizeExternalSessionTitle(value);
     if (title.length > 0) return title;
   }
   return undefined;

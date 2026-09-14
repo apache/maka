@@ -90,6 +90,18 @@ describe('CodexSessionAdapter', () => {
         (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
       );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 0, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-1'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, offset: 1, limit: 1 })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-archived'],
+      );
 
       // The same text query the Claude Code adapter honours. A catalog filter
       // that silently worked for one source and not the other would be worse
@@ -129,10 +141,10 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('lists every thread source the foreign-session scanner accepts (#3693)', async () => {
+  test('lists every supported Codex thread source (#3693)', async () => {
     // The adapter owned its own token set, so bare `atlas`/`chatgpt` and a
-    // wrapped `{"custom":"cli"}` were dropped here while the scanner in
-    // `@maka/core/foreign-session` listed them. Both gates now share one
+    // wrapped `{"custom":"cli"}` used to drift across readers. Catalog and
+    // import now use the same source eligibility gate.
     // authority, so the catalog and the scan agree on every shape.
     await withCodexHome(async (codexHome) => {
       const sources = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;

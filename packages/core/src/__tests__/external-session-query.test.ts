@@ -23,6 +23,7 @@ import {
   EXTERNAL_SESSION_QUERY_TEXT_MAX_CHARS,
   externalSessionMatchesQuery,
   normalizeExternalSessionQueryText,
+  pageExternalSessionSummaries,
   sameExternalSessionPath,
   type ExternalSessionSummary,
 } from '../external-session.js';
@@ -145,6 +146,21 @@ describe('externalSessionMatchesQuery', () => {
       true,
     );
     assert.equal(externalSessionMatchesQuery(summary({ cwd: '/tmp' }), { text: 'parser' }), true);
+  });
+});
+
+describe('pageExternalSessionSummaries', () => {
+  test('applies adapter offset and limit after filtering and sorting', () => {
+    assert.deepEqual(pageExternalSessionSummaries(['a', 'b', 'c', 'd'], { offset: 1, limit: 2 }), [
+      'b',
+      'c',
+    ]);
+    assert.deepEqual(pageExternalSessionSummaries(['a'], { offset: 1, limit: 2 }), []);
+  });
+
+  test('rejects invalid adapter page bounds', () => {
+    assert.throws(() => pageExternalSessionSummaries(['a'], { offset: -1 }));
+    assert.throws(() => pageExternalSessionSummaries(['a'], { limit: 1.5 }));
   });
 });
 

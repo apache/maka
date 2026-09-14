@@ -18,6 +18,8 @@
  */
 
 import type { StoredMessage } from './session.js';
+import { redactSecrets } from './redaction.js';
+import { sanitizeUnicodeText } from './text-sanitize.js';
 
 /** Stable identifier for one external Agent integration, for example `codex`. */
 export type ExternalAgentId = string;
@@ -36,6 +38,10 @@ export interface ExternalSessionQuery {
    * worse than offering no search at all.
    */
   text?: string;
+  /** Adapter-side page offset. Host-owned callers use this after filtering and sorting. */
+  offset?: number;
+  /** Maximum summaries returned. Adapters must apply it before returning to the Host. */
+  limit?: number;
 }
 
 /** Lightweight source-native identity used by session pickers and import commands. */
@@ -46,6 +52,137 @@ export interface ExternalSessionSummary {
   createdAt?: number;
   updatedAt?: number;
   archived?: boolean;
+}
+
+const EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS = 120;
+
+/** Sanitize and redact a source-owned title before it reaches a Maka surface. */
+export function sanitizeExternalSessionTitle(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  return redactSecrets(
+    sanitizeUnicodeText(input, { maxCodePoints: EXTERNAL_SESSION_TITLE_MAX_CODE_POINTS }),
+  );
+}
+
+export interface ClaudeTitleCandidates {
+  customTitle?: string;
+  aiTitle?: string;
+  summary?: string;
+  lastPrompt?: string;
+  firstUserMessage?: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+export function collectClaudeTitle(
+  record: Record<string, unknown>,
+  titles: ClaudeTitleCandidates,
+): void {
+  if (typeof record.customTitle === 'string' && record.customTitle.length > 0) {
+    titles.customTitle = record.customTitle;
+  }
+  if (typeof record.aiTitle === 'string' && record.aiTitle.length > 0)
+    titles.aiTitle = record.aiTitle;
+  if (typeof record.summary === 'string' && record.summary.length > 0)
+    titles.summary = record.summary;
+  if (typeof record.lastPrompt === 'string' && record.lastPrompt.length > 0) {
+    titles.lastPrompt = record.lastPrompt;
+  }
+  if (titles.firstUserMessage === undefined) {
+    const candidate = claudeFirstPromptCandidate(record);
+    if (candidate !== undefined) titles.firstUserMessage = candidate;
+  }
+}
+
+function claudeFirstPromptCandidate(record: Record<string, unknown>): string | undefined {
+  if (record.type !== 'user' || record.isMeta === true || record.isCompactSummary === true) {
+    return undefined;
+  }
+  const raw = claudeUserMessageText(record);
+  if (raw === undefined) return undefined;
+  const commandName = raw.match(/<command-name>([^<]+)<\/command-name>/);
+  if (commandName) return commandName[1]!.trim();
+  const bashInput = raw.match(/<bash-input>([^<]+)<\/bash-input>/);
+  if (bashInput) return `! ${bashInput[1]!.trim()}`;
+  const text = raw.trim();
+  if (isSyntheticClaudeUserText(text)) return undefined;
+  return text.length > 0 ? text : undefined;
+}
+
+export function isSyntheticClaudeUserText(text: string): boolean {
+  const value = text.trimStart();
+  return (
+    value.startsWith('[Request interrupted by user') ||
+    /^<\/?(command-(name|message|args|contents)|local-command-(stdout|stderr)|bash-(input|stdout|stderr))[\s>]/.test(
+      value,
+    )
+  );
+}
+
+export function pickClaudeTitle(titles: ClaudeTitleCandidates): string {
+  return sanitizeExternalSessionTitle(
+    titles.customTitle ??
+      titles.aiTitle ??
+      titles.lastPrompt ??
+      titles.summary ??
+      titles.firstUserMessage,
+  );
+}
+
+function claudeUserMessageText(record: Record<string, unknown>): string | undefined {
+  const message = asRecord(record.message);
+  if (!message) return undefined;
+  const content = message.content;
+  if (typeof content === 'string') return content.length > 0 ? content : undefined;
+  if (!Array.isArray(content)) return undefined;
+  const texts: string[] = [];
+  for (const block of content) {
+    const item = asRecord(block);
+    if (item?.type === 'text' && typeof item.text === 'string') texts.push(item.text);
+  }
+  const joined = texts.join('\n').trim();
+  return joined.length > 0 ? joined : undefined;
+}
+
+export function claudeUserAuthoredText(record: Record<string, unknown>): string | undefined {
+  if (record.isMeta === true || record.isCompactSummary === true) return undefined;
+  const text = claudeUserMessageText(record);
+  return text === undefined || isSyntheticClaudeUserText(text) ? undefined : text;
+}
+
+export function claudeAssistantText(record: Record<string, unknown>): string | undefined {
+  return claudeUserMessageText(record);
+}
+
+const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
+
+function codexSourceToken(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    if (value.length === 0) return undefined;
+    if ((CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value)) return value;
+    if (!value.startsWith('{')) return undefined;
+    try {
+      return codexSourceToken(JSON.parse(value) as unknown);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'object' && value !== null) {
+    const custom = (value as Record<string, unknown>).custom;
+    return typeof custom === 'string' &&
+      (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(custom)
+      ? custom
+      : undefined;
+  }
+  return undefined;
+}
+
+export function isSupportedCodexThreadSource(value: unknown): boolean {
+  return value === undefined || value === null || codexSourceToken(value) !== undefined;
 }
 
 /**
@@ -85,6 +222,18 @@ export function externalSessionMatchesQuery(
       foldExternalSessionPathSeparators(text),
     )
   );
+}
+
+export function pageExternalSessionSummaries<T>(
+  summaries: readonly T[],
+  query: Pick<ExternalSessionQuery, 'offset' | 'limit'> = {},
+): readonly T[] {
+  const offset = query.offset ?? 0;
+  const limit = query.limit ?? summaries.length;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error('Invalid external Session adapter page');
+  }
+  return summaries.slice(offset, offset + limit);
 }
 
 /**

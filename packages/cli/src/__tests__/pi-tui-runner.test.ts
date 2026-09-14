@@ -5893,34 +5893,32 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('imports a foreign session from /session into a fresh handoff turn', async () => {
+  test('imports a Host external session and opens it without starting a turn', async () => {
     const terminal = new FakeTerminal();
-    // No Maka sessions, so the only picker row is the foreign one.
     const driver = new SlashCommandDriver([]);
-    const summary = {
-      source: 'claude-code' as const,
-      id: 'fabc',
-      title: 'Prior parser work',
-      cwd: '/repo',
-      updatedAtMs: Date.now(),
-      transcriptPath: '/home/u/.claude/projects/-repo/fabc.jsonl',
-    };
-    let readDigestCalls = 0;
-    const foreignSessions = {
-      availableSources: async () => ['claude-code' as const],
-      listSessions: async () => [summary],
-      readDigest: async () => {
-        readDigestCalls += 1;
+    let imports = 0;
+    const externalSessions = {
+      listSources: async () => ['claude-code'],
+      listSessions: async () => ({
+        sessions: [
+          {
+            id: 'fabc',
+            name: 'Prior parser work',
+            hostCwd: '/repo',
+            importState: {
+              importedCount: 2,
+              importedSessionIds: ['older-2', 'older-1'],
+              isImporting: false,
+            },
+          },
+        ],
+        nextCursor: null,
+      }),
+      importSession: async () => {
+        imports += 1;
         return {
-          source: 'claude-code' as const,
-          id: 'fabc',
-          title: 'Prior parser work',
-          cwd: '/repo',
-          updatedAtMs: summary.updatedAtMs,
-          userMessages: ['重构解析器'],
-          assistantTexts: ['已修复并补测试'],
-          filesTouched: ['/repo/parser.ts'],
-          warnings: [],
+          kind: 'imported' as const,
+          session: { id: 'imported-1' } as never,
         };
       },
     };
@@ -5932,31 +5930,23 @@ Slug openai-work<cursor>
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
-      foreignSessions,
+      externalSessions,
     });
 
     terminal.input('/session');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
-    // The foreign row is labeled by its title and marked as a resume-from row.
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('resume from Claude Code'));
-
-    // Foreign cwd participates in the advertised path search.
-    terminal.input('repo');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
-
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
     terminal.input('\r');
-    await waitFor(() => readDigestCalls === 1);
-    await waitFor(() => driver.startNewSessionCalls === 1);
-    await waitFor(() => driver.prompts.length === 1);
-
-    // The transcript shows a short human line; the model receives the full
-    // untrusted handoff envelope.
-    assert.equal(driver.displayPrompts[0], 'Resuming Claude Code session: Prior parser work');
-    assert.match(driver.prompts[0]!, /<foreign-session-digest>/);
-    assert.match(driver.prompts[0]!, /untrusted reference DATA/);
-    assert.match(driver.prompts[0]!, /重构解析器/);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes('imported-1'));
+    assert.equal(imports, 1);
+    assert.equal(driver.startNewSessionCalls, 0);
+    assert.deepEqual(driver.prompts, []);
+    terminal.input('continue here');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.includes('continue here'));
+    assert.equal(driver.getSessionId(), 'imported-1');
 
     exitMaka(terminal);
     await Promise.race([
@@ -5967,15 +5957,85 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('surfaces a notice when the foreign-session scan fails', async () => {
+  test('reconciles an outcome-unknown import from fresh Host catalog state', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
-    const foreignSessions = {
-      availableSources: async () => ['claude-code' as const],
+    let catalogReads = 0;
+    const externalSessions = {
+      listSources: async () => ['opencode'],
       listSessions: async () => {
-        throw new Error('corrupt index');
+        catalogReads += 1;
+        return {
+          sessions: [
+            {
+              id: 'ses_external',
+              name: 'Imported after disconnect',
+              hostCwd: '/repo',
+              importState: {
+                importedCount: catalogReads > 1 ? 1 : 0,
+                importedSessionIds: catalogReads > 1 ? ['imported-after-loss'] : [],
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
       },
-      readDigest: async () => {
+      importSession: async () => {
+        throw {
+          operation: 'external-session.import',
+          code: 'commit_outcome_unknown',
+        };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Imported after disconnect'),
+    );
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes('imported-after-loss'));
+    assert.equal(catalogReads, 2);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('loads the next Host external catalog page without replacing earlier rows', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    const cursors: Array<string | undefined> = [];
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async ({ cursor }: { cursor?: string }) => {
+        cursors.push(cursor);
+        const suffix = cursor ? 'second' : 'first';
+        return {
+          sessions: [
+            {
+              id: `ses_${suffix}`,
+              name: `${suffix} page`,
+              hostCwd: '/repo',
+              importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+            },
+          ],
+          nextCursor: cursor ? null : 'next',
+        };
+      },
+      importSession: async () => {
         throw new Error('unused');
       },
     };
@@ -5987,17 +6047,103 @@ Slug openai-work<cursor>
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
-      foreignSessions,
+      externalSessions,
     });
 
     terminal.input('/session');
     terminal.input('\r');
-    // The scan failure is surfaced, not swallowed into an empty list.
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first page'));
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('second page'));
+    assert.deepEqual(cursors, [undefined, 'next']);
+    assert.match(plainTerminalOutput(terminal.output()), /first page/);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('reports the durable Session id when import succeeds but opening fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingSwitchSessionDriver([]);
+    let imports = 0;
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async () => ({
+        sessions: [
+          {
+            id: 'ses_external',
+            name: 'Cannot open yet',
+            hostCwd: '/repo',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
+          },
+        ],
+        nextCursor: null,
+      }),
+      importSession: async () => {
+        imports += 1;
+        return {
+          kind: 'imported' as const,
+          session: { id: 'imported-but-not-opened' } as never,
+        };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Cannot open yet'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('imported-but-not-opened'));
+    assert.equal(imports, 1);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('keeps Maka sessions usable when Host external source discovery fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([fakeSessionSummary('session-2', '/repo')]);
+    const externalSessions = {
+      listSources: async (): Promise<readonly string[]> => {
+        throw new Error('unavailable');
+      },
+      listSessions: async () => ({ sessions: [], nextCursor: null }),
+      importSession: async () => {
+        throw new Error('unused');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes(
-        'Could not read external conversations: corrupt index',
-      ),
+      plainTerminalOutput(terminal.output()).includes('Could not read external sessions.'),
     );
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes('session-2'));
 
     exitMaka(terminal);
     await Promise.race([
