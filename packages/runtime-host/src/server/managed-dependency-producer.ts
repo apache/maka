@@ -82,177 +82,209 @@ export async function runManagedDependencyProducer(
   ) {
     return failed('input');
   }
-  let environment: Record<string, string>;
-  try {
-    validateNpmInput(input);
-    for (const file of [input.nodeExecutablePath, input.npmCliPath, input.supervisorPath]) {
-      if (!isAbsolute(file) || !(await lstat(file)).isFile())
-        throw new Error('Expected an absolute regular executable path');
-    }
-    await requireDirectory(input.projectRoot);
-    const scratchRoot = join(input.projectRoot, '.maka-runtime');
-    await mkdir(scratchRoot, { recursive: true });
-    await requireDirectory(scratchRoot);
-    // Exclusive reservation prevents concurrent callers or retries from sharing
-    // writable npm state, even when Storage has already created scratchRoot.
-    const ownedRoot = join(scratchRoot, 'provision');
-    await mkdir(ownedRoot);
-    const home = join(ownedRoot, 'home');
-    const cache = join(ownedRoot, 'cache');
-    const temporary = join(ownedRoot, 'tmp');
-    await Promise.all([mkdir(home), mkdir(temporary)]);
-    if (input.cacheSeedRoot) {
-      await requireDirectory(input.cacheSeedRoot);
-      if (
-        within(input.projectRoot, input.cacheSeedRoot) ||
-        within(input.cacheSeedRoot, input.projectRoot)
-      )
-        throw new Error('Cache seed overlaps staging');
-      // Treat the cache as immutable input. The final scan includes its copied
-      // bytes; this is a detection quota, not a filesystem reservation.
-      await measureProducerTree(input.cacheSeedRoot, limits, true);
-      await cp(input.cacheSeedRoot, cache, {
-        recursive: true,
-        dereference: false,
-        errorOnExist: true,
-        force: false,
-      });
-    } else {
-      await mkdir(cache);
-    }
-    const config = join(home, 'npmrc');
-    const globalConfig = join(home, 'global-npmrc');
-    await Promise.all([
-      writeFile(config, 'offline=true\nignore-scripts=true\naudit=false\nfund=false\n', {
-        flag: 'wx',
-        mode: 0o600,
-      }),
-      writeFile(globalConfig, '', { flag: 'wx', mode: 0o600 }),
-      writeFile(join(input.projectRoot, 'package.json'), input.manifestBytes, {
-        flag: 'wx',
-        mode: 0o600,
-      }),
-      writeFile(join(input.projectRoot, 'package-lock.json'), input.lockfileBytes, {
-        flag: 'wx',
-        mode: 0o600,
-      }),
-    ]);
-    environment = {
-      HOME: home,
-      // libuv's Windows homedir lookup has a fixed-size buffer. Resolve this
-      // short private profile against the explicitly fixed staging cwd; all
-      // npm config/cache paths remain absolute and independent of user state.
-      USERPROFILE: process.platform === 'win32' ? '.maka-runtime/provision/home' : home,
-      TEMP: temporary,
-      TMP: temporary,
-      TMPDIR: temporary,
-      npm_config_cache: cache,
-      npm_config_userconfig: config,
-      npm_config_globalconfig: globalConfig,
-      npm_config_offline: 'true',
-      npm_config_ignore_scripts: 'true',
-      npm_config_audit: 'false',
-      npm_config_fund: 'false',
-      npm_config_update_notifier: 'false',
-      NODE_DISABLE_COMPILE_CACHE: '1',
-      ...(process.platform === 'win32' && process.env.SystemRoot
-        ? { SystemRoot: process.env.SystemRoot }
-        : {}),
-    };
-    await measureProducerTree(input.projectRoot, limits);
-  } catch (error) {
-    return {
-      ...failed(error instanceof ProducerQuotaError ? 'quota' : 'input'),
-      diagnostic: redactSecrets(
-        error instanceof Error ? error.message : 'Preparation failed',
-      ).slice(0, 4096),
-    };
-  }
-  if (input.abortSignal?.aborted) return failed('cancelled');
+  // One monotonic deadline covers preparation, supervision and final inventory.
+  // Check it between filesystem operations as well as from the timer: a busy
+  // event loop must not turn an expired operation into a successful result.
+  const deadline = performance.now() + timeoutMs;
   const abort = new AbortController();
   let failure: ProducerFailure | undefined;
   const stop = (reason: ProducerFailure) => {
     failure ??= reason;
     abort.abort();
   };
+  const checkpoint = () => {
+    if (performance.now() >= deadline) stop('timeout');
+    abort.signal.throwIfAborted();
+  };
   const cancel = () => stop('cancelled');
   input.abortSignal?.addEventListener('abort', cancel, { once: true });
   if (input.abortSignal?.aborted) cancel();
   const timeout = setTimeout(() => stop('timeout'), timeoutMs);
-  let monitoring = true;
-  let scan: Promise<void> = Promise.resolve();
-  let monitorTimer: ReturnType<typeof setTimeout> | undefined;
-  const monitor = () => {
-    scan = measureProducerTree(input.projectRoot, limits)
-      .then(
-        () => {},
-        (error: unknown) => {
-          stop(error instanceof ProducerQuotaError ? 'quota' : 'input');
-        },
-      )
-      .finally(() => {
-        if (monitoring && !abort.signal.aborted) monitorTimer = setTimeout(monitor, 250);
-      });
-  };
-  monitorTimer = setTimeout(monitor, 250);
-  const chunks: Buffer[] = [];
-  let outputBytes = 0;
-  let outputTruncated = false;
-  let result: ProducerProcessResult;
   try {
-    result = await launch({
-      executable: input.nodeExecutablePath,
-      arguments: [
-        ...(process.platform === 'win32'
-          ? ['--preserve-symlinks-main', '--preserve-symlinks']
-          : []),
-        input.npmCliPath,
-        'ci',
-        '--offline',
-        '--ignore-scripts',
-        '--no-audit',
-        '--no-fund',
-      ],
-      projectRoot: input.projectRoot,
-      readRoots: [dirname(dirname(input.npmCliPath))],
-      environment,
-      supervisorPath: input.supervisorPath,
-      signal: abort.signal,
-      timeoutMs,
-      onOutput: (chunk) => {
-        const accepted = chunk.subarray(0, Math.max(0, 64 * 1024 - outputBytes));
-        if (accepted.length < chunk.length) outputTruncated = true;
-        if (accepted.length) {
-          chunks.push(Buffer.from(accepted));
-          outputBytes += accepted.length;
-        }
-      },
-    });
-  } catch {
-    // A rejected launch adapter cannot attest that it failed before spawning.
-    result = { settled: false };
+    let environment: Record<string, string>;
+    try {
+      checkpoint();
+      validateNpmInput(input);
+      for (const file of [input.nodeExecutablePath, input.npmCliPath, input.supervisorPath]) {
+        checkpoint();
+        if (!isAbsolute(file) || !(await lstat(file)).isFile())
+          throw new Error('Expected an absolute regular executable path');
+      }
+      await requireDirectory(input.projectRoot);
+      checkpoint();
+      const scratchRoot = join(input.projectRoot, '.maka-runtime');
+      await mkdir(scratchRoot, { recursive: true });
+      await requireDirectory(scratchRoot);
+      checkpoint();
+      // Exclusive reservation prevents concurrent callers or retries from sharing
+      // writable npm state, even when Storage has already created scratchRoot.
+      const ownedRoot = join(scratchRoot, 'provision');
+      await mkdir(ownedRoot);
+      checkpoint();
+      const home = join(ownedRoot, 'home');
+      const cache = join(ownedRoot, 'cache');
+      const temporary = join(ownedRoot, 'tmp');
+      await mkdir(home);
+      checkpoint();
+      await mkdir(temporary);
+      checkpoint();
+      if (input.cacheSeedRoot) {
+        await requireDirectory(input.cacheSeedRoot);
+        if (
+          within(input.projectRoot, input.cacheSeedRoot) ||
+          within(input.cacheSeedRoot, input.projectRoot)
+        )
+          throw new Error('Cache seed overlaps staging');
+        // Treat the cache as immutable input. The final scan includes its copied
+        // bytes; this is a detection quota, not a filesystem reservation.
+        await measureProducerTree(input.cacheSeedRoot, limits, true, checkpoint);
+        await cp(input.cacheSeedRoot, cache, {
+          recursive: true,
+          dereference: false,
+          errorOnExist: true,
+          force: false,
+          filter: () => {
+            // cp has no AbortSignal option. Stop between entries, and await
+            // any in-flight filesystem operation before allowing staging cleanup.
+            checkpoint();
+            return true;
+          },
+        });
+      } else {
+        await mkdir(cache);
+      }
+      checkpoint();
+      const config = join(home, 'npmrc');
+      const globalConfig = join(home, 'global-npmrc');
+      await writeFile(config, 'offline=true\nignore-scripts=true\naudit=false\nfund=false\n', {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      checkpoint();
+      await writeFile(globalConfig, '', { flag: 'wx', mode: 0o600 });
+      checkpoint();
+      await writeFile(join(input.projectRoot, 'package.json'), input.manifestBytes, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      checkpoint();
+      await writeFile(join(input.projectRoot, 'package-lock.json'), input.lockfileBytes, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      checkpoint();
+      environment = {
+        HOME: home,
+        // libuv's Windows homedir lookup has a fixed-size buffer. Resolve this
+        // short private profile against the explicitly fixed staging cwd; all
+        // npm config/cache paths remain absolute and independent of user state.
+        USERPROFILE: process.platform === 'win32' ? '.maka-runtime/provision/home' : home,
+        TEMP: temporary,
+        TMP: temporary,
+        TMPDIR: temporary,
+        npm_config_cache: cache,
+        npm_config_userconfig: config,
+        npm_config_globalconfig: globalConfig,
+        npm_config_offline: 'true',
+        npm_config_ignore_scripts: 'true',
+        npm_config_audit: 'false',
+        npm_config_fund: 'false',
+        npm_config_update_notifier: 'false',
+        NODE_DISABLE_COMPILE_CACHE: '1',
+        ...(process.platform === 'win32' && process.env.SystemRoot
+          ? { SystemRoot: process.env.SystemRoot }
+          : {}),
+      };
+      await measureProducerTree(input.projectRoot, limits, false, checkpoint);
+    } catch (error) {
+      return {
+        ...failed(failure ?? (error instanceof ProducerQuotaError ? 'quota' : 'input')),
+        diagnostic: redactSecrets(
+          error instanceof Error ? error.message : 'Preparation failed',
+        ).slice(0, 4096),
+      };
+    }
+    let monitoring = true;
+    let scan: Promise<void> = Promise.resolve();
+    let monitorTimer: ReturnType<typeof setTimeout> | undefined;
+    const monitor = () => {
+      scan = measureProducerTree(input.projectRoot, limits, false, checkpoint)
+        .then(
+          () => {},
+          (error: unknown) => {
+            stop(error instanceof ProducerQuotaError ? 'quota' : 'input');
+          },
+        )
+        .finally(() => {
+          if (monitoring && !abort.signal.aborted) monitorTimer = setTimeout(monitor, 250);
+        });
+    };
+    monitorTimer = setTimeout(monitor, 250);
+    const chunks: Buffer[] = [];
+    let outputBytes = 0;
+    let outputTruncated = false;
+    let result: ProducerProcessResult;
+    try {
+      result = await launch({
+        executable: input.nodeExecutablePath,
+        arguments: [
+          ...(process.platform === 'win32'
+            ? ['--preserve-symlinks-main', '--preserve-symlinks']
+            : []),
+          input.npmCliPath,
+          'ci',
+          '--offline',
+          '--ignore-scripts',
+          '--no-audit',
+          '--no-fund',
+        ],
+        projectRoot: input.projectRoot,
+        readRoots: [dirname(dirname(input.npmCliPath))],
+        environment,
+        supervisorPath: input.supervisorPath,
+        signal: abort.signal,
+        timeoutMs: Math.max(1, Math.ceil(deadline - performance.now())),
+        onOutput: (chunk) => {
+          const accepted = chunk.subarray(0, Math.max(0, 64 * 1024 - outputBytes));
+          if (accepted.length < chunk.length) outputTruncated = true;
+          if (accepted.length) {
+            chunks.push(Buffer.from(accepted));
+            outputBytes += accepted.length;
+          }
+        },
+      });
+    } catch {
+      // A rejected launch adapter cannot attest that it failed before spawning.
+      result = { settled: false };
+    } finally {
+      monitoring = false;
+      if (monitorTimer) clearTimeout(monitorTimer);
+      await scan;
+    }
+    let retained = Buffer.concat(chunks).toString('utf8');
+    // Do not feed a partial secret at the retention boundary to the redactor.
+    if (outputTruncated) retained = retained.slice(0, Math.max(0, retained.lastIndexOf('\n')));
+    const diagnostic = redactSecrets(retained).slice(0, 4096);
+    if (!result.settled) return { kind: 'unsettled', reason: 'supervision', diagnostic };
+    {
+      try {
+        await measureProducerTree(input.projectRoot, limits, false, checkpoint);
+      } catch (error) {
+        failure ??= error instanceof ProducerQuotaError ? 'quota' : 'input';
+      }
+    }
+    if (failure || result.failed)
+      return {
+        kind: 'failed',
+        reason: failure ?? 'process',
+        exitCode: result.exitCode,
+        diagnostic,
+      };
+    return { kind: 'completed', exitCode: 0 };
   } finally {
-    monitoring = false;
-    if (monitorTimer) clearTimeout(monitorTimer);
     clearTimeout(timeout);
     input.abortSignal?.removeEventListener('abort', cancel);
-    await scan;
   }
-  let retained = Buffer.concat(chunks).toString('utf8');
-  // Do not feed a partial secret at the retention boundary to the redactor.
-  if (outputTruncated) retained = retained.slice(0, Math.max(0, retained.lastIndexOf('\n')));
-  const diagnostic = redactSecrets(retained).slice(0, 4096);
-  if (!result.settled) return { kind: 'unsettled', reason: 'supervision', diagnostic };
-  {
-    try {
-      await measureProducerTree(input.projectRoot, limits);
-    } catch (error) {
-      failure ??= error instanceof ProducerQuotaError ? 'quota' : 'input';
-    }
-  }
-  if (failure || result.failed)
-    return { kind: 'failed', reason: failure ?? 'process', exitCode: result.exitCode, diagnostic };
-  return { kind: 'completed', exitCode: 0 };
 }
 
 function failed(
@@ -323,11 +355,13 @@ export async function measureProducerTree(
   root: string,
   limits: ProducerLimits,
   rejectLinks = false,
+  checkpoint: () => void = () => {},
 ): Promise<{ bytes: number; entries: number }> {
   let bytes = 0;
   let entries = 0;
   const pending = [root];
   while (pending.length) {
+    checkpoint();
     const path = pending.pop()!;
     let info;
     try {
@@ -350,6 +384,7 @@ export async function measureProducerTree(
       try {
         const directory = await opendir(path);
         for await (const child of directory) {
+          checkpoint();
           // Bound inventory memory as well as the count of processed entries.
           if (entries + pending.length >= limits.maxEntries)
             throw new ProducerQuotaError('Entry quota exceeded');
@@ -362,6 +397,7 @@ export async function measureProducerTree(
     if (bytes > limits.maxBytes || entries > limits.maxEntries)
       throw new ProducerQuotaError('Producer quota exceeded');
   }
+  checkpoint();
   return { bytes, entries };
 }
 

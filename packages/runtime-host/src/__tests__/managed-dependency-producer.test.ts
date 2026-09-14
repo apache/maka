@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +77,129 @@ producerTest('pre-cancelled producer makes no staging changes and never launches
 });
 
 producerTest(
+  'large cache preparation observes timeout and cancellation before launch',
+  async (t) => {
+    const seed = await fixture(t);
+    for (let batch = 0; batch < 80; batch++) {
+      await Promise.all(
+        Array.from({ length: 100 }, (_, i) =>
+          writeFile(join(seed.projectRoot, String(batch * 100 + i)), 'cache'),
+        ),
+      );
+    }
+    for (const reason of ['timeout', 'cancelled'] as const) {
+      const input = await fixture(t);
+      const controller = new AbortController();
+      const timer = reason === 'cancelled' ? setTimeout(() => controller.abort(), 1) : undefined;
+      let launched = false;
+      try {
+        const result = await runManagedDependencyProducer(
+          {
+            ...input,
+            cacheSeedRoot: seed.projectRoot,
+            timeoutMs: reason === 'timeout' ? 1 : 600_000,
+            abortSignal: controller.signal,
+          },
+          async () => {
+            launched = true;
+            return { settled: true, failed: false, exitCode: 0 };
+          },
+        );
+        assert.equal(result.kind, 'failed');
+        if (result.kind === 'failed') assert.equal(result.reason, reason);
+        assert.equal(launched, false);
+        // Cancellation must stop preparation, not merely reject after copying it all.
+        const cache = join(input.projectRoot, '.maka-runtime', 'provision', 'cache');
+        const copied = await readdir(cache).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+        assert.ok(copied.length < 8000);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  },
+);
+
+producerTest('final inventory remains inside the lifecycle boundary', async (t) => {
+  for (const reason of ['timeout', 'cancelled'] as const) {
+    const input = await fixture(t);
+    const controller = new AbortController();
+    const result = await runManagedDependencyProducer(
+      { ...input, abortSignal: controller.signal },
+      async () => {
+        if (reason === 'timeout') {
+          // Advance the monotonic clock without firing the timer: the final
+          // inventory must check the deadline itself before reporting success.
+          const expired = performance.now() + 600_001;
+          t.mock.method(performance, 'now', () => expired);
+        } else {
+          setImmediate(() => controller.abort());
+        }
+        return { settled: true, failed: false, exitCode: 0 };
+      },
+    );
+    t.mock.restoreAll();
+    assert.equal(result.kind, 'failed');
+    if (result.kind === 'failed') assert.equal(result.reason, reason);
+  }
+});
+
+producerTest('cache copying stops between entries at the lifecycle boundary', async (t) => {
+  const seed = await fixture(t);
+  for (let i = 0; i < 32; i++) await writeFile(join(seed.projectRoot, String(i)), 'cache');
+  for (const reason of ['timeout', 'cancelled'] as const) {
+    const input = await fixture(t);
+    const cache = join(input.projectRoot, '.maka-runtime', 'provision', 'cache');
+    const controller = new AbortController();
+    const now = performance.now();
+    // Trigger only after copying starts, independently of disk speed. This
+    // catches a copy that checks cancellation only after the entire tree.
+    t.mock.method(performance, 'now', () => {
+      if (existsSync(cache) && readdirSync(cache).length >= 5) {
+        if (reason === 'cancelled') controller.abort();
+        else return now + 600_001;
+      }
+      return now;
+    });
+    try {
+      let launched = false;
+      const result = await runManagedDependencyProducer(
+        { ...input, cacheSeedRoot: seed.projectRoot, abortSignal: controller.signal },
+        async () => {
+          launched = true;
+          return { settled: true, failed: false, exitCode: 0 };
+        },
+      );
+      assert.equal(result.kind, 'failed');
+      if (result.kind === 'failed') assert.equal(result.reason, reason);
+      assert.equal(launched, false);
+      const copied = await readdir(cache);
+      assert.ok(copied.length >= 5 && copied.length < 32);
+      await delay(20);
+      assert.deepEqual(await readdir(cache), copied);
+    } finally {
+      t.mock.restoreAll();
+    }
+  }
+});
+
+test('inventory checks cancellation while enumerating a directory', async (t) => {
+  const input = await fixture(t);
+  for (let i = 0; i < 20; i++) await writeFile(join(input.projectRoot, String(i)), 'data');
+  let checkpoints = 0;
+  const cancelled = new Error('cancelled');
+  await assert.rejects(
+    measureProducerTree(input.projectRoot, { maxBytes: 4096, maxEntries: 100 }, false, () => {
+      if (++checkpoints === 5) throw cancelled;
+    }),
+    (error) => error === cancelled,
+  );
+  assert.equal(checkpoints, 5);
+});
+
+producerTest(
   'fixed offline invocation omits ambient credentials and reserves scratch exclusively',
   async (t) => {
     const input = await fixture(t);
@@ -130,7 +254,7 @@ producerTest(
       const controller = new AbortController();
       let confirmed = false;
       const result = await runManagedDependencyProducer(
-        { ...input, timeoutMs: reason === 'timeout' ? 10 : 1000, abortSignal: controller.signal },
+        { ...input, timeoutMs: 1000, abortSignal: controller.signal },
         async (launch) => {
           if (reason === 'cancelled') setTimeout(() => controller.abort(), 10);
           await new Promise<void>((resolve) =>
