@@ -100,6 +100,10 @@ import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js
 import { DesktopSessionLocalStore } from './session-local-store.js';
 import { DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
 import { registerBrowserIpc } from "./browser-ipc-main.js";
+import { mirrorHandle } from "./web-bridge/registry.js";
+import { startWebBridgeServer, type StartedWebBridge } from "./web-bridge/server.js";
+import { registerWebAccessIpc } from "./web-access/ipc-main.js";
+import { webAccessPath } from "./web-access/store.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
 import {
@@ -278,6 +282,39 @@ import {
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from "../shared/runtime-host-identity.js";
+import { mirrorRemove } from "./web-bridge/registry.js";
+
+// `maka-web` full client: mirror every main-process IPC channel into the
+// loopback WebSocket bridge, so browsers speak the identical channel set.
+// Denylist holds main-window-only commands (virtual senders have
+// `senderFrame: null` and would always throw); the renderer must guard those
+// in web mode instead of invoking them.
+const WEB_BRIDGE_IPC_DENYLIST = new Set(["workhub-control:command"]);
+{
+  const originalHandle = ipcMain.handle.bind(ipcMain);
+  (ipcMain as unknown as { handle(channel: string, listener: never): void }).handle = (
+    channel: string,
+    listener: never,
+  ) => {
+    originalHandle(channel, listener);
+    if (typeof channel === "string" && channel && !WEB_BRIDGE_IPC_DENYLIST.has(channel)) {
+      try {
+        mirrorHandle(channel, listener as never);
+      } catch {
+        // Mirroring must never break main-process registration.
+      }
+    }
+  };
+  const originalRemoveHandler = ipcMain.removeHandler.bind(ipcMain);
+  (ipcMain as unknown as { removeHandler(channel: string): void }).removeHandler = (channel: string) => {
+    originalRemoveHandler(channel);
+    try {
+      mirrorRemove(channel);
+    } catch {
+      // Best-effort teardown mirror.
+    }
+  };
+}
 
 await resolveShellEnv();
 
@@ -1550,9 +1587,14 @@ function registerHostClientIpc(
     catalog: targetProjectCatalog,
     directoryCatalog: targetProjectCatalog,
     chooseDirectory: async () => {
+      // Seed with cwd so the Linux portal opens warm in a useful place on
+      // first use (main-window also remembers the last pick after that).
+      // For an instant bypass, the renderer can call `projects:addByPath`
+      // with a typed path and skip this dialog entirely.
       const result = await mainWindowController.showOpenDialog({
         title: projectPickerTitle(await desktopLocale.resolve()),
         properties: ["openDirectory"],
+        defaultPath: process.cwd(),
       });
       return result.canceled ? undefined : result.filePaths[0];
     },
@@ -1915,6 +1957,7 @@ function registerPersistentClientIpc(): void {
       await clientSettingsEffects.apply(settings, true);
     },
   });
+  registerWebAccessIpc({ ipcMain, userDataDir });
   settingsBotsIpc = registerSettingsBotsIpc({
     ipcMain,
     settingsStore,
@@ -1979,7 +2022,7 @@ function registerPersistentClientIpc(): void {
     profileAccess: runtimeHostProfileAccess(target.profile),
     readiness,
   });
-  ipcMain.handle("runtime-host:activeIdentity", () => {
+  const activeIdentity: Parameters<typeof ipcMain.handle>[1] = () => {
     const current = runtimeHostManager?.current();
     if (!current?.hostId) {
       throw new Error("Desktop Runtime Host identity is unavailable");
@@ -1990,8 +2033,10 @@ function registerPersistentClientIpc(): void {
       current.readiness,
       current.hostId,
     );
-  });
-  ipcMain.handle("runtime-host:identities", () =>
+  };
+  ipcMain.handle("runtime-host:activeIdentity", activeIdentity);
+  mirrorHandle("runtime-host:activeIdentity", activeIdentity);
+  const runtimeIdentities: Parameters<typeof ipcMain.handle>[1] = () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
       if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
       const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId ?? localSessionTarget(state)?.scope.hostId;
@@ -1999,10 +2044,13 @@ function registerPersistentClientIpc(): void {
       return [
         projectRuntimeHostIdentity(state.epoch, state.target, state.readiness === 'ready' ? 'ready' : 'reconnecting', hostId),
       ];
-    }),
-  );
+    });
+  ipcMain.handle("runtime-host:identities", runtimeIdentities);
+  mirrorHandle("runtime-host:identities", runtimeIdentities);
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
-  ipcMain.handle('directories:pick', async () => {
+  // `maka-web` browsers key approvals/consumers by their own virtual sender
+  // id, exactly the way Electron keys them per WebContents.
+  const pickDirectory: Parameters<typeof ipcMain.handle>[1] = async () => {
     const local = runtimeHostManager?.entries().find(
       (state) => state.target.profile.kind === 'local',
     );
@@ -2014,8 +2062,10 @@ function registerPersistentClientIpc(): void {
     });
     if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
     return { ok: true, reference: { hostId, path: result.filePaths[0] } };
-  });
-  ipcMain.handle("attachments:pickFiles", async (event) => {
+  };
+  ipcMain.handle('directories:pick', pickDirectory);
+  mirrorHandle('directories:pick', pickDirectory);
+  const pickAttachments: Parameters<typeof ipcMain.handle>[1] = async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: nativeFileDialogCopy(await desktopLocale.resolve()).addAttachments,
       properties: ["openFile", "multiSelections"],
@@ -2031,7 +2081,9 @@ function registerPersistentClientIpc(): void {
       ok: true,
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
     };
-  });
+  };
+  ipcMain.handle("attachments:pickFiles", pickAttachments);
+  mirrorHandle("attachments:pickFiles", pickAttachments);
   registerAttachmentPreviewIpc({
     ipcMain,
     approvals: attachmentApprovals,
@@ -2102,10 +2154,32 @@ function emitSessionsChanged(
   mainWindowController.send("sessions:changed", scope, event);
 }
 
+let webBridgeServer: StartedWebBridge | undefined;
+let webBridgeStarting: Promise<void> | undefined;
+
+function ensureWebBridgeServer(): Promise<void> {
+  webBridgeStarting ??= startWebBridgeServer({ webAccessPath: webAccessPath(userDataDir) }).then(
+    (server) => {
+      webBridgeServer = server;
+    },
+    (error) => {
+      console.warn(`[web-bridge] disabled: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  );
+  return webBridgeStarting;
+}
+
 function wireLifecycle(): void {
   installDesktopShellPresentation({
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
+  });
+  // `maka-web` bridge (Chrome/Brave full client): loopback WebSocket tunneling
+  // the same IPC channels. Best-effort and independent of the window: a
+  // failure here must never block the GUI.
+  void ensureWebBridgeServer();
+  app.once("will-quit", () => {
+    void webBridgeServer?.stop().catch(() => undefined);
   });
   app.on("second-instance", quitCoordinator.focusOrCreateWindow);
   app.on("activate", quitCoordinator.focusOrCreateWindow);

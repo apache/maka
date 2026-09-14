@@ -95,6 +95,7 @@ import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
+import { WebAccessSettingsPage } from './web-access-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
@@ -1231,6 +1232,8 @@ function SettingsPageBody(props: {
           onRetryRuntimeHost={props.onRetryRuntimeHost}
         />
       );
+    case 'web-access':
+      return <WebAccessSettingsPage />;
     case 'permissions':
       return <PermissionCenterPage />;
     case 'health':

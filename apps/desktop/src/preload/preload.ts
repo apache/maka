@@ -2768,6 +2768,16 @@ const makaBridge = {
     > {
       return invokeSelectedRuntimeHost(host, 'projects:add');
     },
+    addByPath(
+      projectPath: string,
+      options?: { select?: boolean },
+      host?: DesktopRuntimeHostRef,
+    ): Promise<
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' | 'invalid-path' }
+    > {
+      return invokeSelectedRuntimeHost(host, 'projects:addByPath', projectPath, options);
+    },
     getDirectoryRoots(host: DesktopRuntimeHostRef) {
       return invokeSelectedRuntimeHost(host, 'projects:directoryRoots');
     },
@@ -2793,6 +2803,16 @@ const makaBridge = {
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     > {
       return invokeSelectedRuntimeHost(host, 'projects:relink', projectId);
+    },
+    relinkByPath(
+      projectId: string,
+      projectPath: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<
+      | { ok: true; project: ProjectRecord }
+      | { ok: false; reason: 'cancelled' | 'invalid-path' }
+    > {
+      return invokeSelectedRuntimeHost(host, 'projects:relinkByPath', projectId, projectPath);
     },
     reveal(projectId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; opened: string }
@@ -3924,6 +3944,26 @@ const makaBridge = {
           ),
         }),
       );
+    },
+  },
+  webAccess: {
+    getStatus() {
+      return ipcRenderer.invoke('webAccess:getStatus');
+    },
+    setPassphrase(passphrase: string) {
+      return ipcRenderer.invoke('webAccess:setPassphrase', { passphrase });
+    },
+    enrollTotp() {
+      return ipcRenderer.invoke('webAccess:enrollTotp');
+    },
+    confirmTotp(code: string) {
+      return ipcRenderer.invoke('webAccess:confirmTotp', { code });
+    },
+    setEnabled(enabled: boolean) {
+      return ipcRenderer.invoke('webAccess:setEnabled', { enabled });
+    },
+    regenerateRecovery() {
+      return ipcRenderer.invoke('webAccess:regenerateRecovery');
     },
   },
 } satisfies MakaBridge;

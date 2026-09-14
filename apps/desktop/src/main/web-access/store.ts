@@ -26,13 +26,24 @@ export interface WebAccessFile {
   passphrase: string;
   totpSecret: string;
   recovery: string[];
+  /** Set by confirmTotp. setEnabled(true) requires this to be true. */
+  totpConfirmed: boolean;
 }
 
 export async function loadWebAccess(path: string): Promise<WebAccessFile | null> {
   try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as WebAccessFile;
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as Partial<WebAccessFile>;
     if (parsed.version !== 1 || typeof parsed.passphrase !== 'string') return null;
-    return parsed;
+    return {
+      version: 1,
+      enabled: Boolean(parsed.enabled),
+      passphrase: parsed.passphrase,
+      totpSecret: typeof parsed.totpSecret === 'string' ? parsed.totpSecret : '',
+      recovery: Array.isArray(parsed.recovery)
+        ? parsed.recovery.filter((item): item is string => typeof item === 'string')
+        : [],
+      totpConfirmed: parsed.totpConfirmed === true,
+    };
   } catch (error) {
     if (error instanceof SyntaxError) return null;
     const code = (error as NodeJS.ErrnoException).code;

@@ -1341,6 +1341,14 @@ export interface MakaBridge {
     add(host?: DesktopRuntimeHostRef): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
+    addByPath(
+      projectPath: string,
+      options?: { select?: boolean },
+      host?: DesktopRuntimeHostRef,
+    ): Promise<
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' | 'invalid-path' }
+    >;
     getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;
     listDirectory(
       input: { readonly rootId: string; readonly segments: readonly string[] },
@@ -1358,6 +1366,14 @@ export interface MakaBridge {
       projectId: string,
       host?: DesktopRuntimeHostRef,
     ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
+    relinkByPath(
+      projectId: string,
+      projectPath: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<
+      | { ok: true; project: ProjectRecord }
+      | { ok: false; reason: 'cancelled' | 'invalid-path' }
+    >;
     /** Open a catalogued project's folder in the OS file manager. */
     reveal(projectId: string, host?: DesktopRuntimeHostRef): Promise<OpenPathResult>;
     rename(projectId: string, name: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
@@ -1926,5 +1942,13 @@ export interface MakaBridge {
     getState(sessionId: string): Promise<BrowserState | null>;
     onState(handler: (payload: { sessionId: string; state: BrowserState }) => void): () => void;
     onLive(handler: (payload: { sessionIds: string[] }) => void): () => void;
+  };
+  webAccess: {
+    getStatus(): Promise<{ enrolled: boolean; enabled: boolean }>;
+    setPassphrase(passphrase: string): Promise<{ ok: true } | { ok: false; reason: 'too-short' }>;
+    enrollTotp(): Promise<{ otpauthUrl: string; qrDataUrl: string }>;
+    confirmTotp(code: string): Promise<{ ok: true } | { ok: false }>;
+    setEnabled(enabled: boolean): Promise<{ ok: true } | { ok: false; reason: 'not-enrolled' }>;
+    regenerateRecovery(): Promise<{ codes: string[] }>;
   };
 }

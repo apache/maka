@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -34,6 +34,7 @@ test('saveWebAccess writes mode 0600 JSON and loadWebAccess round-trips', async 
     passphrase: await hashSecret('passphrase-12chars'),
     totpSecret: 'JBSWY3DPEHPK3PXP',
     recovery: [await hashSecret('ABCDE12345')],
+    totpConfirmed: true,
   };
   await saveWebAccess(path, record);
   const mode = (await stat(path)).mode & 0o777;
@@ -46,4 +47,21 @@ test('saveWebAccess writes mode 0600 JSON and loadWebAccess round-trips', async 
 test('loadWebAccess returns null when the file is missing', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-web-access-'));
   assert.equal(await loadWebAccess(join(dir, 'missing.json')), null);
+});
+
+test('loadWebAccess defaults totpConfirmed to false when the field is absent', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-web-access-'));
+  const path = join(dir, 'web-access.json');
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      enabled: false,
+      passphrase: 'hashed',
+      totpSecret: 'JBSWY3DPEHPK3PXP',
+      recovery: [],
+    }),
+  );
+  const loaded = await loadWebAccess(path);
+  assert.equal(loaded?.totpConfirmed, false);
 });

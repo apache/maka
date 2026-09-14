@@ -85,6 +85,7 @@ export const SETTINGS_SECTIONS = [
   'bot-chat',
   'search',
   'data',
+  'web-access',
   'permissions',
   'health',
   'about',
