@@ -76,8 +76,19 @@ export const OPENCODE_TRANSCRIPT_MAX_RAW_BYTES = 64 * 1024 * 1024;
 export const OPENCODE_TRANSCRIPT_MAX_ROWS = 250_000;
 
 const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
+
+/**
+ * Guards a source field before it reaches JavaScript.
+ *
+ * These are memory bounds, not display limits. A title's display length is
+ * decided by `sanitizeExternalSessionTitle` (120 code points) and the wire
+ * (320 bytes), both of which truncate; bounding it here instead would hide a
+ * conversation from the catalog and refuse its import because of a long title —
+ * and 320 bytes is 106 Chinese characters, which real titles reach. The bound
+ * only has to be small enough that a field nobody typed cannot be read whole.
+ */
 const OPENCODE_CATALOG_ID_MAX_BYTES = 512;
-const OPENCODE_CATALOG_TITLE_MAX_BYTES = 320;
+const OPENCODE_CATALOG_TITLE_MAX_BYTES = 64 * 1024;
 const OPENCODE_CATALOG_CWD_MAX_BYTES = 4 * 1024;
 
 /** Guards the value interpolated into no SQL, but read back out of one. */

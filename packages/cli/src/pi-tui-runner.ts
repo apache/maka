@@ -431,6 +431,11 @@ interface TuiSessionActionsCopy {
   readonly externalImportedCount: string;
   readonly externalImportFailed: string;
   readonly externalImportLimit: string;
+  readonly externalImportLimitTranscriptBytes: string;
+  readonly externalImportLimitRecordBytes: string;
+  readonly externalImportLimitRecords: string;
+  readonly externalImportLimitConvertedBytes: string;
+  readonly externalImportLimitMessages: string;
   readonly externalImportUncertain: string;
   readonly externalOpenFailed: string;
   readonly newSessionFailed: string;
@@ -451,6 +456,30 @@ const TUI_CONNECTION_IDENTITY_COPY = resolveUiMessageCatalog(
 const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
   defineUiMessageCatalog<TuiSessionActionsCopy>()(TUI_COPY_RESOURCES['session-actions']),
 );
+
+/**
+ * What the exhausted bound is called, in the user's language.
+ *
+ * The limit kinds are protocol tokens; a reader told the session exceeds the
+ * `record_bytes` limit has been handed an implementation detail instead of an
+ * explanation.
+ */
+function externalImportLimitLabel(copy: TuiSessionActionsCopy, kind: string): string {
+  switch (kind) {
+    case 'transcript_bytes':
+      return copy.externalImportLimitTranscriptBytes;
+    case 'record_bytes':
+      return copy.externalImportLimitRecordBytes;
+    case 'records':
+      return copy.externalImportLimitRecords;
+    case 'converted_bytes':
+      return copy.externalImportLimitConvertedBytes;
+    case 'messages':
+      return copy.externalImportLimitMessages;
+    default:
+      return kind;
+  }
+}
 
 function sessionConnectionIdentityNotice(
   session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
@@ -3007,11 +3036,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
    * exactly one id must be new.
    *
    * The count is the authority on how many copies landed, and it counts every
-   * one of them. The id list is only a window of the most recent, so a source
-   * that already has a full window drops an id whenever a new one arrives —
-   * reading that slide as a second import would leave this import's own copy
-   * unopened forever. Two copies landing in the window are two, and the count
-   * says so.
+   * one that has been published. The id list is only a window of the most
+   * recent, so a source that already has a full window drops an id whenever a
+   * new one arrives — reading that slide as a second import would leave this
+   * import's own copy unopened forever. Two copies landing in the window are
+   * two, and the count says so.
+   *
+   * A copy this import committed but did not finish publishing is in neither:
+   * the Host counts published copies, and the Session list shows published
+   * Sessions. That window stays uncertain, which is what the uncertain notice
+   * is for — the copy appears once the Host finishes materializing it, and the
+   * user is told to look rather than handed someone else's conversation.
    */
   const reconcileImportedExternalSession = async (
     adapterId: string,
@@ -3047,7 +3082,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           level: 'error',
           text: formatUiMessage(
             copy.externalImportLimit,
-            { kind: result.limit.kind, max: result.limit.max },
+            {
+              kind: externalImportLimitLabel(copy, result.limit.kind),
+              max: result.limit.max,
+            },
             locale,
           ),
         });
