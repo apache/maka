@@ -1327,10 +1327,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     } = {},
   ): AsyncIterable<SessionEvent> {
     const { steering = false, onRunStarted, initialHeader, prepareBackendActivation } = options;
-    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
-    let flowDone = false;
     const owners = this.createRunOwnerScope(run, execution);
     let begin: AgentRunBeginResult;
     try {
@@ -1361,25 +1359,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
       return;
     }
 
-    const interactionRun = owners.interactionRun;
-    const messageOwner = owners.messageOwner;
-
-    const stopBackend = this.stopBackendFor(begin.backend);
-    const eventContext = this.runtimeEventMapContext({
+    yield* this.streamAgentRun({
       sessionId,
-      invocationId: begin.initialRuntimeEvent.invocationId,
-      runId: run.runId,
-      turnId: run.turnId,
-    });
-    if (run.isStopped()) abortController.abort();
-    const streamResult = this.runBackendEventStream({
+      run,
+      owners,
       backend: begin.backend,
-      stopBackend,
-      beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
-      hasCommittedHandoff: () => run.hasCommittedHandoff(),
-      ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
-      abortSignal: abortController.signal,
-      eventContext,
+      abortController,
+      releaseExecutionAbort,
+      requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
+      invocationId: begin.initialRuntimeEvent.invocationId,
       backendInput: {
         invocationId: begin.initialRuntimeEvent.invocationId,
         runId: run.runId,
@@ -1389,83 +1377,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           run.reachHandoffBoundary(signal, remainingSteps),
         ...runtimeSteeringInput(owners.messageOwner),
       },
-      onSessionEvent: async (sessionEvent, runtimeEvent) => {
-        this.assertInteractionPublication(interactionRun, sessionEvent);
-        await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
-          requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
-          allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
-        });
-        this.observeInteractionEvent(sessionId, begin.backend, sessionEvent);
-        await sessionEvents.push(sessionEvent);
-      },
-      onError: async (error) => {
-        if (!isDeliveryAckQueueClosed(error)) {
-          await run.recordFailure(error);
-          sessionEvents.fail(error);
-        }
-      },
-      onFinally: async () => {
-        flowDone = true;
-        try {
-          await owners.finalize();
-          // Release Runtime access BEFORE the event stream closes. Embedded
-          // queues still emit their final steering → followup projection here;
-          // a hosted owner is only sealed, then the Host performs that handoff
-          // under its Session admission gate. The outer finally remains an
-          // idempotent backstop for paths that never reach this hook.
-          if (messageOwner) owners.releaseMessage();
-          sessionEvents.close();
-        } catch (error) {
-          sessionEvents.fail(error);
-          throw error;
-        }
-      },
-    }).then(
-      async (result) => {
-        if (!flowDone) {
-          try {
-            flowDone = true;
-            await owners.finalize();
-            owners.releaseMessage();
-            sessionEvents.close();
-          } catch (error) {
-            sessionEvents.fail(error);
-            throw error;
-          }
-        }
-        return result;
-      },
-      (error) => {
-        sessionEvents.fail(error);
-        throw error;
-      },
-    );
-
-    try {
-      for await (const event of sessionEvents) {
-        yield event;
-      }
-      await streamResult;
-    } finally {
-      try {
-        await this.cleanupRunExecution({
-          run,
-          stopBackend,
-          flowDone,
-          abortController,
-          sessionEvents,
-          streamResult,
-          interactionRun,
-          finalizeRun: () => owners.finalize(),
-          releaseOwner: () => {
-            if (messageOwner) owners.releaseMessage();
-          },
-        });
-      } finally {
-        this.clearInteractionRequestOwners(sessionId, run.turnId);
-        releaseExecutionAbort();
-      }
-    }
+    });
   }
 
   private async *runAgentContinuation(
@@ -1478,10 +1390,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     revalidateSafety?: () => Promise<void>,
     inheritedSandboxBoundaryDenied = false,
   ): AsyncIterable<SessionEvent> {
-    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
-    let flowDone = false;
     const owners = this.createRunOwnerScope(run, execution);
     let begin: Awaited<ReturnType<AgentRun['beginContinuation']>>;
     try {
@@ -1525,8 +1435,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       return;
     }
 
-    const interactionRun = owners.interactionRun;
-
     let continuationMetadata: RuntimeContinuationMetadata;
     try {
       continuationMetadata = consumeAdmittedRuntimeContinuation({
@@ -1546,19 +1454,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.finalizeFailedRunStart(owners, run, execution, error);
       return;
     }
-    const stopBackend = this.stopBackendFor(begin.backend);
-    const eventContext = this.runtimeEventMapContext({
+    yield* this.streamAgentRun({
       sessionId: continuation.sessionId,
-      invocationId: continuation.invocationId,
-      runId: continuation.runId,
-      turnId: continuation.turnId,
-    });
-    if (run.isStopped()) abortController.abort();
-    let streamFailure: unknown;
-    const streamResult = this.runBackendEventStream({
+      run,
+      owners,
       backend: begin.backend,
-      stopBackend,
-      beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
+      abortController,
+      releaseExecutionAbort,
+      requireTerminalWrite: true,
+      recordUnobservedStreamFailure: true,
+      invocationId: continuation.invocationId,
       ...(continuation.handoffRootRunId !== undefined
         ? {
             prepareBeforeDispatch: async () => {
@@ -1573,10 +1478,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
             },
           }
         : {}),
-      hasCommittedHandoff: () => run.hasCommittedHandoff(),
-      ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
-      abortSignal: abortController.signal,
-      eventContext,
       backendInput: {
         invocationId: continuation.invocationId,
         runId: continuation.runId,
@@ -1607,26 +1508,69 @@ export class RuntimeKernel implements RuntimeKernelLike {
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
       },
+    });
+  }
+
+  private async *streamAgentRun(input: {
+    sessionId: string;
+    invocationId: string;
+    run: AgentRun;
+    owners: RuntimeRunOwnerScope;
+    backend: AgentBackend;
+    backendInput: BackendSendInput;
+    abortController: AbortController;
+    releaseExecutionAbort: () => void;
+    requireTerminalWrite: boolean;
+    prepareBeforeDispatch?: () => Promise<void>;
+    recordUnobservedStreamFailure?: boolean;
+  }): AsyncIterable<SessionEvent> {
+    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
+    const interactionRun = input.owners.interactionRun;
+    const stopBackend = this.stopBackendFor(input.backend);
+    let flowDone = false;
+    let streamFailure: unknown;
+    if (input.run.isStopped()) input.abortController.abort();
+    const streamResult = this.runBackendEventStream({
+      backend: input.backend,
+      stopBackend,
+      beforeDispatch: () => this.assertRunCanDispatch(input.run, input.backend),
+      ...(input.prepareBeforeDispatch
+        ? { prepareBeforeDispatch: input.prepareBeforeDispatch }
+        : {}),
+      hasCommittedHandoff: () => input.run.hasCommittedHandoff(),
+      ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
+      abortSignal: input.abortController.signal,
+      eventContext: this.runtimeEventMapContext({
+        sessionId: input.sessionId,
+        invocationId: input.invocationId,
+        runId: input.run.runId,
+        turnId: input.run.turnId,
+      }),
+      backendInput: input.backendInput,
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
         this.assertInteractionPublication(interactionRun, sessionEvent);
-        await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
-          requireTerminalWrite: true,
+        await input.run.acceptMappedEvent(sessionEvent, runtimeEvent, {
+          requireTerminalWrite: input.requireTerminalWrite,
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
-        this.observeInteractionEvent(continuation.sessionId, begin.backend, sessionEvent);
+        this.observeInteractionEvent(input.sessionId, input.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
         if (!isDeliveryAckQueueClosed(error)) {
-          await run.recordFailure(error);
+          await input.run.recordFailure(error);
           sessionEvents.fail(error);
         }
       },
       onFinally: async () => {
         flowDone = true;
         try {
-          await owners.finalize();
-          owners.releaseMessage();
+          await input.owners.finalize();
+          // Release Runtime access before closing the event stream. Embedded
+          // queues publish their final steering projection here; hosted owners
+          // are only sealed, then the Host performs the handoff under its
+          // Session admission gate.
+          input.owners.releaseMessage();
           sessionEvents.close();
         } catch (error) {
           sessionEvents.fail(error);
@@ -1638,8 +1582,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
         if (!flowDone) {
           try {
             flowDone = true;
-            await owners.finalize();
-            owners.releaseMessage();
+            await input.owners.finalize();
+            input.owners.releaseMessage();
             sessionEvents.close();
           } catch (error) {
             streamFailure = error;
@@ -1657,27 +1601,27 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
 
     try {
-      for await (const event of sessionEvents) {
-        yield event;
-      }
+      for await (const event of sessionEvents) yield event;
       await streamResult;
     } finally {
       try {
         await this.cleanupRunExecution({
-          run,
+          run: input.run,
           stopBackend,
           flowDone,
-          abortController,
+          abortController: input.abortController,
           sessionEvents,
           streamResult,
           interactionRun,
-          ...(streamFailure !== undefined ? { streamFailure } : {}),
-          finalizeRun: () => owners.finalize(),
-          releaseOwner: () => owners.releaseMessage(),
+          ...(input.recordUnobservedStreamFailure && streamFailure !== undefined
+            ? { streamFailure }
+            : {}),
+          finalizeRun: () => input.owners.finalize(),
+          releaseOwner: () => input.owners.releaseMessage(),
         });
       } finally {
-        this.clearInteractionRequestOwners(continuation.sessionId, run.turnId);
-        releaseExecutionAbort();
+        this.clearInteractionRequestOwners(input.sessionId, input.run.turnId);
+        input.releaseExecutionAbort();
       }
     }
   }
