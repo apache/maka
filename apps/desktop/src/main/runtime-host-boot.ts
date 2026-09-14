@@ -26,6 +26,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  Notification,
   powerMonitor,
   powerSaveBlocker,
   shell,
@@ -78,6 +79,7 @@ import { normalizeWorkBoardLinkedSession } from "@maka/core/work-board";
 import { createFileCredentialStore } from "@maka/storage/credential-store";
 import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
 import { createSettingsStore } from "@maka/storage/settings-store";
+import { createSettingsRecoveryReporter } from './settings-recovery.js';
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
@@ -438,7 +440,22 @@ if (!startupLocalStorageRoot) {
   await new Promise<never>(() => {});
   throw new Error("Desktop storage root resolution did not complete");
 }
-const settingsStore = createSettingsStore(workspaceRoot);
+const settingsRecovery = createSettingsRecoveryReporter({
+  e2e: isIsolatedE2e,
+  locale: () => resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+  notifications: {
+    isSupported: () => Notification.isSupported(),
+    create: (copy, failed) => {
+      const notification = new Notification(copy);
+      notification.on('failed', failed);
+      return notification;
+    },
+  },
+  log: (message) => console.warn(message),
+});
+const settingsStore = createSettingsStore(workspaceRoot, {
+  onCorruptRecovery: settingsRecovery.onRecovery,
+});
 const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
@@ -994,6 +1011,7 @@ const clientSettingsEffects = createClientSettingsEffects({
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
   },
 });
+settingsRecovery.setEffects(clientSettingsEffects);
 // An OS appearance flip changes no setting, so nothing else would notice it.
 // Only the icon depends on the answer, and `refresh` re-resolves it and
 // no-ops when the resolved tile is the one already applied — which is the
