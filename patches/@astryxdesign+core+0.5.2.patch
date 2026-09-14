@@ -96,10 +96,9 @@ index ff9b9fa..f681cd0 100644
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 889970f..459e6e8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-@@ -122,6 +122,7 @@ function CallRow({
+@@ -122,6 +122,7 @@
    const row = /*#__PURE__*/_jsxs("div", {
      role: hasDetail ? 'button' : undefined,
      tabIndex: hasDetail ? 0 : undefined,
@@ -107,6 +106,26 @@ index 889970f..459e6e8 100644
      "aria-expanded": hasDetail ? isDetailOpen : undefined,
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
+@@ -278,6 +279,10 @@
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+     if (!isControlled) {
+@@ -417,7 +422,7 @@
+           ...{
+             className: "x78zum5 xdt5ytf x7a5moj xtedp8i"
+           },
+-          children: calls.map(call => /*#__PURE__*/_jsx(CallRow, {
++          children: (isExpanded || hasExpanded) && calls.map(call => /*#__PURE__*/_jsx(CallRow, {
+             call: call
+           }, getToolCallKey(call)))
+         })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index e1d2ebd..1f8337e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -772,10 +791,9 @@ index d45a912..efec9fd 100644
      WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
    },
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-@@ -399,6 +399,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+@@ -399,6 +399,7 @@
      <div
        role={hasDetail ? 'button' : undefined}
        tabIndex={hasDetail ? 0 : undefined}
@@ -783,6 +801,26 @@ index f22bb1f..b710951 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+@@ -548,6 +549,10 @@
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+ 
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+@@ -674,7 +679,7 @@
+         )}>
+         <div {...stylex.props(styles.groupContentInner)}>
+           <div {...stylex.props(styles.list)}>
+-            {calls.map(call => (
++            {(isExpanded || hasExpanded) && calls.map(call => (
+               <CallRow key={getToolCallKey(call)} call={call} />
+             ))}
+           </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 index 6eefd4a..17071f1 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
