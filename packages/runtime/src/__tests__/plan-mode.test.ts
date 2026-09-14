@@ -192,6 +192,9 @@ describe('Plan execution request', () => {
     assert.match(request, /first actionable step in_progress/);
     assert.match(request, /cancel_plan/);
     assert.match(request, /Do not delegate to subagents while this execution is active\./);
+    // The last update closes the execution, and a further call would be rejected
+    // as a stale execution, so the request has to forbid it explicitly.
+    assert.match(request, /do not call update_plan again after the execution has closed/);
     // Descriptions stay in the Plan proposal: the request stays bounded by the
     // step list, not by PLAN_TEXT_MAX_BYTES-sized prose.
     assert.doesNotMatch(request, /Read the relevant files\./);

@@ -96,7 +96,7 @@ export function renderPlanExecutionRequest(input: {
     'Steps:',
     ...execution.steps.map((step) => `- ${step.id} [${step.status}] ${step.title}`),
     '',
-    `Keep this execution's progress current with update_plan: ${progress}, again each time a step finishes, and once more before your final response with every finished or skipped step so the execution can close. Send every step id above with its status and keep at most one step in_progress. If I abandon the plan, call cancel_plan. Do not delegate to subagents while this execution is active.`,
+    `Keep this execution's progress current with update_plan: ${progress}; send every step id above with its status and keep at most one step in_progress. Call it again each time a step finishes, and make the last call before your final response leave every step completed or skipped so the execution closes — do not call update_plan again after the execution has closed. If I abandon the plan, call cancel_plan. Do not delegate to subagents while this execution is active.`,
   ].join('\n');
 }
 
