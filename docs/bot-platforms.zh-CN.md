@@ -7,7 +7,7 @@ counterpart: ./bot-platforms.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-09-09
+last_verified: 2026-09-10
 owners:
   - maka-backend
 ---

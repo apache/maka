@@ -242,6 +242,7 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 
 - [Website](https://maka.apache.org/en/)
 - [Documentation index and authority map](./docs/README.md)
+- [Bot platform guide](./docs/bot-platforms.md) ([中文](./docs/bot-platforms.zh-CN.md))
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)
 - [Contributing guide](./CONTRIBUTING.md)
