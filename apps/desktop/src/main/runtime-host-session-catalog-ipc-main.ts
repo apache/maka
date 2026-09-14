@@ -322,12 +322,21 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 
 export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
   const request = resolveCreateSessionRequest(input);
+  const executorId = normalizeOptionalString(input?.executorId, 'executor id');
+  if (
+    executorId &&
+    (input?.llmConnectionId !== undefined ||
+      input?.llmConnectionSlug !== undefined ||
+      input?.model !== undefined)
+  ) {
+    throw new Error('Plugin executor selection cannot include a model target');
+  }
   return {
     sessionId, workspace,
     ...(request.mode === undefined ? {} : { mode: request.mode }),
     name: request.name,
     ...(request.labels === undefined ? {} : { labels: request.labels }),
-    modelTarget: normalizeModelTarget(input),
+    ...(executorId ? { executorId } : { modelTarget: normalizeModelTarget(input) }),
     ...normalizeCreateThinkingLevel(input?.thinkingLevel),
     ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
     collaborationMode: request.collaborationMode,

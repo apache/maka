@@ -446,7 +446,7 @@ function isLegacyContinuationSource(value: unknown): value is LegacyContinuation
 
 /** `'fake'` stays accepted: runs written by builds that shipped FakeBackend must keep decoding (#3211). */
 function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || value === 'fake';
+  return value === 'ai-sdk' || value === 'plugin-executor' || value === 'fake';
 }
 
 function isSha256Digest(value: unknown): value is `sha256:${string}` {

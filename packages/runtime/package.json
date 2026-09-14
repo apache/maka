@@ -83,6 +83,8 @@
     "./plugin-composition-loader": "./dist/plugin-composition-loader.js",
     "./plugin-command-service": "./dist/plugin-command-service.js",
     "./plugin-data-services": "./dist/plugin-data-services.js",
+    "./plugin-executor-backend": "./dist/plugin-executor-backend.js",
+    "./plugin-executor-service": "./dist/plugin-executor-service.js",
     "./plugin-goal-service": "./dist/plugin-goal-service.js",
     "./plugin-lsp-service": "./dist/plugin-lsp-service.js",
     "./plugin-session-query-service": "./dist/plugin-session-query-service.js",

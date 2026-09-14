@@ -48,10 +48,12 @@ export type AgentGraphWorkTarget =
   | {
       kind: 'agent';
       agentId: string;
+      executorId?: string;
     }
   | {
       kind: 'preset';
       presetId: string;
+      executorId?: string;
     }
   | {
       kind: 'operator';
@@ -346,16 +348,26 @@ function isSelectedResultInput(value: unknown): value is AgentGraphSelectedResul
 function isWorkTarget(value: unknown): value is AgentGraphWorkTarget {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (
-    isExactRecord(value, ['kind', 'agentId']) &&
+    isExactRecord(value, [
+      'kind',
+      'agentId',
+      ...(hasOwn(value, 'executorId') ? ['executorId'] : []),
+    ]) &&
     value.kind === 'agent' &&
-    isOpaqueIdentity(value.agentId)
+    isOpaqueIdentity(value.agentId) &&
+    (value.executorId === undefined || isExecutorId(value.executorId))
   ) {
     return true;
   }
   if (
-    isExactRecord(value, ['kind', 'presetId']) &&
+    isExactRecord(value, [
+      'kind',
+      'presetId',
+      ...(hasOwn(value, 'executorId') ? ['executorId'] : []),
+    ]) &&
     value.kind === 'preset' &&
-    isOpaqueIdentity(value.presetId)
+    isOpaqueIdentity(value.presetId) &&
+    (value.executorId === undefined || isExecutorId(value.executorId))
   ) {
     return true;
   }
@@ -404,6 +416,10 @@ function isOpaqueIdentity(value: unknown): value is string {
     value.trim() === value &&
     !/[\u0000-\u001f\u007f]/.test(value)
   );
+}
+
+function isExecutorId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(value);
 }
 
 function isSha256Fingerprint(value: unknown): value is string {

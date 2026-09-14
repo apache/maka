@@ -747,6 +747,51 @@ describe('SessionManager graph operator provisioning', () => {
     assert.deepStrictEqual(await runStore.listSessionInvocations(result.header.id), []);
   });
 
+  test('provisions a graph child on an explicit plugin executor without Maka tools', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      childTools: [],
+      newId: nextId(),
+      now: nextNow(40),
+    });
+    const parent = await manager.createSession(makeInput());
+    await seedInvocationFromHeader(
+      runStore,
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+      }),
+    );
+
+    const result = await manager.provisionAgentGraphOperator({
+      graphId: 'graph-external',
+      workId: `graph_work_${'4'.repeat(32)}`,
+      agentId: LOCAL_READ_AGENT_ID,
+      executorId: 'codex',
+      operatorId: `graph_operator_${'5'.repeat(32)}`,
+      source: {
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+        toolCallId: 'schedule-tool',
+      },
+      edges: [],
+      expectedScheduleRevision: 1,
+    });
+
+    assert.strictEqual(result.header.backend, 'plugin-executor');
+    assert.strictEqual(result.header.executorId, 'codex');
+    assert.strictEqual(result.header.llmConnectionId, undefined);
+    assert.strictEqual(result.header.llmConnectionSlug, 'executor:codex');
+    assert.deepStrictEqual(result.header.subagentRuntime?.toolNames, []);
+  });
+
   test('keeps four large graph branches and a replacement off the supervisor data plane', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -2273,6 +2318,82 @@ describe('SessionManager claimed graph intent execution', () => {
 });
 
 describe('SessionManager child-session runtime primitive', () => {
+  test('runs an explicitly delegated child through a plugin executor with no Maka tools', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    let childContext: BackendFactoryContext | undefined;
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, parentGate));
+    backends.register('plugin-executor', (ctx) => {
+      childContext = ctx;
+      return {
+        kind: 'plugin-executor' as const,
+        sessionId: ctx.sessionId,
+        async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          yield {
+            type: 'text_complete',
+            id: 'external-complete-text',
+            turnId: input.turnId,
+            ts: 1,
+            messageId: 'external-message',
+            text: 'external result',
+          };
+          yield {
+            type: 'complete',
+            id: 'external-complete',
+            turnId: input.turnId,
+            ts: 2,
+            stopReason: 'end_turn',
+          };
+        },
+        async stop() {},
+        async respondToSandboxBoundary() {},
+        async dispose() {},
+      };
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [],
+      newId: nextId(),
+      now: nextNow(80),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn', text: 'delegate externally' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-external',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      executorId: 'codex',
+      prompt: 'inspect through codex',
+    });
+    const child = await store.readHeader(result.childSessionId);
+
+    assert.strictEqual(result.status, 'completed');
+    assert.strictEqual(result.summary, 'external result');
+    assert.strictEqual(child.backend, 'plugin-executor');
+    assert.strictEqual(child.executorId, 'codex');
+    assert.strictEqual(child.llmConnectionId, undefined);
+    assert.deepStrictEqual(child.subagentRuntime?.toolNames, []);
+    assert.deepStrictEqual(childContext?.tools, []);
+    assert.strictEqual(childContext?.systemPrompt, LOCAL_READ_AGENT_DEFINITION.systemPrompt);
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('creates a fresh read-only child with a session-inline first run and no parent history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -13756,7 +13877,8 @@ class MemorySessionStore implements SessionStore {
       ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
       ...(input.revisionState ? { revisionState: input.revisionState } : {}),
       hasUnread: false,
-      backend: 'ai-sdk',
+      backend: input.executorId ? 'plugin-executor' : 'ai-sdk',
+      ...(input.executorId ? { executorId: input.executorId } : {}),
       ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: input.subagentParent !== undefined,

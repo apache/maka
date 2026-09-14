@@ -64,7 +64,7 @@ export function runtimeHostSafeBoundaryContinuationUnavailableReason(
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
-    (header.llmConnectionId === undefined && header.backend !== 'fake'
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
       ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined)
@@ -111,7 +111,7 @@ export function runtimeHostExecutionUnavailableReason(
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
-    (header.llmConnectionId === undefined && header.backend !== 'fake'
+    (header.llmConnectionId === undefined && header.backend === 'ai-sdk'
       ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.collaborationMode === 'plan' &&

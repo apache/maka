@@ -2679,6 +2679,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (!header.subagentParent) {
       throw new Error('Subagent runtime snapshot requires a linked child session');
     }
+    if (header.backend === 'plugin-executor') {
+      return {
+        systemPrompt: snapshot.systemPrompt,
+        tools: [],
+      };
+    }
     const snapshotDefinition = {
       id: snapshot.agentId,
       permissionMode: header.permissionMode,

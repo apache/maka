@@ -140,6 +140,22 @@ test('legacy Session identity cannot enter Host execution before explicit accoun
   );
 });
 
+test('plugin executor Sessions do not require a Maka model connection identity', () => {
+  assert.equal(
+    runtimeHostExecutionUnavailableReason(
+      {
+        ...base,
+        id: 'plugin-executor-session',
+        role: undefined,
+        llmConnectionId: undefined,
+        backend: 'plugin-executor',
+      },
+      { kind: 'external_message' },
+    ),
+    undefined,
+  );
+});
+
 test('legacy Session identity cannot resume a safe-boundary continuation', () => {
   assert.equal(
     runtimeHostSafeBoundaryContinuationUnavailableReason({

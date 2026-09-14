@@ -1167,7 +1167,7 @@ function isRuntimeInvocationRoute(value: unknown): value is RuntimeInvocationRou
 }
 
 function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || value === 'fake';
+  return value === 'ai-sdk' || value === 'plugin-executor' || value === 'fake';
 }
 
 function isRuntimeInvocationConfiguration(value: unknown): value is RuntimeInvocationConfiguration {

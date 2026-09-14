@@ -711,6 +711,7 @@ export class HostSessionRevisionCoordinator {
     const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
+      ...(source.executorId === undefined ? {} : { executorId: source.executorId }),
       ...(source.llmConnectionId === undefined ? {} : { llmConnectionId: source.llmConnectionId }),
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,

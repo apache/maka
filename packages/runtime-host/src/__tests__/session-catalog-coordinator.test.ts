@@ -747,6 +747,54 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(persistedConnectionId, 'connection-1');
 });
 
+test('plugin executor creation bypasses model resolution and persists the executor route', async () => {
+  let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
+  const externalHeader = (sessionId: string): SessionHeader => {
+    const { llmConnectionId: _connectionId, ...base } = sessionHeader(sessionId, ['user-label']);
+    return {
+      ...base,
+      backend: 'plugin-executor',
+      executorId: 'codex',
+      llmConnectionSlug: 'executor:codex',
+      model: 'codex',
+    };
+  };
+  const fixture = createFixture({
+    connection: {
+      onResolve: () => assert.fail('Plugin executor creation must not resolve a Maka model'),
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedInput = args.input;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(externalHeader(args.sessionId), 1),
+        };
+      },
+      readCatalogRecord: async (sessionId) => catalogRecord(externalHeader(sessionId), 1),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'codex',
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(persistedInput?.executorId, 'codex');
+  assert.equal(persistedInput?.llmConnectionId, undefined);
+  assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
+  assert.equal(persistedInput?.model, 'codex');
+  if (outcome.ok && !('kind' in outcome.result)) {
+    assert.equal(outcome.result.backend, 'plugin-executor');
+    assert.equal(outcome.result.executorId, 'codex');
+  }
+});
+
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
   let createAttempts = 0;

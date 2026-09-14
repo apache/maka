@@ -91,6 +91,8 @@ import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service
 import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
 import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
 import { PluginLlmService } from '@maka/runtime/plugin-llm-service';
+import { PluginExecutorBackend } from '@maka/runtime/plugin-executor-backend';
+import { PluginExecutorService } from '@maka/runtime/plugin-executor-service';
 import { PluginShellService } from '@maka/runtime/plugin-shell-service';
 import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
 import { PluginWebService } from '@maka/runtime/plugin-web-service';
@@ -345,6 +347,7 @@ export async function createExecutionRuntimeHostComposition(
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
     const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
+    const pluginExecutors = new PluginExecutorService(pluginRoot);
     const pluginShellEnv = new PluginShellEnvService(pluginRoot);
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
@@ -368,6 +371,7 @@ export async function createExecutionRuntimeHostComposition(
       tools: pluginTools,
       systemPrompt: pluginSystemPrompt,
       commands: pluginCommands,
+      executors: pluginExecutors,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -1049,6 +1053,35 @@ export async function createExecutionRuntimeHostComposition(
         prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
       },
     );
+    backends.register('plugin-executor', {
+      prepare: async (backendContext) => {
+        const executorId = backendContext.header.executorId;
+        if (!executorId) throw new Error('Plugin executor Session is missing its executor id');
+        const identity = pluginExecutors.identity(backendContext.sessionId, executorId);
+        const providerStateIdentity = `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify([
+              'plugin-executor.v1',
+              identity.id,
+              identity.extensionId,
+              identity.entryId,
+              identity.generation,
+            ]),
+          )
+          .digest('hex')}` as const;
+        return {
+          providerStateIdentity,
+          build: (factoryContext) =>
+            new PluginExecutorBackend({
+              sessionId: factoryContext.sessionId,
+              cwd: factoryContext.header.cwd,
+              executorId,
+              ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
+              service: pluginExecutors,
+            }),
+        };
+      },
+    });
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) =>
@@ -1102,6 +1135,7 @@ export async function createExecutionRuntimeHostComposition(
     };
     resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
       const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+      if (header.backend === 'plugin-executor') return [];
       if (header.subagentRuntime) {
         if (!header.subagentParent) {
           throw new Error('Subagent runtime snapshot requires a linked child session');
@@ -1678,6 +1712,7 @@ export async function createExecutionRuntimeHostComposition(
         return new Promise((resolve, reject) => {
           void spawn({
             agentProfile: options.agentProfile ?? 'implementation',
+            ...(options.executorId ? { executorId: options.executorId } : {}),
             prompt: options.prompt!,
             ...(options.signal ? { abortSignal: options.signal } : {}),
             onReady: (ready) =>
@@ -2129,14 +2164,18 @@ export async function createExecutionRuntimeHostComposition(
                   sessionId: input.targetSessionId,
                   workspace: input.create.workspace,
                   name: input.create.title,
-                  modelTarget: input.create.defaults?.model
-                    ? {
-                        kind: 'explicit',
-                        connectionId: input.create.defaults.model.llmConnectionId,
-                        connectionSlug: input.create.defaults.model.llmConnectionSlug,
-                        model: input.create.defaults.model.model,
-                      }
-                    : { kind: 'default' },
+                  ...(input.create.defaults?.executorId
+                    ? { executorId: input.create.defaults.executorId }
+                    : {
+                        modelTarget: input.create.defaults?.model
+                          ? {
+                              kind: 'explicit' as const,
+                              connectionId: input.create.defaults.model.llmConnectionId,
+                              connectionSlug: input.create.defaults.model.llmConnectionSlug,
+                              model: input.create.defaults.model.model,
+                            }
+                          : ({ kind: 'default' } as const),
+                      }),
                   ...(input.create.defaults?.permissionMode
                     ? { permissionMode: input.create.defaults.permissionMode }
                     : {}),

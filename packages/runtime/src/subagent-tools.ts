@@ -93,6 +93,7 @@ export function buildSubagentSpawnTool(
   {
     profile?: string;
     subagent_id?: string;
+    executor_id?: string;
     task: string;
     write_back?: string;
     isolation?: string;
@@ -118,6 +119,11 @@ export function buildSubagentSpawnTool(
             .refine(isSafeSubagentPresetId)
             .optional()
             .describe('User-approved subagent preset id from agent_list.'),
+          executor_id: z
+            .string()
+            .regex(/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u)
+            .optional()
+            .describe('Plugin executor id for this child task.'),
           task: z
             .string()
             .min(1)
@@ -202,6 +208,7 @@ export function buildSubagentSpawnTool(
           await ctx.spawnChildSession({
             agentProfile: definition.profile,
             ...(input.subagent_id ? { subagentId: input.subagent_id } : {}),
+            ...(input.executor_id ? { executorId: input.executor_id } : {}),
             prompt: input.task,
             onEvent: (event) => progress.observe(event),
           }),
