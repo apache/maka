@@ -30,6 +30,7 @@ import {
   type SessionHeader,
   type StoredMessage,
 } from '@maka/core/session';
+import { runtimeHostConversationCopyUnavailableReason } from './host-session-availability.js';
 import {
   archivedToolResultContainsLinkedChildReferences,
   archivedToolResultContainsConversationOwnedReferences,
@@ -345,6 +346,8 @@ export class HostSessionRevisionCoordinator {
         'Deep Research Sessions cannot be copied without an exact research ledger boundary',
       );
     }
+    const copyUnavailableReason = runtimeHostConversationCopyUnavailableReason(sourceHeader);
+    if (copyUnavailableReason) return copyFailure('operation_unavailable', copyUnavailableReason);
     if (kind !== 'side_conversation' && this.options.isSessionActive(input.sourceSessionId)) {
       return copyFailure('session_busy', 'Source Session has an active Turn');
     }
@@ -711,7 +714,6 @@ export class HostSessionRevisionCoordinator {
     const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
-      ...(source.executorId === undefined ? {} : { executorId: source.executorId }),
       ...(source.llmConnectionId === undefined ? {} : { llmConnectionId: source.llmConnectionId }),
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,

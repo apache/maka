@@ -795,6 +795,36 @@ test('plugin executor creation bypasses model resolution and persists the execut
   }
 });
 
+test('plugin executor creation fails before persistence when the executor is unavailable', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    assertExecutorAvailable: () => {
+      throw new Error('not installed');
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        throw new Error('must not persist');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'missing',
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'operation_unavailable', message: 'Plugin executor is unavailable: missing' },
+  });
+  assert.equal(createAttempts, 0);
+});
+
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
   let createAttempts = 0;
@@ -1943,6 +1973,7 @@ function createFixture(
     readonly onProjectChanged?: () => void;
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
+    readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -2032,6 +2063,9 @@ function createFixture(
     requestDrain: () => {
       drains += 1;
     },
+    ...(options.assertExecutorAvailable
+      ? { assertExecutorAvailable: options.assertExecutorAvailable }
+      : {}),
   });
   return {
     coordinator,

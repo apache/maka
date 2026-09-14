@@ -24,6 +24,7 @@ import type {
 } from './agent-graph-control.js';
 import type { AgentGraphTopologyStore } from './agent-graph-topology.js';
 import type { OrchestrationMode } from './orchestration.js';
+import { isExecutorId } from './executor-id.js';
 
 export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 
@@ -416,10 +417,6 @@ function isOpaqueIdentity(value: unknown): value is string {
     value.trim() === value &&
     !/[\u0000-\u001f\u007f]/.test(value)
   );
-}
-
-function isExecutorId(value: unknown): value is string {
-  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(value);
 }
 
 function isSha256Fingerprint(value: unknown): value is string {

@@ -750,12 +750,16 @@ describe('SessionManager graph operator provisioning', () => {
   test('provisions a graph child on an explicit plugin executor without Maka tools', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
+    const checkedExecutors: string[] = [];
     const manager = new SessionManager({
       store,
       runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
       childTools: [],
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        checkedExecutors.push(`${parentSessionId}:${executorId}`);
+      },
       newId: nextId(),
       now: nextNow(40),
     });
@@ -790,6 +794,7 @@ describe('SessionManager graph operator provisioning', () => {
     assert.strictEqual(result.header.llmConnectionId, undefined);
     assert.strictEqual(result.header.llmConnectionSlug, 'executor:codex');
     assert.deepStrictEqual(result.header.subagentRuntime?.toolNames, []);
+    assert.deepStrictEqual(checkedExecutors, [`${parent.id}:codex`]);
   });
 
   test('keeps four large graph branches and a replacement off the supervisor data plane', async () => {
@@ -2324,6 +2329,7 @@ describe('SessionManager child-session runtime primitive', () => {
     const backends = new BackendRegistry();
     const parentGate = makeGate();
     let childContext: BackendFactoryContext | undefined;
+    const checkedExecutors: string[] = [];
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx, parentGate));
     backends.register('plugin-executor', (ctx) => {
       childContext = ctx;
@@ -2358,6 +2364,9 @@ describe('SessionManager child-session runtime primitive', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [],
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        checkedExecutors.push(`${parentSessionId}:${executorId}`);
+      },
       newId: nextId(),
       now: nextNow(80),
     });
@@ -2389,6 +2398,7 @@ describe('SessionManager child-session runtime primitive', () => {
     assert.deepStrictEqual(child.subagentRuntime?.toolNames, []);
     assert.deepStrictEqual(childContext?.tools, []);
     assert.strictEqual(childContext?.systemPrompt, LOCAL_READ_AGENT_DEFINITION.systemPrompt);
+    assert.deepStrictEqual(checkedExecutors, [`${parent.id}:codex`]);
 
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
@@ -3637,7 +3647,9 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
           {
             runId: sourceRun.runId,
             connectionId:
-              sourceRoute.provenance === 'runtime' ? sourceRoute.llmConnectionId : undefined,
+              sourceRoute.provenance === 'runtime' && sourceRoute.backendKind !== 'plugin-executor'
+                ? sourceRoute.llmConnectionId
+                : undefined,
             modelId: sourceRoute.modelId,
           },
         ],
@@ -13061,7 +13073,8 @@ class CompactingTestBackend extends TestBackend {
       runtimeContextCount: input.runtimeContext.length,
       sourceRoutes: (input.runtimeContextInvocations ?? []).map((run) => ({
         runId: run.runId,
-        ...(run.opening.route.provenance === 'runtime'
+        ...(run.opening.route.provenance === 'runtime' &&
+        run.opening.route.backendKind !== 'plugin-executor'
           ? { connectionId: run.opening.route.llmConnectionId }
           : {}),
         modelId: run.opening.route.modelId,
@@ -15215,7 +15228,7 @@ function testInvocationOpening(header: TestRunHeader): RuntimeEventInvocationOpe
     kind: 'invocation_opened',
     protocol: 'invocation_opened_v1',
     route:
-      header.llmConnectionId === undefined
+      header.llmConnectionId === undefined || header.backendKind === 'plugin-executor'
         ? {
             provenance: 'unknown',
             backendKind: header.backendKind,

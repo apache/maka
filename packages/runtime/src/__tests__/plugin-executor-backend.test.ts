@@ -25,7 +25,7 @@ import { Context } from '../plugin-kernel.js';
 import { PluginExecutorService } from '../plugin-executor-service.js';
 
 test('executor backend converts plugin output and result to ordinary Session events', async () => {
-  const { root, service } = fixture(async (request, context) => {
+  const { root, binding } = fixture(async (request, context) => {
     assert.equal(request.instructions, 'child instructions');
     context.emit({ type: 'output_delta', text: 'hel' });
     return { status: 'completed', text: 'hello' };
@@ -33,9 +33,8 @@ test('executor backend converts plugin output and result to ordinary Session eve
   const backend = new PluginExecutorBackend({
     sessionId: 'session-a',
     cwd: '/workspace',
-    executorId: 'remote',
     instructions: 'child instructions',
-    service,
+    binding,
     newId: ids(),
     now: () => 42,
   });
@@ -57,7 +56,7 @@ test('executor backend turns stop into abort and terminal events', async () => {
   const ready = new Promise<void>((resolve) => {
     started = resolve;
   });
-  const { root, service } = fixture(async (_request, context) => {
+  const { root, binding } = fixture(async (_request, context) => {
     started();
     await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve()));
     return { status: 'cancelled' };
@@ -65,8 +64,7 @@ test('executor backend turns stop into abort and terminal events', async () => {
   const backend = new PluginExecutorBackend({
     sessionId: 'session-a',
     cwd: '/workspace',
-    executorId: 'remote',
-    service,
+    binding,
   });
 
   const eventsPromise = collect(backend.send({ turnId: 'turn-a', text: 'task' }));
@@ -81,18 +79,122 @@ test('executor backend turns stop into abort and terminal events', async () => {
   await root.fiber.dispose();
 });
 
-function fixture(execute: Parameters<PluginExecutorService['register']>[0]['execute']): {
+test('executor backend projects optional thinking and external tool activity', async () => {
+  const { root, binding } = fixture(
+    async (_request, context) => {
+      context.emit({ type: 'thinking_delta', text: 'considering' });
+      context.emit({
+        type: 'tool_start',
+        toolCallId: 'external-1',
+        name: 'search',
+        input: { query: 'maka' },
+        activityKind: 'search',
+      });
+      context.emit({ type: 'tool_progress', toolCallId: 'external-1', text: 'working' });
+      context.emit({ type: 'tool_result', toolCallId: 'external-1', text: 'found' });
+      return { status: 'completed', text: 'done' };
+    },
+    { thinking: true, toolActivity: true },
+  );
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+    newId: ids(),
+    now: () => 42,
+  });
+
+  const events = await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      'thinking_delta',
+      'tool_start',
+      'tool_progress',
+      'tool_result',
+      'thinking_complete',
+      'text_complete',
+      'complete',
+    ],
+  );
+  assert.equal(events[1]?.type === 'tool_start' ? events[1].providerExecuted : undefined, true);
+  const stepId = events[0]?.type === 'thinking_delta' ? events[0].messageId : undefined;
+  assert.equal(events[1]?.type === 'tool_start' ? events[1].stepId : undefined, stepId);
+  assert.equal(events[4]?.type === 'thinking_complete' ? events[4].messageId : undefined, stepId);
+  assert.equal(events[5]?.type === 'text_complete' ? events[5].messageId : undefined, stepId);
+  await root.fiber.dispose();
+});
+
+test('executor retirement remains cancellation and is surfaced as a crash abort', async () => {
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const { root, binding, dispose } = fixture(async (_request, context) => {
+    started();
+    await new Promise<void>((_resolve, reject) =>
+      context.signal.addEventListener('abort', () => reject(context.signal.reason)),
+    );
+    return { status: 'completed', text: 'unreachable' };
+  });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+  });
+
+  const eventsPromise = collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+  await ready;
+  await dispose();
+  const events = await eventsPromise;
+  assert.equal(events[0]?.type === 'abort' ? events[0].reason : undefined, 'crash');
+  assert.equal(events[1]?.type === 'complete' ? events[1].stopReason : undefined, 'user_stop');
+  await root.fiber.dispose();
+});
+
+test('executor failure closes rich output before publishing its terminal error', async () => {
+  const { root, binding } = fixture(
+    async (_request, context) => {
+      context.emit({ type: 'thinking_delta', text: 'partial thought' });
+      context.emit({ type: 'tool_start', toolCallId: 'external-1', name: 'search' });
+      throw new Error('provider crashed');
+    },
+    { thinking: true, toolActivity: true },
+  );
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+    newId: ids(),
+    now: () => 42,
+  });
+
+  const events = await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['thinking_delta', 'tool_start', 'thinking_complete', 'tool_result', 'error', 'complete'],
+  );
+  assert.equal(events[3]?.type === 'tool_result' ? events[3].isError : undefined, true);
+  assert.equal(events[4]?.type === 'error' ? events[4].message : undefined, 'provider crashed');
+  await root.fiber.dispose();
+});
+
+function fixture(
+  execute: Parameters<PluginExecutorService['register']>[0]['execute'],
+  capabilities?: Parameters<PluginExecutorService['register']>[0]['capabilities'],
+): {
   root: Context;
-  service: PluginExecutorService;
+  binding: ReturnType<PluginExecutorService['bind']>;
+  dispose: ReturnType<PluginExecutorService['register']>;
 } {
   const root = new Context();
   const service = new PluginExecutorService(root);
-  root
+  const dispose = root
     .extend({
       maka: { rootId: 'profile', packageId: 'fixture', entryId: 'provider', generation: 1 },
     })
-    .executors.register({ id: 'remote', execute });
-  return { root, service };
+    .executors.register({ id: 'remote', execute, ...(capabilities ? { capabilities } : {}) });
+  return { root, binding: service.bind('session-a', 'remote'), dispose };
 }
 
 function ids(): () => string {

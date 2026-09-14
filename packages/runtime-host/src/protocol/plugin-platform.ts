@@ -449,7 +449,18 @@ function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
     'generation',
     'id',
     'displayName',
+    'capabilities',
   ]);
+  const capabilities = requireExactRecord(item.capabilities, 'Plugin Executor capabilities', [
+    'thinking',
+    'toolActivity',
+  ]);
+  if (
+    typeof capabilities.thinking !== 'boolean' ||
+    typeof capabilities.toolActivity !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid Plugin Executor capabilities');
+  }
   return {
     entryId: requireId(item.entryId, 'Plugin Entry identity'),
     scopeId: requireString(item.scopeId, 'Plugin scope identity', 256),
@@ -457,6 +468,10 @@ function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
     generation: requireCount(item.generation, 'Plugin generation'),
     id: requireString(item.id, 'Plugin Executor id', 128),
     displayName: requireString(item.displayName, 'Plugin Executor display name', 256),
+    capabilities: {
+      thinking: capabilities.thinking,
+      toolActivity: capabilities.toolActivity,
+    },
   };
 }
 

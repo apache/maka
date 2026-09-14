@@ -30,6 +30,7 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { isExecutorId } from '@maka/core/executor-id';
 import type { ToolMode } from '@maka/core/tool-mode';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
@@ -189,6 +190,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
   readonly sessionAccessAuthority?: Pick<
     RuntimeHostAccessAuthority,
     'activeSessionGrantForPrincipal'
@@ -300,6 +302,7 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #assertExecutorAvailable: ((sessionId: string, executorId: string) => void) | undefined;
   readonly #sessionAccessAuthority:
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
     | undefined;
@@ -313,6 +316,7 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#assertExecutorAvailable = options.assertExecutorAvailable;
     this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
@@ -1278,6 +1282,14 @@ export class HostSessionCatalogCoordinator {
     readonly model: string;
   }> {
     if (input.executorId) {
+      try {
+        this.#assertExecutorAvailable?.(input.sessionId, input.executorId);
+      } catch {
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          `Plugin executor is unavailable: ${input.executorId}`,
+        );
+      }
       return {
         executorId: input.executorId,
         connectionSlug: `executor:${input.executorId}`,
@@ -1345,10 +1357,7 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
       'Session creation requires exactly one model target or executor id',
     );
   }
-  if (
-    input.executorId !== undefined &&
-    !/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(input.executorId)
-  ) {
+  if (input.executorId !== undefined && !isExecutorId(input.executorId)) {
     throw new SessionOperationFailure('invalid_request', 'Session executor id is invalid');
   }
   if (input.labels?.some(isExecutionSemanticLabel)) {

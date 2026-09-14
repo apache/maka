@@ -17,13 +17,17 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { AsyncEventQueue } from './async-queue.js';
-import type { PluginExecutorResult, PluginExecutorService } from './plugin-executor-service.js';
+import type {
+  PluginExecutorBinding,
+  PluginExecutorOutputEvent,
+  PluginExecutorResult,
+} from './plugin-executor-service.js';
 
 interface ActiveExecution {
   readonly abort: AbortController;
@@ -33,9 +37,8 @@ interface ActiveExecution {
 export interface PluginExecutorBackendInput {
   readonly sessionId: string;
   readonly cwd: string;
-  readonly executorId: string;
   readonly instructions?: string;
-  readonly service: PluginExecutorService;
+  readonly binding: PluginExecutorBinding;
   readonly newId?: () => string;
   readonly now?: () => number;
 }
@@ -45,9 +48,8 @@ export class PluginExecutorBackend implements AgentBackend {
   readonly kind = 'plugin-executor' as const;
   readonly sessionId: string;
   readonly #cwd: string;
-  readonly #executorId: string;
   readonly #instructions?: string;
-  readonly #service: PluginExecutorService;
+  readonly #binding: PluginExecutorBinding;
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #active = new Set<ActiveExecution>();
@@ -56,26 +58,10 @@ export class PluginExecutorBackend implements AgentBackend {
   constructor(input: PluginExecutorBackendInput) {
     this.sessionId = input.sessionId;
     this.#cwd = input.cwd;
-    this.#executorId = input.executorId;
     this.#instructions = input.instructions;
-    this.#service = input.service;
+    this.#binding = input.binding;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
-  }
-
-  providerStateIdentity(): `sha256:${string}` {
-    const identity = this.#service.identity(this.sessionId, this.#executorId);
-    return `sha256:${createHash('sha256')
-      .update(
-        JSON.stringify([
-          'plugin-executor.v1',
-          identity.id,
-          identity.extensionId,
-          identity.entryId,
-          identity.generation,
-        ]),
-      )
-      .digest('hex')}`;
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
@@ -129,9 +115,13 @@ export class PluginExecutorBackend implements AgentBackend {
     queue: AsyncEventQueue<SessionEvent>,
   ): Promise<void> {
     const turnId = input.turnId;
+    let thinkingText = '';
+    const toolUseIds = new Map<string, string>();
+    let result: PluginExecutorResult | undefined;
+    let failure: unknown;
+    let failed = false;
     try {
-      const result = await this.#service.execute(
-        this.#executorId,
+      result = await this.#binding.execute(
         {
           sessionId: this.sessionId,
           turnId,
@@ -147,31 +137,71 @@ export class PluginExecutorBackend implements AgentBackend {
         {
           signal,
           onEvent: (event) => {
-            if (!event.text) return;
-            queue.push({
-              type: 'text_delta',
-              id: this.#newId(),
-              turnId,
-              ts: this.#now(),
-              messageId,
-              text: event.text,
-            });
+            if (event.type === 'thinking_delta') thinkingText += event.text;
+            this.#publishOutputEvent(turnId, messageId, event, toolUseIds, queue);
           },
         },
       );
-      this.#publishResult(turnId, messageId, result, queue);
     } catch (error) {
-      if (signal.aborted) {
-        this.#publishCancellation(turnId, queue);
-        return;
-      }
+      failed = true;
+      failure = error;
+    }
+
+    this.#closeOptionalOutput(turnId, messageId, thinkingText, toolUseIds, queue);
+    if (failed) {
+      if (signal.aborted)
+        this.#publishCancellation(turnId, { status: 'cancelled', source: 'caller' }, queue);
+      else
+        this.#publishFailure(
+          turnId,
+          failure instanceof Error ? failure.message : 'External executor failed',
+          undefined,
+          false,
+          queue,
+        );
+      return;
+    }
+    if (result === undefined) {
       this.#publishFailure(
         turnId,
-        error instanceof Error ? error.message : 'External executor failed',
+        'External executor returned no terminal result',
         undefined,
         false,
         queue,
       );
+      return;
+    }
+    this.#publishResult(turnId, messageId, result, queue);
+  }
+
+  #closeOptionalOutput(
+    turnId: string,
+    messageId: string,
+    thinkingText: string,
+    toolUseIds: Map<string, string>,
+    queue: AsyncEventQueue<SessionEvent>,
+  ): void {
+    if (thinkingText) {
+      queue.push({
+        type: 'thinking_complete',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        messageId,
+        text: thinkingText,
+      });
+    }
+    for (const toolUseId of toolUseIds.values()) {
+      queue.push({
+        type: 'tool_result',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        toolUseId,
+        providerExecuted: true,
+        isError: true,
+        content: { kind: 'text', text: 'External executor ended before reporting a tool result' },
+      });
     }
   }
 
@@ -200,19 +230,24 @@ export class PluginExecutorBackend implements AgentBackend {
       return;
     }
     if (result.status === 'cancelled') {
-      this.#publishCancellation(turnId, queue);
+      this.#publishCancellation(turnId, result, queue);
       return;
     }
     this.#publishFailure(turnId, result.message, result.code, result.recoverable ?? false, queue);
   }
 
-  #publishCancellation(turnId: string, queue: AsyncEventQueue<SessionEvent>): void {
+  #publishCancellation(
+    turnId: string,
+    result: Extract<PluginExecutorResult, { status: 'cancelled' }>,
+    queue: AsyncEventQueue<SessionEvent>,
+  ): void {
+    const reason = cancellationEventReason(result);
     queue.push({
       type: 'abort',
       id: this.#newId(),
       turnId,
       ts: this.#now(),
-      reason: 'user_stop',
+      reason,
     });
     queue.push({
       type: 'complete',
@@ -220,6 +255,95 @@ export class PluginExecutorBackend implements AgentBackend {
       turnId,
       ts: this.#now(),
       stopReason: 'user_stop',
+    });
+  }
+
+  #publishOutputEvent(
+    turnId: string,
+    messageId: string,
+    event: PluginExecutorOutputEvent,
+    toolUseIds: Map<string, string>,
+    queue: AsyncEventQueue<SessionEvent>,
+  ): void {
+    if (event.type === 'output_delta') {
+      if (!event.text) return;
+      queue.push({
+        type: 'text_delta',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        messageId,
+        text: event.text,
+      });
+      return;
+    }
+    if (event.type === 'thinking_delta') {
+      if (!event.text) return;
+      queue.push({
+        type: 'thinking_delta',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        messageId,
+        text: event.text,
+      });
+      return;
+    }
+    if (event.type === 'tool_start') {
+      const previousToolUseId = toolUseIds.get(event.toolCallId);
+      if (previousToolUseId) {
+        queue.push({
+          type: 'tool_result',
+          id: this.#newId(),
+          turnId,
+          ts: this.#now(),
+          toolUseId: previousToolUseId,
+          providerExecuted: true,
+          isError: true,
+          content: { kind: 'text', text: 'External executor reused an active tool call id' },
+        });
+      }
+      const toolUseId = this.#newId();
+      toolUseIds.set(event.toolCallId, toolUseId);
+      queue.push({
+        type: 'tool_start',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        toolUseId,
+        toolName: event.name,
+        args: event.input ?? {},
+        providerExecuted: true,
+        stepId: messageId,
+        ...(event.displayName === undefined ? {} : { displayName: event.displayName }),
+        ...(event.activityKind === undefined ? {} : { activityKind: event.activityKind }),
+      });
+      return;
+    }
+    const toolUseId = toolUseIds.get(event.toolCallId);
+    if (!toolUseId) return;
+    if (event.type === 'tool_progress') {
+      if (!event.text) return;
+      queue.push({
+        type: 'tool_progress',
+        id: this.#newId(),
+        turnId,
+        ts: this.#now(),
+        toolUseId,
+        chunk: event.text,
+      });
+      return;
+    }
+    toolUseIds.delete(event.toolCallId);
+    queue.push({
+      type: 'tool_result',
+      id: this.#newId(),
+      turnId,
+      ts: this.#now(),
+      toolUseId,
+      providerExecuted: true,
+      isError: event.isError ?? false,
+      content: { kind: 'text', text: event.text },
     });
   }
 
@@ -252,4 +376,13 @@ export class PluginExecutorBackend implements AgentBackend {
 function boundedMessage(value: string): string {
   if (value.length <= 8_192) return value;
   return `${value.slice(0, 8_191)}…`;
+}
+
+function cancellationEventReason(
+  result: Extract<PluginExecutorResult, { status: 'cancelled' }>,
+): 'user_stop' | 'redirect' | 'timeout' | 'crash' {
+  if (result.reason === 'redirect') return 'redirect';
+  if (result.reason === 'timeout') return 'timeout';
+  if (result.source === 'executor_retired') return 'crash';
+  return 'user_stop';
 }

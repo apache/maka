@@ -31,6 +31,7 @@ import {
   type SessionToolProfile,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
+import { isExecutorId } from '@maka/core/executor-id';
 import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 export type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 import {
@@ -1024,7 +1025,7 @@ function backend(value: unknown): SessionCatalogProjection['backend'] {
 
 function executorIdValue(value: unknown): string {
   const id = requireUtf8String(value, 'Executor id', 128);
-  if (!/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(id)) {
+  if (!isExecutorId(id)) {
     throw invalidProtocolFrame('Invalid Executor id');
   }
   return id;

@@ -337,6 +337,7 @@ export async function createExecutionRuntimeHostComposition(
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
   let manager: SessionManager | undefined;
+  let invalidatePluginExecutorBackends: () => void = () => undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   let archiveEvidence: Awaited<ReturnType<typeof openToolResultArchiveEvidenceReader>> | undefined;
   try {
@@ -347,7 +348,11 @@ export async function createExecutionRuntimeHostComposition(
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
     const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
-    const pluginExecutors = new PluginExecutorService(pluginRoot);
+    const pluginExecutors = new PluginExecutorService(pluginRoot, {
+      // Retirement aborts its generation before backend disposal begins, so the
+      // terminal event preserves executor-retired instead of looking like Stop.
+      onChanged: () => queueMicrotask(invalidatePluginExecutorBackends),
+    });
     const pluginShellEnv = new PluginShellEnvService(pluginRoot);
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
@@ -1057,27 +1062,15 @@ export async function createExecutionRuntimeHostComposition(
       prepare: async (backendContext) => {
         const executorId = backendContext.header.executorId;
         if (!executorId) throw new Error('Plugin executor Session is missing its executor id');
-        const identity = pluginExecutors.identity(backendContext.sessionId, executorId);
-        const providerStateIdentity = `sha256:${createHash('sha256')
-          .update(
-            JSON.stringify([
-              'plugin-executor.v1',
-              identity.id,
-              identity.extensionId,
-              identity.entryId,
-              identity.generation,
-            ]),
-          )
-          .digest('hex')}` as const;
+        const binding = pluginExecutors.bind(backendContext.sessionId, executorId);
         return {
-          providerStateIdentity,
+          providerStateIdentity: binding.providerStateIdentity,
           build: (factoryContext) =>
             new PluginExecutorBackend({
               sessionId: factoryContext.sessionId,
               cwd: factoryContext.header.cwd,
-              executorId,
               ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
-              service: pluginExecutors,
+              binding,
             }),
         };
       },
@@ -1328,6 +1321,14 @@ export async function createExecutionRuntimeHostComposition(
       toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
       subagentCatalog,
+      assertChildExecutorAvailable: (parentSessionId, executorId) => {
+        const identity = pluginExecutors.identity(parentSessionId, executorId);
+        if (identity.scopeId !== 'profile') {
+          throw new Error(
+            `Session-scoped executor cannot be inherited by a child Session: ${executorId}`,
+          );
+        }
+      },
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
@@ -1429,6 +1430,7 @@ export async function createExecutionRuntimeHostComposition(
     const registerBackendInvalidation = (): void => {
       observeBackendInvalidation(requireSessionManager(manager).refreshIdleBackends());
     };
+    invalidatePluginExecutorBackends = registerBackendInvalidation;
     const registerConfigurationMutation = (): void => {
       hostChanges.publishConfiguration();
       registerBackendInvalidation();
@@ -1969,6 +1971,9 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      assertExecutorAvailable: (sessionId, executorId) => {
+        pluginExecutors.identity(sessionId, executorId);
+      },
       ...(context.sessionAccessAuthority
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),

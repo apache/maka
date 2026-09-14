@@ -151,6 +151,7 @@ import {
 import { DeliveryAckQueue, isDeliveryAckQueueClosed } from './delivery-ack-queue.js';
 import { runtimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
 import { preserveHandoffOpening } from './runtime-resume.js';
+import { runtimeInvocationRouteForHeader } from './runtime-invocation-route.js';
 import type { AgentRunHandoffRequest } from './agent-run.js';
 
 export interface RuntimeKernelLike {
@@ -3152,24 +3153,7 @@ function continuationTargetOpeningForExecution(input: {
   const opening: RuntimeEventInvocationOpenedContent = {
     kind: 'invocation_opened',
     protocol: 'invocation_opened_v1',
-    route:
-      sessionHeader.llmConnectionId === undefined
-        ? {
-            provenance: 'unknown',
-            backendKind: sessionHeader.backend,
-            llmConnectionSlug: sessionHeader.llmConnectionSlug,
-            modelId: sessionHeader.model,
-          }
-        : {
-            provenance: 'runtime',
-            backendKind: sessionHeader.backend,
-            llmConnectionId: sessionHeader.llmConnectionId,
-            llmConnectionSlug: sessionHeader.llmConnectionSlug,
-            modelId: sessionHeader.model,
-            ...(input.targetProviderStateIdentity
-              ? { providerStateIdentity: input.targetProviderStateIdentity }
-              : {}),
-          },
+    route: runtimeInvocationRouteForHeader(sessionHeader, input.targetProviderStateIdentity),
     configuration: {
       cwd: sessionHeader.cwd,
       permissionMode: sessionHeader.permissionMode,

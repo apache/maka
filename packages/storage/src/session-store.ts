@@ -36,6 +36,7 @@ import {
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
+import { isExecutorId } from '@maka/core/executor-id';
 import {
   decodeCanonicalMessage,
   deriveTurnRecords,
@@ -1573,10 +1574,7 @@ function isPersistedBackendKind(value: unknown): value is SessionHeader['backend
 
 function isValidExecutorSelection(header: SessionHeader): boolean {
   if (header.backend === 'plugin-executor') {
-    return (
-      typeof header.executorId === 'string' &&
-      /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(header.executorId)
-    );
+    return isExecutorId(header.executorId);
   }
   return header.executorId === undefined;
 }

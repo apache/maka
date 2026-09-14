@@ -353,7 +353,7 @@ export function invocationOpeningFromLegacyRunHeader(
 }
 
 function invocationRouteFromLegacyRunHeader(header: LegacyRunHeader): RuntimeInvocationRoute {
-  if (header.llmConnectionId === undefined) {
+  if (header.llmConnectionId === undefined || header.backendKind === 'plugin-executor') {
     return {
       provenance: 'unknown',
       backendKind: header.backendKind,

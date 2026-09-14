@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { isExecutorId } from '@maka/core/executor-id';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { isSafeSubagentPresetId } from '@maka/core/subagent-settings';
 import { type ToolResultContent } from '@maka/core/events';
@@ -121,7 +122,7 @@ export function buildSubagentSpawnTool(
             .describe('User-approved subagent preset id from agent_list.'),
           executor_id: z
             .string()
-            .regex(/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u)
+            .refine(isExecutorId)
             .optional()
             .describe('Plugin executor id for this child task.'),
           task: z

@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { isExecutorId } from '@maka/core/executor-id';
 import {
   AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK,
   AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS,
@@ -65,9 +66,7 @@ const identitySchema = z
   .max(256)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), 'Identity contains control characters');
 
-const executorIdSchema = z
-  .string()
-  .regex(/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u, 'Invalid plugin executor id');
+const executorIdSchema = z.string().refine(isExecutorId, 'Invalid plugin executor id');
 
 const cursorSchema = z
   .string()

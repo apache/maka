@@ -44,7 +44,9 @@ test('executors are scoped and pass black-box output without an Agent invocation
   const output: string[] = [];
   assert.deepEqual(
     await service.execute('remote', request('session-b'), {
-      onEvent: (event) => output.push(event.text),
+      onEvent: (event) => {
+        if (event.type === 'output_delta') output.push(event.text);
+      },
     }),
     { status: 'completed', text: 'session-b:hello' },
   );
@@ -105,7 +107,95 @@ test('retiring an executor aborts and drains its active calls', async () => {
   await startedPromise;
   await dispose();
   assert.equal(observed?.aborted, true);
-  assert.deepEqual(await execution, { status: 'cancelled' });
+  assert.deepEqual(await execution, {
+    status: 'cancelled',
+    source: 'executor_retired',
+    reason: 'Executor was retired: remote',
+  });
+  await root.fiber.dispose();
+});
+
+test('executor registration binds prototype methods to the provider instance', async () => {
+  class ClassExecutor {
+    readonly id = 'remote';
+    readonly prefix = 'class';
+
+    async execute() {
+      return { status: 'completed' as const, text: `${this.prefix}:ok` };
+    }
+  }
+
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  plugin(root, 'profile', 'provider', 1).executors.register(new ClassExecutor());
+  assert.equal(await executeText(service), 'class:ok');
+  await root.fiber.dispose();
+});
+
+test('executor bindings pin one provider generation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const previous = plugin(root, 'profile', 'provider', 1);
+  const disposePrevious = previous.executors.register(provider('previous'));
+  const previousBinding = service.bind('session-a', 'remote');
+  const candidateOwner = plugin(root, 'profile', 'provider', 2);
+  const transaction = new MakaPluginTransactionBuffer(candidateOwner);
+  const candidate = candidateOwner.extend({ makaTransaction: transaction });
+  candidate.executors.register(provider('candidate'));
+  await transaction.commit();
+
+  assert.equal((await previousBinding.execute(request('session-a'))).status, 'completed');
+  assert.equal(await executeText(service), 'candidate');
+  await disposePrevious();
+  assert.deepEqual(await previousBinding.execute(request('session-a')), {
+    status: 'cancelled',
+    source: 'executor_retired',
+    reason: 'Executor was retired: remote',
+  });
+  await root.fiber.dispose();
+});
+
+test('executor completion after caller cancellation is normalized to cancelled', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const owner = plugin(root, 'profile', 'provider', 1);
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  owner.executors.register({
+    id: 'remote',
+    execute: async (_request, context) => {
+      started();
+      await new Promise<void>((resolve) =>
+        context.signal.addEventListener('abort', () => resolve()),
+      );
+      return { status: 'completed', text: 'late success' };
+    },
+  });
+  const abort = new AbortController();
+  const execution = service.execute('remote', request('session-a'), { signal: abort.signal });
+  await ready;
+  abort.abort(new Error('redirect'));
+  assert.deepEqual(await execution, { status: 'cancelled', source: 'caller', reason: 'redirect' });
+  await root.fiber.dispose();
+});
+
+test('executor rich events require an explicitly declared capability', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  plugin(root, 'profile', 'provider', 1).executors.register({
+    id: 'remote',
+    execute: async (_request, context) => {
+      context.emit({ type: 'thinking_delta', text: 'undeclared' });
+      return { status: 'completed', text: 'unreachable' };
+    },
+  });
+
+  await assert.rejects(
+    () => service.execute('remote', request('session-a')),
+    /invalid or undeclared/u,
+  );
   await root.fiber.dispose();
 });
 

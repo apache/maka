@@ -824,6 +824,8 @@ interface SessionManagerBaseDeps {
     list(): Promise<SubagentPresetListItem[]>;
     resolve(id: string): Promise<ResolvedSubagentPreset>;
   };
+  /** Host gate for an executor that must remain visible in a newly created child Session. */
+  assertChildExecutorAvailable?: (parentSessionId: string, executorId: string) => void;
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
@@ -2629,6 +2631,9 @@ export class SessionManager {
       ? requireBuiltinAgentDefinitionByProfile(resolvedPreset.profile)
       : requireBuiltinAgentDefinition(input.agentId!);
     const executorId = input.executorId ?? (resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) {
+      this.deps.assertChildExecutorAvailable?.(input.source.sessionId, executorId);
+    }
     const resolvedToolNames = executorId
       ? []
       : await this.resolveChildToolNames(input.source.sessionId, parentHeader, definition);
@@ -3227,6 +3232,7 @@ export class SessionManager {
     const definition = requireBuiltinAgentDefinitionByProfile(input.agentProfile);
     const executorId =
       input.executorId ?? (input.resolvedPreset ? undefined : parentHeader.executorId);
+    if (executorId) this.deps.assertChildExecutorAvailable?.(parentSessionId, executorId);
     const resolvedToolNames = executorId
       ? []
       : await this.resolveChildToolNames(parentSessionId, parentHeader, definition);
@@ -3983,7 +3989,7 @@ export class SessionManager {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
       route:
-        session.llmConnectionId === undefined
+        session.llmConnectionId === undefined || session.backend === 'plugin-executor'
           ? {
               provenance: 'unknown',
               backendKind: session.backend,

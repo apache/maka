@@ -25,8 +25,11 @@ import {
 } from '@maka/core/session';
 import {
   runtimeHostExecutionUnavailableReason,
+  runtimeHostConversationCopyUnavailableReason,
   runtimeHostSafeBoundaryContinuationUnavailableReason,
   LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON,
+  PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON,
+  PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON,
   WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
   WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON,
 } from '../server/host-session-availability.js';
@@ -154,6 +157,28 @@ test('plugin executor Sessions do not require a Maka model connection identity',
     ),
     undefined,
   );
+});
+
+test('plugin executor Sessions fail closed for safe-boundary continuation', () => {
+  assert.equal(
+    runtimeHostSafeBoundaryContinuationUnavailableReason({
+      ...base,
+      id: 'plugin-executor-session',
+      role: undefined,
+      subagentParent: undefined,
+      llmConnectionId: undefined,
+      backend: 'plugin-executor',
+    }),
+    PLUGIN_EXECUTOR_CONTINUATION_UNAVAILABLE_REASON,
+  );
+});
+
+test('plugin executor Sessions fail closed for branch and revision copies', () => {
+  assert.equal(
+    runtimeHostConversationCopyUnavailableReason({ backend: 'plugin-executor' }),
+    PLUGIN_EXECUTOR_COPY_UNAVAILABLE_REASON,
+  );
+  assert.equal(runtimeHostConversationCopyUnavailableReason({ backend: 'ai-sdk' }), undefined);
 });
 
 test('legacy Session identity cannot resume a safe-boundary continuation', () => {

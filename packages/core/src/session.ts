@@ -18,6 +18,7 @@
  */
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isExecutorId } from './executor-id.js';
 
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
@@ -967,12 +968,7 @@ export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateD
   )
     return false;
   if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
-  if (
-    value.executorId !== undefined &&
-    (typeof value.executorId !== 'string' ||
-      !/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u.test(value.executorId))
-  )
-    return false;
+  if (value.executorId !== undefined && !isExecutorId(value.executorId)) return false;
   if (value.executorId !== undefined && value.model !== undefined) return false;
   if (value.model === undefined) return true;
   const model = value.model;
