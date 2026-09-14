@@ -360,7 +360,7 @@ function mergeLiveOverPersisted(
  * - `user`: an instruction inserted after the turn began, displayed where
  *   Runtime acknowledged it.
  *
- * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
+ * The model stays FLAT: grouping adjacent reasoning/tools for spacing is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
  * so timeline-rewriting passes (overlayLiveTurn, projectTurnTools, shell-run
  * folding) never have to maintain a nesting invariant.

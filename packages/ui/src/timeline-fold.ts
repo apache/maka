@@ -20,7 +20,7 @@
 import type { TurnTimelineItem } from './materialize.js';
 
 /**
- * Render-layer fold for the collapsed "Processing" block (#1307).
+ * Groups adjacent reasoning and tools for their shared layout spacing.
  *
  * The turn timeline model (`TurnTimelineItem`) stays FLAT — every
  * timeline-rewriting pass (overlayLiveTurn, projectTurnTools, shell-run
@@ -29,22 +29,17 @@ import type { TurnTimelineItem } from './materialize.js';
  * before rendering:
  *
  *  - answer `text` and inserted `user` entries stay in place and bound groups;
- *  - a maximal thinking+tools run between two texts folds into ONE
- *    `processing` block when it contains at least one tools group, preserving
- *    the run's interleaved order as `children`;
- *  - a pure-thinking run stays bare (the 深度思考 disclosure renders it
- *    directly — wrapping a lone reasoning block would just double the fold).
+ *  - every thinking/tools run becomes one `processing` sequence, preserving
+ *    the run's interleaved order as `children`. This wrapper has no disclosure;
+ *    reasoning and tool components own their individual expansion states.
  *
  * Each block carries a stable `id` derived from the preceding text or inserted
  * user entry's messageId (`'start'` when the block opens the turn). Between two boundaries there
  * is at most one block, so the id is unique per turn — and, unlike a key
  * guessed from the first child, it survives the first tool being projected
- * away (shell-run folding) without remounting the disclosure or dropping a
- * manual open/close. When projection removes a block's LAST tools group the
- * block itself dissolves (the remaining run is pure thinking), so the bare
- * 深度思考 entries remount and any manual open state inside is reset — the
- * accepted cost of deriving block existence at render time instead of
- * representing a tools-less block in the model.
+ * away (shell-run folding) without remounting the disclosure or dropping its
+ * expansion state. A remaining reasoning entry keeps the same wrapper even
+ * when the last tool disappears.
  */
 
 /** An entry folded inside a processing block: reasoning or a tool group. */
@@ -57,7 +52,7 @@ export interface ProcessingFold {
   children: FoldedTimelineChild[];
 }
 
-export type FoldedTimelineEntry = TurnTimelineItem | ProcessingFold;
+export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
 export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimelineEntry[] {
   const out: FoldedTimelineEntry[] = [];
@@ -65,11 +60,7 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): FoldedTimeline
   let buffer: FoldedTimelineChild[] | null = null;
   const flush = (): void => {
     if (buffer && buffer.length > 0) {
-      if (buffer.some((child) => child.kind === 'tools')) {
-        out.push({ kind: 'processing', id: anchor, children: buffer });
-      } else {
-        out.push(...buffer);
-      }
+      out.push({ kind: 'processing', id: anchor, children: buffer });
     }
     buffer = null;
   };

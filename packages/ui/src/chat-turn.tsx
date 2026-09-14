@@ -483,7 +483,7 @@ export const TurnView = memo(function TurnView(props: {
     turn.timeline.length > 0 ||
     !!props.liveStreaming ||
     (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
-  // #1307: the collapsed "Processing" fold is derived at render time from the
+  // The processing layout sequence is derived at render time from the
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
   const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
@@ -675,7 +675,7 @@ export const TurnView = memo(function TurnView(props: {
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
                 #1307: runs of reasoning + tools between answer texts render
-                through the derived fold as collapsed Processing blocks. */}
+                through the derived grouping as processing sequences. */}
               {segment.items.map((item, index) =>
                 item.kind === 'processing' ? (
                   <ProcessingBlock
@@ -814,8 +814,8 @@ type ConversationSegment =
        * What this answer replies to: the steering message that opened it, or
        * the turn itself for the first answer. This is the segment's identity —
        * its React key must not be derived from its contents, because those
-       * change as the turn runs (a Processing fold dissolves once its last
-       * tools group is projected away) and a changing key remounts the whole
+       * change as the turn runs (a tools-only sequence disappears when its
+       * tools are projected away) and a changing key remounts the whole
        * answer, costing the user their scroll position, any disclosure they
        * had open, and any text Selection held inside it.
        *
@@ -1289,6 +1289,9 @@ function ProcessingBlock(props: {
     <div
       className="maka-processing-sequence"
       data-maka-transcript-boundary=""
+      // Pure reasoning keeps the answer column's spacing without changing
+      // component ancestry when neighboring tools appear or disappear.
+      style={entries.some((entry) => entry.kind === 'tools') ? undefined : { rowGap: 'inherit' }}
     >
       {entries.map((entry, index) => (
         <TurnTimelineEntry

@@ -182,6 +182,23 @@ test('keeps the assistant answer element as a turn settles around it', async () 
   );
 });
 
+test('keeps reasoning expanded when its last neighboring tool is projected away', async () => {
+  const { container, root } = domRoot();
+  const thinking: TurnTimelineItem = {
+    kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
+  };
+  await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  await renderTurn(root, turnWith([thinking, ANSWER]));
+  const after = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(after);
+  assert.ok(after.isSameNode(header));
+  assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, turnWith([
