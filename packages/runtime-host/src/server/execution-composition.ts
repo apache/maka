@@ -250,7 +250,11 @@ import {
   resolveHostTavilyWebSearchReadiness,
   shouldResolveHostTavilyWebSearchReadiness,
 } from './web-search-tool.js';
-import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
+import {
+  createHostLoopbackHealthAuthorizer,
+  createHostWebFetchService,
+  createHostWebFetchToolFromService,
+} from './web-fetch-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
@@ -442,6 +446,7 @@ export async function createExecutionRuntimeHostComposition(
       store: openedShellRunStore,
       newId: randomUUID,
       now: Date.now,
+      authorizeHttpHealth: createHostLoopbackHealthAuthorizer(runtimePolicyStores.operations),
       onShellRunUpdate: (update) => runtimeResources?.observeShellRunUpdate(update),
       onPtyData: (event) => {
         void continuity?.enqueueRuntimeResourcePtyData(event);

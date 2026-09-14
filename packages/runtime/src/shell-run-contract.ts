@@ -46,6 +46,8 @@ export const DEFAULT_MAX_LIVE_PTY_RUNS = 8;
 export const DEFAULT_SHELL_RUN_FLUSH_INTERVAL_MS = 1_000;
 export const DEFAULT_SHELL_RUN_FLUSH_BYTES = 64 * 1024;
 export const DEFAULT_PIPE_OUTPUT_DRAIN_MS = 2_000;
+export const DEFAULT_SHELL_RUN_HEALTH_TIMEOUT_MS = 5_000;
+export const MAX_SHELL_RUN_HEALTH_TIMEOUT_MS = 30_000;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
   SHELL_RUN_RESOURCE_PREFIX.length + 1 + SHELL_RUN_ID_MAX_CHARS;
@@ -82,6 +84,27 @@ export interface ShellRunProcessManagerInput {
   scheduleFlush?: (run: () => void, delayMs: number) => () => void;
   /** Schedules the run timeout and returns its canceler; injected so tests can drive timeout timing. */
   scheduleTimeout?: (run: () => void, delayMs: number) => () => void;
+  /** Performs one HTTP readiness probe; injected for deterministic tests. */
+  probeHttpHealth?: (input: ShellRunHttpHealthCheckRequest, signal: AbortSignal) => Promise<number>;
+  /** Applies the host's current privacy/credential policy before a readiness probe. */
+  authorizeHttpHealth?: (
+    input: ShellRunHttpHealthCheckRequest,
+    signal: AbortSignal,
+  ) => Promise<ShellRunHttpHealthAuthorization>;
+  /** Waits between readiness probes; injected for deterministic tests. */
+  waitForHealthRetry?: (delayMs: number) => Promise<void>;
+}
+
+export type ShellRunHttpHealthAuthorization =
+  | { kind: 'allowed' }
+  | { kind: 'blocked'; reason: 'privacy_mode' | 'credential_not_configured' };
+
+export interface ShellRunHttpHealthCheckRequest {
+  kind: 'http';
+  host: '127.0.0.1' | '::1';
+  port: number;
+  path: string;
+  timeoutMs: number;
 }
 
 export interface ShellRunBashInput {
@@ -99,6 +122,8 @@ export interface ShellRunBashInput {
   /** Binary payloads exposed to pipe-mode children on inherited descriptors. */
   fdInputs?: readonly ChildFdInput[];
   pty?: boolean;
+  /** Explicit loopback HTTP evidence for background endpoint readiness. */
+  healthCheck?: ShellRunHttpHealthCheckRequest;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
@@ -107,6 +132,44 @@ export interface ShellRunBashInput {
   sandboxType?: SandboxType;
   /** Invoked exactly once after startup failure or terminal process completion. */
   onCompletion?: (outcome: { successful: boolean }) => void;
+}
+
+export function parseShellRunHttpHealthCheck(
+  rawUrl: string,
+  timeoutMs = DEFAULT_SHELL_RUN_HEALTH_TIMEOUT_MS,
+): ShellRunHttpHealthCheckRequest {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error('health_check.url must be a valid HTTP URL');
+  }
+  const host = url.hostname === '[::1]' ? '::1' : url.hostname;
+  if (url.protocol !== 'http:') throw new Error('health_check.url must use http');
+  if (host !== '127.0.0.1' && host !== '::1') {
+    throw new Error('health_check.url must target the loopback host 127.0.0.1 or ::1');
+  }
+  const authority = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/iu.exec(rawUrl)?.[1];
+  const explicitPort = /:(\d+)$/u.exec(authority ?? '')?.[1];
+  if (!explicitPort) throw new Error('health_check.url must include an explicit port');
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('health_check.url must not include credentials, query, or fragment');
+  }
+  const port = Number(explicitPort);
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error('health_check.url port must be between 1 and 65535');
+  }
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_SHELL_RUN_HEALTH_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `health_check.timeout_ms must be between 1 and ${MAX_SHELL_RUN_HEALTH_TIMEOUT_MS}`,
+    );
+  }
+  if (url.pathname.length > 2_048) throw new Error('health_check.url path is too long');
+  return { kind: 'http', host, port, path: url.pathname, timeoutMs };
 }
 
 export interface ShellRunWriteInput {

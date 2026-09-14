@@ -53,6 +53,8 @@ import {
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
   MAX_SHELL_RUN_RESOURCE_REF_CHARS,
   MAX_SHELL_RUN_TIMEOUT_MS,
+  MAX_SHELL_RUN_HEALTH_TIMEOUT_MS,
+  parseShellRunHttpHealthCheck,
   MAX_WRITE_STDIN_ACTIONS,
   MAX_WRITE_STDIN_INPUT_BYTES,
   MIN_PTY_COLS,
@@ -230,9 +232,21 @@ export function buildManagedBashTool(
     timeout_ms: z.number().int().positive().max(MAX_SHELL_RUN_TIMEOUT_MS).optional(),
     run_in_background: z.boolean().optional(),
     pty: z.boolean().optional(),
+    health_check: z
+      .object({
+        url: z.string().max(2_048),
+        timeout_ms: z.number().int().positive().max(MAX_SHELL_RUN_HEALTH_TIMEOUT_MS).optional(),
+      })
+      .strict()
+      .optional(),
   };
   const refineManagedBash = (
-    { timeout_ms, run_in_background, pty }: z.infer<z.ZodObject<typeof managedBashFields>>,
+    {
+      timeout_ms,
+      run_in_background,
+      pty,
+      health_check,
+    }: z.infer<z.ZodObject<typeof managedBashFields>>,
     ctx: z.core.$RefinementCtx,
   ) => {
     if (
@@ -256,6 +270,24 @@ export function buildManagedBashTool(
         message: 'PTY Bash requires run_in_background=true',
       });
     }
+    if (health_check && !run_in_background) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['health_check'],
+        message: 'health_check requires run_in_background=true',
+      });
+    }
+    if (health_check) {
+      try {
+        parseShellRunHttpHealthCheck(health_check.url, health_check.timeout_ms);
+      } catch (error) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['health_check', 'url'],
+          message: error instanceof Error ? error.message : 'Invalid health_check',
+        });
+      }
+    }
   };
   return {
     name: 'Bash',
@@ -265,6 +297,7 @@ export function buildManagedBashTool(
       ` Foreground is the default (timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms).` +
       ` Set run_in_background=true only when the command should continue as a tracked runtime background task; background commands have no default timeout (maximum explicit timeout ${MAX_SHELL_RUN_TIMEOUT_MS}ms).` +
       ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.' +
+      ' For an HTTP server, health_check can verify an explicit loopback endpoint; a running process alone is not endpoint readiness, and only health status healthy is ready.' +
       (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
     parameters: declareSandboxBoundary
       ? preprocessBashBoundaryDeclaration(
@@ -285,7 +318,7 @@ export function buildManagedBashTool(
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async (input, ctx) => {
       throwIfShellSetupFailed(shell);
-      const { command, timeout_ms, run_in_background, pty } = input;
+      const { command, timeout_ms, run_in_background, pty, health_check } = input;
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
         selectedBashBoundaryExpansion(input),
         ctx,
@@ -313,6 +346,14 @@ export function buildManagedBashTool(
           cwd: transformed?.cwd ?? ctx.cwd,
           command,
           ...(pty !== undefined ? { pty } : {}),
+          ...(health_check
+            ? {
+                healthCheck: parseShellRunHttpHealthCheck(
+                  health_check.url,
+                  health_check.timeout_ms,
+                ),
+              }
+            : {}),
           ...(transformed?.argv ? { argv: transformed.argv } : { shell: shell.plan }),
           ...(transformed?.env ? { env: transformed.env } : {}),
           ...(transformed?.fdInputs ? { fdInputs: transformed.fdInputs } : {}),

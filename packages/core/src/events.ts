@@ -47,6 +47,7 @@ import type {
   PipeShellOutput,
   PtyShellOutput,
   ShellOutput,
+  ShellRunHealthCheck,
   ShellRunOperation,
   ShellRunStatus,
   ShellRunTerminalStatus,
@@ -782,6 +783,8 @@ type ShellRunResultMetadata = {
   kind: 'shell_run';
   ref: string;
   status: ShellRunStatus;
+  pid?: number;
+  healthCheck?: ShellRunHealthCheck;
   cwd: string;
   cmd: string;
   startedAt: number;

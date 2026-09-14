@@ -29,6 +29,7 @@ import {
   type ShellOutput,
   type ShellRunPatch,
   type ShellRunRecord,
+  type ShellRunHealthCheck,
 } from '@maka/core/shell-run';
 import { TerminalMouseInputRejectedError } from '@maka/core/terminal-mouse-input';
 import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
@@ -76,6 +77,8 @@ import {
   type ShellRunPtyDataEvent,
   type ShellRunPtySnapshot,
   type ShellRunProcessManagerInput,
+  type ShellRunHttpHealthCheckRequest,
+  type ShellRunHttpHealthAuthorization,
   type ShellRunWriteInput,
 } from './shell-run-contract.js';
 import {
@@ -269,6 +272,15 @@ export class ShellRunProcessManager
   private readonly pipeOutputDrainMs: number;
   private readonly scheduleFlush: (run: () => void, delayMs: number) => () => void;
   private readonly scheduleTimeout: (run: () => void, delayMs: number) => () => void;
+  private readonly probeHttpHealth: (
+    input: ShellRunHttpHealthCheckRequest,
+    signal: AbortSignal,
+  ) => Promise<number>;
+  private readonly authorizeHttpHealth: (
+    input: ShellRunHttpHealthCheckRequest,
+    signal: AbortSignal,
+  ) => Promise<ShellRunHttpHealthAuthorization>;
+  private readonly waitForHealthRetry: (delayMs: number) => Promise<void>;
   private reservedShellRuns = 0;
   private reservedPtyRuns = 0;
   private shuttingDown = false;
@@ -296,6 +308,12 @@ export class ShellRunProcessManager
         const timer = setTimeout(run, delayMs);
         return () => clearTimeout(timer);
       });
+    this.probeHttpHealth = input.probeHttpHealth ?? probeLoopbackHttpEndpoint;
+    this.authorizeHttpHealth =
+      input.authorizeHttpHealth ?? (async () => ({ kind: 'allowed' as const }));
+    this.waitForHealthRetry =
+      input.waitForHealthRetry ??
+      ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   }
 
   async runBackgroundBash(input: ShellRunBashInput): Promise<ShellRunToolResult> {
@@ -309,6 +327,8 @@ export class ShellRunProcessManager
         const mode: ShellMode = input.pty ? 'pty' : 'pipes';
         const timeoutMs = normalizeBackgroundTimeoutMs(input.timeoutMs);
         const live = await this.start(ownedInput, mode, timeoutMs, false);
+        if (input.healthCheck)
+          await this.awaitInitialHealth(live, input.healthCheck, input.abortSignal);
         const record = await this.persistObservation(live);
         if (input.abortSignal?.aborted) {
           this.requestForcedTermination(live, 'cancel');
@@ -952,6 +972,14 @@ export class ShellRunProcessManager
       cwd: input.cwd,
       command: input.command,
       status: 'starting',
+      ...(input.healthCheck
+        ? {
+            healthCheck: {
+              ...input.healthCheck,
+              status: 'checking' as const,
+            },
+          }
+        : {}),
       startedAt,
       updatedAt: startedAt,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -970,8 +998,13 @@ export class ShellRunProcessManager
   }
 
   private async markRunning(live: LiveShellRun): Promise<void> {
+    const pid = live.driver.pid;
+    if (!Number.isInteger(pid) || Number(pid) <= 0) {
+      throw new Error('Shell process did not publish a valid process identity');
+    }
     live.record = await this.input.store.updateShellRun(live.sessionId, live.shellRunId, {
       status: 'running',
+      pid,
       output: (await this.snapshotAtCut(live, false)).output,
       updatedAt: this.input.now(),
     });
@@ -1625,6 +1658,116 @@ export class ShellRunProcessManager
     });
   }
 
+  private async awaitInitialHealth(
+    live: LiveShellRun,
+    target: ShellRunHttpHealthCheckRequest,
+    callerSignal?: AbortSignal,
+  ): Promise<void> {
+    const deadline = Date.now() + target.timeoutMs;
+    let lastFailure: ShellRunHealthCheck['failureReason'] = 'connection_failed';
+    while (!live.driverExit && !live.finalizeOnce) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const outcome = await this.probeHealth(target, Math.min(remaining, 1_000), callerSignal);
+      if (outcome.kind === 'response') {
+        await this.persistHealth(live, {
+          ...target,
+          status: outcome.statusCode >= 200 && outcome.statusCode < 400 ? 'healthy' : 'listening',
+          checkedAt: this.input.now(),
+          httpStatus: outcome.statusCode,
+        });
+        return;
+      }
+      lastFailure = outcome.reason;
+      if (outcome.reason === 'privacy_mode' || outcome.reason === 'credential_not_configured') {
+        break;
+      }
+      if (callerSignal?.aborted) throw abortError('Health check aborted before completion');
+      if (Date.now() >= deadline) break;
+      await this.waitForHealthRetry(Math.min(100, Math.max(0, deadline - Date.now())));
+    }
+    await this.persistHealth(live, {
+      ...target,
+      status: 'unreachable',
+      checkedAt: this.input.now(),
+      failureReason: live.driverExit || live.finalizeOnce ? 'process_exited' : lastFailure,
+    });
+  }
+
+  private async refreshHealth(
+    live: LiveShellRun,
+    target: ShellRunHealthCheck,
+    callerSignal: AbortSignal,
+  ): Promise<void> {
+    const request: ShellRunHttpHealthCheckRequest = {
+      kind: target.kind,
+      host: target.host,
+      port: target.port,
+      path: target.path,
+      timeoutMs: target.timeoutMs,
+    };
+    const outcome = await this.probeHealth(
+      request,
+      Math.min(request.timeoutMs, 1_000),
+      callerSignal,
+    );
+    if (callerSignal.aborted) throw abortError('Health check aborted before completion');
+    await this.persistHealth(
+      live,
+      outcome.kind === 'response'
+        ? {
+            ...request,
+            status: outcome.statusCode >= 200 && outcome.statusCode < 400 ? 'healthy' : 'listening',
+            checkedAt: this.input.now(),
+            httpStatus: outcome.statusCode,
+          }
+        : {
+            ...request,
+            status: 'unreachable',
+            checkedAt: this.input.now(),
+            failureReason: live.driverExit ? 'process_exited' : outcome.reason,
+          },
+    );
+  }
+
+  private async probeHealth(
+    target: ShellRunHttpHealthCheckRequest,
+    timeoutMs: number,
+    callerSignal?: AbortSignal,
+  ): Promise<
+    | { kind: 'response'; statusCode: number }
+    | { kind: 'failure'; reason: NonNullable<ShellRunHealthCheck['failureReason']> }
+  > {
+    const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutMs));
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+    try {
+      const authorization = await this.authorizeHttpHealth(target, signal);
+      if (authorization.kind === 'blocked') {
+        return { kind: 'failure', reason: authorization.reason };
+      }
+      return { kind: 'response', statusCode: await this.probeHttpHealth(target, signal) };
+    } catch (error) {
+      if (callerSignal?.aborted) throw error;
+      return { kind: 'failure', reason: timeoutSignal.aborted ? 'timeout' : 'connection_failed' };
+    }
+  }
+
+  private async persistHealth(live: LiveShellRun, healthCheck: ShellRunHealthCheck): Promise<void> {
+    if (live.driverExit || live.finalizeOnce) {
+      healthCheck = {
+        kind: healthCheck.kind,
+        host: healthCheck.host,
+        port: healthCheck.port,
+        path: healthCheck.path,
+        timeoutMs: healthCheck.timeoutMs,
+        status: 'unreachable',
+        checkedAt: this.input.now(),
+        failureReason: 'process_exited',
+      };
+    }
+    await this.queuePersist(live, { healthCheck }, { allowLastGood: true });
+  }
+
   private async resourceDetail(
     sessionId: string,
     ref: string,
@@ -1643,6 +1786,8 @@ export class ShellRunProcessManager
       } else {
         if (abortSignal.aborted)
           throw abortError('Read aborted before the runtime snapshot cut was established');
+        if (live.record.healthCheck)
+          await this.refreshHealth(live, live.record.healthCheck, abortSignal);
         record = await this.persistObservation(live);
       }
     } else {
@@ -1939,6 +2084,20 @@ function notifyFailedStartup(callback: ShellRunBashInput['onCompletion']): void 
   } catch {
     // Resource cleanup errors must not replace the original startup failure.
   }
+}
+
+async function probeLoopbackHttpEndpoint(
+  target: ShellRunHttpHealthCheckRequest,
+  signal: AbortSignal,
+): Promise<number> {
+  const host = target.host === '::1' ? '[::1]' : target.host;
+  const response = await fetch(`http://${host}:${target.port}${target.path}`, {
+    method: 'GET',
+    redirect: 'manual',
+    signal,
+  });
+  await response.body?.cancel().catch(() => undefined);
+  return response.status;
 }
 
 function createTerminationLifecycle(): TerminationLifecycle {

@@ -77,6 +77,32 @@ export type ShellMode = 'pipes' | 'pty';
  */
 export type ShellRunVisibility = 'model' | 'user';
 
+export const SHELL_RUN_HEALTH_STATUSES = [
+  'checking',
+  'healthy',
+  'listening',
+  'unreachable',
+] as const;
+
+export type ShellRunHealthStatus = (typeof SHELL_RUN_HEALTH_STATUSES)[number];
+
+export interface ShellRunHealthCheck {
+  kind: 'http';
+  host: '127.0.0.1' | '::1';
+  port: number;
+  path: string;
+  timeoutMs: number;
+  status: ShellRunHealthStatus;
+  checkedAt?: number;
+  httpStatus?: number;
+  failureReason?:
+    | 'connection_failed'
+    | 'timeout'
+    | 'process_exited'
+    | 'privacy_mode'
+    | 'credential_not_configured';
+}
+
 export interface PipeShellOutput {
   mode: 'pipes';
   stdout: string;
@@ -137,6 +163,10 @@ export interface ShellRunRecord {
   cwd: string;
   command: string;
   status: ShellRunStatus;
+  /** OS process identity; presence proves spawn, not endpoint readiness. */
+  pid?: number;
+  /** Opt-in endpoint evidence, kept separate from process lifecycle. */
+  healthCheck?: ShellRunHealthCheck;
   exitCode?: number;
   failureMessage?: string;
   startedAt: number;
@@ -159,7 +189,15 @@ export interface ShellRunRecord {
 export type ShellRunPatch = Partial<
   Pick<
     ShellRunRecord,
-    'status' | 'exitCode' | 'failureMessage' | 'updatedAt' | 'completedAt' | 'observedAt' | 'output'
+    | 'status'
+    | 'pid'
+    | 'healthCheck'
+    | 'exitCode'
+    | 'failureMessage'
+    | 'updatedAt'
+    | 'completedAt'
+    | 'observedAt'
+    | 'output'
   >
 >;
 
@@ -307,6 +345,8 @@ const SHELL_RUN_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 const SHELL_RUN_PATCH_KEYS: ReadonlySet<string> = new Set([
   'status',
+  'pid',
+  'healthCheck',
   'exitCode',
   'failureMessage',
   'updatedAt',
@@ -325,6 +365,8 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'cwd',
   'command',
   'status',
+  'pid',
+  'healthCheck',
   'startedAt',
   'updatedAt',
   'completedAt',
@@ -380,6 +422,8 @@ export function normalizeShellRunRecord(
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
+    (record.pid === undefined || isPositiveInteger(record.pid)) &&
+    (record.healthCheck === undefined || isShellRunHealthCheck(record.healthCheck)) &&
     isFiniteNumber(record.startedAt) &&
     isFiniteNumber(record.updatedAt) &&
     isPositiveInteger(record.revision) &&
@@ -418,6 +462,17 @@ export function nextShellRunRecord(current: ShellRunRecord, patch: ShellRunPatch
   const { sessionId, shellRunId } = current;
   if (patch.output && patch.output.mode !== current.output.mode) {
     throw new Error(`ShellRun output mode is immutable: ${current.output.mode}`);
+  }
+  if (current.pid !== undefined && Object.hasOwn(patch, 'pid') && patch.pid !== current.pid) {
+    throw new Error(`ShellRun process identity is immutable: ${current.pid}`);
+  }
+  if (
+    current.healthCheck !== undefined &&
+    Object.hasOwn(patch, 'healthCheck') &&
+    (patch.healthCheck === undefined ||
+      !sameShellRunHealthCheckTarget(current.healthCheck, patch.healthCheck))
+  ) {
+    throw new Error('ShellRun health-check target is immutable');
   }
   const effectivePatch =
     current.observedAt !== undefined && Object.hasOwn(patch, 'observedAt')
@@ -524,6 +579,8 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     cwd: record.cwd,
     command: record.command,
     status: record.status,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
+    ...(record.healthCheck !== undefined ? { healthCheck: { ...record.healthCheck } } : {}),
     startedAt: record.startedAt,
     updatedAt: record.updatedAt,
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
@@ -540,6 +597,90 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     ...(record.observedAt !== undefined ? { observedAt: record.observedAt } : {}),
     output: canonicalShellOutput(record.output),
   };
+}
+
+export function isShellRunHealthCheck(value: unknown): value is ShellRunHealthCheck {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (
+    !hasOnlyKeys(
+      value,
+      new Set([
+        'kind',
+        'host',
+        'port',
+        'path',
+        'timeoutMs',
+        'status',
+        'checkedAt',
+        'httpStatus',
+        'failureReason',
+      ]),
+    )
+  )
+    return false;
+  const check = value as Partial<ShellRunHealthCheck>;
+  if (
+    check.kind !== 'http' ||
+    (check.host !== '127.0.0.1' && check.host !== '::1') ||
+    !isPositiveInteger(check.port) ||
+    check.port > 65_535 ||
+    typeof check.path !== 'string' ||
+    !check.path.startsWith('/') ||
+    check.path.length > 2_048 ||
+    /[\u0000-\u001f\u007f]/u.test(check.path) ||
+    !isPositiveInteger(check.timeoutMs) ||
+    check.timeoutMs > 30_000 ||
+    !(SHELL_RUN_HEALTH_STATUSES as readonly unknown[]).includes(check.status)
+  )
+    return false;
+  if (check.status === 'checking') {
+    return (
+      check.checkedAt === undefined &&
+      check.httpStatus === undefined &&
+      check.failureReason === undefined
+    );
+  }
+  if (!isFiniteNumber(check.checkedAt)) return false;
+  if (check.status === 'healthy') {
+    return (
+      isHttpStatus(check.httpStatus) &&
+      check.httpStatus >= 200 &&
+      check.httpStatus < 400 &&
+      check.failureReason === undefined
+    );
+  }
+  if (check.status === 'listening') {
+    return (
+      isHttpStatus(check.httpStatus) &&
+      (check.httpStatus < 200 || check.httpStatus >= 400) &&
+      check.failureReason === undefined
+    );
+  }
+  return (
+    check.httpStatus === undefined &&
+    (check.failureReason === 'connection_failed' ||
+      check.failureReason === 'timeout' ||
+      check.failureReason === 'process_exited' ||
+      check.failureReason === 'privacy_mode' ||
+      check.failureReason === 'credential_not_configured')
+  );
+}
+
+function sameShellRunHealthCheckTarget(
+  left: ShellRunHealthCheck,
+  right: ShellRunHealthCheck,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.host === right.host &&
+    left.port === right.port &&
+    left.path === right.path &&
+    left.timeoutMs === right.timeoutMs
+  );
+}
+
+function isHttpStatus(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599;
 }
 
 function canonicalShellOutput(output: ShellOutput): ShellOutput {

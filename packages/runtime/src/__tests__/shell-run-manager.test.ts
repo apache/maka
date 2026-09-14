@@ -40,6 +40,8 @@ import { createSqliteShellRunStore } from '@maka/storage/shell-run-store';
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import {
   ShellRunPtyControlClosedError,
+  parseShellRunHttpHealthCheck,
+  type ShellRunBashInput,
   type ShellRunPtyDataEvent,
   type ShellRunProcessManagerInput,
 } from '../shell-run-contract.js';
@@ -176,6 +178,230 @@ describe('ShellRunProcessManager', () => {
     assert.ok(record.revision >= 2);
     assert.ok(record.observedAt !== undefined);
     assert.equal(manager.liveCount(), 0);
+  });
+
+  test('waits for a declared loopback endpoint and projects PID plus healthy evidence', async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    const probes = [new Error('not listening'), 204];
+    const manager = createManager(store, undefined, {
+      probeHttpHealth: async () => {
+        const outcome = probes.shift();
+        if (outcome instanceof Error) throw outcome;
+        return outcome ?? 204;
+      },
+      waitForHealthRetry: async () => undefined,
+    });
+
+    const result = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'sleep 10',
+        healthCheck: {
+          kind: 'http',
+          host: '127.0.0.1',
+          port: 8765,
+          path: '/health',
+          timeoutMs: 1_000,
+        },
+      }),
+    );
+    assertShellRun(result);
+    assert.ok(result.pid && result.pid > 0);
+    assert.deepEqual(result.healthCheck, {
+      kind: 'http',
+      host: '127.0.0.1',
+      port: 8765,
+      path: '/health',
+      timeoutMs: 1_000,
+      status: 'healthy',
+      checkedAt: result.healthCheck?.checkedAt,
+      httpStatus: 204,
+    });
+    await manager.stopBackgroundTask('session-1', result.ref, NO_ABORT);
+  });
+
+  test('keeps non-success HTTP evidence separate from the running process lifecycle', async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    const manager = createManager(store, undefined, { probeHttpHealth: async () => 503 });
+    const result = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'sleep 10',
+        healthCheck: {
+          kind: 'http',
+          host: '::1',
+          port: 8765,
+          path: '/',
+          timeoutMs: 1_000,
+        },
+      }),
+    );
+    assertShellRun(result);
+    assert.equal(result.status, 'running');
+    assert.equal(result.healthCheck?.status, 'listening');
+    assert.equal(result.healthCheck?.httpStatus, 503);
+    await manager.stopBackgroundTask('session-1', result.ref, NO_ABORT);
+  });
+
+  test('refreshes endpoint evidence on Read without changing process lifecycle', async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    let statusCode = 204;
+    const manager = createManager(store, undefined, {
+      probeHttpHealth: async () => statusCode,
+    });
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'sleep 10',
+        healthCheck: {
+          kind: 'http',
+          host: '127.0.0.1',
+          port: 8765,
+          path: '/health',
+          timeoutMs: 1_000,
+        },
+      }),
+    );
+    assertShellRun(initial);
+    assert.equal(initial.healthCheck?.status, 'healthy');
+
+    statusCode = 503;
+    const refreshed = await manager.readRuntimeResource('session-1', initial.ref, NO_ABORT);
+    assertShellRun(refreshed);
+    assert.equal(refreshed.status, 'running');
+    assert.equal(refreshed.healthCheck?.status, 'listening');
+    assert.equal(refreshed.healthCheck?.httpStatus, 503);
+    await manager.stopBackgroundTask('session-1', initial.ref, NO_ABORT);
+  });
+
+  test('records a safe process-exited health cause when the child exits before readiness', async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    const manager = createManager(store, undefined, {
+      probeHttpHealth: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        throw new Error('private provider detail');
+      },
+      waitForHealthRetry: async () => undefined,
+    });
+    const result = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'exit 0',
+        healthCheck: {
+          kind: 'http',
+          host: '127.0.0.1',
+          port: 8765,
+          path: '/',
+          timeoutMs: 100,
+        },
+      }),
+    );
+    assertShellRun(result);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.healthCheck?.status, 'unreachable');
+    assert.equal(result.healthCheck?.failureReason, 'process_exited');
+    assert.doesNotMatch(JSON.stringify(result), /private provider detail/);
+  });
+
+  test('reports a bounded unreachable endpoint without exposing probe failures', async () => {
+    const cwd = await workspace();
+    const store = sqliteShellRunStore(cwd);
+    const manager = createManager(store, undefined, {
+      probeHttpHealth: async () => {
+        throw new Error('connect ECONNREFUSED with private diagnostics');
+      },
+      waitForHealthRetry: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      },
+    });
+    const result = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'sleep 10',
+        healthCheck: {
+          kind: 'http',
+          host: '127.0.0.1',
+          port: 8765,
+          path: '/',
+          timeoutMs: 1,
+        },
+      }),
+    );
+    assertShellRun(result);
+    assert.equal(result.status, 'running');
+    assert.equal(result.healthCheck?.status, 'unreachable');
+    assert.ok(
+      result.healthCheck?.failureReason === 'connection_failed' ||
+        result.healthCheck?.failureReason === 'timeout',
+    );
+    assert.doesNotMatch(JSON.stringify(result), /ECONNREFUSED|private diagnostics/);
+    await manager.stopBackgroundTask('session-1', result.ref, NO_ABORT);
+  });
+
+  test('persists native PID and safe Host-policy failures without probing the network', async () => {
+    for (const reason of ['privacy_mode', 'credential_not_configured'] as const) {
+      const cwd = await workspace();
+      const store = sqliteShellRunStore(cwd);
+      let probes = 0;
+      const manager = createManager(store, undefined, {
+        authorizeHttpHealth: async () => ({ kind: 'blocked', reason }),
+        probeHttpHealth: async () => {
+          probes += 1;
+          throw new Error('policy-blocked probes must not reach the network');
+        },
+      });
+      const result = await manager.runBackgroundBash(
+        shellInput({
+          cwd,
+          command: 'sleep 10',
+          healthCheck: {
+            kind: 'http',
+            host: '127.0.0.1',
+            port: 8765,
+            path: '/health',
+            timeoutMs: 1_000,
+          },
+        }),
+      );
+      assertShellRun(result);
+      assert.equal(result.status, 'running');
+      assert.ok(result.pid && result.pid > 0);
+      assert.equal(result.healthCheck?.status, 'unreachable');
+      assert.equal(result.healthCheck?.failureReason, reason);
+      assert.equal(probes, 0);
+
+      const [durable] = await store.listSessionShellRuns('session-1');
+      assert.ok(durable);
+      assert.equal(durable.pid, result.pid);
+      assert.equal(durable.status, 'running');
+      assert.equal(durable.healthCheck?.failureReason, reason);
+      assert.doesNotMatch(JSON.stringify(durable), /credentialId|secret|proxy/i);
+      await manager.stopBackgroundTask('session-1', result.ref, NO_ABORT);
+    }
+  });
+
+  test('accepts only credential-free HTTP loopback health targets with an explicit port', () => {
+    assert.deepEqual(parseShellRunHttpHealthCheck('http://[::1]:8765/health', 250), {
+      kind: 'http',
+      host: '::1',
+      port: 8765,
+      path: '/health',
+      timeoutMs: 250,
+    });
+    assert.equal(parseShellRunHttpHealthCheck('http://127.0.0.1:80/').port, 80);
+    for (const url of [
+      'https://127.0.0.1:8765/health',
+      'http://localhost:8765/health',
+      'http://127.0.0.1/health',
+      'http://user:secret@127.0.0.1:8765/health',
+      'http://127.0.0.1:8765/health?token=secret',
+    ]) {
+      assert.throws(() => parseShellRunHttpHealthCheck(url));
+    }
   });
 
   test('preserves CJK PowerShell output through pipes', {
@@ -342,6 +568,8 @@ describe('ShellRunProcessManager', () => {
     assert.equal(initial.kind, 'shell_run');
     assert.equal(initial.mode, 'pipes');
     assert.equal(initial.output, undefined);
+    assert.ok(initial.pid && initial.pid > 0);
+    assert.equal(initial.healthCheck, undefined);
     assert.equal((await store.readShellRun('session-1', 'shell-run-1')).timeoutMs, undefined);
     await waitForShellRun(
       manager,
@@ -2804,6 +3032,9 @@ function createManager(
     onPtyData?: ShellRunProcessManagerInput['onPtyData'];
     scheduleFlush?: ShellRunProcessManagerInput['scheduleFlush'];
     scheduleTimeout?: ShellRunProcessManagerInput['scheduleTimeout'];
+    probeHttpHealth?: ShellRunProcessManagerInput['probeHttpHealth'];
+    waitForHealthRetry?: ShellRunProcessManagerInput['waitForHealthRetry'];
+    authorizeHttpHealth?: ShellRunProcessManagerInput['authorizeHttpHealth'];
   } = {},
 ): ShellRunProcessManager {
   let id = 0;
@@ -2885,6 +3116,7 @@ function shellInput(input: {
   fdInputs?: readonly { fd: number; data: Uint8Array }[];
   pty?: boolean;
   timeoutMs?: number;
+  healthCheck?: ShellRunBashInput['healthCheck'];
   abortSignal?: AbortSignal;
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
@@ -2903,6 +3135,7 @@ function shellInput(input: {
     ...(input.fdInputs !== undefined ? { fdInputs: input.fdInputs } : {}),
     ...(input.pty !== undefined ? { pty: input.pty } : {}),
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    ...(input.healthCheck !== undefined ? { healthCheck: input.healthCheck } : {}),
     ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
     ...(input.shell !== undefined ? { shell: input.shell } : {}),
     ...(input.onCompletion !== undefined ? { onCompletion: input.onCompletion } : {}),

@@ -141,6 +141,43 @@ describe('Bash tool shell is threaded through to execution, not just the descrip
     assert.deepEqual((captured[0] as { shell?: unknown }).shell, pwshPlan);
   });
 
+  test('background tool normalizes an explicit loopback endpoint health check', async () => {
+    let captured: Parameters<ShellRunLauncher['runBackgroundBash']>[0] | undefined;
+    const controller: ShellRunLauncher = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: (input) => {
+        captured = input;
+        return Promise.resolve({
+          kind: 'shell_run',
+          ref: 'maka://runtime/background-tasks/sr_test',
+          mode: 'pipes',
+          status: 'running',
+          cwd: '.',
+          cmd: '',
+          startedAt: 1,
+          updatedAt: 1,
+          revision: 1,
+        });
+      },
+    };
+    const tool = buildManagedBashTool(controller);
+    await tool.impl(
+      {
+        command: 'python -m http.server 8765',
+        run_in_background: true,
+        health_check: { url: 'http://127.0.0.1:8765/health', timeout_ms: 250 },
+      },
+      fakeToolContext(),
+    );
+    assert.deepEqual(captured?.healthCheck, {
+      kind: 'http',
+      host: '127.0.0.1',
+      port: 8765,
+      path: '/health',
+      timeoutMs: 250,
+    });
+  });
+
   test('managed completion callback remains exactly-once when the launcher settles it', async () => {
     let completionCount = 0;
     const controller: ShellRunLauncher = {

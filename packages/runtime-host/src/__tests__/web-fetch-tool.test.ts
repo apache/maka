@@ -26,7 +26,63 @@ import type {
   ResolveHostOutboundExecutionResult,
   RuntimePolicyOperationCoordinator,
 } from '@maka/storage/runtime-policy-stores';
-import { createHostWebFetchTool } from '../server/web-fetch-tool.js';
+import {
+  createHostLoopbackHealthAuthorizer,
+  createHostWebFetchTool,
+} from '../server/web-fetch-tool.js';
+
+const LOOPBACK_HEALTH = {
+  kind: 'http' as const,
+  host: '127.0.0.1' as const,
+  port: 8765,
+  path: '/health',
+  timeoutMs: 1_000,
+};
+
+test('Host loopback health authorization preserves privacy and credential policy', async () => {
+  for (const [resolved, expected] of [
+    [{ kind: 'privacy_mode' as const }, { kind: 'blocked', reason: 'privacy_mode' }],
+    [
+      {
+        kind: 'credential_not_configured' as const,
+        status: {
+          locator: { scope: 'network_proxy' as const, kind: 'password' as const },
+          configured: false,
+          credentialId: null,
+          revision: null,
+          updatedAt: null,
+        },
+      },
+      { kind: 'blocked', reason: 'credential_not_configured' },
+    ],
+  ] as const) {
+    const authorize = createHostLoopbackHealthAuthorizer(resolver(resolved));
+    assert.deepEqual(await authorize(LOOPBACK_HEALTH, context().abortSignal), expected);
+  }
+});
+
+test('Host loopback health authorization admits without exporting proxy credentials', async () => {
+  const authorize = createHostLoopbackHealthAuthorizer(
+    resolver({
+      kind: 'ready',
+      networkProxy: {
+        ...createDefaultRuntimePolicy().networkProxy,
+        enabled: true,
+        authEnabled: true,
+      },
+      secretMaterial: {
+        networkProxy: {
+          locator: { scope: 'network_proxy', kind: 'password' },
+          credentialId: 'proxy-credential',
+          revision: 1,
+          secret: 'must-not-leave-policy-result',
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(await authorize(LOOPBACK_HEALTH, context().abortSignal), { kind: 'allowed' });
+});
 
 test('Host WebFetch uses the resolved proxy snapshot and closes its transport', async () => {
   const networkProxy = {

@@ -25,12 +25,41 @@ import {
   type ProxiedFetchTransport,
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type {
+  ShellRunHttpHealthAuthorization,
+  ShellRunHttpHealthCheckRequest,
+} from '@maka/runtime/shell-run-contract';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 interface HostWebFetchServiceInput {
   readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+}
+
+/**
+ * Applies Host outbound policy to an explicit loopback health probe. The
+ * returned authorizer intentionally carries no proxy material: loopback stays
+ * local rather than being routed through a configured remote proxy.
+ */
+export function createHostLoopbackHealthAuthorizer(
+  policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>,
+): (
+  input: ShellRunHttpHealthCheckRequest,
+  abortSignal: AbortSignal,
+) => Promise<ShellRunHttpHealthAuthorization> {
+  return async (_input, abortSignal) => {
+    if (abortSignal.aborted) throw abortSignal.reason;
+    const resolved = await policy.resolveHostOutboundExecution();
+    if (abortSignal.aborted) throw abortSignal.reason;
+    if (resolved.kind === 'privacy_mode') {
+      return { kind: 'blocked', reason: 'privacy_mode' };
+    }
+    if (resolved.kind === 'credential_not_configured') {
+      return { kind: 'blocked', reason: 'credential_not_configured' };
+    }
+    return { kind: 'allowed' };
+  };
 }
 
 export interface HostWebFetchService {

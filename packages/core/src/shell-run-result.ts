@@ -28,6 +28,7 @@ import type {
 import { defineObjectShape, hasExactShape } from './record-schema.js';
 import {
   isShellOutput,
+  isShellRunHealthCheck,
   isShellRunStatus,
   isValidShellRunState,
   type ShellOutput,
@@ -112,6 +113,8 @@ const CURRENT_SHELL_RUN_RESULT_SHAPE = defineObjectShape<ShellRunToolResultRecor
   ['kind', 'ref', 'mode', 'status', 'cwd', 'cmd', 'startedAt', 'updatedAt', 'revision'],
   [
     'completedAt',
+    'pid',
+    'healthCheck',
     'exitCode',
     'failureMessage',
     'timeoutMs',
@@ -194,6 +197,8 @@ function currentShellRunResult(value: Record<string, unknown>): ShellRunToolResu
     !isFiniteNumber(value.startedAt) ||
     !isFiniteNumber(value.updatedAt) ||
     !isPositiveInteger(value.revision) ||
+    (value.pid !== undefined && !isPositiveInteger(value.pid)) ||
+    (value.healthCheck !== undefined && !isShellRunHealthCheck(value.healthCheck)) ||
     !isOptionalFiniteNumber(value.completedAt) ||
     !isOptionalFiniteNumber(value.exitCode) ||
     !isOptionalFiniteNumber(value.timeoutMs) ||

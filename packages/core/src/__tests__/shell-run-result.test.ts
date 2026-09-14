@@ -249,6 +249,32 @@ describe('decodeCanonicalShellToolResultContent', () => {
     }
   });
 
+  it('accepts safe process and endpoint evidence and rejects malformed health state', () => {
+    const valid = {
+      ...shellRun(),
+      pid: 42,
+      healthCheck: {
+        kind: 'http',
+        host: '127.0.0.1',
+        port: 8765,
+        path: '/health',
+        timeoutMs: 5_000,
+        status: 'healthy',
+        checkedAt: 2,
+        httpStatus: 204,
+      },
+    } as const;
+    assert.equal(decodeCanonicalShellToolResultContent(valid).state, 'valid');
+    assert.equal(
+      decodeCanonicalShellToolResultContent({
+        ...valid,
+        healthCheck: { ...valid.healthCheck, status: 'healthy', httpStatus: 503 },
+      }).state,
+      'invalid',
+    );
+    assert.equal(decodeCanonicalShellToolResultContent({ ...valid, pid: 0 }).state, 'invalid');
+  });
+
   it('accepts queued PTY input and rejects the superseded applied field', () => {
     const base = {
       ...shellRun(),

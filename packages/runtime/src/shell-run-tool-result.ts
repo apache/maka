@@ -142,6 +142,8 @@ function shellRunStateContent(record: ShellRunRecord): ShellRunCompactResult {
     kind: 'shell_run',
     ref: shellRunResourceRef(record.shellRunId),
     status: record.status,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
+    ...(record.healthCheck !== undefined ? { healthCheck: { ...record.healthCheck } } : {}),
     cwd: record.cwd,
     cmd: record.command,
     startedAt: record.startedAt,
