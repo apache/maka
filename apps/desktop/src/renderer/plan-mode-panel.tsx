@@ -88,9 +88,6 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
   useEffect(() => {
     setState(undefined);
     setError(undefined);
-    // Reads started by the previous effect run — or by the Session the user just
-    // left — are superseded from here on; the cleanup below covers unmount.
-    planReadSequence.current += 1;
     if (!session) return;
     const refreshOrReport = () => void refresh().catch((cause) => {
       reportUnexpectedError('plan-mode:refresh', cause);
@@ -111,6 +108,8 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       refreshOrReport,
     );
     return () => {
+      // Supersedes every read this run started: a Session switch, a close and an
+      // unmount all pass through here, and the next effect refreshes again.
       planReadSequence.current += 1;
       unsubscribeEvents();
       unsubscribePlanChanges();

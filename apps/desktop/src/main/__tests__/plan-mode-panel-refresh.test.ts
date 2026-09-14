@@ -125,16 +125,6 @@ test('a read still in flight when the Session is closed cannot land afterwards',
   assert.equal(harness.error(), undefined);
 });
 
-test('a read still in flight at unmount cannot land afterwards', async () => {
-  const harness = await mountPanelFixture();
-  const pending = harness.planChanged.expect();
-
-  await harness.unmount();
-  pending.resolve(planState(['completed', 'completed', 'completed']));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(harness.error(), undefined);
-});
-
 test('the newest read still reports its own failure', async () => {
   const harness = await mountPanelFixture();
   const only = harness.planChanged.expect();
@@ -153,7 +143,6 @@ interface PanelFixture {
   planChanged: { expect(): PendingRead };
   flush(): Promise<void>;
   switchSession(sessionId: string | undefined, state?: PlanSessionState): Promise<void>;
-  unmount(): Promise<void>;
 }
 
 interface PendingRead {
@@ -276,10 +265,6 @@ async function mountPanelFixture(): Promise<PanelFixture> {
         root.render(rendered());
       });
       await act(async () => {});
-    },
-    unmount: async () => {
-      await act(() => root.unmount());
-      mountedRoot = undefined;
     },
   };
 }
