@@ -97,19 +97,75 @@ test('a response for the Session the user left cannot land on the new one', asyn
   assert.match(harness.text(), /1\/3 steps/, 'the previous Session read must be discarded');
 });
 
+test('a superseded read that fails changes neither the panel nor the error', async () => {
+  const harness = await mountPanelFixture();
+  const older = harness.planChanged.expect();
+  const newer = harness.planChanged.expect();
+
+  newer.resolve(planState(['completed', 'in_progress', 'pending']));
+  await harness.flush();
+  assert.match(harness.text(), /1\/3 steps/);
+
+  older.reject(new Error('Plan projection is unavailable'));
+  await harness.flush();
+  assert.match(harness.text(), /1\/3 steps/);
+  assert.equal(harness.error(), undefined, 'a superseded failure must stay silent');
+});
+
+test('a read still in flight when the Session is closed cannot land afterwards', async () => {
+  const harness = await mountPanelFixture();
+  const pending = harness.planChanged.expect();
+
+  await harness.switchSession(undefined);
+  assert.equal(harness.state(), undefined);
+
+  pending.resolve(planState(['completed', 'completed', 'completed']));
+  await harness.flush();
+  assert.equal(harness.state(), undefined, 'a read for a closed panel must be discarded');
+  assert.equal(harness.error(), undefined);
+});
+
+test('a read still in flight at unmount cannot land afterwards', async () => {
+  const harness = await mountPanelFixture();
+  const pending = harness.planChanged.expect();
+
+  await harness.unmount();
+  pending.resolve(planState(['completed', 'completed', 'completed']));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.error(), undefined);
+});
+
+test('the newest read still reports its own failure', async () => {
+  const harness = await mountPanelFixture();
+  const only = harness.planChanged.expect();
+
+  only.reject(new Error('Plan projection is unavailable'));
+  await harness.flush();
+  assert.match(harness.text(), /0\/3 steps/, 'the last known projection is kept');
+  assert.match(harness.error() ?? '', /The plan action failed/);
+});
+
 interface PanelFixture {
   readonly sessionEvents: number;
   text(): string;
-  planChanged: { expect(): Deferred<PlanSessionState> };
+  state(): PlanSessionState | undefined;
+  error(): string | undefined;
+  planChanged: { expect(): PendingRead };
   flush(): Promise<void>;
-  switchSession(sessionId: string, state: PlanSessionState): Promise<void>;
+  switchSession(sessionId: string | undefined, state?: PlanSessionState): Promise<void>;
+  unmount(): Promise<void>;
+}
+
+interface PendingRead {
+  resolve(state: PlanSessionState): void;
+  reject(cause: unknown): void;
 }
 
 async function mountPanelFixture(): Promise<PanelFixture> {
   const pendingReads = new Map<string, Deferred<PlanSessionState>[]>();
   const stagedStates = new Map<string, PlanSessionState>();
   let sessionEvents = 0;
-  let sessionId = 'session-1';
+  let sessionId: string | undefined = 'session-1';
   let planChangedHandler: (() => void) | undefined;
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
   const matchMedia = (media: string) => ({
@@ -166,7 +222,8 @@ async function mountPanelFixture(): Promise<PanelFixture> {
 
   let controller: PlanModeState | undefined;
   function Harness() {
-    const planMode = usePlanModeState({ id: sessionId } as SessionSummary);
+    const session = sessionId ? ({ id: sessionId } as SessionSummary) : undefined;
+    const planMode = usePlanModeState(session);
     controller = planMode;
     return createElement(PlanExecutionPanel, { planMode });
   }
@@ -192,15 +249,21 @@ async function mountPanelFixture(): Promise<PanelFixture> {
       return sessionEvents;
     },
     text: () => container.textContent ?? '',
+    state: () => controller?.state,
+    error: () => controller?.error,
     planChanged: {
       expect: () => {
         const pending = deferred<PlanSessionState>();
+        assert.ok(sessionId, 'no Session is selected');
         const queued = pendingReads.get(sessionId) ?? [];
         queued.push(pending);
         pendingReads.set(sessionId, queued);
         assert.ok(planChangedHandler, 'the panel did not subscribe to Plan changes');
         planChangedHandler();
-        return pending;
+        return {
+          resolve: (state) => pending.resolve(state),
+          reject: (cause) => pending.reject(cause),
+        };
       },
     },
     flush: async () => {
@@ -208,11 +271,15 @@ async function mountPanelFixture(): Promise<PanelFixture> {
     },
     switchSession: async (nextSessionId, state) => {
       sessionId = nextSessionId;
-      stagedStates.set(nextSessionId, state);
+      if (nextSessionId && state) stagedStates.set(nextSessionId, state);
       await act(async () => {
         root.render(rendered());
       });
       await act(async () => {});
+    },
+    unmount: async () => {
+      await act(() => root.unmount());
+      mountedRoot = undefined;
     },
   };
 }

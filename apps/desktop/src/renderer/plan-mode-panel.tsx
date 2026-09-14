@@ -62,23 +62,35 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     turnId: string;
   } | undefined>(undefined);
 
-  const refreshSequence = useRef(0);
+  const planReadSequence = useRef(0);
   const refresh = useCallback(async () => {
     if (!session) return;
     // Plan execution writes now refresh while the Turn runs, so reads can
     // overlap: only the newest read may publish, or a slower earlier response
     // puts stale progress back on screen, and a response for the Session the
     // user just left can land after the switch.
-    const sequence = refreshSequence.current + 1;
-    refreshSequence.current = sequence;
-    const next = await window.maka.sessions.getPlanState(session.id);
-    if (refreshSequence.current !== sequence) return;
+    const sequence = planReadSequence.current + 1;
+    planReadSequence.current = sequence;
+    let next: PlanSessionState;
+    try {
+      next = await window.maka.sessions.getPlanState(session.id);
+    } catch (cause) {
+      // A superseded read owns nothing, including its failure: report it only
+      // while it is still the newest read, so a late rejection cannot raise an
+      // error for a Session the panel has already left.
+      if (planReadSequence.current !== sequence) return;
+      throw cause;
+    }
+    if (planReadSequence.current !== sequence) return;
     setState(next);
   }, [session?.id]);
 
   useEffect(() => {
     setState(undefined);
     setError(undefined);
+    // Reads started by the previous effect run — or by the Session the user just
+    // left — are superseded from here on; the cleanup below covers unmount.
+    planReadSequence.current += 1;
     if (!session) return;
     const refreshOrReport = () => void refresh().catch((cause) => {
       reportUnexpectedError('plan-mode:refresh', cause);
@@ -99,6 +111,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       refreshOrReport,
     );
     return () => {
+      planReadSequence.current += 1;
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
