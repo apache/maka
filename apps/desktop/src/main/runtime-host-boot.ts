@@ -134,7 +134,6 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
-import { resolveWindowRevealMode } from "./window-reveal.js";
 import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
 import {
   captureDesktopDiagnosticEnvironment,
@@ -270,6 +269,7 @@ import {
   isComputerUseRealModelE2e,
   isE2e,
   isIsolatedE2e,
+  revealMode,
 } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep } from "./startup-step.js";
@@ -502,11 +502,6 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
-const revealMode = resolveWindowRevealMode(
-  Boolean(e2eFixture) || isIsolatedE2e,
-  process.env.MAKA_E2E_SHOW_WINDOW === "1",
-  app.isPackaged,
-);
 let onMainWindowClose = (): void => {};
 let onMainWindowClosed = (): void => {};
 const mainWindowController = createMainWindowController({

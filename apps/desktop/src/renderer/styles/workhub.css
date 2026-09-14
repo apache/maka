@@ -156,11 +156,10 @@
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
   .workHubComposerContent { position: relative; }
-  /* Top-layer content still needs room inside the native window. Measuring
-     this leading space grows the bottom-anchored window upward, without
-     changing the composer's layout or its controls' screen positions. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .workHubComposerSurface:has(.maka-model-wheel-anchor[data-open='true'])::before {
-    content: ''; display: block; height: 136px;
+  /* Compact WorkHub keeps its original inline wheel footprint. Other hosts
+     keep the button footprint and paint the same wheel over that position. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
+    width: min(264px, 55vw); height: var(--maka-model-wheel-height);
   }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
