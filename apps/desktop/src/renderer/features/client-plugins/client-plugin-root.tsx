@@ -22,6 +22,10 @@ import {
   MakaClientRoot,
   MakaClientRootOutlet,
 } from '@maka/ui/client-plugin-runtime';
+import {
+  MakaClientPluginSdkModule,
+  MakaClientSlotOutlet,
+} from '@maka/ui/client-plugin';
 import { useEffect, useState, type ReactNode } from 'react';
 import * as ReactModule from 'react';
 import * as ReactJsxRuntime from 'react/jsx-runtime';
@@ -45,6 +49,7 @@ export function ClientPluginRoot(props: { readonly children?: ReactNode }) {
       staticModules: Object.freeze({
         react: ReactModule,
         'react/jsx-runtime': ReactJsxRuntime,
+        '@maka/ui/client-plugin': MakaClientPluginSdkModule,
         '@maka/ui/client-plugin-runtime': MakaClientPluginRuntimeModule,
       }),
     });
@@ -72,5 +77,10 @@ export function ClientPluginRoot(props: { readonly children?: ReactNode }) {
     };
   }, [root, services]);
 
-  return <MakaClientRootOutlet root={root}>{props.children}</MakaClientRootOutlet>;
+  return (
+    <MakaClientRootOutlet root={root}>
+      {props.children}
+      <MakaClientSlotOutlet name="shell.overlay" owner={{}} />
+    </MakaClientRootOutlet>
+  );
 }

@@ -157,7 +157,9 @@ test('Client Runtime re-materializes consumers when a dependency generation chan
           plugin.extensionId === 'dependency'
             ? () => ({ apply() {}, value: plugin.generation === 1 ? 'one' : 'two' })
             : (require) => {
-                const dependency = require('dependency') as { readonly value: string };
+                const dependency = require(plugin.dependencies[0] ?? '') as {
+                  readonly value: string;
+                };
                 return {
                   apply(ctx: MakaClientPluginContext) {
                     ctx.slots.register({ name: 'root' }, ({ children }) => (
@@ -179,5 +181,36 @@ test('Client Runtime re-materializes consumers when a dependency generation chan
   assert.match(render(root), /data-dependency="one"/u);
   await runtime.reconcile(snapshot(2, consumer, descriptor('dependency', 2)));
   assert.match(render(root), /data-dependency="two"/u);
+  await runtime.close();
+});
+
+test('Client Runtime atomically keeps the previous typed Slots when a candidate fails', async () => {
+  const root = new MakaClientRoot();
+  let runtime!: ClientPluginRuntime;
+  runtime = new ClientPluginRuntime({
+    root,
+    staticModules: {},
+    loadBundle: async (plugin) => {
+      runtime.registerBundle({
+        id: plugin.extensionId,
+        factory: () => ({
+          apply(ctx: MakaClientPluginContext) {
+            ctx.slots.register(
+              { name: 'sidebar.footer', id: `generation-${plugin.generation}` },
+              () => null,
+            );
+            if (plugin.generation === 2) throw new Error('slot candidate failed');
+          },
+        }),
+      });
+    },
+  });
+
+  await runtime.reconcile(snapshot(1, descriptor('slots', 1)));
+  await runtime.reconcile(snapshot(2, descriptor('slots', 2)));
+
+  const sidebar = runtime.inspect().slots.find((slot) => slot.name === 'sidebar.footer');
+  assert.equal(sidebar?.occupants[0]?.id, 'generation-1');
+  assert.match(runtime.inspect().failure?.diagnostic ?? '', /slot candidate failed/u);
   await runtime.close();
 });

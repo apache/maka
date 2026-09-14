@@ -228,6 +228,7 @@ packages/ui/src/chat-view.tsx
 packages/ui/src/choice-panel.tsx
 packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/client-plugin-runtime.tsx
+packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx

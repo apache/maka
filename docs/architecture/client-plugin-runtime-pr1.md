@@ -17,12 +17,12 @@
   under the License.
 -->
 
-# Client Plugin Runtime PR1 contract
+# Client Plugin Runtime and typed Slots contract
 
-PR1 makes a trusted Renderer bundle part of the same package, immutable
-generation, and composition authority as a Host plugin. It intentionally ships
-one typed `root` Slot. The wider Slot catalog and Host-to-Client RPC/events are
-separate follow-up changes.
+This change makes a trusted Renderer bundle part of the same package, immutable
+generation, and composition authority as a Host plugin. It also provides a
+typed, recursively extensible Slot graph and a compatibility-governed public UI
+SDK. Host-to-Client RPC and product events remain a separate follow-up.
 
 ## Unified package
 
@@ -85,22 +85,92 @@ window.__MakaModuleLoader__.load({
 });
 ```
 
-PR1 supplies `react`, `react/jsx-runtime`, `@maka/ui/client-plugin-runtime`, and
-composed package dependencies to `require`. A package dependency must be
-declared in the manifest. The bundle must not contain dynamic imports or depend
-on Node globals. A curated public component SDK belongs to PR2; PR1 does not
-expose the full `@maka/ui` barrel to plugins.
+The Runtime supplies `react`, `react/jsx-runtime`,
+`@maka/ui/client-plugin-runtime`, `@maka/ui/client-plugin`, and composed package
+dependencies to `require`. A package dependency must be declared in the
+manifest. The bundle must not contain dynamic imports or depend on Node globals.
+The full private `@maka/ui` product barrel is deliberately not available.
 
 The Client `apply` function receives:
 
-- the typed `root` Slot registrar;
+- the typed native and recursive Slot registrar;
 - `ctx.effect(setup)` for lifecycle-owned effects;
 - `ctx.style(css)` for lifecycle-owned Renderer CSS;
 - immutable entry identity and generation metadata.
 
-The root Slot wraps Maka's complete product surface. More specific and
-recursively extensible Slots, including provider-aware UI insertion points,
-belong to PR2.
+The backward-compatible `root` Slot wraps Maka's complete product surface. New
+plugins should prefer the narrowest native Slot that fits their contribution.
+
+## Typed recursive Slots
+
+The Slot contract supports four composition kinds:
+
+| Kind | Semantics |
+| --- | --- |
+| `single` | Lowest-priority live contribution replaces the fallback; a failed contribution yields to the next one. |
+| `list` | Stable additive entries keyed by `id`, ordered by `order`, with priority shadowing per id. |
+| `keyed` | One replacement cell per runtime dispatch key, such as a Tool name or Settings page id. |
+| `chain` | Priority-ordered pure selectors; the first non-null match owns the render occurrence. |
+
+Slots are `root`, `session-maybe`, or strict `session` scoped. Session Slot
+components receive `sessionId`; a strict Session Slot renders its fallback when
+there is no selected Session.
+
+Maka currently exposes these deliberately small, product-native seams:
+
+| Slot | Kind / scope | Purpose |
+| --- | --- | --- |
+| `shell.overlay` | list / root | Frame-wide overlay surfaces. |
+| `sidebar.footer` | list / root | Additive Session-sidebar footer actions. |
+| `settings.navigation` | list / root | Plugin-owned Settings navigation controls. |
+| `settings.page` | keyed / root | Full plugin Settings pages dispatched by page id. |
+| `conversation.header.actions` | list / session | Actions in the active conversation context header. |
+| `conversation.turn.footer` | list / session | Actions below an assistant Turn. |
+| `conversation.composer.toolbar` | list / session-maybe | Controls in the Composer toolbar. |
+| `conversation.tool.detail` | keyed / session | Tool detail rendering keyed by Tool name. |
+
+A contribution can declare child Slots in the same registration. Those children
+exist only while the parent registration is live, and the parent component alone
+receives the typed `renderSlot` / `renderSlotChain` authority:
+
+```ts
+declare module '@maka/ui/client-plugin' {
+  interface MakaClientSlotMap {
+    'weather.panel.body': {
+      kind: 'list';
+      scope: 'session';
+      owner: { city: string };
+    }
+  }
+}
+
+ctx.slots.register(
+  {
+    name: 'shell.overlay',
+    id: 'weather-panel',
+    children: {
+      'weather.panel.body': { kind: 'list', scope: 'session' },
+    },
+  },
+  ({ renderSlot }) => renderSlot('weather.panel.body', { city: 'Hangzhou' }),
+);
+```
+
+Removing the parent recursively removes its child declarations and occupants.
+This gives plugins DSH-class nested composition freedom without making a flat,
+product-wide list of every possible internal React location into a permanent ABI.
+
+## Public UI SDK
+
+`@maka/ui/client-plugin` is the supported Client Plugin UI surface. It exports:
+
+- Slot contracts, runtime props, outlets, and Session scope types;
+- stable Astryx layout, navigation, form, feedback, and text primitives;
+- Client Plugin context types.
+
+It does not export Maka product internals. Trusted plugins may still use DOM APIs
+or ship their own React components, but private Maka imports are not compatibility
+guaranteed and are not supplied by the module loader.
 
 ## Lifecycle and rollback
 
@@ -112,7 +182,7 @@ Renderer then:
 1. loads all immutable bundle factories;
 2. stages every plugin and its owned effects;
 3. commits the complete candidate graph;
-4. swaps the root Slot once;
+4. atomically swaps the root wrappers and complete typed Slot graph;
 5. disposes the previous graph in reverse order.
 
 If loading, dependency resolution, `apply`, or effect setup fails, the
@@ -120,9 +190,8 @@ candidate is disposed and the last committed UI remains active. Host restart,
 package reload, uninstall, and recovery therefore converge through the same
 Store and composition lifecycle.
 
-## Deferred from PR1
+## Deferred
 
-- the full typed Slot catalog and recursive sub-Slots;
 - typed Host-to-Client RPC, streams, and product events;
 - plugin management UI and SDK build tooling;
 - untrusted Renderer sandboxing or native permission escalation.

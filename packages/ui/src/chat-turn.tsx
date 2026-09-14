@@ -75,6 +75,7 @@ import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
+import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -788,6 +789,7 @@ export const TurnView = memo(function TurnView(props: {
             )}
             {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
               <TurnFooter
+                turnId={turn.turnId}
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}
                 meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
                 live={!!props.liveStreaming}
@@ -917,6 +919,7 @@ export interface TurnPresentation {
 export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
 
 export function TurnFooter(props: {
+  turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
   /** One-line turn meta (model · duration · cost) shown beside the actions. */
   meta?: string;
@@ -945,45 +948,55 @@ export function TurnFooter(props: {
       role={props.live ? undefined : 'toolbar'}
       aria-label={props.live ? undefined : copy.answerActionsAriaLabel(props.context)}
       footer={
-        props.activity ?? <>
-          {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
-          {props.actions.map((action) => {
-            const isCopyAction = action.id === 'copy';
-            const copyFeedbackLabel = copyPhase === 'pending'
-              ? `${copy.copying}…`
-              : copyPhase === 'copied'
-                ? copy.copied
-                : copyPhase === 'failed'
-                  ? copy.copyFailed
-                  : action.label;
-            const tooltipText = isCopyAction
-              ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
-              : (action.tooltip ?? action.label);
-            const icon = isCopyAction && copyPhase === 'copied'
-              ? <Icon icon="check" size="sm" />
-              : STATUS_FOOTER_ICON[action.id];
-            return (
-              <UiIconButton
-                key={action.id}
-                label={copy.answerActionAriaLabel(
-                  action.label,
-                  props.context,
-                )}
-                tooltip={tooltipText}
-                icon={icon}
-                variant="ghost"
-                size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
-                data-action={action.id}
-                data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                isDisabled={!action.enabled}
-                isLoading={
-                  isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
-                }
-                onClick={() => void handleClick(action)}
-              />
-            );
-          })}
+        <>
+          {props.activity ?? <>
+            {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
+            {props.actions.map((action) => {
+              const isCopyAction = action.id === 'copy';
+              const copyFeedbackLabel = copyPhase === 'pending'
+                ? `${copy.copying}…`
+                : copyPhase === 'copied'
+                  ? copy.copied
+                  : copyPhase === 'failed'
+                    ? copy.copyFailed
+                    : action.label;
+              const tooltipText = isCopyAction
+                ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
+                : (action.tooltip ?? action.label);
+              const icon = isCopyAction && copyPhase === 'copied'
+                ? <Icon icon="check" size="sm" />
+                : STATUS_FOOTER_ICON[action.id];
+              return (
+                <UiIconButton
+                  key={action.id}
+                  label={copy.answerActionAriaLabel(
+                    action.label,
+                    props.context,
+                  )}
+                  tooltip={tooltipText}
+                  icon={icon}
+                  variant="ghost"
+                  size="sm"
+                  className={markerVariants({ variant: 'footer-action' })}
+                  data-action={action.id}
+                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+                  isDisabled={!action.enabled}
+                  isLoading={
+                    isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
+                  }
+                  onClick={() => void handleClick(action)}
+                />
+              );
+            })}
+          </>}
+          <MakaClientSlotOutlet
+            name="conversation.turn.footer"
+            owner={{
+              turnId: props.turnId,
+              live: props.live === true,
+              assistantText: props.assistantText,
+            }}
+          />
         </>
       }
     />

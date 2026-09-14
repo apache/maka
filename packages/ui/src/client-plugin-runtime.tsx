@@ -19,6 +19,12 @@
 
 import type { ReactNode } from 'react';
 import { useSyncExternalStore } from 'react';
+import {
+  MakaClientSlotCore,
+  MakaClientSlotProvider,
+  type MakaClientLiveSlotNode,
+  type MakaClientSlotRegistrar,
+} from './client-plugin-slots.js';
 
 export interface MakaClientPluginDescriptor {
   readonly entryId: string;
@@ -68,16 +74,15 @@ export interface MakaClientRootProps {
 
 export type MakaClientRootComponent = (props: MakaClientRootProps) => ReactNode;
 
+export type MakaClientPluginSlots = MakaClientSlotRegistrar & {
+  register(options: { readonly name: 'root' }, component: MakaClientRootComponent): () => void;
+};
+
 export interface MakaClientPluginContext {
   readonly id: string;
   readonly extensionId: string;
   readonly generation: number;
-  readonly slots: {
-    register(
-      options: { readonly name: 'root' },
-      component: MakaClientRootComponent,
-    ): () => void;
-  };
+  readonly slots: MakaClientPluginSlots;
   /** Stage an owned side effect. Setup runs only if the whole snapshot commits. */
   effect(setup: () => void | (() => void | Promise<void>), label?: string): () => void;
   /** Stage Client CSS with lifecycle-owned removal. */
@@ -96,6 +101,7 @@ export interface MakaClientPluginRuntimeInspection {
     readonly extensionId: string;
     readonly generation: number;
   }[];
+  readonly slots: readonly MakaClientLiveSlotNode[];
   readonly failure: { readonly revision: string; readonly diagnostic: string } | null;
 }
 
@@ -113,22 +119,37 @@ interface StagedEffect {
 interface PluginInstance {
   readonly descriptor: MakaClientPluginDescriptor;
   readonly roots: StagedRootRegistration[];
+  readonly slotDisposers: Array<() => void>;
   readonly effects: StagedEffect[];
+}
+
+interface MakaClientRootSnapshot {
+  readonly components: readonly MakaClientRootComponent[];
+  readonly slots: MakaClientSlotCore;
 }
 
 export class MakaClientRoot {
   readonly #listeners = new Set<() => void>();
-  #components: readonly MakaClientRootComponent[] = Object.freeze([]);
+  #snapshot: MakaClientRootSnapshot = Object.freeze({
+    components: Object.freeze([]),
+    slots: new MakaClientSlotCore(),
+  });
 
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
 
-  snapshot = (): readonly MakaClientRootComponent[] => this.#components;
+  snapshot = (): MakaClientRootSnapshot => this.#snapshot;
 
-  replace(components: readonly MakaClientRootComponent[]): void {
-    this.#components = Object.freeze([...components]);
+  replace(
+    components: readonly MakaClientRootComponent[],
+    slots: MakaClientSlotCore = new MakaClientSlotCore(),
+  ): void {
+    this.#snapshot = Object.freeze({
+      components: Object.freeze([...components]),
+      slots,
+    });
     for (const listener of this.#listeners) listener();
   }
 }
@@ -137,14 +158,18 @@ export function MakaClientRootOutlet(props: {
   readonly root: MakaClientRoot;
   readonly children: ReactNode;
 }): ReactNode {
-  const components = useSyncExternalStore(
+  const snapshot = useSyncExternalStore(
     props.root.subscribe,
     props.root.snapshot,
     props.root.snapshot,
   );
-  return components.reduceRight<ReactNode>(
-    (children, Component) => <Component>{children}</Component>,
-    props.children,
+  return (
+    <MakaClientSlotProvider core={snapshot.slots}>
+      {snapshot.components.reduceRight<ReactNode>(
+        (children, Component) => <Component>{children}</Component>,
+        props.children,
+      )}
+    </MakaClientSlotProvider>
   );
 }
 
@@ -165,6 +190,7 @@ export class ClientPluginRuntime {
   readonly #modules = new Map<string, Record<string, unknown>>();
   #pending: MakaClientPluginDescriptor | undefined;
   #active: readonly PluginInstance[] = Object.freeze([]);
+  #slots = new MakaClientSlotCore();
   #revision: string | null = null;
   #failure: { readonly revision: string; readonly diagnostic: string } | null = null;
   #closed = false;
@@ -203,6 +229,7 @@ export class ClientPluginRuntime {
           }),
         ),
       ),
+      slots: this.#slots.inspect(),
       failure: this.#failure,
     });
   }
@@ -226,6 +253,7 @@ export class ClientPluginRuntime {
     if (this.#closed) throw new Error('Client Plugin Runtime is closed');
     if (snapshot.revision === this.#revision || snapshot.revision === this.#failure?.revision) return;
     const staged: PluginInstance[] = [];
+    const slots = new MakaClientSlotCore();
     try {
       const byExtension = indexDescriptors(snapshot.plugins);
       const ordered = orderDescriptors(snapshot.plugins, byExtension);
@@ -235,7 +263,9 @@ export class ClientPluginRuntime {
       this.#modules.clear();
       for (const descriptor of uniqueBundles(ordered)) await this.#ensureFactory(descriptor);
       if (this.#closed) throw new Error('Client Plugin Runtime is closed');
-      for (const descriptor of ordered) staged.push(await this.#stage(descriptor, byExtension));
+      for (const descriptor of ordered) {
+        staged.push(await this.#stage(descriptor, byExtension, slots));
+      }
       if (this.#closed) throw new Error('Client Plugin Runtime is closed');
       for (const instance of staged) await commitEffects(instance);
       if (this.#closed) throw new Error('Client Plugin Runtime is closed');
@@ -259,8 +289,10 @@ export class ClientPluginRuntime {
           .roots.filter(({ cancelled }) => !cancelled)
           .map(({ component }) => component),
       ),
+      slots,
     );
     this.#active = Object.freeze(staged);
+    this.#slots = slots;
     this.#revision = snapshot.revision;
     this.#failure = null;
     this.#retainFactories(snapshot.plugins);
@@ -270,7 +302,8 @@ export class ClientPluginRuntime {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#root.replace([]);
+    this.#slots = new MakaClientSlotCore();
+    this.#root.replace([], this.#slots);
     const active = this.#active;
     this.#active = Object.freeze([]);
     this.#revision = null;
@@ -319,14 +352,20 @@ export class ClientPluginRuntime {
   async #stage(
     descriptor: MakaClientPluginDescriptor,
     byExtension: ReadonlyMap<string, MakaClientPluginDescriptor>,
+    slots: MakaClientSlotCore,
   ): Promise<PluginInstance> {
     const exports = this.#materialize(descriptor, byExtension, new Set());
     const apply = exports.apply ?? exports.default;
     if (typeof apply !== 'function') {
       throw new Error(`Client Plugin ${descriptor.extensionId} must export apply(ctx)`);
     }
-    const instance: PluginInstance = { descriptor, roots: [], effects: [] };
-    const context = this.#context(instance);
+    const instance: PluginInstance = {
+      descriptor,
+      roots: [],
+      slotDisposers: [],
+      effects: [],
+    };
+    const context = this.#context(instance, slots);
     const cleanup = await (apply as MakaClientPluginApply)(context, descriptor.config ?? {});
     if (typeof cleanup === 'function') {
       instance.effects.push({ setup: () => cleanup, cancelled: false });
@@ -334,26 +373,38 @@ export class ClientPluginRuntime {
     return instance;
   }
 
-  #context(instance: PluginInstance): MakaClientPluginContext {
+  #context(instance: PluginInstance, slots: MakaClientSlotCore): MakaClientPluginContext {
+    const register = (options: { readonly name?: string }, component: unknown): (() => void) => {
+      if (options?.name === 'root') {
+        if (typeof component !== 'function') {
+          throw new Error('Client Plugin root Slot component must be a function');
+        }
+        const registration: StagedRootRegistration = {
+          component: component as MakaClientRootComponent,
+          cancelled: false,
+        };
+        instance.roots.push(registration);
+        return () => {
+          registration.cancelled = true;
+        };
+      }
+      const dispose = slots.register(
+        {
+          ...options,
+          registrant: `${instance.descriptor.extensionId}:${instance.descriptor.entryId}`,
+        } as never,
+        component as never,
+      );
+      instance.slotDisposers.push(dispose);
+      return dispose;
+    };
     return Object.freeze({
       id: instance.descriptor.entryId,
       extensionId: instance.descriptor.extensionId,
       generation: instance.descriptor.generation,
       slots: Object.freeze({
-        register: (
-          options: { readonly name: 'root' },
-          component: MakaClientRootComponent,
-        ) => {
-          if (options?.name !== 'root' || typeof component !== 'function') {
-            throw new Error('PR1 exposes only the typed root Client Slot');
-          }
-          const registration: StagedRootRegistration = { component, cancelled: false };
-          instance.roots.push(registration);
-          return () => {
-            registration.cancelled = true;
-          };
-        },
-      }),
+        register,
+      }) as MakaClientPluginSlots,
       effect: (setup: () => void | (() => void | Promise<void>)) => {
         if (typeof setup !== 'function') throw new Error('Client Plugin effect must be a function');
         const effect: StagedEffect = { setup, cancelled: false };
@@ -521,6 +572,7 @@ async function disposeInstances(instances: readonly PluginInstance[]): Promise<v
       if (!cleanup) continue;
       await Promise.resolve().then(cleanup).catch(() => undefined);
     }
+    for (const dispose of [...instance.slotDisposers].reverse()) dispose();
   }
 }
 

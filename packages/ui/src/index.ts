@@ -19,6 +19,7 @@
 
 export * from './artifact-preview-registry.js';
 export * from './assistant-stream.js';
+export * from './client-plugin-slots.js';
 export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
