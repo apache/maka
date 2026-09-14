@@ -30,9 +30,9 @@ const server = await startStaticServer('apps/desktop/storybook-static');
 const browser = await chromium.launch({ headless: true });
 const samples = [];
 const scenes = (
-  process.env.SCROLL_WINDOW_SCENES ?? 'history-window-traversal,virtual-history-mixed-content'
+  process.env.SCROLL_WINDOW_SCENES ?? 'virtual-history-mixed-content'
 ).split(',');
-const trials = Number(process.env.SCROLL_WINDOW_TRIALS ?? 3);
+const trials = Number(process.env.SCROLL_WINDOW_TRIALS ?? 12);
 assert(Number.isInteger(trials) && trials > 0);
 
 // A real virtual row can enter the viewport before IntersectionObserver's
@@ -118,6 +118,36 @@ try {
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.addInitScript(() => {
+        window.__intersections = [];
+        let observerId = 0;
+        const NativeObserver = IntersectionObserver;
+        window.IntersectionObserver = class extends NativeObserver {
+          constructor(callback, options) {
+            const id = ++observerId;
+            super((entries, observer) => {
+              window.__intersections.push({ id, type: 'delivery', ms: performance.now(),
+                entries: entries.map((entry) => ({
+                  turnId: entry.target.dataset.transcriptTurnId,
+                  intersecting: entry.isIntersecting, time: entry.time,
+                  top: entry.boundingClientRect.top, bottom: entry.boundingClientRect.bottom,
+                  rootTop: entry.rootBounds?.top, rootBottom: entry.rootBounds?.bottom,
+                  connected: entry.target.isConnected,
+                })),
+              });
+              callback(entries, observer);
+            }, options);
+            this.probeId = id;
+          }
+          observe(node) {
+            window.__intersections.push({ id: this.probeId, type: 'observe',
+              turnId: node.dataset.transcriptTurnId, ms: performance.now() });
+            super.observe(node);
+          }
+          disconnect() {
+            window.__intersections.push({ id: this.probeId, type: 'disconnect', ms: performance.now() });
+            super.disconnect();
+          }
+        };
         window.__scrollWrites = [];
         const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
         Object.defineProperty(Element.prototype, 'scrollTop', {
@@ -303,7 +333,7 @@ try {
       await page.waitForTimeout(500);
       const data = await page.evaluate(() => {
         window.__scrollWindow.running = false;
-        return window.__scrollWindow;
+        return { ...window.__scrollWindow, intersections: window.__intersections };
       });
       assert.equal(errors.length, 0, errors.join('\n'));
       assert(
