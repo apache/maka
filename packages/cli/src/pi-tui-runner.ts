@@ -611,6 +611,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // keeps it for the retry.
   let stagedRewindQuotes: NonNullable<MakaSessionRewindResult['quotes']> = [];
   let stagedQuotesSessionId: string | null = null;
+  let stagedGeneration = 0;
   const effectiveStagedQuotes = () =>
     stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId()
       ? stagedRewindQuotes
@@ -618,6 +619,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const clearStagedQuotes = () => {
     stagedRewindQuotes = [];
     stagedQuotesSessionId = null;
+    stagedGeneration += 1;
   };
   let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
@@ -1212,7 +1214,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // `busy`, so a prompt typed mid-switch goes back to the editor rather than
   // racing it. Exiting is never held back.
   const submitPrompt = (prompt: string) => {
-    if (!prompt.trim()) {
+    // Staged rewind quotes are the replacement content on their own: an empty
+    // text with quotes present is a meaningful quote-only submission (#5109).
+    if (!prompt.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1295,7 +1299,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // the staging clears as the message dispatches, and a refusal or failure
     // restages them for the retry.
     const staged = effectiveStagedQuotes();
+    const originSessionId = input.driver.getSessionId();
+    const originGeneration = stagedGeneration;
     if (staged.length > 0) clearStagedQuotes();
+    // A refusal or failure returns the quotes to the draft that dispatched
+    // them. The originating Session and staging generation are captured at
+    // dispatch: a Session switched, a newer rewind, or an explicit clear
+    // landing while the admission was in flight must not inherit context
+    // meant for the original conversation (#5109 review).
+    const restageForRetry = () => {
+      if (!staged.length) return;
+      if (input.driver.getSessionId() !== originSessionId) return;
+      if (stagedGeneration !== originGeneration) return;
+      stagedRewindQuotes = staged;
+      stagedQuotesSessionId = originSessionId;
+    };
     const task = input.driver
       .submitMessage(text, {
         messageId,
@@ -1308,10 +1326,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // Retire the row it belongs to and report the failure in its place.
         if (result?.disposition === 'blocked') {
           removeTransientUserMessage(messageId);
-          if (staged.length > 0) {
-            stagedRewindQuotes = staged;
-            stagedQuotesSessionId = input.driver.getSessionId();
-          }
+          restageForRetry();
           showSkillInvocation(result.skillInvocation);
           return;
         }
@@ -1328,10 +1343,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // The Message never became anything, so its row goes with the failure
         // notice that replaces it. The text stays in editor history for a retry.
         removeTransientUserMessage(messageId);
-        if (staged.length > 0) {
-          stagedRewindQuotes = staged;
-          stagedQuotesSessionId = input.driver.getSessionId();
-        }
+        restageForRetry();
         reportError(error);
       })
       .finally(() => {
@@ -1344,7 +1356,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // step boundary. The Host alone decides whether it steers or starts a
   // successor Turn if the previous Turn settled during admission.
   const steerRunningTurn = (text: string) => {
-    if (!text.trim()) {
+    if (!text.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1362,7 +1374,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // be queued onto it and no fresh turn may open — keep the draft.
     if (interruptRequested) return;
     const text = editor.getExpandedText().trim();
-    if (!text) return;
+    if (!text && effectiveStagedQuotes().length === 0) return;
     editor.setText('');
     if (!turnRunning) {
       submitPrompt(text);
