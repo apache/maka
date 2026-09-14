@@ -18,12 +18,16 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { argon2id } from '@noble/hashes/argon2.js';
+import { argon2idAsync } from '@noble/hashes/argon2.js';
 
-const ARGON_T = 3;
-const ARGON_M = 64 * 1024;
+/** OWASP-friendly Argon2id params for JS (19 MiB). */
+const ARGON_T = 2;
+const ARGON_M = 19_456;
 const ARGON_P = 1;
 const ARGON_DK = 32;
+const ARGON_SALT_LEN = 16;
+/** Cap noble's u32 working set (~1 KiB per m unit). */
+const ARGON_MAXMEM = ARGON_M * 1024;
 const TOTP_DIGITS = 6;
 const TOTP_PERIOD = 30;
 
@@ -35,23 +39,48 @@ function fromB64(text: string): Buffer {
   return Buffer.from(text, 'base64url');
 }
 
+function digitsEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}
+
 export async function hashSecret(secret: string): Promise<string> {
-  const salt = randomBytes(16);
-  const hash = argon2id(secret, salt, { t: ARGON_T, m: ARGON_M, p: ARGON_P, dkLen: ARGON_DK });
+  const salt = randomBytes(ARGON_SALT_LEN);
+  const hash = await argon2idAsync(secret, salt, {
+    t: ARGON_T,
+    m: ARGON_M,
+    p: ARGON_P,
+    dkLen: ARGON_DK,
+    maxmem: ARGON_MAXMEM,
+  });
   return `argon2id$v=19$m=${ARGON_M},t=${ARGON_T},p=${ARGON_P}$${b64(salt)}$${b64(hash)}`;
 }
 
 export async function verifySecret(secret: string, encoded: string): Promise<boolean> {
-  const match = /^argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([^$]+)\$([^$]+)$/.exec(encoded);
-  if (!match) return false;
-  const [, m, t, p, saltB64, hashB64] = match;
-  const salt = fromB64(saltB64!);
-  const expected = fromB64(hashB64!);
-  const actual = Buffer.from(
-    argon2id(secret, salt, { t: Number(t), m: Number(m), p: Number(p), dkLen: expected.length }),
-  );
-  if (actual.length !== expected.length) return false;
-  return timingSafeEqual(actual, expected);
+  try {
+    const match = /^argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([^$]+)\$([^$]+)$/.exec(encoded);
+    if (!match) return false;
+    const [, mText, tText, pText, saltB64, hashB64] = match;
+    const m = Number(mText);
+    const t = Number(tText);
+    const p = Number(pText);
+    if (m !== ARGON_M || t !== ARGON_T || p !== ARGON_P) return false;
+    const salt = fromB64(saltB64!);
+    const expected = fromB64(hashB64!);
+    if (salt.length !== ARGON_SALT_LEN || expected.length !== ARGON_DK) return false;
+    const actual = Buffer.from(
+      await argon2idAsync(secret, salt, {
+        t,
+        m,
+        p,
+        dkLen: ARGON_DK,
+        maxmem: ARGON_MAXMEM,
+      }),
+    );
+    return timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
 }
 
 export function generateTotpSecret(): Buffer {
@@ -91,10 +120,10 @@ export function verifyTotp(
       period: TOTP_PERIOD,
     });
     const key = `${Math.floor((unixSeconds + skew * TOTP_PERIOD) / TOTP_PERIOD)}:${at}`;
-    if (trimmed === at && !replay.has(key)) {
-      replay.add(key);
-      return true;
-    }
+    if (!digitsEqual(trimmed, at)) continue;
+    if (replay.has(key)) return false;
+    replay.add(key);
+    return true;
   }
   return false;
 }
