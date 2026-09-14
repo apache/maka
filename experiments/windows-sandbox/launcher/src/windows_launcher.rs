@@ -839,7 +839,7 @@ pub(crate) unsafe fn create_confined_desktop(
     }
     let security = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor as *mut c_void,
+        lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
     // The launching user holds GA minus the denied interactive-control bits in
@@ -858,7 +858,7 @@ pub(crate) unsafe fn create_confined_desktop(
             null_mut(),
         )
     };
-    unsafe { LocalFree(descriptor as *mut c_void) };
+    unsafe { LocalFree(descriptor) };
     if handle.is_null() {
         return Err(last_error("CreateDesktopW(private desktop)"));
     }
@@ -1353,7 +1353,7 @@ impl Drop for InheritableStdio {
 
 unsafe fn open_inheritable_nul(readable: bool) -> Result<HANDLE, String> {
     let name = wide("NUL");
-    let mut security = SECURITY_ATTRIBUTES {
+    let security = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: null_mut(),
         bInheritHandle: 1,
@@ -1368,7 +1368,7 @@ unsafe fn open_inheritable_nul(readable: bool) -> Result<HANDLE, String> {
             name.as_ptr(),
             access,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
-            &mut security,
+            &security,
             OPEN_EXISTING,
             0,
             null_mut(),
@@ -1711,3 +1711,7 @@ fn wide(value: &str) -> Vec<u16> {
 fn last_error(operation: &str) -> String {
     format!("{operation} failed: {}", std::io::Error::last_os_error())
 }
+
+#[cfg(test)]
+#[path = "windows_job_tests.rs"]
+mod job_tests;

@@ -271,7 +271,7 @@ impl LedgerLock {
         let descriptor = lock_security_descriptor(&sddl)?;
         let mut attributes: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
         attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
-        attributes.lpSecurityDescriptor = descriptor as *mut std::ffi::c_void;
+        attributes.lpSecurityDescriptor = descriptor;
         attributes.bInheritHandle = 0;
         let name = wide(name);
         let handle = unsafe { CreateMutexW(&attributes, 0, name.as_ptr()) };
@@ -282,15 +282,13 @@ impl LedgerLock {
         } else {
             None
         };
-        unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+        unsafe { LocalFree(descriptor) };
         if let Some(error) = create_error {
             return Err(error);
         }
-        if already_exists {
-            if let Err(error) = validate_existing_lock_owner(handle, user_sid) {
-                unsafe { CloseHandle(handle) };
-                return Err(error);
-            }
+        if already_exists && let Err(error) = validate_existing_lock_owner(handle, user_sid) {
+            unsafe { CloseHandle(handle) };
+            return Err(error);
         }
         let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
@@ -354,7 +352,7 @@ fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), St
         ));
     }
     let rendered = unsafe { sid_string(owner) };
-    unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+    unsafe { LocalFree(descriptor) };
     let rendered = rendered?;
     if rendered.eq_ignore_ascii_case(user_sid)
         || rendered == SYSTEM_SID

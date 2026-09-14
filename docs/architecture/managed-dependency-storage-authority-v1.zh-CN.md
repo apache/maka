@@ -182,3 +182,5 @@ runner 返回 `completed`、`failed` 或 `unsettled`。前两者证明进程已�
 Linux 当前只读挂载 host filesystem 并隔离网络；这不是完整的未来 hermetic filesystem policy。Bundled runtime 身份与供应链、在线 registry 获取策略、打包发布、完整 Host 生命周期及 Desktop 功能均未交付。不得据此关闭 #4326 或宣称 M1.3 已可用。
 
 验证入口：先构建 core/storage/runtime/runtime-host，在真实 Windows 上构建 `experiments/windows-sandbox/launcher`；Linux 安装支持 PID/user/network namespace 的 bubblewrap。设置 `MAKA_PRODUCER_SUPERVISOR` 与 `MAKA_TEST_NPM_CLI` 为绝对路径，运行 `node --test scripts/managed-dependency-producer.integration.test.mjs`。未设置环境变量的 native 测试会跳过，不能计为平台通过。对应 unit tests 位于 runtime-host 的 `managed-dependency-producer.test.ts`，现有 authority/crash 测试继续验证 receipt、清理和 Windows ADS。
+
+Windows 进程树证据分两层记录：AppContainer 集成 fixture 在当前环境拒绝普通后代创建；`windows_job_tests.rs` 则在真实原子绑定的 Job 中明确启动后代，关闭全部 stdio 后持续写入。后者调用生产使用的 `settle_job`，验证主进程先退出和取消时都必须获得空 Job，再确认没有后续写入；还在无 AppContainer 的条件下验证 breakaway 被 Job 拒绝。它验证 Job 监管边界，不宣称已经证明 AppContainer 允许后代，也没有为生产增加绕过 AppContainer 的路径。
