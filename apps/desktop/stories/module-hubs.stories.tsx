@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
@@ -27,6 +28,7 @@ import {
   DailyReviewPage,
   getSharedUiCopy,
   ModuleHubSelector,
+  type NavSelection,
   SkillsPage,
   type ManagedSkillUpdatePreview,
   type SkillEntry,
@@ -795,9 +797,15 @@ function ModuleHubHostSurface(props: {
     | { section: 'extensions'; module: 'skills' | 'mcp' }
     | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
 }) {
-  const base = createFakeModuleHubHostModel(props.selection);
+  const [selection, setSelection] = useState(props.selection);
+  const base = createFakeModuleHubHostModel(selection);
   const model = {
     ...base,
+    selectModule: (next: NavSelection) => {
+      if (next.section === 'extensions' || next.section === 'automations') {
+        setSelection(next);
+      }
+    },
     skills: {
       ...base.skills,
       skills: INSTALLED_SKILLS,
@@ -814,9 +822,9 @@ function ModuleHubHostSurface(props: {
       },
     },
   };
-  const agentsView = props.selection.section === 'extensions'
-    ? props.selection.module
-    : props.selection.module === 'daily-review'
+  const agentsView = selection.section === 'extensions'
+    ? selection.module
+    : selection.module === 'daily-review'
       ? 'daily-review'
       : 'cron';
   return (
@@ -920,9 +928,53 @@ export const HostAutomationsScheduledTasks: Story = {
 export const HostAutomationsDailyReview: Story = {
   render: () => (
     <ModuleHubHostSurface
-      selection={{ section: 'automations', module: 'daily-review' }}
+      selection={{ section: 'automations', module: 'scheduled-tasks' }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const dailyReview = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('每日回顾') === true,
+    );
+    let lazyFallbacks = 0;
+    let dailyReviewEntryAnimations = 0;
+    const mutationObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (
+            node instanceof Element
+            && (node.matches('.maka-lazy-fallback') || node.querySelector('.maka-lazy-fallback'))
+          ) {
+            lazyFallbacks += 1;
+          }
+        }
+      }
+    });
+    const onAnimationStart = (event: Event) => {
+      if (
+        event instanceof AnimationEvent
+        && event.animationName === 'maka-daily-review-enter'
+      ) {
+        dailyReviewEntryAnimations += 1;
+      }
+    };
+    mutationObserver.observe(canvasElement, { childList: true, subtree: true });
+    canvasElement.addEventListener('animationstart', onAnimationStart, true);
+    try {
+      dailyReview.click();
+      const content = await waitForStorySelector<HTMLElement>(
+        canvasElement,
+        '.maka-daily-review-content',
+      );
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(lazyFallbacks).toBe(0);
+      expect(dailyReviewEntryAnimations).toBe(0);
+      expect(getComputedStyle(content).animationName).toBe('none');
+    } finally {
+      mutationObserver.disconnect();
+      canvasElement.removeEventListener('animationstart', onAnimationStart, true);
+    }
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with several installed Skills.
@@ -1385,7 +1437,8 @@ export const ScheduledDailyReviewGenerationFailed: Story = {
   play: async ({ canvasElement }) => {
     const generate = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.includes('生成分析') === true,
+      (candidate) =>
+        candidate.textContent?.includes('生成分析') === true && !candidate.disabled,
     );
     generate.click();
     await waitForStoryText(canvasElement, '生成失败');
