@@ -28,6 +28,7 @@ import { compileCronExpression } from './cron-expression.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
+import { isToolMode, type ToolMode } from './tool-mode.js';
 import {
   decodePersistedPermissionMode,
   isPermissionMode,
@@ -73,6 +74,8 @@ export type ScheduledTaskEffect =
 
 /** Frozen at create time so later settings changes do not rewrite past jobs. */
 export interface ScheduledTaskExecutionTemplate {
+  /** Omitted legacy templates use direct tools. */
+  readonly toolMode?: ToolMode;
   readonly cwd: string;
   readonly projectId?: string | null;
   /** Immutable Connection entity identity. Omitted only on legacy slug-only rows. */
@@ -321,7 +324,6 @@ export function pauseScheduledTask(task: ScheduledTask, now: number): ScheduledT
   return {
     ...task,
     status: 'paused',
-    nextFireAt: null,
     updatedAt: now,
   };
 }
@@ -345,7 +347,10 @@ export function resumeScheduledTask(
       updatedAt: now,
     };
   }
-  const nextFireAt = computeNextFireAt(task.schedule, now);
+  const nextFireAt =
+    task.nextFireAt !== null && task.nextFireAt > now
+      ? task.nextFireAt
+      : computeNextFireAt(task.schedule, now);
   if (nextFireAt === null) {
     return { error: 'Schedule has no remaining fire' };
   }
@@ -530,6 +535,9 @@ function normalizeExecution(
   if (!isOrchestrationMode(value.orchestrationMode)) {
     return fail('execution.orchestrationMode is required');
   }
+  if (value.toolMode !== undefined && !isToolMode(value.toolMode)) {
+    return fail('execution.toolMode is invalid');
+  }
   if (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel)) {
     return fail('execution.thinkingLevel is invalid');
   }
@@ -553,6 +561,7 @@ function normalizeExecution(
       permissionMode: value.permissionMode,
       collaborationMode: value.collaborationMode,
       orchestrationMode: value.orchestrationMode,
+      ...(value.toolMode === undefined ? {} : { toolMode: value.toolMode }),
     },
   };
 }

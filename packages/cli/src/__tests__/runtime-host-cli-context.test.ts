@@ -340,7 +340,7 @@ test('CLI explains a service Host without inventing resident work', async () => 
       assert.ok(error instanceof HostHandoffRequiredError);
       assert.equal(error.view.reason, 'operator_required');
       assert.equal(error.view.mayExitNaturally, false);
-      assert.match(error.message, /operator/);
+      assert.match(error.message, /managed by the Maka installation that created it/);
       assert.doesNotMatch(error.message, /not idle/);
       return true;
     },
@@ -811,6 +811,7 @@ test('activated managed Host incompatibility stays operator-owned', async () => 
       {
         connectOrSpawn: async () => ({ kind: 'failed', reason: 'managed_root_requires_operator' }),
         activateLocalManagedHost: async () => {},
+        resolveManagedAuthority: async () => ({ record: {} }) as never,
         connectActivatedHost: async () => ({
           kind: 'incompatible',
           registration: hostRegistration(),
@@ -822,7 +823,7 @@ test('activated managed Host incompatibility stays operator-owned', async () => 
       assert.ok(error instanceof HostHandoffRequiredError);
       assert.equal(error.view.reason, 'operator_required');
       assert.deepEqual(error.view.actions, ['cancel', 'retry']);
-      assert.match(error.message, /operator/);
+      assert.match(error.message, /Desktop.*Stop old service and continue/su);
       return true;
     },
   );

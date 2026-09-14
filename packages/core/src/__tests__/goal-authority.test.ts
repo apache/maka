@@ -53,9 +53,23 @@ test('Goal authority decoder rejects cross-authority execution state', () => {
         },
       },
     },
+    {
+      ...valid,
+      pendingContinuation: {
+        checkpoint: { goalId: valid.goal.id, revision: valid.goal.revision },
+        controlLease: valid.controlLease,
+        prompt: 'continue',
+      },
+    },
   ]) {
     assert.throws(() => decodeGoalAuthorityRecord(candidate), TypeError);
   }
+});
+
+test('Goal authority decoder normalizes pre-outbox records', () => {
+  const legacy = goalAuthorityRecord();
+  const { pendingContinuation: _, ...withoutOutbox } = legacy;
+  assert.equal(decodeGoalAuthorityRecord(withoutOutbox).pendingContinuation, null);
 });
 
 function goalAuthorityRecord(): GoalAuthorityRecord {
@@ -85,5 +99,6 @@ function goalAuthorityRecord(): GoalAuthorityRecord {
       checkpoint: { goalId, revision: 2 },
       controlLease: { goalId, generation: 1 },
     },
+    pendingContinuation: null,
   };
 }

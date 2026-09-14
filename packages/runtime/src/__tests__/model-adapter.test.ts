@@ -481,7 +481,7 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
-  test('surfaces provider-executed tool input as replay-unsafe activity', () => {
+  test('preserves local input sampling separately from provider tool activity', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
 
@@ -492,7 +492,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'WebSearch',
         providerExecuted: true,
       } as Chunk),
-      [{ kind: 'provider-tool-input' }],
+      [{ kind: 'tool-input', providerExecuted: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -501,7 +501,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'Read',
         providerExecuted: false,
       } as Chunk),
-      [],
+      [{ kind: 'tool-input', providerExecuted: false }],
     );
   });
 

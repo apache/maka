@@ -259,6 +259,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
+      mainWindowController: {
+        showSaveDialog: async () => ({ canceled: true }),
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      },
       attachmentApprovals: createAttachmentApprovalRegistry(),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
@@ -269,7 +273,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         computerUseTools: Object.assign([], {
           clearSession() {},
         }) as unknown as ComputerUseToolSet,
-        releaseComputerUseSession() {},
+        releaseDesktopInteractionSession() {},
       },
       botRegistry: {} as BotRegistry,
       resolveBotCreateTarget: async () => ({
@@ -277,7 +281,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       }),
       resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
-      completeComputerUseTurn() {},
+      completeDesktopInteractionTurn() {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
         rejectCreation: async () => undefined,
@@ -305,12 +309,17 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         /Invalid Session list filter/,
       );
     }
-    assert.equal(
-      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass') as {
-        permissionMode: string;
-      }).permissionMode,
-      'bypass',
-    );
+    const modeUpdate = await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass');
+    if (typeof modeUpdate !== 'object' || modeUpdate === null || !('ok' in modeUpdate)) {
+      throw new Error('sessions:setPermissionMode did not return an update envelope');
+    }
+    if (!modeUpdate.ok) throw new Error('Expected the committed mode update envelope');
+    if (!('session' in modeUpdate) || typeof modeUpdate.session !== 'object') {
+      throw new Error('Committed envelope missing session');
+    }
+    const updatedSession = modeUpdate.session as { permissionMode: string; revision: number };
+    assert.equal(updatedSession.permissionMode, 'bypass');
+    assert.equal(updatedSession.revision, 2);
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
     // A purge sweep asks for the task it saw archived. Restored under it, the
@@ -516,7 +525,8 @@ test('drives bounded Session domain projections through real UDS framing', async
     const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
     registerRuntimeHostSessionDomainsIpc(
-      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver() },
+      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver(),
+        terminalCloses: new (await import('../terminal-close-intents.js')).TerminalCloseIntents() },
       ipc,
     );
 
@@ -596,7 +606,7 @@ function unusedSessionCopyCleanup() {
 
 function unusedSessionObserver() {
   return {
-    async observe() { return []; },
+    async observe() {},
     async unobserve() {},
   };
 }

@@ -22,6 +22,8 @@ export interface McpToolProgress {
   readonly total: number;
 }
 
+export const MCP_TOOL_PROGRESS_MAX_TOTAL = 1_024;
+
 /**
  * Map an SDK `notifications/progress` payload onto the Host progress pair.
  * First slice: only finite step counts that the shared tool-progress codec
@@ -38,6 +40,7 @@ export function mapMcpToolProgress(value: unknown): McpToolProgress | undefined 
     !Number.isSafeInteger(total) ||
     current < 0 ||
     total < 1 ||
+    total > MCP_TOOL_PROGRESS_MAX_TOTAL ||
     current > total
   ) {
     return undefined;

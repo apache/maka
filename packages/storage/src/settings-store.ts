@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
+import { writeAtomicFile } from './atomic-file-write.js';
 
 /**
  * A conditional write's patch, either fixed or derived from the state the
@@ -189,10 +190,13 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private async write(settings: AppSettings): Promise<void> {
+    // SettingsStore does not own the workspace directory's permission policy:
+    // sibling stores such as MCP config may independently harden the same root.
+    // Keep both directory creation and the historical umask-derived file mode.
     await mkdir(dirname(this.settingsPath), { recursive: true });
-    const tempPath = `${this.settingsPath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    await rename(tempPath, this.settingsPath);
+    await writeAtomicFile(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
+      fileMode: 0o666 & ~process.umask(),
+    });
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {

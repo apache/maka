@@ -8,13 +8,15 @@
  * (commit c9fe437). The lab package is canary-only and declares an exact
  * canary core peer even though this release is the stable 0.1.9 source. Maka
  * therefore uses Astryx's supported swizzle/eject seam instead of forcing an
- * invalid dependency tree. DOM, state, keyboard behavior, icons, and compiled
- * StyleX atoms below are the official component; only the build-time StyleX
- * call has already been compiled, matching the published package output.
+ * invalid dependency tree. The build-time StyleX call has already been
+ * compiled, matching the published package output. Maka deliberately defers
+ * body children until the first expansion, then keeps them mounted on close;
+ * never-opened bodies also omit their descendants from the accessibility tree.
+ * The wrapper DOM, header, and keyboard behavior remain the official component.
  *
  * Product dialect lives in chat-message.css (cursor default, hover wash,
- * chevron size). This file keeps the ejected lab DOM/behavior, except that
- * the chevron is Astryx `Icon` rather than the lab's own 12-viewBox SVG: at
+ * chevron size). In addition to the first-open body rendering change, the
+ * chevron is Astryx `Icon` rather than the lab's own 12-viewBox SVG: at
  * the 10x10 chat-message.css forces, that glyph drew 1.25px of stroke beside
  * the tool rows' 0.73px. One registry, one chevron.
  */
@@ -60,6 +62,10 @@ export function ChatReasoning(props: ChatReasoningProps) {
   const [internalExpanded, setInternalExpanded] = useState(defaultIsExpanded);
   const isControlled = controlledExpanded !== undefined;
   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
+  const [hasExpanded, setHasExpanded] = useState(isExpanded);
+  // Track controlled expansion too, before rendering children. Once opened,
+  // retain their state and streaming updates through the existing CSS collapse.
+  if (isExpanded && !hasExpanded) setHasExpanded(true);
   const toggle = useCallback(() => {
     const next = !isExpanded;
     if (!isControlled) setInternalExpanded(next);
@@ -139,7 +145,9 @@ export function ChatReasoning(props: ChatReasoningProps) {
               collapses every newline in the thinking text. Maka restores the
               pre-wrap reading contract on this class — see
               `.maka-chat-reasoning-content` in styles.css. */}
-          <div className="maka-chat-reasoning-content x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">{children}</div>
+          <div className="maka-chat-reasoning-content x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">
+            {isExpanded || hasExpanded ? children : null}
+          </div>
         </div>
       </div>
     </div>

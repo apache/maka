@@ -32,6 +32,7 @@ import {
 import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
+  AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
   assertMcpEndpointPolicyOnChanges,
   McpConfigSourceError,
@@ -137,6 +138,12 @@ export type TuiMcpActionEffect =
 export type TuiMcpActionResult =
   | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
   | { readonly status: 'tested'; readonly test: McpTestResult; readonly effect: TuiMcpActionEffect }
+  | {
+      readonly status: 'failed';
+      readonly reason: 'commit-unknown';
+      readonly cause: AtomicFileWriteCommitUnknownError;
+      readonly reconciliationError?: unknown;
+    }
   | {
       readonly status: 'conflict';
       readonly reason: 'exists' | 'stale_config' | 'stale_edit' | 'stale_import' | 'missing';
@@ -495,9 +502,49 @@ class TuiMcpControllerImpl implements TuiMcpController {
       });
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof AtomicFileWriteCommitUnknownError) {
+        // The transform has already published, including any credential
+        // retirement. Reload its authority; never replay those effects.
+        this.#preparedImport = undefined;
+        let reconciliationError: unknown;
+        if (!this.#closed) {
+          try {
+            ({ reconciliationError } = await this.#synchronizeCommittedConfig(
+              await this.#deps.configStore.get(),
+            ));
+          } catch (failure) {
+            reconciliationError = failure;
+            this.#publicationSuppressed = false;
+            this.#snapshot = freezeSnapshot({
+              ...this.#snapshot,
+              configuration: 'out_of_sync',
+              servers: this.#snapshot.servers.map((server) => ({
+                ...server,
+                synchronized: false,
+              })),
+            });
+            this.#notify();
+          }
+        }
+        // Reconciliation does not establish the missing durability fence,
+        // and its own failure must not replace the original write error.
+        return {
+          status: 'failed',
+          reason: 'commit-unknown',
+          cause: error,
+          ...(reconciliationError === undefined ? {} : { reconciliationError }),
+        };
+      }
       return { status: 'failed', reason: 'persist-failed' };
     }
-    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    return (await this.#synchronizeCommittedConfig(committed)).result;
+  }
+
+  async #synchronizeCommittedConfig(committed: McpConfigFile): Promise<{
+    readonly result: TuiMcpActionResult;
+    readonly reconciliationError?: unknown;
+  }> {
+    if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
     this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
@@ -505,18 +552,18 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#publicationSuppressed = true;
     try {
       await this.#deps.manager.sync(committed);
-    } catch {
+    } catch (error) {
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
       this.#refreshManagerSnapshot();
       await this.#settlePublication();
-      return { status: 'applied', effect: 'sync_failed' };
+      return { result: { status: 'applied', effect: 'sync_failed' }, reconciliationError: error };
     }
     this.#publicationSuppressed = false;
-    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
     this.#updateSnapshot({ configuration: 'ready' });
     this.#refreshManagerSnapshot();
-    return { status: 'applied', effect: await this.#settlePublication() };
+    return { result: { status: 'applied', effect: await this.#settlePublication() } };
   }
 
   #prepareMutation(

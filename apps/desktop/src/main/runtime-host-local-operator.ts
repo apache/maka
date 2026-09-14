@@ -866,6 +866,7 @@ function runSetupProcess(input: {
     onFrame(frame) {
       if (frame.kind === 'progress') input.onProgress(frame);
       else if (frame.kind === 'error') failure = new Error(frame.error.message);
+      else if (frame.kind === 'existing_environment') failure = new Error('Local setup returned an environment binding');
       else if (complete) failure = new Error('Local Maka setup returned multiple results');
       else complete = frame;
     },

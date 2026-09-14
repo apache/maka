@@ -33,6 +33,7 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -41,6 +42,7 @@ import {
   type RuntimeHandoffPause,
 } from './runtime-handoff.js';
 import {
+  hasMeaningfulMessageContent,
   isMessageContent,
   normalizeMessageContent,
   type MessageContent,
@@ -180,6 +182,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 
 export interface RuntimeEventTextContent extends MessageContent {
   kind: 'text';
+  /** Failed response fragment retained for display, never for model replay. */
+  interrupted?: true;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
   /** Durable provenance for a host-authored user-role turn. */
@@ -536,6 +540,8 @@ export interface RuntimeEventPermissionClosureAccepted {
  * event without `actions.endInvocation` MUST assert a terminal `status`.
  */
 export interface RuntimeEventActions {
+  /** Host coordination receipt linked to this admitted Run. */
+  coordination?: WorkHubActionReceipt;
   /** Durable physical pause; does not complete or cancel the owning logical Turn. */
   handoffPause?: RuntimeHandoffPause;
   /** Patch applied to invocation-scoped runtime state. */
@@ -720,6 +726,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
     'displayText',
+    'interrupted',
     'origin',
     'attachments',
     'directoryReferences',
@@ -838,6 +845,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
   [
     'handoffPause',
+    'coordination',
     'stateDelta',
     'artifactDelta',
     'permissionRequest',
@@ -1041,6 +1049,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.interrupted !== undefined && value.interrupted !== true) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
         return false;
@@ -1272,6 +1281,7 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
   }
   return (
     (value.handoffPause === undefined || isRuntimeHandoffPause(value.handoffPause)) &&
+    (value.coordination === undefined || isWorkHubActionReceipt(value.coordination)) &&
     (value.stateDelta === undefined || isRecord(value.stateDelta)) &&
     (value.artifactDelta === undefined ||
       (isRecord(value.artifactDelta) &&
@@ -1553,7 +1563,10 @@ export function isPartialRuntimeEvent(event: RuntimeEvent): boolean {
 /**
  * True if the event carries content whose kind is eligible for model
  * history projection: text, thinking, function_call, or function_response.
- * Error-only content and pure action/refs events are NOT model-visible.
+ * A user-authored text event with structured context (quotes or attachments)
+ * is model-visible even when the inline text is empty — the structured part
+ * is what carries the turn (#4804). Error-only content and pure action/refs
+ * events are NOT model-visible.
  *
  * This is a content-kind check only. Callers still apply `partial`
  * filtering (partial chunks are never replayed into the next model call).
@@ -1564,7 +1577,7 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
   if (!content) return false;
   switch (content.kind) {
     case 'text':
-      return content.text.length > 0;
+      return hasMeaningfulMessageContent(content);
     case 'thinking':
     case 'function_call':
     case 'function_response':

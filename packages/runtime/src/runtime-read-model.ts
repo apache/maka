@@ -32,6 +32,7 @@ import {
   classifyRuntimeEventTerminalFact,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
+  projectTranscriptToolResult,
   type RuntimeEventReadModelDiagnostic,
   type RuntimeEventTerminalFact,
 } from './runtime-event-read-model.js';
@@ -187,6 +188,7 @@ export class RuntimeReadModel {
     const projected = projectRuntimeEventsToStoredMessages(input.events, {
       invocations: input.invocations,
       canonicalPermissionOutcomes: canonicalPermissionRead.outcomes,
+      projectToolResult: projectTranscriptToolResult,
     });
     const diagnostics = [
       ...input.diagnostics,

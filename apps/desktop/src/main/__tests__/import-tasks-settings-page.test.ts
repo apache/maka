@@ -20,12 +20,16 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
 import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
+import {
+  SessionBundleServicesProvider,
+  SessionBundleTasks,
+} from '../../renderer/features/session-bundle/index.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 
@@ -1258,6 +1262,7 @@ async function renderPage(options: {
    */
   importBySource?: Record<string, 'ok' | 'unknown' | 'throw' | 'no_model' | 'source_unreadable'>;
   onOpenImported?: (sessionId: string) => void;
+  offersBundleSource?: boolean;
   locale?: 'en' | 'zh-CN';
 }): Promise<{
   container: HTMLElement;
@@ -1353,13 +1358,37 @@ async function renderPage(options: {
     const pageProps = {
       onImported: () => undefined,
       onOpenImported: options.onOpenImported ?? (() => undefined),
+      ...(options.offersBundleSource === undefined
+        ? {}
+        : { offersBundleSource: options.offersBundleSource }),
     };
-    const page = createElement(ImportTasksSettingsPage, pageProps);
+    const bare = createElement(ImportTasksSettingsPage, pageProps);
+    // Composed the way the settings surface composes it. The page's bundle
+    // source renders a panel the feature provides, so a page rendered on its
+    // own is a composition production never has.
+    const page = createElement(SessionBundleTasks, {
+      isLocalTarget: options.offersBundleSource === true,
+      sessions: [],
+      renderSection: ({ children }: { children: ReactNode }) =>
+        createElement('div', null, children),
+      children: bare,
+    });
     const targeted = createElement(RuntimeHostSettingsTarget, {
       host: TEST_RUNTIME_HOST,
       children: page,
     });
-    const localized = createElement(AstryxLocaleProvider, { children: targeted });
+    // The page asks for a confirmation before exporting a subtree, and a
+    // confirmation is a toast. The app has always provided one; the harness did
+    // not, which made every case fail on the provider rather than the case.
+    const withServices = createElement(SessionBundleServicesProvider, {
+      services: {
+        exportBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+        importBundle: async () => ({ ok: false, reason: 'canceled' }) as const,
+      },
+      children: targeted,
+    });
+    const withToasts = createElement(ToastProvider, { children: withServices });
+    const localized = createElement(AstryxLocaleProvider, { children: withToasts });
     root.render(
       createElement(LocaleProvider, { locale: options.locale ?? 'en', children: localized }),
     );
@@ -1635,5 +1664,33 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.equal(run.disabled, true);
     await tick(rows(container)[0]!, true);
     assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+  });
+});
+
+describe('ImportTasksSettingsPage bundle source', () => {
+  it('does not offer the bundle source where the feature is not mounted', async () => {
+    // An adapter is present so the switch renders at all; the question is
+    // whether the bundle joins it. Beside a Remote target it must not: the
+    // panel needs services this page does not have, and picking the source
+    // there would name a Local action on a Remote-scoped page.
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: false });
+    assert.match(harness.container.textContent, /Codex/);
+    assert.doesNotMatch(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('offers it where the feature is mounted', async () => {
+    const harness = await renderPage({ adapterIds: ['codex'], offersBundleSource: true });
+    assert.match(harness.container.textContent, /Maka session file/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('says so when neither an agent nor the bundle source is available', async () => {
+    // Beside a Remote target with no agent installed there is nothing to pick,
+    // nothing to filter and nothing to list. Empty controls would be worse than
+    // the sentence that says why.
+    const harness = await renderPage({ adapterIds: [], offersBundleSource: false });
+    assert.match(harness.container.textContent, /No supported Agent detected/);
+    await act(async () => harness.root.unmount());
   });
 });

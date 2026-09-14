@@ -117,13 +117,13 @@ test('the recovery handle opens the existing exact account-and-model picker', as
         />
       </LocaleProvider>,
     ));
-    assert.match(document.documentElement.innerHTML, /aria-expanded="false"[^>]*aria-haspopup="menu"/);
+    assert.match(document.documentElement.innerHTML, /aria-expanded="false"/);
 
     await act(() => composer.current?.openModelPicker());
 
-    assert.match(document.documentElement.innerHTML, /aria-expanded="true"[^>]*aria-haspopup="menu"/);
+    assert.ok(document.querySelector('.maka-model-wheel-viewport'));
     assert.match(document.documentElement.innerHTML, /GPT-5/);
-    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    const items = [...document.querySelectorAll<HTMLElement>('.maka-model-wheel-viewport [role="option"]')];
     assert.equal(items.length, 1, 'the stale legacy target is not a selectable current row');
 
     await act(() => items[0]?.dispatchEvent(new window.Event('click', { bubbles: true })));
@@ -133,7 +133,8 @@ test('the recovery handle opens the existing exact account-and-model picker', as
       llmConnectionSlug: 'openrouter',
       model: 'openai/gpt-5',
     });
-    assert.match(document.documentElement.innerHTML, /aria-expanded="false"[^>]*aria-haspopup="menu"/);
+    await act(() => document.querySelector('.maka-model-wheel-viewport')?.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true }), { key: 'Escape' })));
+    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false, 'Escape closes the wheel');
 
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -158,13 +159,38 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     await act(() => composer.current?.openModelPicker());
 
     const selectedRadio = document.querySelector<HTMLElement>(
-      '[role="menuitemradio"][aria-checked="true"]',
+      '.maka-model-wheel-viewport [role="option"][aria-selected="true"]',
     );
     assert.equal(selectedRadio?.textContent?.includes('GPT-5'), true);
     assert.match(
-      document.querySelector<HTMLElement>('.maka-model-switcher-trigger')?.getAttribute('aria-label') ?? '',
+      document.querySelector<HTMLElement>('.maka-model-wheel-viewport')?.getAttribute('aria-label') ?? '',
       /GPT-5/,
     );
+
+    selected = undefined;
+    let sends = 0;
+    const second = { ...choice, connectionId: 'connection-second', connectionSlug: 'second', connectionName: 'Second account' };
+    await act(() => root.render(
+      <LocaleProvider locale="en"><Composer ref={composer}
+        activeSession={{ id: 'wheel-session', llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model } as SessionSummary}
+        modelChoices={[choice, second]}
+        onModelChange={(input) => { selected = input; }} onSend={() => { sends++; }} onStop={() => undefined} />
+      </LocaleProvider>,
+    ));
+    await act(() => composer.current?.openModelPicker());
+    const browseNext = async () => {
+      const wheel = document.querySelector<HTMLElement>('.maka-model-wheel-viewport');
+      assert.ok(wheel);
+      await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'ArrowDown' })));
+      await act(() => wheel.dispatchEvent(new window.Event('scroll')));
+      return wheel;
+    };
+    const wheel = await browseNext();
+    assert.deepEqual(selected, { llmConnectionId: second.connectionId, llmConnectionSlug: second.connectionSlug, model: second.model }, 'keyboard navigation applies the model without confirmation');
+    assert.ok(document.querySelector('.maka-model-wheel-viewport'), 'selection keeps the wheel open');
+    await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'Enter' })));
+    assert.equal(sends, 0, 'closing the picker must not send the composer draft');
+    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

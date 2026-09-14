@@ -27,6 +27,7 @@ import { test } from 'node:test';
 import {
   createRuntimeHostPeerClient,
   RuntimeHostPeerReachabilityUnavailableError,
+  type RuntimeHostPeerRouteResolution,
 } from '../client/peer-client.js';
 import { PEER_REACHABILITY_MAX_CLOCK_SKEW_MS } from '../peer-reachability/index.js';
 import {
@@ -314,6 +315,46 @@ module.exports = {
       (error: unknown) => error instanceof RuntimeHostPeerReachabilityUnavailableError,
     );
     assert.equal(native.default.stats.requests.length, requestCount);
+
+    let resolution: RuntimeHostPeerRouteResolution = {
+      state: 'exhausted',
+      routeHints: [],
+      coordinationRelays: [],
+      transitRelayPeerIds: [],
+    };
+    let notifyResolution = () => {};
+    const detachExhausted = client.attachRouteResolver({
+      resolveRoutes: () => resolution,
+      subscribeRoutes: (_peerId, listener) => {
+        notifyResolution = listener;
+        return () => {};
+      },
+      prepareRoutes: async () => {
+        resolution = { ...resolution, state: 'recovering' };
+        notifyResolution();
+        resolution = { ...resolution, state: 'exhausted' };
+        notifyResolution();
+      },
+    });
+    let recoveryWakeups = 0;
+    const unsubscribeRecovery = client.subscribeRoutes('offline', () => recoveryWakeups++);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await assert.rejects(
+        client.connect({ ...peerConnectInput('offline'), routeHints: [] }),
+        RuntimeHostPeerReachabilityUnavailableError,
+      );
+    }
+    assert.equal(recoveryWakeups, 0, 'empty recovery sweeps must not wake their own retries');
+    resolution = { ...resolution, state: 'available', coordinationRelays: ['/memory/new-relay'] };
+    notifyResolution();
+    assert.equal(recoveryWakeups, 1, 'a new candidate wakes the offline connection');
+    notifyResolution();
+    assert.equal(recoveryWakeups, 1, 'unchanged candidates do not bypass backoff');
+    resolution = { ...resolution, state: 'exhausted', coordinationRelays: [] };
+    notifyResolution();
+    assert.equal(recoveryWakeups, 1, 'losing the final candidate does not wake a retry');
+    unsubscribeRecovery();
+    detachExhausted();
 
     let connectivityWakeups = 0;
     const unsubscribeConnectivity = client.subscribeRoutes('restored', () => {

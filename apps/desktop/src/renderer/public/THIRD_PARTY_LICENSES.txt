@@ -9,6 +9,10 @@ This file records notices for third-party source assets vendored into the Maka d
 - Package: `@lobehub/icons-static-svg` version `1.91.0`
 - License: MIT
 - Covered vendored files:
+  - `apps/desktop/src/renderer/assets/provider-brands/antigravity.svg`
+    - Upstream commit: `32f4083f7a20b67ecdc7b29c0af031ada5a29c52`
+    - Upstream path: `packages/static-svg/icons/antigravity-color.svg`
+    - SHA-256: `652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca`
   - `apps/desktop/src/renderer/assets/provider-brands/xai.svg`
     - Upstream commit: `32f4083f7a20b67ecdc7b29c0af031ada5a29c52`
     - Upstream path: `packages/static-svg/icons/xai.svg`

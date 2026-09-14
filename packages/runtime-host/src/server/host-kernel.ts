@@ -92,7 +92,7 @@ import {
   type RuntimeHostListenerSet,
   type RuntimeHostListenerSetFactory,
 } from './listener-set.js';
-import { HostResidencyRegistry } from './host-residency-registry.js';
+import { HostResidencyRegistry, type HostResidencyKind } from './host-residency-registry.js';
 import type { PeerMeshNode } from '../peer-mesh/node.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
 import { createHostResourceCollector } from './host-resource-collector.js';
@@ -122,7 +122,8 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
 export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;
   hostEpoch: string;
-  acquireResidency(label: string): RuntimeHostResidency;
+  /** Idle retention keeps schedulers alive without claiming work is in flight. */
+  acquireResidency(label: string, kind?: HostResidencyKind): RuntimeHostResidency;
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
@@ -388,7 +389,7 @@ export class RuntimeHostKernel {
         this.#composition = await this.#options.composition.create({
           owner: this.#options.owner,
           hostEpoch: this.hostEpoch,
-          acquireResidency: (label) => this.#acquireResidency(label),
+          acquireResidency: (label, kind) => this.#acquireResidency(label, kind),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
           ...(this.#options.accessAuthority
@@ -695,8 +696,8 @@ export class RuntimeHostKernel {
     this.#settleLifecycleAfterWork();
   }
 
-  #acquireResidency(label: string): RuntimeHostResidency {
-    const residency = this.#residencies.acquire(label, 'drain', () =>
+  #acquireResidency(label: string, kind: HostResidencyKind = 'drain'): RuntimeHostResidency {
+    const residency = this.#residencies.acquire(label, kind, () =>
       this.#settleLifecycleAfterWork(),
     );
     this.#cancelIdle();

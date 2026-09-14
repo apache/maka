@@ -28,6 +28,7 @@ import {
   decodeRuntimeHostSetupFrame,
   decodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
@@ -47,7 +48,7 @@ const WSL_SETUP_TIMEOUT_MS = 10 * 60_000;
 const WSL_SETUP_OUTPUT_MAX_BYTES = 64 * 1024;
 const WSL_SETUP_STDERR_MAX_BYTES = 8 * 1024;
 
-type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
+type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' | 'existing_environment' }>;
 type RuntimeHostWslSetupCompleteFrame = Omit<RuntimeHostSetupCompleteFrame, 'operator'> & {
   readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
 };
@@ -182,7 +183,7 @@ export async function runDesktopRuntimeHostWslSetup(
     executable,
     processFactory,
   );
-  const command = runtimeHostWslSetupCommand(setupPackage, input);
+  const command = runtimeHostWslSetupCommand(setupPackage, input, input.setupPackage.kind === 'development_archive');
   const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', command]);
   return runWslFramedProcess({
     child,
@@ -210,6 +211,67 @@ export async function runDesktopRuntimeHostWslSetup(
     },
     onResult: () => onComplete?.(),
   });
+}
+
+/** Runs the explicitly selected successor, which owns the existing durable update transaction. */
+export async function runDesktopRuntimeHostWslUpdate(
+  input: {
+    readonly distribution: string;
+    readonly setupPackage: DesktopRuntimeHostSetupPackage;
+    readonly expectedTarget: DesktopRuntimeHostWslManagementInput['expectedTarget'];
+    readonly expectedConfigFingerprint?: string;
+    readonly expectedSourceVersion: string;
+    readonly expectedHost: { readonly hostEpoch: string; readonly pid: number };
+    readonly allowInterruptActiveTasks: boolean;
+    readonly signal?: AbortSignal;
+  },
+  onProgress: (phase: string) => void,
+  overrides: {
+    readonly processFactory?: RuntimeHostWslProcessFactory;
+    readonly wslExecutable?: string;
+  } = {},
+): Promise<RuntimeHostManagementTerminalFrame> {
+  input.signal?.throwIfAborted();
+  const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
+  const processFactory = overrides.processFactory ?? spawnWsl;
+  const executable = overrides.wslExecutable ?? resolveSystemRuntimeHostWslExecutable();
+  const setupPackage = await resolveWslPackageSpecifier(input.setupPackage, distribution, executable, processFactory);
+  input.signal?.throwIfAborted();
+  const target = input.expectedTarget;
+  if (!target.deploymentId) throw new Error('WSL update requires a bound deployment identity');
+  const args = [
+    'npx', '--yes', '--package', setupPackage.specifier,
+    'maka', 'runtime-host', 'service', 'update', '--framed',
+    '--managed-root-id', target.rootId,
+    '--expected-service-id', target.serviceId,
+    '--expected-root-id', target.rootId,
+    '--expected-root-path', target.rootPath,
+    '--expected-deployment-id', target.deploymentId,
+    '--expected-source-version', input.expectedSourceVersion,
+    ...(input.expectedConfigFingerprint ? ['--expected-config-fingerprint', input.expectedConfigFingerprint] : []),
+    '--expected-host-json', JSON.stringify(input.expectedHost),
+    ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+  ];
+  const environment = `${RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV}=1 ` +
+    (setupPackage.integrity ? `${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=${quotePosix(setupPackage.integrity)} ` : '');
+  const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${environment}${args.map(quotePosix).join(' ')}`;
+  const child = processFactory(executable, [
+    '--distribution', distribution, '--exec', '/bin/sh', '-lc',
+    runtimeHostWslLoginCommand(command),
+  ]);
+  const terminal = await runWslFramedProcess({
+    child, signal: input.signal, retirementCancellation: true,
+    prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+    decode: decodeRuntimeHostServiceManagementFrame,
+    label: 'WSL Runtime Host update',
+    onFrame: (frame) => {
+      if (frame.action !== 'update') throw new Error('WSL returned an unrelated update result');
+      if (frame.kind === 'progress') { onProgress(frame.phase); return undefined; }
+      if (frame.kind === 'result' && frame.update.kind !== 'active_tasks') onProgress('verifying');
+      return frame;
+    },
+  });
+  return terminal;
 }
 
 async function resolveWslPackageSpecifier(
@@ -241,6 +303,7 @@ async function resolveWslPackageSpecifier(
 function runtimeHostWslSetupCommand(
   setupPackage: { readonly specifier: string; readonly integrity?: string },
   input: Pick<DesktopRuntimeHostWslSetupInput, 'principalId' | 'projectDirectoryRoots'>,
+  development: boolean,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -256,7 +319,9 @@ function runtimeHostWslSetupCommand(
     '--lifecycle',
     'on-demand',
     '--repair-root-after-remount',
-    '--update-existing',
+    // Source development explicitly selects a new archive; released onboarding
+    // must never replace an existing shared deployment as a side effect of Connect.
+    ...(development ? ['--update-existing'] : ['--reuse-existing-environment']),
     ...(input.projectDirectoryRoots === undefined
       ? []
       : input.projectDirectoryRoots.length === 0
@@ -274,6 +339,10 @@ function runtimeHostWslSetupCommand(
     ? `${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=${quotePosix(setupPackage.integrity)} `
     : '';
   const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${environment}${invocation}`;
+  return runtimeHostWslLoginCommand(command);
+}
+
+function runtimeHostWslLoginCommand(command: string): string {
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
 }
@@ -325,11 +394,15 @@ async function runWslFramedProcess<Frame, Result>(input: {
   readonly label: string;
   readonly onFrame: (frame: Frame) => Result | undefined;
   readonly onResult?: (result: Result) => void;
+  readonly retirementCancellation?: boolean;
 }): Promise<Result> {
-  const abort = () => input.child.kill();
+  // EOF cancels only retirement admission. The updater must settle its durable
+  // transaction after cutover, even when the user closes the handoff window.
+  const abort = () => input.retirementCancellation ? input.child.stdin.end() : input.child.kill();
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
-  input.child.stdin.end();
+  if (!input.retirementCancellation) input.child.stdin.end();
+  input.child.stdin.on('error', () => undefined);
   let result: Result | undefined;
   let failure: Error | undefined;
   const filter = createRuntimeHostFramedOutputFilter({

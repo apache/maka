@@ -147,6 +147,7 @@ function subscription(
 ): RuntimeHostSessionSubscription {
   return {
     subscribePtyData: () => () => undefined,
+    subscribeSessionDomainChanges: () => () => undefined,
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],

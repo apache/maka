@@ -49,6 +49,7 @@ import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics
 import { showBrowserMessageBox } from './browser-message-box.js';
 import {
   showDesktopStartupProgress,
+  startupRevealMode,
   updateDesktopStartupProgress,
   desktopStartupProgressWindow,
 } from './startup-presentation.js';
@@ -124,7 +125,7 @@ if (!app.requestSingleInstanceLock()) {
               cancelId: 0,
             },
             undefined,
-            { locale },
+            { locale, revealMode: startupRevealMode() },
           );
         })
         .catch((error) => {
@@ -249,7 +250,10 @@ if (!app.requestSingleInstanceLock()) {
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
             showMessageBox: (options) =>
-              showBrowserMessageBox(options, desktopStartupProgressWindow(), { locale }),
+              showBrowserMessageBox(options, desktopStartupProgressWindow(), {
+                locale,
+                revealMode: startupRevealMode(),
+              }),
           });
         }
       } finally {

@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import {
+  CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL,
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityClientFrame,
@@ -349,6 +350,7 @@ export class ClientCapabilityChannel {
           !Number.isInteger(total) ||
           current < 0 ||
           total < 1 ||
+          total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL ||
           current > total
         ) {
           return;

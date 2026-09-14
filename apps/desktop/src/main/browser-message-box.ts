@@ -32,6 +32,7 @@ import type {
   Rectangle,
 } from 'electron';
 import { resolveOverlayAssetDir } from './overlay-assets.js';
+import { focusWindow, type WindowRevealMode } from './window-reveal.js';
 
 const RESPONSE_URL_PREFIX = 'maka-dialog://response/';
 const DIALOG_WIDTH = 520;
@@ -43,10 +44,16 @@ const DIALOG_DESIGN_TOKENS_FILE = 'browser-dialog-design-tokens.css';
 let cachedDialogDesignTokens: string | undefined;
 let activeBrowserMessageBoxPresentations = 0;
 
-export interface BrowserMessageBoxAppearance {
+/** Everything the rendered dialog document needs; nothing about revealing it. */
+export interface BrowserMessageBoxTheme {
   readonly locale: UiLocale;
   readonly palette?: ThemePalette;
   readonly dark?: boolean;
+}
+
+export interface BrowserMessageBoxAppearance extends BrowserMessageBoxTheme {
+  /** How far this run may go when the dialog asks to be seen. */
+  readonly revealMode: WindowRevealMode;
 }
 
 export interface BrowserMessageBoxRuntime {
@@ -223,9 +230,11 @@ async function presentBrowserMessageBox(
             true,
           );
           if (settled || win.isDestroyed()) return;
-          win.show();
-          win.focus();
+          focusWindow(win, appearance.revealMode);
           clearPresentationTimeout();
+          // A run that may not reveal the dialog has nobody to answer it.
+          // Settle it as a cancel rather than leave the caller pending forever.
+          if (appearance.revealMode === 'hidden') finish(presentation.cancelId);
         })
         .catch(fail);
     });
@@ -249,7 +258,7 @@ interface BrowserMessageBoxPresentation {
 
 function normalizeBrowserMessageBoxPresentation(
   options: MessageBoxOptions,
-  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
+  appearance: BrowserMessageBoxTheme & { readonly dark: boolean },
 ): BrowserMessageBoxPresentation {
   const buttons = options.buttons?.length ? [...options.buttons] : ['OK'];
   const cancelId = validButtonId(options.cancelId, buttons.length) ? options.cancelId : 0;
@@ -340,7 +349,7 @@ export function parseBrowserMessageBoxResponse(
 
 export function buildBrowserMessageBoxHtml(
   options: MessageBoxOptions,
-  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
+  appearance: BrowserMessageBoxTheme & { readonly dark: boolean },
 ): string {
   return renderBrowserMessageBoxHtml(
     normalizeBrowserMessageBoxPresentation(options, appearance),
