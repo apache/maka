@@ -82,7 +82,7 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
   type McpEditorDraft,
 } from '../model/mcp-page-model.js';
 import { classifiedErrorFallback } from '../../../application/contracts/operation-diagnostics.js';
@@ -138,7 +138,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const mounted = useMountedRef();
   const toast = useToast();
   useEffect(() => {
-    if (error) toast.error(copy.errors.update, mcpWriteFailureMessage(error, copy) ?? classifiedErrorFallback(error, getSettingsSharedCopy(locale).unknownError, locale, 'mcp'), undefined, defaultRuntimeHostDiagnosticTarget(error));
+    if (error) toast.error(copy.errors.update, mcpConfigFailureMessage(error, copy) ?? classifiedErrorFallback(error, getSettingsSharedCopy(locale).unknownError, locale, 'mcp'), undefined, defaultRuntimeHostDiagnosticTarget(error));
   }, [error, locale, copy, toast]);
   // Set when a remove starts, consumed once the row has actually left the
   // list — which only happens when the config write lands.

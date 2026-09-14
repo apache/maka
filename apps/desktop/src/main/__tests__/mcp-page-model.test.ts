@@ -27,7 +27,7 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
 } from '../../renderer/features/module-hub/testing.js';
 
 const copy = getMcpCopy('en');
@@ -41,14 +41,14 @@ test('MCP write errors retain actionable localized meaning across Electron seria
       [durabilityError.message, localized.errors.writeDurabilityUnknown],
       [outOfSync, localized.errors.writeOutOfSync],
     ]) {
-      assert.equal(mcpWriteFailureMessage(message, localized), expected);
+      assert.equal(mcpConfigFailureMessage(message, localized), expected);
       assert.equal(
-        mcpWriteFailureMessage(new Error(`Error invoking remote method 'mcp:remove': Error: ${message}`), localized),
+        mcpConfigFailureMessage(new Error(`Error invoking remote method 'mcp:remove': Error: ${message}`), localized),
         expected,
       );
     }
-    assert.equal(mcpWriteFailureMessage(new Error('unrelated private details'), localized), undefined);
-    assert.equal(mcpWriteFailureMessage(undefined, localized), undefined);
+    assert.equal(mcpConfigFailureMessage(new Error('unrelated private details'), localized), undefined);
+    assert.equal(mcpConfigFailureMessage(undefined, localized), undefined);
   }
 });
 

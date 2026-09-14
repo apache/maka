@@ -27,9 +27,13 @@ import type { McpCopy } from '../../../locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
 /** Electron preserves error messages, but not custom error fields. Map only
- * the fixed publication-error messages to safe, localized presentation. */
-export function mcpWriteFailureMessage(error: unknown, copy: McpCopy): string | undefined {
+ * the fixed config-error messages to safe, localized presentation. */
+export function mcpConfigFailureMessage(error: unknown, copy: McpCopy): string | undefined {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const invalidFile = /MCP config at ([^\r\n]+) contains invalid JSON\. The file was not modified\. Close the app, back up and repair this file before retrying\.$/u.exec(message);
+  if (invalidFile) {
+    return copy.errors.invalidConfigFile(invalidFile[1].replace(/[\u0000-\u001f\u007f-\u009f]/gu, ''));
+  }
   if (message.includes('MCP write durability is uncertain and runtime state is out of sync')) {
     return copy.errors.writeOutOfSync;
   }

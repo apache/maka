@@ -76,6 +76,7 @@ export class McpConfigSourceError extends Error {
     readonly reason: McpConfigSourceFailureReason,
     readonly version?: string,
     message: string = reason,
+    readonly path?: string,
   ) {
     super(message);
     this.name = 'McpConfigSourceError';
@@ -275,7 +276,22 @@ class FileMcpConfigStore implements McpConfigStore {
     if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
       throw new Error('MCP config exceeds 1 MiB');
     }
-    return normalizeMcpConfig(JSON.parse(text));
+    let persisted: unknown;
+    try {
+      persisted = JSON.parse(text);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // JSON.parse can quote credentials in its message. Report the location
+      // and recovery action without retaining those source bytes in an error.
+      throw new McpConfigSourceError(
+        'invalid-json',
+        undefined,
+        `MCP config at ${this.path} contains invalid JSON. The file was not modified. ` +
+          'Close the app, back up and repair this file before retrying.',
+        this.path,
+      );
+    }
+    return normalizeMcpConfig(persisted);
   }
 
   private async readOrCreate(): Promise<McpConfigFile> {

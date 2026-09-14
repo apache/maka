@@ -553,3 +553,123 @@ function surface(
     execute: async () => ({ status: 'failed', reason: 'manager-failed' }),
   };
 }
+
+test('invalid persisted MCP JSON renders its location and repair guidance in every locale', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const overlay = new McpManagementOverlay({
+      locale,
+      surface: surface({
+        initialization: 'error',
+        invalidConfigPath: '/profile/mcp.json',
+        configuration: 'synchronizing',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [],
+      }),
+      viewportRows: () => 20,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const text = overlay.render(160).map(stripAnsi).join('\n');
+    assert.match(text, /\/profile\/mcp\.json/u);
+    assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.match(text, /unchanged|未被修改/u);
+  }
+});
+
+for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+  test(`runtime MCP file errors show ${locale} repair guidance and return to the live server list`, async () => {
+    const snapshot = listSnapshot();
+    const mcp = surface(snapshot);
+    mcp.execute = async () => ({
+      status: 'failed',
+      reason: 'invalid-config-file',
+      path: '/profile/\u0000mcp.json',
+    });
+    let closed = false;
+    const overlay = new McpManagementOverlay({
+      locale,
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {
+        closed = true;
+      },
+      onChange: () => {},
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const text = render();
+    assert.ok(text.includes('/profile/mcp.json'));
+    assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.ok(text.includes(TUI_COPY_RESOURCES['mcp-status'][locale].footer.diagnostic));
+    assert.doesNotMatch(text, /\u0000/u);
+    assert.equal(mcp.snapshot().initialization, 'ready');
+    overlay.handleInput('\u001b');
+    assert.equal(closed, false);
+    assert.ok(render().includes('filesystem'));
+    assert.equal(render().includes('/profile/mcp.json'), false);
+    mcp.execute = async () => ({ status: 'applied', effect: 'published' });
+    overlay.handleInput(' ');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(render().includes(TUI_COPY_RESOURCES['mcp-status'][locale].editor.results.published));
+  });
+}
+
+for (const phase of ['initialization', 'mutation'] as const) {
+  test(`MCP ${phase} repair details scroll in a small terminal and clamp after resizing`, async () => {
+    const path = '/Users/example/Library/Application Support/Maka/workspaces/default/mcp.json';
+    const mcp = surface(
+      phase === 'mutation'
+        ? listSnapshot()
+        : {
+            initialization: 'error',
+            configuration: 'synchronizing',
+            publication: 'not_published',
+            invalidConfigPath: path,
+            toolCount: 0,
+            servers: [],
+          },
+    );
+    mcp.execute = async () => ({ status: 'failed', reason: 'invalid-config-file', path });
+    let rows = 4;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => rows,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const render = () => overlay.render(50).map(stripAnsi).join('\n');
+    render();
+    if (phase === 'mutation') {
+      overlay.handleInput(' ');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const first = render();
+    assert.equal(first.includes('retrying.'), false);
+    overlay.handleInput('\u001b[B');
+    assert.notEqual(render(), first);
+    overlay.handleInput('\u001b[A');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[6~');
+    assert.notEqual(render(), first);
+    overlay.handleInput('\u001b[5~');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[F');
+    const last = render();
+    assert.ok(last.includes('retrying.'));
+    overlay.handleInput('\u001b[6~');
+    assert.equal(render(), last);
+    overlay.handleInput('\u001b[H');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[F');
+    render();
+    rows = 30;
+    const expanded = render();
+    assert.match(expanded, /1-\d+ \/ \d+/u);
+    assert.ok(expanded.includes('mcp.json'));
+    assert.ok(expanded.includes('retrying.'));
+  });
+}
