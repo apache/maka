@@ -18,6 +18,7 @@
  */
 
 import type { Menu, MenuItemConstructorOptions, Tray } from 'electron';
+import type { UiCatalog } from '@maka/core/ui-locale';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 
 type TraySurface = Pick<Tray, 'setToolTip' | 'setContextMenu' | 'on' | 'destroy' | 'isDestroyed'>;
@@ -33,11 +34,17 @@ interface WindowsAppTrayDeps {
   onError(error: unknown): void;
 }
 
+interface WindowsAppTrayCopy {
+  readonly open: string;
+  readonly workHub: string;
+  readonly quit: string;
+}
+
 const copy = {
   en: { open: 'Open Maka', workHub: 'Open WorkHub', quit: 'Quit Maka' },
   'zh-CN': { open: '打开 Maka', workHub: '打开 WorkHub', quit: '退出 Maka' },
   'zh-TW': { open: '開啟 Maka', workHub: '開啟 WorkHub', quit: '結束 Maka' },
-};
+} satisfies UiCatalog<WindowsAppTrayCopy>;
 
 /** Windows needs a visible way back after the last product window closes. */
 export function createWindowsAppTray(deps: WindowsAppTrayDeps) {

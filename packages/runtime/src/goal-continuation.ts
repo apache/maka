@@ -33,6 +33,7 @@ import {
 } from './goal-evaluator.js';
 import {
   goalCheckpoint,
+  truncateGoalText,
   type GoalControlLease,
   type GoalCheckpoint,
   type GoalManager,
@@ -46,10 +47,12 @@ import {
 import { GoalTaskGatePolicy, type GoalTaskGateDeps } from './goal-task-gate-policy.js';
 import type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
 import {
+  GOAL_PENDING_PROMPT_TEXT_LIMIT,
   isDrivingGoal,
   sameGoalControlLease,
   type GoalCurrentExecution,
   type GoalExecutionRef,
+  type GoalPendingContinuation,
 } from '@maka/core/goal';
 
 export type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
@@ -81,12 +84,16 @@ export interface GoalContinuationScheduler {
 
 export interface GoalDurabilityPort {
   flush(sessionId: string): Promise<void>;
+  recordPendingContinuation(pending: GoalPendingContinuation): Promise<void>;
+  clearPendingContinuation(sessionId: string, controlLease: GoalControlLease): Promise<void>;
   recordCurrentExecution(current: GoalCurrentExecution): Promise<void>;
   settleCurrentExecution(sessionId: string, turnId: string): Promise<void>;
 }
 
 export const volatileGoalDurability: GoalDurabilityPort = Object.freeze({
   flush: async () => {},
+  recordPendingContinuation: async () => {},
+  clearPendingContinuation: async () => {},
   recordCurrentExecution: async () => {},
   settleCurrentExecution: async () => {},
 });
@@ -132,6 +139,7 @@ interface ContinuationIntent {
   controlLease: GoalControlLease;
   triggeringTurnId?: string;
   evaluation: GoalEvaluation;
+  recoveredPrompt?: string;
 }
 
 interface WaitingTimer {
@@ -464,6 +472,39 @@ export class GoalContinuationCoordinator {
     });
   }
 
+  /** Restore the durable outbox entry before synthesizing generic recovery. */
+  recoverPendingContinuation(pending: GoalPendingContinuation): void {
+    if (this.disposed) return;
+    const sessionId = this.deps.goalManager.getSessionIdByGoalId(pending.checkpoint.goalId);
+    if (!sessionId || this.sessionCloseFence.isClosed(sessionId)) return;
+    const goal = this.deps.goalManager.get(sessionId);
+    if (
+      !goal ||
+      (goal.status !== 'active' && goal.status !== 'waiting') ||
+      !this.deps.goalManager.matches(sessionId, pending.checkpoint) ||
+      !this.deps.goalManager.matchesControlLease(sessionId, pending.controlLease)
+    ) {
+      return;
+    }
+    const lane = this.laneFor(sessionId);
+    if (lane.intent || lane.turns.size > 0) return;
+    lane.intent = {
+      checkpoint: pending.checkpoint,
+      controlLease: pending.controlLease,
+      ...(pending.triggeringTurnId ? { triggeringTurnId: pending.triggeringTurnId } : {}),
+      recoveredPrompt: pending.prompt,
+      evaluation: {
+        met: false,
+        impossible: false,
+        progress: false,
+        waiting: goal.status === 'waiting',
+        evaluatorFailed: true,
+        reason: 'Durable Goal continuation recovered after Host restart.',
+      },
+    };
+    this.scheduleDrain(lane);
+  }
+
   /** Resume an exact paused Goal generation from Host control without a model-owned Turn. */
   resumeFromControl(sessionId: string, checkpoint: GoalCheckpoint): GoalState | undefined {
     if (this.disposed || this.sessionCloseFence.isClosed(sessionId)) return undefined;
@@ -528,9 +569,6 @@ export class GoalContinuationCoordinator {
     registration: TurnRegistration,
   ): Promise<void> {
     const lane = registration.lane;
-    // New evidence always outranks an older, not-yet-admitted continuation.
-    lane.intent = undefined;
-    this.clearWaitingTimer(lane);
     return new Promise<void>((resolve) => {
       lane.queue.push({
         turnId: registration.turnId,
@@ -663,10 +701,23 @@ export class GoalContinuationCoordinator {
     if (!this.deps.goalManager.matchesControlLease(lane.sessionId, item.controlLease)) {
       return;
     }
-    const goal = this.deps.goalManager.get(lane.sessionId)!;
     if (item.checkpoint && !this.deps.goalManager.matchesActive(lane.sessionId, item.checkpoint)) {
       return;
     }
+    if (sameGoalControlLease(lane.intent?.controlLease, item.controlLease)) {
+      // New evidence always outranks an older, not-yet-admitted continuation.
+      lane.intent = undefined;
+      this.clearWaitingTimer(lane);
+      await this.deps.durability.clearPendingContinuation(lane.sessionId, item.controlLease);
+      if (
+        !this.isCurrent(lane) ||
+        !this.deps.goalManager.matchesControlLease(lane.sessionId, item.controlLease) ||
+        (item.checkpoint && !this.deps.goalManager.matchesActive(lane.sessionId, item.checkpoint))
+      ) {
+        return;
+      }
+    }
+    const goal = this.deps.goalManager.get(lane.sessionId)!;
     if (item.outcome.kind !== 'completed') {
       if (goal.status !== 'active' && goal.status !== 'waiting') return;
       this.pauseAtCheckpoint(
@@ -787,6 +838,16 @@ export class GoalContinuationCoordinator {
       triggeringTurnId: turnId,
       evaluation,
     };
+    const pendingPrompt = truncateGoalText(
+      buildContinuationPrompt(settled, evaluation, undefined),
+      GOAL_PENDING_PROMPT_TEXT_LIMIT,
+    );
+    await this.deps.durability.recordPendingContinuation({
+      checkpoint: lane.intent.checkpoint,
+      controlLease,
+      prompt: pendingPrompt,
+      triggeringTurnId: turnId,
+    });
     if (settled.status === 'waiting') {
       lane.consecutiveWaits++;
       return;
@@ -826,7 +887,9 @@ export class GoalContinuationCoordinator {
       return;
     }
 
-    const prompt = buildContinuationPrompt(goal, intent.evaluation, taskPlan.reminder);
+    const prompt = intent.recoveredPrompt
+      ? attachTaskReminder(intent.recoveredPrompt, taskPlan.reminder)
+      : buildContinuationPrompt(goal, intent.evaluation, taskPlan.reminder);
     const admission = this.deps.admitTurn(
       lane.sessionId,
       prompt,
@@ -937,7 +1000,17 @@ export class GoalContinuationCoordinator {
       if (!woken || !lane.intent) return;
       lane.intent = { ...lane.intent, checkpoint: goalCheckpoint(woken) };
       void this.deps.durability
-        .flush(lane.sessionId)
+        .recordPendingContinuation({
+          checkpoint: lane.intent.checkpoint,
+          controlLease: lane.intent.controlLease,
+          prompt:
+            lane.intent.recoveredPrompt ??
+            buildContinuationPrompt(woken, lane.intent.evaluation, undefined),
+          ...(lane.intent.triggeringTurnId
+            ? { triggeringTurnId: lane.intent.triggeringTurnId }
+            : {}),
+        })
+        .then(() => this.deps.durability.flush(lane.sessionId))
         .then(() => this.scheduleDrain(lane))
         .catch(() => undefined);
     }, delayMs);
@@ -1006,6 +1079,14 @@ function buildContinuationPrompt(
     `\n\nEvaluation: ${evaluation.reason}${evaluation.waiting ? ' (scheduled external-event re-check)' : ''}\n` +
     `Goal: "${goal.condition}" (turn ${goal.iterations}/${goal.maxIterations}${noProgress})`
   );
+}
+
+function attachTaskReminder(prompt: string, taskReminder: string | undefined): string {
+  if (!taskReminder) return prompt;
+  const evaluationMarker = '\n\nEvaluation:';
+  const evaluationAt = prompt.indexOf(evaluationMarker);
+  if (evaluationAt === -1) return `${prompt}\n\n${taskReminder}`;
+  return `${prompt.slice(0, evaluationAt)}\n\n${taskReminder}${prompt.slice(evaluationAt)}`;
 }
 
 function waitBackoffMs(consecutiveWaits: number): number {

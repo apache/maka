@@ -22,6 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { activateRuntimeHostManagedDeployment } from '@maka/runtime-host/client';
 import {
+  compareProductReleaseVersions,
   createRuntimeHostLegacyPosixOperatorCommand,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
@@ -38,6 +39,7 @@ import {
   RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
 } from '@maka/runtime-host/operator';
 import {
+  isRuntimeHostDevelopmentPackageVersion,
   assertRuntimeHostManagedOperatorConfig,
   assertRuntimeHostManagedOperatorDeployment,
   convergeRuntimeHostManagedOperator,
@@ -51,6 +53,7 @@ import {
   type RuntimeHostManagedPackageDeployment,
 } from './runtime-host-managed-deployment.js';
 import {
+  runtimeHostManagedServiceConfigFingerprint,
   manageRuntimeHostService,
   replaceRuntimeHostManagedService,
   resolveRuntimeHostManagedServiceId,
@@ -87,6 +90,7 @@ import {
   verifyRuntimeHostLifecycleProjection,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
+import { launchRuntimeHostLocalSourceRetirement } from './runtime-host-local-source-retirement.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 
 const OPERATOR_TIMEOUT_MS = 2 * 60_000;
@@ -102,6 +106,8 @@ export interface RuntimeHostUpdateCliOptions {
   readonly version: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly expectedHost?: RuntimeHostExpectedHost;
+  readonly expectedConfigFingerprint?: string;
+  readonly expectedSourceVersion?: string;
   readonly managedRootId?: string;
   readonly operatorDeploymentId?: string;
   readonly registrySelection?: {
@@ -128,6 +134,7 @@ interface RuntimeHostUpdateCliDeps {
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly prunePackages: typeof pruneRuntimeHostManagedPackages;
   readonly activateDesired: typeof activateRuntimeHostManagedDeployment;
+  readonly retireSource: typeof launchRuntimeHostLocalSourceRetirement;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
@@ -219,6 +226,7 @@ export async function runManagedRuntimeHostUpdateCli(
     openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
     prunePackages: pruneRuntimeHostManagedPackages,
+    retireSource: launchRuntimeHostLocalSourceRetirement,
     activateDesired: (input) =>
       activateRuntimeHostManagedDeployment(input, {
         reconcileActivation: async () => undefined,
@@ -626,7 +634,7 @@ async function runCanonicalRuntimeHostUpdate(
   try {
     return await deps.withDeploymentLock(
       resolveRuntimeHostManagedControlRoot(options.managedRootId),
-      async () => {
+      async (inheritableAuthorityLeaseFd) => {
         await deps.canonical.assertOperatorDeployment(
           options.managedRootId,
           options.operatorDeploymentId,
@@ -653,6 +661,15 @@ async function runCanonicalRuntimeHostUpdate(
           );
         }
         const current = recovered.config;
+        if (
+          options.expectedSourceVersion &&
+          current.launch.package.version !== options.expectedSourceVersion
+        ) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'The installed Runtime Host package changed; check it again before updating',
+          );
+        }
         await deps.canonical.convergeControlProjection(current, lifecycleDeps);
         await deps.canonical.verifyProjection(current, lifecycleDeps);
         deps.canonical.assertOperatorConfig(
@@ -672,6 +689,35 @@ async function runCanonicalRuntimeHostUpdate(
           },
           { resolveProvider: resolveRuntimeHostLifecycleProvider },
         );
+        if (
+          options.expectedConfigFingerprint &&
+          (!currentStatus.service.config ||
+            runtimeHostManagedServiceConfigFingerprint(currentStatus.service.config) !==
+              options.expectedConfigFingerprint)
+        ) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'The managed Runtime Host configuration changed; check it again before updating',
+          );
+        }
+        const developmentArtifact =
+          isRuntimeHostDevelopmentPackageVersion(options.version) ||
+          isRuntimeHostDevelopmentPackageVersion(current.launch.package.version);
+        if (developmentArtifact && !options.sourcePackageIntegrity) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'Development deployments require an explicitly selected source artifact; source hashes do not establish release order',
+          );
+        }
+        if (
+          !developmentArtifact &&
+          compareProductReleaseVersions(options.version, current.launch.package.version) < 0
+        ) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'This update would downgrade the shared Runtime Host. Update the Client instead.',
+          );
+        }
         const targetIntegrity =
           options.sourcePackageIntegrity ??
           options.registrySelection?.integrity ??
@@ -751,15 +797,41 @@ async function runCanonicalRuntimeHostUpdate(
           },
         };
         emit(progress('retiring', current.launch.package.version, options.version));
-        emit(progress('replacing', current.launch.package.version, options.version));
         const replacement = await deps.canonical.replaceLifecycle({
           operation: 'update',
+          validateRetiredState: async () => {
+            emit(progress('replacing', current.launch.package.version, options.version));
+          },
           current,
           desired,
           allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
           ...(options.expectedHost ? { expectedOwner: options.expectedHost } : {}),
           ...(desired.lifecycle.mode === 'on_demand'
             ? {
+                ...(options.expectedHost
+                  ? {
+                      prepareSourceRetirement: (signal?: AbortSignal) => {
+                        if (inheritableAuthorityLeaseFd === undefined) {
+                          throw new RuntimeHostServiceManagerError(
+                            'target_mismatch',
+                            'Source-package retirement requires the deployment authority lease',
+                          );
+                        }
+                        return deps.retireSource({
+                          sourceCliPath: currentCliPath,
+                          sourceNodePath: current.launch.nodePath,
+                          rootPath: current.root.path,
+                          expectedRootId: current.root.id,
+                          expectedHostEpoch: options.expectedHost!.hostEpoch,
+                          activeWorkPolicy: options.allowInterruptActiveTasks
+                            ? 'interrupt_active_work'
+                            : 'refuse_active_work',
+                          inheritableAuthorityLeaseFd,
+                          ...(signal ? { signal } : {}),
+                        });
+                      },
+                    }
+                  : {}),
                 activateDesired: async () => {
                   await deps.activateDesired({ rootId: options.managedRootId });
                 },

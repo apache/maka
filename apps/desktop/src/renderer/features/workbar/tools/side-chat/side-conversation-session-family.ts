@@ -24,10 +24,7 @@ import {
   sessionRevisionFamilyId,
 } from '@maka/core/session-revisions';
 
-type LinkedSession = SessionSummary;
-
 interface SessionFamilyProjection {
-  logicalSessions: readonly LinkedSession[];
   representativeByFamilyId: ReadonlyMap<string, string>;
   parentByChildId: ReadonlyMap<string, string>;
 }
@@ -37,12 +34,12 @@ interface SessionFamilyProjection {
 // catalog array and active id so a streaming catalog revision builds the
 // revision-aware maps once, rather than once per panel.
 const sessionFamilyProjectionCache = new WeakMap<
-  readonly LinkedSession[],
+  readonly SessionSummary[],
   Map<string, SessionFamilyProjection>
 >();
 
 function projectSessionFamily(
-  sessions: readonly LinkedSession[],
+  sessions: readonly SessionSummary[],
   activeId: string,
 ): SessionFamilyProjection {
   const cacheKey = activeId;
@@ -60,7 +57,6 @@ function projectSessionFamily(
     for (const child of children) parentByChildId.set(child.id, parentId);
   }
   const projection: SessionFamilyProjection = {
-    logicalSessions,
     representativeByFamilyId,
     parentByChildId,
   };
@@ -77,8 +73,8 @@ function projectSessionFamily(
  */
 export function isLinkedSideConversationSessionFamily(
   sourceSessionId: string,
-  activeSession: LinkedSession | undefined,
-  sessions: readonly LinkedSession[],
+  activeSession: SessionSummary | undefined,
+  sessions: readonly SessionSummary[],
 ): boolean {
   if (!activeSession) return false;
   // The active source may be represented by the shell's pending Session view
@@ -101,41 +97,6 @@ export function isLinkedSideConversationSessionFamily(
   const activeId =
     representativeByFamilyId.get(sessionRevisionFamilyId(activeSession)) ?? activeSession.id;
   return reachesSession(activeId, sourceId, parentByChildId);
-}
-
-/**
- * Stable key for a linked Session family. Using the active Session's root,
- * rather than whichever panel happens to be listed first, keeps the mounted
- * Workbar surface stable when one of several retained panels is closed.
- */
-export function linkedSideConversationFamilyRootId(
-  activeSession: LinkedSession | undefined,
-  sessions: readonly LinkedSession[],
-): string | undefined {
-  if (!activeSession) return undefined;
-  if (!sessions.some((session) => session.id === activeSession.id)) return undefined;
-  const { logicalSessions, parentByChildId } = projectSessionFamily(
-    sessions,
-    activeSession.id,
-  );
-  const logicalSessionsById = new Map(
-    logicalSessions.map((session) => [session.id, session]),
-  );
-  const activeRepresentative =
-    logicalSessions.find(
-      (session) => sessionRevisionFamilyId(session) === sessionRevisionFamilyId(activeSession),
-    ) ?? activeSession;
-  const visited = new Set<string>();
-  let currentSession = logicalSessionsById.get(activeRepresentative.id) ?? activeRepresentative;
-  while (!visited.has(currentSession.id)) {
-    visited.add(currentSession.id);
-    const parentId = parentByChildId.get(currentSession.id);
-    if (!parentId) return sessionRevisionFamilyId(currentSession);
-    const parentSession = logicalSessionsById.get(parentId);
-    if (!parentSession) return sessionRevisionFamilyId(currentSession);
-    currentSession = parentSession;
-  }
-  return sessionRevisionFamilyId(currentSession);
 }
 
 function reachesSession(

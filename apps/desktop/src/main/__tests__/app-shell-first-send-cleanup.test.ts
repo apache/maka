@@ -35,6 +35,10 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { act, createElement } from 'react';
+import type { StoredMessage } from '@maka/core/session';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 
 import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
@@ -43,7 +47,6 @@ import { prepareTranscriptForSend } from '../../renderer/features/conversation/t
 
 import {
   createActionsDeps,
-  createTurnState,
   installWindow,
 } from './app-shell-chat-actions-fixture.js';
 
@@ -374,8 +377,8 @@ describe('composer first-send cleanup', () => {
           activeIdRef.current = sessionId;
           throw new Error('Timed out while preparing the new Session event stream');
         },
-        setActiveId: (sessionId) => {
-          activeIdRef.current = sessionId;
+        retireSession: (sessionId) => {
+          if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
         },
         isNewChatSendSurfaceActive: () => activeIdRef.current === undefined,
         isShellSurfaceOwnerActive: (owner) =>
@@ -544,6 +547,75 @@ describe('composer first-send cleanup', () => {
     }
   });
 
+  it('refresh waits for durable messages without bypassing range publication', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    let durable = false;
+    const durableAnswer = { id: 'answer' };
+    let publishedAnswer = { id: 'answer' };
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      waitForDurableMessage: async () => { durable = true; return true; },
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [durableAnswer] }),
+        hasDurableMessage: () => durable,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const dependencies = {
+      ...deps,
+      transcriptRangeRef: { current: controller },
+      isMessagePublished: (message: unknown) => message === publishedAnswer,
+    };
+    const actions = createAppShellChatActions(dependencies);
+    const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+    assert.equal(durable, false);
+    ready.resolve();
+    assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
+    publishedAnswer = durableAnswer;
+    assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
+  });
+
+  it('an in-flight refresh reads publication that commits after the call began', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session';
+    const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
+    const ready = deferred<void>();
+    const controller = {
+      ready: () => ready.promise,
+      store: {
+        snapshot: () => ({ sessionId: 'session', messages: [answer] }),
+        hasDurableMessage: () => true,
+      },
+    } as unknown as DesktopTranscriptRangeController;
+    const { root } = installReactRenderer();
+    let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
+    function Probe(): null {
+      publication = useAppShellSessionUiState(
+        [], undefined, deps.activeIdRef,
+        (_sessionId, _messages, _controller: DesktopTranscriptRangeController) => true,
+      ).publication;
+      return null;
+    }
+    try {
+      act(() => root.render(createElement(Probe)));
+      const actions = createAppShellChatActions({
+        ...deps, transcriptRangeRef: { current: controller },
+        isMessagePublished: publication.isMessagePublished,
+      });
+      const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+      act(() => {
+        publication.messagesRef.current = [answer];
+        publication.setMessagesState([answer]);
+      });
+      ready.resolve();
+      assert.equal(await refresh, true, 'the original invocation must see the new publication');
+      assert.equal(publication.isMessagePublished({ ...answer }), false, 'same id is not the published version');
+    } finally {
+      cleanupFakeDom();
+    }
+  });
+
   for (const initialized of [false, true]) {
   it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
     const submissions: string[] = [];
@@ -578,7 +650,6 @@ describe('composer first-send cleanup', () => {
           cancel: () => {},
           followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
         }),
-        setMessages: () => { assert.fail('the previous range must not replace selected messages'); },
       }).send('hello');
       assert.equal(result, true);
       assert.deepEqual(submissions, ['selected-session']);
@@ -630,24 +701,6 @@ describe('composer send failure feedback', () => {
     }
 
     assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated to 设置 · 模型');
-  });
-
-  it('does not invent a live turn when the send never lands', async () => {
-    const turnState = createTurnState();
-    const restoreWindow = installWindow(readinessFailure());
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef: { current: 'session-a' },
-        setLiveTurnBySession: turnState.setLiveTurnBySession,
-      });
-      assert.equal(await actions.send('hello'), false);
-    } finally {
-      restoreWindow();
-    }
-
-    assert.deepEqual(turnState.liveTurnBySession, {}, 'the arm must be disarmed');
   });
 
   it('still answers the surface that is actually waiting', async () => {

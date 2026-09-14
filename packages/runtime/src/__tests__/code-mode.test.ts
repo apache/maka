@@ -37,6 +37,45 @@ function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>
   });
 }
 
+test('excludes host waiting from the execution budget and preserves dependent Promise.race progress', async () => {
+  let releaseSlow!: (value: string) => void;
+  const slow = new Promise<string>((resolve) => {
+    releaseSlow = resolve;
+  });
+  const calls: string[] = [];
+  const result = await execute(
+    `
+    const slow = tools.slow({});
+    const fast = tools.fast({});
+    const winner = await Promise.race([slow, fast]);
+    await tools.after({});
+    await Promise.all([slow, fast]);
+    return winner;
+  `,
+    {
+      tools: ['slow', 'fast', 'after'].map((name) => ({ name })),
+      signal: AbortSignal.timeout(5_000),
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, timeoutMs: 200 },
+      callTool: async (name, _input, signal) => {
+        calls.push(name);
+        if (name === 'slow') {
+          signal.addEventListener('abort', () => releaseSlow('cancelled'), { once: true });
+          return slow;
+        }
+        if (name === 'fast') {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          return 'fast';
+        }
+        releaseSlow('slow');
+        return null;
+      },
+    },
+  ).finally(() => releaseSlow('cleanup'));
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.value, 'fast');
+  assert.deepEqual(calls, ['slow', 'fast', 'after']);
+});
+
 test('executes standard JavaScript without an interpreter subset', async () => {
   const result = await execute(`
     const key = 'answer';
@@ -60,6 +99,18 @@ test('executes TypeScript syntax', async () => {
   `);
 
   assert.deepEqual(result, { ok: true, value: { value: 42 }, toolCalls: [] });
+});
+
+test('does not read the execution result through a guest-controlled global', async () => {
+  const result = await execute(`
+    Object.defineProperty(globalThis, '__runResult', {
+      get() { throw new Error('Guest getter must not run'); },
+      set() {},
+    });
+    return 'actual result';
+  `);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.value, 'actual result');
 });
 
 test('reports invalid source as a parse error', async () => {
@@ -404,6 +455,62 @@ test('preempts a pure compute loop at the sandbox-time limit', async () => {
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
+});
+
+test('still preempts compute while a host tool is pending', async () => {
+  let aborted = false;
+  const result = await execute(
+    'const pending = tools.wait({}).then(value => value); await tools.started({}); while (true) {}',
+    {
+      tools: [{ name: 'wait' }, { name: 'started' }],
+      signal: AbortSignal.timeout(5_000),
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, timeoutMs: 100 },
+      callTool: async (name, _input, signal) => {
+        if (name === 'started') return null;
+        await new Promise<void>((resolve) => {
+          const onAbort = () => {
+            aborted = true;
+            resolve();
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
+        });
+        return null;
+      },
+    },
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
+  assert.equal(aborted, true);
+});
+
+test('accumulates compute across awaits instead of resetting the budget', async () => {
+  // Keep the single slice well below the budget on a loaded runner, with
+  // enough repeated slices to exercise cumulative accounting on faster hosts.
+  const work = 'let total = 0; for (let i = 0; i < 10_000; i++) total += Math.sqrt(i);';
+  const executionPolicy = {
+    ...DEFAULT_CODE_MODE_EXECUTION_POLICY,
+    timeoutMs: 1_000,
+    maxBridgeRequests: 8_192,
+  };
+  const single = await execute(`${work} return total;`, { executionPolicy });
+  assert.equal(single.ok, true, JSON.stringify(single));
+  let calls = 0;
+  const result = await execute(
+    `for (let step = 0; step < 5_000; step++) { ${work} await tools.tick({}); }`,
+    {
+      executionPolicy,
+      tools: [{ name: 'tick' }],
+      signal: AbortSignal.timeout(15_000),
+      callTool: async () => {
+        calls++;
+        return null;
+      },
+    },
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error.message, /timed out after 1000ms/);
+  assert.ok(calls > 1 && calls < 5_000, `completed ${calls} slices`);
 });
 
 test('waits for an aborted host operation to settle before rejecting', async () => {

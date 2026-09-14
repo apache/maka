@@ -20,7 +20,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import { Button, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
+import { Button, TextInput } from '@astryxdesign/core';
+import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
@@ -41,6 +42,7 @@ export function UserQuestionPrompt(props: {
   const titleId = useId();
   const [questionIndex, setQuestionIndex] = useState(0);
   const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() => createQuestionDrafts(props.request.questions));
+  const [responseError, setResponseError] = useState<string>();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
@@ -48,6 +50,7 @@ export function UserQuestionPrompt(props: {
 
   useEffect(() => {
     activeRequestIdRef.current = props.request.requestId;
+    setResponseError(undefined);
     setQuestionIndex(0);
     setDrafts(createQuestionDrafts(props.request.questions));
     responsePendingRef.current = false;
@@ -80,8 +83,11 @@ export function UserQuestionPrompt(props: {
     const requestId = props.request.requestId;
     responsePendingRef.current = true;
     setResponsePending(true);
+    setResponseError(undefined);
     try {
       await props.onRespond(buildUserQuestionResponse(props.request, drafts));
+    } catch (reason) {
+      if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       if (activeRequestIdRef.current === requestId) {
         responsePendingRef.current = false;
@@ -100,32 +106,22 @@ export function UserQuestionPrompt(props: {
         <header className="maka-interaction-header">
           <div className="maka-interaction-title-row">
             <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
-            <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span>
+            {props.request.questions.length > 1 ? <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span> : null}
           </div>
         </header>
 
+        {responseError && <p role="alert">{responseError}</p>}
         <div className="maka-question-options">
-          <RadioList
+          <ChoicePanel
+            key={questionIndex}
             label={question.question}
-            isLabelHidden
             value={selectedValue}
-            isDisabled={interactionDisabled}
+            disabled={interactionDisabled}
             onChange={select}
-          >
-            {question.options.map((option, optionIndex) => (
-              <RadioListItem
-                value={`option:${optionIndex}`}
-                key={`${optionIndex}:${option.label}`}
-                label={option.label}
-                description={option.description}
-              />
-            ))}
-            <RadioListItem
-              value="other"
-              label={copy.other}
-              description={copy.otherDescription}
-            />
-          </RadioList>
+            onConfirm={() => { if (canContinue) { if (isLast) void submit(); else setQuestionIndex((current) => current + 1); } }}
+            onEscape={() => select('other')}
+            options={[...question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description })), { value: 'other', label: copy.other, description: copy.otherDescription }]}
+          />
           {draft?.kind === 'other' ? (
             <div className="maka-question-other-answer">
               <TextInput

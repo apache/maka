@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import type { ProjectRecord } from '@maka/core/project';
 import {
@@ -252,20 +254,20 @@ function createPage(
   offset: number,
 ): ProjectCatalogQueryResult {
   const pageItems: ProjectCatalogPageItem[] = [];
+  const budget = new JsonArrayPageBudget(PROJECT_CATALOG_PAGE_MAX_BYTES, {
+    kind: 'page',
+    view,
+    revision,
+    projectCount,
+    items: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < items.length; index += 1) {
     if (pageItems.length >= PROJECT_CATALOG_PAGE_MAX_ITEMS) break;
     const item = items[index];
     if (!item) throw new Error('Project catalog projection index was out of bounds');
     const nextOffset = index + 1;
-    const candidate: ProjectCatalogQueryResult = {
-      kind: 'page',
-      view,
-      revision,
-      projectCount,
-      items: [...pageItems, item],
-      nextCursor: nextOffset < items.length ? encodeCursor(nextOffset) : null,
-    };
-    if (encodedBytes(candidate) > PROJECT_CATALOG_PAGE_MAX_BYTES) break;
+    if (!budget.tryAppend(item, nextOffset < items.length ? encodeCursor(nextOffset) : null)) break;
     pageItems.push(item);
   }
   if (pageItems.length === 0 && offset < items.length) {
@@ -290,10 +292,6 @@ function decodeCursor(cursor: string): number | undefined {
   if (!/^(?:0|[1-9]\d*)$/.test(cursor)) return undefined;
   const offset = Number(cursor);
   return Number.isSafeInteger(offset) ? offset : undefined;
-}
-
-function encodedBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
 function isInvalidPathError(error: unknown): boolean {

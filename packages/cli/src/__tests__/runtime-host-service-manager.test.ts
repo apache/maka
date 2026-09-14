@@ -497,6 +497,36 @@ describe('managed Runtime Host service', () => {
       },
     );
     assert.equal(parseRuntimeHostCommand(['service', 'status', '--root', '/tmp']).kind, 'error');
+    const setupUpdateArgs = [
+      'setup',
+      '--principal',
+      'desktop.client-1',
+      '--preset',
+      'desktop-client',
+    ];
+    assert.equal(
+      parseRuntimeHostCommand([...setupUpdateArgs, '--allow-interrupt-active-tasks']).kind,
+      'error',
+    );
+    const explicitSetupUpdate = parseRuntimeHostCommand([
+      ...setupUpdateArgs,
+      '--update-existing',
+      '--allow-interrupt-active-tasks',
+    ]);
+    assert.equal(explicitSetupUpdate.kind, 'runtime-host-setup');
+    if (explicitSetupUpdate.kind === 'runtime-host-setup') {
+      assert.equal(explicitSetupUpdate.allowInterruptActiveTasks, true);
+    }
+    assert.equal(
+      parseRuntimeHostCommand([
+        ...setupUpdateArgs,
+        '--update-existing',
+        '--allow-interrupt-active-tasks',
+        '--allow-interrupt-active-tasks',
+      ]).kind,
+      'error',
+    );
+
     assert.equal(
       parseRuntimeHostCommand([
         'setup',

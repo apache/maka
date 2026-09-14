@@ -187,7 +187,7 @@ system prompt, disables product identity/personalization/skills/workspace-memory
 admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `apply_patch` as tool candidates,
 and exposes a foreground-only Bash schema without `run_in_background` or `pty`. Provider-specific
 routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
-`Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
+`Edit`, and `Read` also accepts Session-scoped Maka tool-result paths. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
 developer prompt and complete tool schema.
 

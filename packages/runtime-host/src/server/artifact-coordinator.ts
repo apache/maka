@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import { attachmentKindFromMimeType } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
@@ -146,6 +148,8 @@ export class HostArtifactCoordinator {
   ): Promise<OperationOutcome<'artifact.ingest'>> {
     try {
       if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        // Session removal can race an upload; release only this owner's staged bytes.
+        this.#uploads.abort(uploadKey(input.sessionId, input.uploadId), context);
         return ingestFailure('not_found', 'Session was not found');
       }
       switch (input.kind) {
@@ -507,18 +511,17 @@ function createPage(
   offset: number,
 ): ArtifactQueryResult {
   const pageArtifacts: ArtifactProjection[] = [];
+  const budget = new JsonArrayPageBudget(ARTIFACT_RESULT_MAX_BYTES, {
+    kind: 'page',
+    sessionId,
+    revision,
+    artifacts: [],
+    nextCursor: null,
+  });
   for (const record of records) {
     const artifact = encodeArtifactProjection(record);
-    const candidateArtifacts = [...pageArtifacts, artifact];
-    const nextOffset = offset + candidateArtifacts.length;
-    const candidate: ArtifactQueryResult = {
-      kind: 'page',
-      sessionId,
-      revision,
-      artifacts: candidateArtifacts,
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > ARTIFACT_RESULT_MAX_BYTES) {
+    const nextOffset = offset + pageArtifacts.length + 1;
+    if (!budget.tryAppend(artifact, nextOffset < total ? String(nextOffset) : null)) {
       if (pageArtifacts.length === 0) {
         throw new Error('A canonical Artifact cannot fit in one page');
       }

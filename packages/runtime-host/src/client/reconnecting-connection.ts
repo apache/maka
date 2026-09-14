@@ -46,6 +46,10 @@ import type { RuntimeHostSessionSubscription } from './session-subscription.js';
 
 export interface RuntimeHostReconnectingConnection extends RuntimeHostConnection {
   readonly reconnecting: true;
+  openSessionSubscriptionOnce(
+    input: SubscriptionOpenInput,
+    timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription>;
   subscribeConnectionAvailability(
     listener: (availability: RuntimeHostConnectionAvailability) => void,
   ): () => void;
@@ -210,6 +214,13 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
         previous = connection;
       }
     }
+  }
+
+  openSessionSubscriptionOnce(
+    input: SubscriptionOpenInput,
+    timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription> {
+    return this.#requireCurrent('subscription.open').openSessionSubscription(input, timeoutMs);
   }
 
   async replaceClientCapabilities(

@@ -28,9 +28,9 @@ export interface RuntimeMessageRunIdentity {
   readonly runId: string;
 }
 
-/** Synchronous lease bridge owned by the Runtime Host for one live root run. */
+/** Lease bridge owned by the Runtime Host for one live root run. */
 export interface RuntimeMessageRunOwner extends RuntimeMessageRunIdentity {
-  pull(): readonly SteeringLease[];
+  pull(): Promise<readonly SteeringLease[]>;
   ack(leaseIds: readonly string[]): void;
   nack(leaseIds: readonly string[]): void;
   /** Ends Runtime access; the Host closes admission at its terminal transition cut. */

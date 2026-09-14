@@ -145,14 +145,14 @@ describe('ShellRunProcessManager', () => {
     assert.deepEqual(completions, [false]);
   });
 
-  test('keeps the default pipe path separated, durable, redacted, and observed', async () => {
+  test('keeps the default pipe path raw, separated, durable, and observed', async () => {
     const cwd = await workspace();
     const store = sqliteShellRunStore(cwd);
     const manager = createManager(store);
     const result = await manager.runForegroundBash(
       shellInput({
         cwd,
-        command: 'printf "hello"; printf "warning" >&2',
+        command: 'printf "Authorization: Bearer sk-live-secret-token-value"; printf "warning" >&2',
       }),
     );
 
@@ -161,11 +161,16 @@ describe('ShellRunProcessManager', () => {
     assert.equal(result.exitCode, 0);
     assert.equal(result.output.mode, 'pipes');
     if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
-    assert.equal(result.output.stdout, 'hello');
+    assert.equal(result.output.stdout, 'Authorization: Bearer sk-live-secret-token-value');
     assert.equal(result.output.stderr, 'warning');
     assert.equal(result.output.latestStream, 'stderr');
+    assert.equal(result.output.redacted, false);
 
     const record = await store.readShellRun('session-1', 'shell-run-1');
+    assert.equal(
+      record.command,
+      'printf "Authorization: Bearer sk-live-secret-token-value"; printf "warning" >&2',
+    );
     assert.equal(record.output.mode, 'pipes');
     assert.equal(record.status, 'completed');
     assert.ok(record.revision >= 2);

@@ -74,26 +74,30 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     await replica.advance(completeThrough);
     assertRecords(replica, second);
 
-    await replica.loadBefore(second[0]!.sequence, PAGE_BYTES);
-    assertRecords(replica, complete);
-    assert.equal(replica.snapshot().hasOlder, false,
-      'older paging keeps the complete oversized Turn and its adjacent anchor');
-    await replica.readAt(first[0]!.sequence);
-    assertRecords(replica, first);
-    assert.equal(replica.snapshot().hasNewer, true);
+    // A window read answers the Renderer without touching Main's tail cache.
+    const older = await replica.loadBefore(second[0]!.sequence, PAGE_BYTES);
+    assert.ok(older);
+    assert.deepEqual(older.durable, first,
+      'older paging returns the complete oversized Turn adjacent to the anchor');
+    assert.equal(older.hasOlder, false);
+    assert.equal(older.hasNewer, undefined, 'an older page establishes only its older edge');
+    assertRecords(replica, second);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await replica.followLatest(PAGE_BYTES);
+      // An oversized Turn fills a client range on its own, so a reset anchored
+      // on the oldest row ends at that range boundary rather than at the tail.
+      // Reachability is carried by the newer edge and the page behind it.
+      const around = await replica.loadAround(first[0]!.sequence, PAGE_BYTES);
+      assert.ok(around);
+      assert.deepEqual(around.durable, first);
+      assert.equal(around.hasOlder, false);
+      assert.equal(around.hasNewer, true);
+      const newer = await replica.loadAfter(first.at(-1)!.sequence, PAGE_BYTES);
+      assert.ok(newer);
+      assert.deepEqual(newer.durable, second, 'the page past the boundary reaches the current tail');
+      assert.equal(newer.hasNewer, false);
       assertRecords(replica, second);
-      assert.equal(replica.snapshot().hasOlder, true);
-      assert.equal(replica.snapshot().hasNewer, false);
-      await replica.loadAround(first[0]!.sequence, PAGE_BYTES);
-      assertRecords(replica, first);
-      assert.equal(replica.snapshot().hasOlder, false);
-      assert.equal(replica.snapshot().hasNewer, true);
     }
-    await replica.followLatest(PAGE_BYTES);
-    assertRecords(replica, second);
   } finally {
     opened?.replica.close();
     await opened?.subscription.close();
@@ -121,10 +125,6 @@ for (const checkpoint of ['running-b', 'result-b'] as const) {
       const expected = source.second.slice(0, source.second.findIndex(({ id }) => id === checkpoint) + 1)
         .filter((message) => message.type !== 'turn_state').map(({ id }) => id);
       assert.deepEqual(replica.snapshot().overlay.map(({ id }) => id), expected);
-      await replica.readAt(first[0]!.sequence);
-      assertRecords(replica, first);
-      await replica.followLatest(PAGE_BYTES);
-      assertRecords(replica, first);
       assert.ok(replica.messages().some(({ id }) => id === expected.at(-1)), 'the running Turn remains reachable');
 
       const throughSequence = await ledger.appendThrough('completed-b');

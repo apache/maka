@@ -36,10 +36,13 @@ use futures::{
 use libp2p::core::muxing::{StreamMuxer, StreamMuxerEvent};
 use libp2p_webrtc_utils::{DropListener, Stream as Libp2pWebRtcStream};
 use tokio::sync::OwnedSemaphorePermit;
+use tokio_util::sync::CancellationToken;
 use webrtc::{
     data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState},
-    peer_connection::{PeerConnection, RTCPeerConnectionState},
+    peer_connection::RTCPeerConnectionState,
 };
+
+use super::lifetime::PeerConnectionLifetime;
 
 const DATA_CHANNEL_QUEUE_CAPACITY: usize = 16;
 const MAX_DATA_CHANNEL_MESSAGE_BYTES: usize = 16 * 1024;
@@ -47,7 +50,7 @@ const MAX_DATA_CHANNEL_MESSAGE_BYTES: usize = 16 * 1024;
 pub(crate) type ReadySubstream = (WebRtcSubstream, DropListener<MessageIo>);
 
 pub struct WebRtcConnection {
-    peer_connection: Arc<dyn PeerConnection>,
+    lifetime: Option<PeerConnectionLifetime>,
     incoming: mpsc::Receiver<Result<ReadySubstream, io::Error>>,
     states: mpsc::Receiver<RTCPeerConnectionState>,
     outbound: Option<BoxFuture<'static, Result<ReadySubstream, io::Error>>>,
@@ -57,13 +60,13 @@ pub struct WebRtcConnection {
 }
 
 impl WebRtcConnection {
-    pub(crate) fn new(
-        peer_connection: Arc<dyn PeerConnection>,
+    pub(super) fn new(
+        lifetime: PeerConnectionLifetime,
         incoming: mpsc::Receiver<Result<ReadySubstream, io::Error>>,
         states: mpsc::Receiver<RTCPeerConnectionState>,
     ) -> Self {
         Self {
-            peer_connection,
+            lifetime: Some(lifetime),
             incoming,
             states,
             outbound: None,
@@ -82,12 +85,7 @@ impl WebRtcConnection {
     }
 
     pub(crate) fn close_in_background(self) {
-        let peer_connection = Arc::clone(&self.peer_connection);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                let _ = peer_connection.close().await;
-            });
-        }
+        drop(self);
     }
 }
 
@@ -113,7 +111,14 @@ impl StreamMuxer for WebRtcConnection {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Self::Substream, Self::Error>> {
-        let peer_connection = Arc::clone(&self.peer_connection);
+        let Some(lifetime) = self.lifetime.as_ref() else {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "WebRTC peer connection closing",
+            )));
+        };
+        let peer_connection = Arc::clone(&lifetime.peer_connection);
+        let cancellation = lifetime.cancellation.clone();
         let future = self.outbound.get_or_insert_with(|| {
             async move {
                 let channel = peer_connection
@@ -121,7 +126,7 @@ impl StreamMuxer for WebRtcConnection {
                     .await
                     .map_err(webrtc_io_error)?;
                 data_channel_diagnostic("created", channel.id(), Some("outbound"));
-                ready_substream(channel, "outbound", None).await
+                ready_substream(channel, "outbound", None, cancellation).await
             }
             .boxed()
         });
@@ -138,11 +143,16 @@ impl StreamMuxer for WebRtcConnection {
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let peer_connection = Arc::clone(&self.peer_connection);
-        let future = self.closing.get_or_insert_with(|| {
-            async move { peer_connection.close().await.map_err(webrtc_io_error) }.boxed()
-        });
-        future.poll_unpin(cx)
+        if self.closing.is_none() {
+            let mut lifetime = self.lifetime.take().expect("connection lifetime exists");
+            lifetime.cancellation.cancel();
+            self.outbound = None;
+            self.closing = Some(async move { lifetime.close().await }.boxed());
+        }
+        self.closing
+            .as_mut()
+            .expect("close future exists")
+            .poll_unpin(cx)
     }
 
     fn poll(
@@ -217,18 +227,21 @@ pub(crate) async fn ready_substream(
     data_channel: Arc<dyn DataChannel>,
     origin: &'static str,
     inbound_permit: Option<OwnedSemaphorePermit>,
+    cancellation: CancellationToken,
 ) -> Result<ReadySubstream, io::Error> {
     let (outgoing, outgoing_receiver) = mpsc::channel(DATA_CHANNEL_QUEUE_CAPACITY);
     let (incoming_sender, incoming) = mpsc::channel(DATA_CHANNEL_QUEUE_CAPACITY);
     let io = MessageIo::new(outgoing, incoming);
     let (ready_sender, ready_receiver) = oneshot::channel();
-    tokio::spawn(drive_data_channel(
-        data_channel,
-        outgoing_receiver,
-        incoming_sender,
-        ready_sender,
-        origin,
-    ));
+    tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {},
+            _ = drive_data_channel(
+                data_channel, outgoing_receiver, incoming_sender, ready_sender, origin,
+            ) => {},
+        }
+    });
     ready_receiver
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::ConnectionAborted, "data channel stopped"))??;
@@ -245,22 +258,29 @@ pub(crate) async fn ready_substream(
 pub(crate) fn keep_init_channel(
     data_channel: Arc<dyn DataChannel>,
     mut opened: mpsc::Sender<Result<(), io::Error>>,
+    cancellation: CancellationToken,
 ) {
     tokio::spawn(async move {
-        data_channel_diagnostic("waiting", data_channel.id(), Some("init"));
-        let result = wait_for_data_channel_open(&data_channel).await;
-        let is_open = result.is_ok();
-        data_channel_diagnostic(
-            if is_open { "opened" } else { "open-failed" },
-            data_channel.id(),
-            Some("init"),
-        );
-        let _ = opened.try_send(result);
-        if is_open {
-            // Keep the initial channel allocated for the connection lifetime. Closing it lets
-            // current native WebRTC stacks reuse its SCTP stream id before both peers have
-            // retired it, causing the first real libp2p substream to fail immediately.
-            while data_channel.poll().await.is_some() {}
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {},
+            _ = async move {
+                data_channel_diagnostic("waiting", data_channel.id(), Some("init"));
+                let result = wait_for_data_channel_open(&data_channel).await;
+                let is_open = result.is_ok();
+                data_channel_diagnostic(
+                    if is_open { "opened" } else { "open-failed" },
+                    data_channel.id(),
+                    Some("init"),
+                );
+                let _ = opened.try_send(result);
+                if is_open {
+                    // Keep the initial channel allocated for the connection lifetime. Closing it lets
+                    // current native WebRTC stacks reuse its SCTP stream id before both peers have
+                    // retired it, causing the first real libp2p substream to fail immediately.
+                    while data_channel.poll().await.is_some() {}
+                }
+            } => {},
         }
     });
 }
