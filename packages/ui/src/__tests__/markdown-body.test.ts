@@ -229,6 +229,59 @@ it('does not let multiline display math cross a fenced code block', () => {
   assert.match(markup, /inside/);
 });
 
+it('keeps escaped brackets in link labels out of display math', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh-CN',
+    children: createElement(MarkdownBody, {
+      text: '[\\[DISCUSS\\] Clarify Maka sandbox contracts and runtime dependency access](https://github.com/apache/maka/discussions/5304)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/github\.com\/apache\/maka\/discussions\/5304"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+  assert.doesNotMatch(markup, /katex-display/);
+  assert.match(markup, /\[DISCUSS\] Clarify Maka sandbox contracts and runtime dependency access/);
+});
+
+it('still renders inline math inside link labels', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[see \\(x+1\\) here](https://example.com)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+});
+
+it('keeps dollar display math in link labels as literal text', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[a $$x^2$$ b](https://example.com)',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.doesNotMatch(markup, /maka-math-display/);
+  assert.match(markup, /\$\$x\^2\$\$/);
+});
+
+it('still renders display math outside link labels', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[plain](https://example.com)\n\n\\[ y^2 \\]',
+    }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com"/);
+  assert.match(markup, /class="maka-math maka-math-display"/);
+  assert.match(markup, /class="katex-display"/);
+});
+
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',

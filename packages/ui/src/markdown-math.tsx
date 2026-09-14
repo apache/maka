@@ -90,7 +90,11 @@ export const MARKDOWN_MATH_PLUGINS = [{
   },
 }] satisfies MarkdownInlinePlugin[];
 
-function protectMarkdownMath(source: string, startsAtLineStart = true): {
+function protectMarkdownMath(
+  source: string,
+  startsAtLineStart = true,
+  allowDisplayMath = true,
+): {
   text: string;
   safeSourceEnd: number;
   safeTextEnd: number;
@@ -155,23 +159,74 @@ function protectMarkdownMath(source: string, startsAtLineStart = true): {
       continue;
     }
 
-    const delimited =
-      readDelimitedMath(source, index, '\\(', '\\)', false, false)
-      ?? readDelimitedMath(source, index, '\\[', '\\]', true, true)
-      ?? readDelimitedMath(source, index, '$$', '$$', true, true);
-    if (delimited?.kind === 'pending') {
-      text += source.slice(index, delimited.end);
-      index = delimited.end;
+    const link = readMarkdownLink(source, index);
+    if (link?.kind === 'pending') {
+      text += source.slice(index, link.end);
+      index = link.end;
       atLineStart = false;
       canMarkSafe = false;
       continue;
     }
-    if (delimited?.kind === 'match') {
-      text += mathToken(delimited.formula, delimited.displayMode);
-      index = delimited.end;
+    if (link?.kind === 'match') {
+      // Display math renders as a block, which cannot live inside an inline
+      // link label, and Markdown reads `\[` / `\]` there as literal escaped
+      // brackets. Re-run the label with display math disabled so the escapes
+      // survive for Markdown to unescape; inline math still renders inside.
+      const inner = protectMarkdownMath(
+        source.slice(link.labelStart, link.labelEnd),
+        false,
+        false,
+      );
+      // Astryx matches label brackets without regard for escapes, so an
+      // escaped bracket would end the label early and the link would never
+      // form. Rewrite just those escapes as literal tokens for real links;
+      // image alt text stays untouched because it renders as a raw string.
+      const label = link.isImage ? inner.text : encodeEscapedBrackets(inner.text);
+      text += source.slice(index, link.labelStart) + label + source.slice(link.labelEnd, link.end);
+      index = link.end;
+      atLineStart = source[index - 1] === '\n';
+      if (inner.safeSourceEnd >= link.labelEnd - link.labelStart) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
+      continue;
+    }
+
+    const inlineDelim = readDelimitedMath(source, index, '\\(', '\\)', false, false);
+    if (inlineDelim?.kind === 'pending') {
+      text += source.slice(index, inlineDelim.end);
+      index = inlineDelim.end;
+      atLineStart = false;
+      canMarkSafe = false;
+      continue;
+    }
+    if (inlineDelim?.kind === 'match') {
+      text += mathToken(inlineDelim.formula, inlineDelim.displayMode);
+      index = inlineDelim.end;
       atLineStart = false;
       markSafe();
       continue;
+    }
+
+    if (allowDisplayMath) {
+      const displayDelim =
+        readDelimitedMath(source, index, '\\[', '\\]', true, true)
+        ?? readDelimitedMath(source, index, '$$', '$$', true, true);
+      if (displayDelim?.kind === 'pending') {
+        text += source.slice(index, displayDelim.end);
+        index = displayDelim.end;
+        atLineStart = false;
+        canMarkSafe = false;
+        continue;
+      }
+      if (displayDelim?.kind === 'match') {
+        text += mathToken(displayDelim.formula, displayDelim.displayMode);
+        index = displayDelim.end;
+        atLineStart = false;
+        markSafe();
+        continue;
+      }
     }
 
     const character = source[index] ?? '';
@@ -281,6 +336,165 @@ function readDelimitedMath(
   const formula = rawFormula.trim();
   if (formula === '') return undefined;
   return { kind: 'match', formula, displayMode, end: close + closing.length };
+}
+
+const MAX_LINK_LABEL_DEPTH = 32;
+
+type MarkdownLinkScan =
+  | { kind: 'match'; labelStart: number; labelEnd: number; end: number; isImage: boolean }
+  | { kind: 'pending'; end: number }
+  | undefined;
+
+/**
+ * Recognize a Markdown inline link or image starting at `index` so its label
+ * can be re-scanned without display math. Bare `[text]` without a `(...)` or
+ * `[ref]` tail is left alone: without the tail there is no link whose inline
+ * layout display math could break.
+ */
+function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
+  let openerEnd: number;
+  let isImage = false;
+  if (source[index] === '!') {
+    if (index + 1 >= source.length) return { kind: 'pending', end: index + 1 };
+    if (source[index + 1] !== '[') return undefined;
+    if (isEscaped(source, index)) return undefined;
+    openerEnd = index + 2;
+    isImage = true;
+  } else if (source[index] === '[') {
+    if (isEscaped(source, index)) return undefined;
+    openerEnd = index + 1;
+  } else {
+    return undefined;
+  }
+
+  const labelEnd = findLabelEnd(source, openerEnd);
+  if (labelEnd === 'pending') return { kind: 'pending', end: openerEnd };
+  if (labelEnd === 'invalid') return undefined;
+
+  const tail = source[labelEnd + 1] ?? '';
+  if (tail === '(') {
+    const tailEnd = findInlineTailEnd(source, labelEnd + 1);
+    if (tailEnd === 'pending') return { kind: 'pending', end: openerEnd };
+    if (tailEnd === 'invalid') return undefined;
+    return { kind: 'match', labelStart: openerEnd, labelEnd, end: tailEnd, isImage };
+  }
+  if (tail === '[') {
+    const refEnd = findLabelEnd(source, labelEnd + 2);
+    if (refEnd === 'pending') return { kind: 'pending', end: openerEnd };
+    if (refEnd === 'invalid') return undefined;
+    return { kind: 'match', labelStart: openerEnd, labelEnd, end: refEnd + 1, isImage };
+  }
+  return undefined;
+}
+
+/** Whether the character at `pos` is backslash-escaped (odd run before it). */
+function isEscaped(source: string, pos: number): boolean {
+  let count = 0;
+  let i = pos - 1;
+  while (i >= 0 && source[i] === '\\') {
+    count++;
+    i--;
+  }
+  return count % 2 === 1;
+}
+
+/**
+ * Find the `]` closing a link label opened before `from`, skipping escapes,
+ * code spans, and nested labels. Blank lines and excessive nesting can never
+ * form a label; running out of input means more text may still complete it.
+ */
+function findLabelEnd(source: string, from: number): number | 'pending' | 'invalid' {
+  let depth = 0;
+  let i = from;
+  while (i < source.length) {
+    const ch = source[i] ?? '';
+    if (ch === '\n' && source[i + 1] === '\n') return 'invalid';
+    if (ch === '\\') {
+      if (i + 1 >= source.length) return 'pending';
+      i += 2;
+      continue;
+    }
+    if (ch === '`') {
+      let runEnd = i + 1;
+      while (source[runEnd] === '`') runEnd++;
+      const close = source.indexOf(source.slice(i, runEnd), runEnd);
+      if (close < 0) return 'pending';
+      i = close + (runEnd - i);
+      continue;
+    }
+    if (ch === '[') {
+      depth++;
+      if (depth > MAX_LINK_LABEL_DEPTH) return 'pending';
+      i++;
+      continue;
+    }
+    if (ch === ']') {
+      if (depth === 0) return i;
+      depth--;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return 'pending';
+}
+
+/**
+ * Find the end of an inline `(destination)` tail starting at its `(`.
+ * Quotes get no special treatment: apostrophes are ordinary URL characters,
+ * and a title's balanced parens resolve through nesting. Only the label
+ * needs exact bounds; the tail just confirms link-ness and is copied as-is.
+ */
+function findInlineTailEnd(source: string, from: number): number | 'pending' | 'invalid' {
+  let depth = 1;
+  let i = from + 1;
+  while (i < source.length) {
+    const ch = source[i] ?? '';
+    if (ch === '\n' && source[i + 1] === '\n') return 'invalid';
+    if (ch === '\\') {
+      if (i + 1 >= source.length) return 'pending';
+      i += 2;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return 'pending';
+}
+
+/**
+ * Replace Markdown-escaped brackets inside a link label with literal
+ * transport tokens. Every other escape survives verbatim for Markdown to
+ * resolve, and tokens contain no brackets for link matching to trip over.
+ */
+function encodeEscapedBrackets(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '\\' && i + 1 < text.length) {
+      const next = text[i + 1] ?? '';
+      if (next === '[' || next === ']') {
+        out += transportToken(next, '2');
+      } else {
+        out += text.slice(i, i + 2);
+      }
+      i += 2;
+      continue;
+    }
+    out += text[i] ?? '';
+    i++;
+  }
+  return out;
 }
 
 function findPendingFenceBoundary(source: string, from: number): number {
