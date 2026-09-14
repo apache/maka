@@ -1362,6 +1362,7 @@ test('Plugin Platform recovery removes orphaned bundle import roots', async () =
 });
 
 test('Plugin Platform protocol rejects open and malformed generic composition shapes', () => {
+  assert.equal(operationAllowsRemoteOwner('plugin.client.query'), true);
   for (const operation of [
     'plugin.platform.query',
     'plugin.platform.reconcile',
@@ -1373,6 +1374,14 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
   ] as const) {
     assert.equal(operationAllowsRemoteOwner(operation), false);
   }
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-client-snapshot',
+      operation: 'plugin.client.query',
+      input: { kind: 'snapshot' },
+    }).operation,
+    'plugin.client.query',
+  );
   assert.equal(
     decodeRequestFrame({
       requestId: 'plugin-reload',
@@ -1410,6 +1419,20 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
       input: { view: 'tools', rootId: 'session:one' },
     }).operation,
     'plugin.platform.query',
+  );
+  assert.doesNotThrow(() =>
+    decodeResponseFrame({
+      requestId: 'plugin-client-snapshot',
+      operation: 'plugin.client.query',
+      ok: true,
+      result: {
+        kind: 'snapshot',
+        authorityEpoch: 1,
+        revision: `sha256-${'a'.repeat(64)}`,
+        entries: [],
+        failures: [],
+      },
+    }),
   );
   assert.doesNotThrow(() =>
     decodeResponseFrame({

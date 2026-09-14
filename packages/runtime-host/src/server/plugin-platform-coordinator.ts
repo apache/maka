@@ -30,6 +30,7 @@ import type { PluginCommandInspection } from '@maka/runtime/plugin-command-servi
 import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
 import type {
   OperationOutcome,
+  PluginClientQueryInput,
   PluginPackageExportInput,
   PluginPackageInstallInput,
   PluginPackageProjection,
@@ -49,6 +50,7 @@ import { HostPluginPlatform, HostPluginPlatformError } from './plugin-platform.j
 
 export class HostPluginPlatformCoordinator {
   readonly handlers: PluginPlatformOperationHandlerMap = {
+    'plugin.client.query': (input) => this.#client(input),
     'plugin.platform.query': (input) => this.#query(input),
     'plugin.package.install': (input) => this.#install(input),
     'plugin.package.uninstall': (input) => this.#uninstall(input),
@@ -59,6 +61,21 @@ export class HostPluginPlatformCoordinator {
   };
 
   constructor(readonly platform: HostPluginPlatform) {}
+
+  async #client(input: PluginClientQueryInput): Promise<OperationOutcome<'plugin.client.query'>> {
+    try {
+      return {
+        ok: true,
+        result: await this.platform.read(async () =>
+          input.kind === 'snapshot'
+            ? this.platform.clientSnapshot()
+            : await this.platform.readClientBundle(input),
+        ),
+      };
+    } catch (error) {
+      return failure(error);
+    }
+  }
 
   async #query(
     input: PluginPlatformQueryInput,

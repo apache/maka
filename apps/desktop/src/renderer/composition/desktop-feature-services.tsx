@@ -23,6 +23,10 @@ import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
+import {
+  ClientPluginRoot,
+  ClientPluginServicesProvider,
+} from '../features/client-plugins/index.js';
 import { ExternalAgentSettingsServicesProvider } from '../features/external-agent-settings/index.js';
 import { createDesktopExternalAgentSettingsServices } from '../platform/desktop/create-external-agent-settings-services.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
@@ -36,6 +40,7 @@ import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
+import { createDesktopClientPluginServices } from '../platform/desktop/create-client-plugin-services.js';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
@@ -58,6 +63,7 @@ if (import.meta.env.DEV) {
 export function createDesktopFeatureServices() {
   return {
     appUpdate: createDesktopAppUpdateServices(),
+    clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
@@ -80,7 +86,9 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
-    <AppUpdateServicesProvider services={props.services.appUpdate}>
+    <ClientPluginServicesProvider services={props.services.clientPlugins}>
+      <ClientPluginRoot>
+        <AppUpdateServicesProvider services={props.services.appUpdate}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
       <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
@@ -110,6 +118,8 @@ export function DesktopFeatureServicesProvider(props: {
         </RuntimeHostManagementServicesProvider>
       </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
-    </AppUpdateServicesProvider>
+        </AppUpdateServicesProvider>
+      </ClientPluginRoot>
+    </ClientPluginServicesProvider>
   );
 }

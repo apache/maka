@@ -299,6 +299,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'plan.control',
   'plan.query',
   'plan.turn.start',
+  'plugin.client.query',
   'pricing.mutate',
   'pricing.query',
   'project.catalog.mutate',

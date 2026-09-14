@@ -21,6 +21,7 @@ import {
   MakaCompositionLoader,
   type MakaCompositionRecoveryFailure,
 } from '@maka/runtime/plugin-composition-loader';
+import { createHash } from 'node:crypto';
 import {
   applyCompositionState,
   MakaPluginRuntimeError,
@@ -45,14 +46,18 @@ import {
   HostPluginCompositionStoreError,
   type PersistedPluginComposition,
 } from './plugin-composition-store.js';
-import { TrustedPluginPackageLoader } from './plugin-package-loader.js';
+import { PluginPackageLoaderError, TrustedPluginPackageLoader } from './plugin-package-loader.js';
 import { PluginPackageStore, PluginPackageStoreError } from './plugin-package-store.js';
 import type {
+  PluginClientCompositionEntry,
+  PluginClientQueryInput,
+  PluginClientQueryResult,
   PluginMutationReceipt,
   PluginPackageProjection,
   PluginPlatformConvergence,
   PluginPlatformPhase,
 } from '../protocol/plugin-platform.js';
+import { PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES } from '../protocol/plugin-platform.js';
 
 export class HostPluginPlatformError extends Error {
   readonly name = 'HostPluginPlatformError';
@@ -576,6 +581,94 @@ export class HostPluginPlatform {
       );
     }
     return Object.freeze(projections);
+  }
+
+  async clientSnapshot(): Promise<Extract<PluginClientQueryResult, { readonly kind: 'snapshot' }>> {
+    this.#assertReadable();
+    const entries: PluginClientCompositionEntry[] = [];
+    const clientEntryIds = new Set<string>();
+    for (const inspection of flattenEntryInspections(this.#composition.inspectTree('desktop-ui'))) {
+      clientEntryIds.add(inspection.id);
+      if (
+        inspection.status !== 'active' ||
+        !inspection.packageId ||
+        inspection.generation === undefined
+      ) {
+        continue;
+      }
+      const pkg = this.#composition.package(inspection.packageId);
+      const bundle = this.#packageLoader.clientBundle(pkg);
+      if (!bundle) continue;
+      const installed = await this.#packages.load(inspection.packageId);
+      entries.push(
+        Object.freeze({
+          entryId: inspection.id,
+          extensionId: inspection.packageId,
+          generation: inspection.generation,
+          contentDigest: bundle.contentDigest,
+          clientDigest: bundle.clientDigest,
+          totalBytes: bundle.totalBytes,
+          dependencies: Object.freeze(installed.manifest.dependencies.map(({ id }) => id)),
+          ...(inspection.config === undefined
+            ? {}
+            : {
+                config: inspection.config as Readonly<Record<string, string | number | boolean>>,
+              }),
+        }),
+      );
+    }
+    const clientPackages = new Set(entries.map(({ extensionId }) => extensionId));
+    const failures = Object.freeze(
+      this.#failures.filter(
+        (failure) =>
+          (failure.entryId !== undefined && clientEntryIds.has(failure.entryId)) ||
+          (failure.extensionId !== undefined && clientPackages.has(failure.extensionId)),
+      ),
+    );
+    const revision = `sha256-${createHash('sha256')
+      .update(JSON.stringify({ authorityEpoch: this.#authority.generation, entries, failures }))
+      .digest('hex')}`;
+    return Object.freeze({
+      kind: 'snapshot',
+      authorityEpoch: this.#authority.generation,
+      revision,
+      entries: Object.freeze(entries),
+      failures,
+    });
+  }
+
+  async readClientBundle(
+    input: Extract<PluginClientQueryInput, { readonly kind: 'bundle' }>,
+  ): Promise<Extract<PluginClientQueryResult, { readonly kind: 'bundle' }>> {
+    this.#assertReadable();
+    const pkg = this.#composition.package(input.extensionId);
+    const bundle = this.#packageLoader.clientBundle(pkg);
+    if (
+      !bundle ||
+      bundle.contentDigest !== input.contentDigest ||
+      bundle.clientDigest !== input.clientDigest
+    ) {
+      throw new PluginPackageLoaderError(
+        'not_found',
+        `Plugin Client generation is stale or unavailable: ${input.extensionId}`,
+      );
+    }
+    const { content, totalBytes } = await this.#packageLoader.readClientBundle(
+      pkg,
+      input.offset,
+      PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES,
+    );
+    const nextOffset = input.offset + content.byteLength;
+    return Object.freeze({
+      kind: 'bundle',
+      extensionId: input.extensionId,
+      contentDigest: input.contentDigest,
+      clientDigest: input.clientDigest,
+      offset: input.offset,
+      totalBytes,
+      content: content.toString('base64'),
+      nextOffset: nextOffset < totalBytes ? nextOffset : null,
+    });
   }
 
   async exportPackage(extensionId: string, targetPath: string): Promise<void> {
@@ -1326,6 +1419,20 @@ function compositionAuthority(
     packageLayers: Object.freeze([...packageLayers]),
     overlays: Object.freeze(structuredClone(overlays)),
   });
+}
+
+function flattenEntryInspections(
+  entries: readonly MakaCompositionEntryInspection[],
+): readonly MakaCompositionEntryInspection[] {
+  const flattened: MakaCompositionEntryInspection[] = [];
+  const visit = (items: readonly MakaCompositionEntryInspection[]): void => {
+    for (const item of items) {
+      flattened.push(item);
+      visit(item.children);
+    }
+  };
+  visit(entries);
+  return flattened;
 }
 
 function compositionEntries(state: MakaCompositionState): readonly MakaCompositionEntry[] {

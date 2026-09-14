@@ -1406,6 +1406,11 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  clientPlugins: {
+    snapshot() {
+      return invokeActiveRuntimeHost('client-plugins:snapshot');
+    },
+  },
   workHubControl: workHubControlBridge,
   workHubPresentation: workHubPresentationBridge,
   runtimeHost,

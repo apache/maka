@@ -58,6 +58,8 @@ const MUTATE_ERRORS = [
 ] as const;
 const MAX_FRAME_BYTES = 512 * 1024;
 export const PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES = 480 * 1024;
+export const PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES = 192 * 1024;
+export const PLUGIN_CLIENT_BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
 
 export type PluginPlatformPhase =
   | 'new'
@@ -152,6 +154,46 @@ export interface PluginPlatformFailureProjection {
   readonly diagnostic: string;
 }
 
+export interface PluginClientCompositionEntry {
+  readonly entryId: string;
+  readonly extensionId: string;
+  readonly generation: number;
+  readonly contentDigest: string;
+  readonly clientDigest: string;
+  readonly totalBytes: number;
+  readonly dependencies: readonly string[];
+  readonly config?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export type PluginClientQueryInput =
+  | { readonly kind: 'snapshot' }
+  | {
+      readonly kind: 'bundle';
+      readonly extensionId: string;
+      readonly contentDigest: string;
+      readonly clientDigest: string;
+      readonly offset: number;
+    };
+
+export type PluginClientQueryResult =
+  | {
+      readonly kind: 'snapshot';
+      readonly authorityEpoch: number;
+      readonly revision: string;
+      readonly entries: readonly PluginClientCompositionEntry[];
+      readonly failures: readonly PluginPlatformFailureProjection[];
+    }
+  | {
+      readonly kind: 'bundle';
+      readonly extensionId: string;
+      readonly contentDigest: string;
+      readonly clientDigest: string;
+      readonly offset: number;
+      readonly totalBytes: number;
+      readonly content: string;
+      readonly nextOffset: number | null;
+    };
+
 export interface PluginPackageInstallInput {
   readonly sourcePath: string;
 }
@@ -176,6 +218,17 @@ export type PluginPackageMutationResult = PluginMutationReceipt;
 export type PluginCompositionApplyResult = PluginMutationReceipt;
 
 export const PLUGIN_PLATFORM_OPERATION_SPECS = {
+  'plugin.client.query': defineOperation<
+    PluginClientQueryInput,
+    PluginClientQueryResult,
+    (typeof QUERY_ERRORS)[number] | 'not_found'
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: [...QUERY_ERRORS, 'not_found'],
+    decodeInput: decodePluginClientQueryInput,
+    decodeOutput: decodePluginClientQueryResult,
+  }),
   'plugin.platform.query': defineOperation<
     PluginPlatformQueryInput,
     PluginPlatformQueryResult,
@@ -272,6 +325,148 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     decodeOutput: decodePluginMutationReceipt,
   }),
 } as const;
+
+function decodePluginClientQueryInput(value: unknown): PluginClientQueryInput {
+  const input = requireRecord(value, 'Plugin Client query input');
+  if (input.kind === 'snapshot') {
+    requireExactRecord(input, 'Plugin Client snapshot input', ['kind']);
+    return { kind: 'snapshot' };
+  }
+  if (input.kind === 'bundle') {
+    const bundle = requireExactRecord(input, 'Plugin Client bundle input', [
+      'kind',
+      'extensionId',
+      'contentDigest',
+      'clientDigest',
+      'offset',
+    ]);
+    return {
+      kind: 'bundle',
+      extensionId: requireId(bundle.extensionId, 'Plugin package identity'),
+      contentDigest: requireDigest(bundle.contentDigest, 'Plugin package content digest'),
+      clientDigest: requireDigest(bundle.clientDigest, 'Plugin Client bundle digest'),
+      offset: requireCount(bundle.offset, 'Plugin Client bundle offset'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid Plugin Client query kind');
+}
+
+function decodePluginClientQueryResult(value: unknown): PluginClientQueryResult {
+  const result = requireRecord(value, 'Plugin Client query result');
+  if (result.kind === 'snapshot') {
+    const snapshot = requireExactRecord(result, 'Plugin Client snapshot result', [
+      'kind',
+      'authorityEpoch',
+      'revision',
+      'entries',
+      'failures',
+    ]);
+    if (!Array.isArray(snapshot.entries) || snapshot.entries.length > 1024) {
+      throw invalidProtocolFrame('Invalid Plugin Client composition entries');
+    }
+    if (!Array.isArray(snapshot.failures) || snapshot.failures.length > 1024) {
+      throw invalidProtocolFrame('Invalid Plugin Client failures');
+    }
+    const decoded: PluginClientQueryResult = {
+      kind: 'snapshot',
+      authorityEpoch: requireCount(snapshot.authorityEpoch, 'Plugin authority epoch'),
+      revision: requireDigest(snapshot.revision, 'Plugin Client composition revision'),
+      entries: snapshot.entries.map(decodePluginClientCompositionEntry),
+      failures: snapshot.failures.map(decodePlatformFailure),
+    };
+    requireEncodedByteLimit(
+      decoded,
+      'Plugin Client snapshot result',
+      PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
+    );
+    return decoded;
+  }
+  if (result.kind === 'bundle') {
+    const bundle = requireExactRecord(result, 'Plugin Client bundle result', [
+      'kind',
+      'extensionId',
+      'contentDigest',
+      'clientDigest',
+      'offset',
+      'totalBytes',
+      'content',
+      'nextOffset',
+    ]);
+    const offset = requireCount(bundle.offset, 'Plugin Client bundle offset');
+    const totalBytes = requireCount(bundle.totalBytes, 'Plugin Client bundle size');
+    const content = requireString(
+      bundle.content,
+      'Plugin Client bundle content',
+      Math.ceil((PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES * 4) / 3) + 4,
+    );
+    const decodedBytes = Buffer.from(content, 'base64');
+    if (
+      decodedBytes.byteLength === 0 ||
+      decodedBytes.byteLength > PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES ||
+      decodedBytes.toString('base64') !== content
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin Client bundle content');
+    }
+    const nextOffset =
+      bundle.nextOffset === null
+        ? null
+        : requireCount(bundle.nextOffset, 'Plugin Client next bundle offset');
+    if (
+      offset >= totalBytes ||
+      offset + decodedBytes.byteLength > totalBytes ||
+      (nextOffset === null
+        ? offset + decodedBytes.byteLength !== totalBytes
+        : nextOffset !== offset + decodedBytes.byteLength || nextOffset >= totalBytes)
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin Client bundle range');
+    }
+    return {
+      kind: 'bundle',
+      extensionId: requireId(bundle.extensionId, 'Plugin package identity'),
+      contentDigest: requireDigest(bundle.contentDigest, 'Plugin package content digest'),
+      clientDigest: requireDigest(bundle.clientDigest, 'Plugin Client bundle digest'),
+      offset,
+      totalBytes,
+      content,
+      nextOffset,
+    };
+  }
+  throw invalidProtocolFrame('Invalid Plugin Client query result kind');
+}
+
+function decodePluginClientCompositionEntry(value: unknown): PluginClientCompositionEntry {
+  const entry = requireShapedRecord(
+    value,
+    'Plugin Client composition entry',
+    [
+      'entryId',
+      'extensionId',
+      'generation',
+      'contentDigest',
+      'clientDigest',
+      'totalBytes',
+      'dependencies',
+    ],
+    ['config'],
+  );
+  if (!Array.isArray(entry.dependencies) || entry.dependencies.length > 64) {
+    throw invalidProtocolFrame('Invalid Plugin Client dependencies');
+  }
+  return {
+    entryId: requireId(entry.entryId, 'Plugin Client Entry identity'),
+    extensionId: requireId(entry.extensionId, 'Plugin package identity'),
+    generation: requireCount(entry.generation, 'Plugin Client generation'),
+    contentDigest: requireDigest(entry.contentDigest, 'Plugin package content digest'),
+    clientDigest: requireDigest(entry.clientDigest, 'Plugin Client bundle digest'),
+    totalBytes: requireCount(entry.totalBytes, 'Plugin Client bundle size'),
+    dependencies: entry.dependencies.map((dependency) =>
+      requireId(dependency, 'Plugin Client dependency identity'),
+    ),
+    ...(entry.config === undefined
+      ? {}
+      : { config: decodeScalarRecord(entry.config, 'Client config') }),
+  };
+}
 
 function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInput {
   const input = requireShapedRecord(
