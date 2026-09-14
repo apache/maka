@@ -21,6 +21,33 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
+test('Windows natural PTY exit releases the worker and input pipe', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const source = String.raw`
+    const { spawn } = require('node-pty');
+    const terminal = spawn(process.execPath, ['-e', 'console.log("final-pty-output")'], {
+      cols: 80, rows: 24, env: process.env,
+    });
+    let output = '';
+    terminal.onData(data => { output += data; });
+    terminal.onExit(({ exitCode }) => {
+      if (exitCode !== 0 || !output.includes('final-pty-output')) process.exitCode = 1;
+      console.log('natural-exit-observed');
+    });
+  `;
+  // No process.exit(), terminal.kill() or unref(): successful parent exit must
+  // prove that node-pty released its own resources after draining final output.
+  const result = spawnSync(process.execPath, ['-e', source], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.match(result.stdout, /natural-exit-observed/);
+  assert.equal(result.error, undefined, String(result.error));
+  assert.equal(result.status, 0, result.stderr);
+});
+
 const CHILD_SOURCE = String.raw`
   import { createRequire } from 'node:module';
   import {
