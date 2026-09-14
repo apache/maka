@@ -202,7 +202,7 @@ test('Gemini 2.x native search stays unimplemented and drops the client WebSearc
   );
 });
 
-test('Gemini 3 mixes Google Search grounding with function tools', () => {
+test('Gemini 3 keeps Google Search grounding disabled until compliant', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
     description: 'Tavily',
@@ -230,10 +230,9 @@ test('Gemini 3 mixes Google Search grounding with function tools', () => {
   });
   assert.deepEqual(
     mixed.map((tool) => tool.name),
-    ['Read', NATIVE_WEB_SEARCH_TOOL_NAME],
+    ['Read'],
   );
   assert.equal(mixed[0], read);
-  assert.deepEqual(mixed[1]?.providerTool, { kind: 'google-search' });
 
   const tavily = routeWebSearchTools({
     tools: [read, clientSearch],

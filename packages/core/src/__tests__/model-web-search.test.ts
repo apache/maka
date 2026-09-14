@@ -52,7 +52,7 @@ describe('hosted web search capability', () => {
     assert.equal(resolveHostedWebSearchCapability('openai', undefined, 'gpt-4.1'), null);
   });
 
-  it('reports provider support separately from Maka adapter readiness', () => {
+  it('keeps Google grounding unavailable without compliant rendering', () => {
     assert.deepEqual(
       resolveHostedWebSearchCapability('anthropic', undefined, 'claude-sonnet-4-6'),
       { adapter: 'anthropic-messages', implemented: true },
@@ -67,11 +67,11 @@ describe('hosted web search capability', () => {
     });
     assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-3-flash'), {
       adapter: 'google-grounding',
-      implemented: true,
+      implemented: false,
     });
     assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-3.5-flash'), {
       adapter: 'google-grounding',
-      implemented: true,
+      implemented: false,
     });
     assert.equal(resolveHostedWebSearchCapability('google', undefined, 'gemini-1.5-flash'), null);
     assert.deepEqual(resolveHostedWebSearchCapability('openrouter', undefined, 'gemini-3-flash'), {
@@ -108,7 +108,7 @@ describe('hosted web search capability', () => {
         [{ id: 'gemini-3-flash', capabilities: { webSearch: true } }],
         'gemini-3-flash',
       ),
-      { adapter: 'google-grounding', implemented: true },
+      { adapter: 'google-grounding', implemented: false },
     );
     assert.deepEqual(
       resolveHostedWebSearchCapability(

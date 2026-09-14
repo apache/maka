@@ -16266,7 +16266,7 @@ describe('AiSdkBackend steering durability and identity', () => {
               type: 'tool-call',
               toolCallId: 'search-google-1',
               toolName: 'server:GOOGLE_SEARCH_WEB',
-              input: JSON.stringify({ query: 'latest Maka' }),
+              input: JSON.stringify({ queries: ['latest Maka'] }),
               providerExecuted: true,
             },
             {

@@ -75,18 +75,13 @@ export function resolveHostedWebSearchCapability(
 }
 
 /**
- * @ai-sdk/google drops function tools when `googleSearch` is present on
- * pre-Gemini-3 models. Gemini 3+ is the only documented mix that keeps both.
+ * Google grounding returns Search Suggestions and Links with display and
+ * retention requirements that Maka's durable `web_search` rows cannot satisfy.
+ * Keep this provider path fail-closed until a compliant ephemeral display and
+ * retention seam exists.
  */
-export function geminiModelAllowsGoogleSearchToolMix(modelId: string): boolean {
-  return /^gemini-3(?:[.-]|$)/i.test(modelId.trim());
-}
-
-function googleGroundingCapability(modelId: string): HostedWebSearchCapability {
-  return {
-    adapter: 'google-grounding',
-    implemented: geminiModelAllowsGoogleSearchToolMix(modelId),
-  };
+function googleGroundingCapability(_modelId: string): HostedWebSearchCapability {
+  return { adapter: 'google-grounding', implemented: false };
 }
 
 function providerHostedWebSearchAdapter(

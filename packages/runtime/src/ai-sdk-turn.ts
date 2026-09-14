@@ -452,8 +452,11 @@ function providerWebSearchQuery(input: unknown): string {
     }
   }
   if (!value || typeof value !== 'object') return '';
-  const query = (value as { query?: unknown }).query;
-  return typeof query === 'string' ? query : '';
+  const record = value as { query?: unknown; queries?: unknown };
+  if (typeof record.query === 'string') return record.query;
+  return Array.isArray(record.queries)
+    ? record.queries.filter((item): item is string => typeof item === 'string').join(' | ')
+    : '';
 }
 
 function mergeTextProviderOptions(
