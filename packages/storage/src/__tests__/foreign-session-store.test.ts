@@ -704,6 +704,63 @@ describe('foreign session store — OpenCode scan', () => {
     );
   });
 
+  it('uses time_created when a legacy row has no time_updated value', async () => {
+    const home = await tempHome();
+    const root = join(home, '.local', 'share', 'opencode');
+    await mkdir(root, { recursive: true });
+    const db = new DatabaseSync(join(root, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session (
+          id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text,
+          time_created integer, time_updated integer, time_archived integer
+        )
+      `);
+      const insert = db.prepare(
+        'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, NULL, ?, ?, ?, ?, NULL)',
+      );
+      for (let i = 0; i < FOREIGN_SESSION_SCAN_MAX_SESSIONS * 2; i++) {
+        insert.run(
+          `ses_old${i}`,
+          '/repo',
+          'old',
+          NOW - FOREIGN_SESSION_SCAN_MAX_AGE_MS - i * 1000,
+          NOW - FOREIGN_SESSION_SCAN_MAX_AGE_MS - i * 1000,
+        );
+      }
+      insert.run('ses_legacy_recent', '/repo', 'recent', NOW - 80_000, null);
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual(
+      (await store.listSessions()).map((s) => s.id),
+      ['ses_legacy_recent'],
+    );
+  });
+
+  it('fails closed when a legacy schema cannot identify child sessions', async () => {
+    const home = await tempHome();
+    const root = join(home, '.local', 'share', 'opencode');
+    await mkdir(root, { recursive: true });
+    const db = new DatabaseSync(join(root, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session (
+          id text PRIMARY KEY, directory text NOT NULL, title text,
+          time_created integer, time_updated integer, time_archived integer
+        )
+      `);
+      db.prepare(
+        'INSERT INTO session (id, directory, title, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, NULL)',
+      ).run('ses_unknown_parent', '/repo', 'unknown', NOW, NOW);
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual(await store.listSessions(), []);
+  });
+
   it('matches OpenCode directory across trailing-separator forms', async () => {
     const home = await tempHome();
     await seedOpenCodeDb(home, [{ id: 'ses_trail', cwd: '/repo/one/' }]);

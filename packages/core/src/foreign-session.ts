@@ -642,11 +642,12 @@ export function pushDigestMessage(
 }
 
 export function pushDigestFile(acc: DigestAccumulator, path: string): void {
-  if (path.length === 0) return;
+  const safePath = redactSecrets(sanitizeForeignText(path, FOREIGN_SESSION_PATH_MAX_CODE_POINTS));
+  if (safePath.length === 0) return;
   // Re-insert to move an existing path to newest, then evict the oldest —
   // the most recently touched files are the ones the handoff cares about.
-  acc.filesTouched.delete(path);
-  acc.filesTouched.add(path);
+  acc.filesTouched.delete(safePath);
+  acc.filesTouched.add(safePath);
   if (acc.filesTouched.size > FOREIGN_SESSION_DIGEST_MAX_FILES) {
     const oldest = acc.filesTouched.values().next().value;
     if (oldest !== undefined) acc.filesTouched.delete(oldest);

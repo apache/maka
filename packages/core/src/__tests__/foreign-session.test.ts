@@ -522,6 +522,13 @@ describe('digest assembly', () => {
       acc.userMessages[0],
     );
   });
+
+  it('redacts secrets in digest file paths', () => {
+    const acc = createDigestAccumulator();
+    pushDigestFile(acc, '/repo/key-sk-ant-api03-abcdefghijklmnopqrstuvwx.ts');
+    assert.equal(acc.filesTouched.size, 1);
+    assert.ok(![...acc.filesTouched][0]!.includes('sk-ant-api03-abcdefghijklmnopqrstuvwx'));
+  });
 });
 
 describe('stripEnvelopeTags', () => {

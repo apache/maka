@@ -51,8 +51,11 @@ import {
   CODEX_SUPPORTED_THREAD_SOURCES,
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
+  FOREIGN_SESSION_ID_MAX_CHARS,
+  FOREIGN_SESSION_MESSAGE_MAX_CODE_POINTS,
   FOREIGN_SESSION_SCAN_MAX_AGE_MS,
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
+  FOREIGN_SESSION_TITLE_MAX_CODE_POINTS,
   FOREIGN_SESSION_TITLE_WINDOW_BYTES,
   claudeAssistantText,
   claudeToolFilePaths,
@@ -934,6 +937,21 @@ function sqlitePayloadBytes(value: unknown): number {
   }
 }
 
+/** Avoid materializing an unbounded foreign row identifier in JavaScript. */
+function boundedSqliteIdentifierExpression(column: 'id' | 'message_id'): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${FOREIGN_SESSION_ID_MAX_CHARS} THEN ${column} END AS ${column}`;
+}
+
+/**
+ * Return either the complete SQLite text or a bounded blob prefix. The prefix
+ * is intentionally a blob: the collector counts it as oversize and stops,
+ * without materializing an unbounded JSON value in JavaScript.
+ */
+function boundedSqliteDataExpression(maxBytes: number): string {
+  const prefixBytes = maxBytes + 1;
+  return `CASE WHEN length(CAST(data AS BLOB)) > ${maxBytes} THEN substr(CAST(data AS BLOB), 1, ${prefixBytes}) ELSE data END AS data`;
+}
+
 /** Walk a statement iterator newest-first; stop at the digest byte cap or row cap. */
 export function collectSqliteRowsUntilReadCap(
   iterable: Iterable<unknown>,
@@ -1006,24 +1024,41 @@ async function readOpenCodeSessionRows(
 ): Promise<OpenCodeSessionScanRow[] | undefined> {
   return await withOpenCodeDb(dbPath, (db) => {
     const columns = sqliteTableColumns(db, 'session');
-    if (!columns.has('id') || !columns.has('directory')) return undefined;
+    // Without parent_id there is no way to prove a listed session is not a
+    // child session; fail closed rather than leak subagent history.
+    if (!columns.has('id') || !columns.has('directory') || !columns.has('parent_id')) {
+      return undefined;
+    }
     const selected = [
-      'id',
-      'title',
-      'directory',
-      'time_created',
-      'time_updated',
-      'time_archived',
-      'parent_id',
-    ].filter((column) => columns.has(column));
+      columns.has('id')
+        ? `CASE WHEN length(CAST(id AS BLOB)) <= ${FOREIGN_SESSION_ID_MAX_CHARS} THEN id END AS id`
+        : undefined,
+      columns.has('title')
+        ? `substr(title, 1, ${FOREIGN_SESSION_TITLE_MAX_CODE_POINTS * 4 + 1}) AS title`
+        : undefined,
+      columns.has('directory')
+        ? `substr(directory, 1, ${FOREIGN_SESSION_MESSAGE_MAX_CODE_POINTS * 4 + 1}) AS directory`
+        : undefined,
+      ...['time_created', 'time_updated', 'time_archived'].filter((column) => columns.has(column)),
+    ].filter((column): column is string => column !== undefined);
     // Identifiers below are from this allowlist, never from the DB.
     const where: string[] = [];
     const params: unknown[] = [];
     if (columns.has('time_archived')) {
       where.push('time_archived IS NULL');
     }
-    if (columns.has('time_updated')) {
-      where.push('time_updated >= ?');
+    // Use the same fallback as the JS projection. Without COALESCE, a legacy
+    // row with a recent time_created but NULL time_updated is filtered out
+    // before the JS fallback can retain it.
+    const activityColumn = columns.has('time_updated')
+      ? columns.has('time_created')
+        ? 'COALESCE(time_updated, time_created)'
+        : 'time_updated'
+      : columns.has('time_created')
+        ? 'time_created'
+        : undefined;
+    if (activityColumn !== undefined) {
+      where.push(`${activityColumn} >= ?`);
       params.push(now - FOREIGN_SESSION_SCAN_MAX_AGE_MS);
     }
     if (columns.has('parent_id')) {
@@ -1037,11 +1072,7 @@ async function readOpenCodeSessionRows(
       where.push(`directory IN (${variants.map(() => '?').join(', ')})`);
       params.push(...variants);
     }
-    const order = columns.has('time_updated')
-      ? 'time_updated DESC'
-      : columns.has('time_created')
-        ? 'time_created DESC'
-        : 'id DESC';
+    const order = activityColumn !== undefined ? `${activityColumn} DESC, id DESC` : 'id DESC';
     const sql =
       `SELECT ${selected.join(', ')} FROM session` +
       (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
@@ -1085,10 +1116,11 @@ async function readOpenCodeDigestRows(
 > {
   return await withOpenCodeDb(dbPath, (db) => {
     const sessionColumns = sqliteTableColumns(db, 'session');
-    if (!sessionColumns.has('id')) return undefined;
-    const sessionFields = ['id', 'parent_id'].filter((column) => sessionColumns.has(column));
+    if (!sessionColumns.has('id') || !sessionColumns.has('parent_id')) return undefined;
+    const sessionField =
+      "CASE WHEN parent_id IS NULL OR parent_id = '' THEN NULL ELSE 'child' END AS parent_id";
     const sessionRaw = db
-      .prepare(`SELECT ${sessionFields.join(', ')} FROM session WHERE id = ?`)
+      .prepare(`SELECT ${sessionField} FROM session WHERE id = ?`)
       .all(sessionId)[0];
     const sessionRec = asObject(sessionRaw);
     if (sessionRec === undefined) return undefined;
@@ -1103,7 +1135,9 @@ async function readOpenCodeDigestRows(
       const order = messageColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
       const collected = collectSqliteRowsUntilReadCap(
         db
-          .prepare(`SELECT id, data FROM message WHERE session_id = ? ORDER BY ${order}`)
+          .prepare(
+            `SELECT ${boundedSqliteIdentifierExpression('id')}, ${boundedSqliteDataExpression(remainingBytes)} FROM message WHERE session_id = ? ORDER BY ${order}`,
+          )
           .iterate(sessionId),
         { maxBytes: remainingBytes, maxRows: remainingRows },
       );
@@ -1128,7 +1162,9 @@ async function readOpenCodeDigestRows(
       const order = partColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
       const collected = collectSqliteRowsUntilReadCap(
         db
-          .prepare(`SELECT message_id, data FROM part WHERE session_id = ? ORDER BY ${order}`)
+          .prepare(
+            `SELECT ${boundedSqliteIdentifierExpression('message_id')}, ${boundedSqliteDataExpression(remainingBytes)} FROM part WHERE session_id = ? ORDER BY ${order}`,
+          )
           .iterate(sessionId),
         { maxBytes: remainingBytes, maxRows: remainingRows },
       );
