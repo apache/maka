@@ -77,6 +77,8 @@ export interface TuiMcpServerSnapshot {
 
 export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
+  /** Safe source location for invalid persisted JSON, never the parser message. */
+  readonly invalidConfigPath?: string;
   readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
   readonly canManagePublicationCredential?: boolean;
@@ -138,6 +140,11 @@ export type TuiMcpActionEffect =
 export type TuiMcpActionResult =
   | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
   | { readonly status: 'tested'; readonly test: McpTestResult; readonly effect: TuiMcpActionEffect }
+  | {
+      readonly status: 'failed';
+      readonly reason: 'invalid-config-file';
+      readonly path: string;
+    }
   | {
       readonly status: 'failed';
       readonly reason: 'commit-unknown';
@@ -401,9 +408,15 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#config = cloneConfig(config);
       this.#refreshManagerSnapshot('ready', 'ready');
       this.#requestPublication();
-    } catch {
+    } catch (error) {
       if (this.#closed) return;
-      this.#updateSnapshot({ initialization: 'error', publication: 'not_published' });
+      this.#updateSnapshot({
+        initialization: 'error',
+        publication: 'not_published',
+        ...(error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path
+          ? { invalidConfigPath: error.path }
+          : {}),
+      });
     }
   }
 
@@ -502,6 +515,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
       });
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path) {
+        return { status: 'failed', reason: 'invalid-config-file', path: error.path };
+      }
       if (error instanceof AtomicFileWriteCommitUnknownError) {
         // The transform has already published, including any credential
         // retirement. Reload its authority; never replay those effects.
@@ -740,7 +756,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   #updateSnapshot(
-    update: Partial<Pick<TuiMcpSnapshot, 'initialization' | 'configuration' | 'publication'>>,
+    update: Partial<
+      Pick<TuiMcpSnapshot, 'initialization' | 'configuration' | 'publication' | 'invalidConfigPath'>
+    >,
   ): void {
     this.#snapshot = freezeSnapshot({ ...this.#snapshot, ...update });
     this.#notify();

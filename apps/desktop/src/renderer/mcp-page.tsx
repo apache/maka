@@ -107,7 +107,7 @@ import {
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
   type McpEditorDraft,
 } from './mcp-page-model';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
@@ -189,7 +189,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.load,
-          settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
       }
@@ -297,7 +297,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current && !cancelledInstalls.current.has(entry.id)) {
         reportRuntimeHostError(
           copy.errors.install(entry.name),
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         await reload();
@@ -327,7 +327,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.cancelInstall(entry.name),
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         await reload();
@@ -364,7 +364,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.save,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         // A rejected mutation may already have replaced mcp.json. Refresh
@@ -397,7 +397,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.import,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         await reload();
@@ -418,7 +418,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.update,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         await reload();
@@ -448,7 +448,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.test,
-          settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
       }
@@ -484,7 +484,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (mounted.current) {
         reportRuntimeHostError(
           copy.errors.remove,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
+          mcpConfigFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
           defaultRuntimeHostDiagnosticTarget(error),
         );
         await reload();
