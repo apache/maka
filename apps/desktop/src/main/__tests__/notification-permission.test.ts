@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { notificationPermissionSnapshot } from '../notification-permission.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { createNotificationAuthorizationReader, notificationPermissionSnapshot } from '../notification-permission.js';
 
 test('maps native authorization without claiming unsupported future states are granted', async () => {
   for (const [native, expected] of [
@@ -58,10 +59,58 @@ test('never loads the native bridge on another platform or when notifications ar
   assert.equal(unsupported.status, 'unsupported');
 });
 
-test('requeries after a system settings change instead of retaining a stale grant', async () => {
+test('overlapping snapshots share native work but retain each caller timestamp', async () => {
+  let calls = 0;
   let status = 2;
-  const read = async () => status;
-  assert.equal((await notificationPermissionSnapshot(1, 'darwin', true, read)).status, 'granted');
+  const pending = deferred<number>();
+  const read = createNotificationAuthorizationReader(() => {
+    calls++;
+    return calls === 1 ? pending.promise : Promise.resolve(status);
+  });
+  const snapshots = Array.from({ length: 8 }, (_, now) =>
+    notificationPermissionSnapshot(now, 'darwin', true, read));
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  pending.resolve(status);
+  const results = await Promise.all(snapshots);
+  results.forEach((result, now) => {
+    assert.equal(result.status, 'granted');
+    assert.equal(result.checkedAt, now);
+  });
   status = 1;
-  assert.equal((await notificationPermissionSnapshot(2, 'darwin', true, read)).status, 'denied');
+  assert.equal((await notificationPermissionSnapshot(10, 'darwin', true, read)).status, 'denied');
+  assert.equal(calls, 2);
+});
+
+test('a shared native rejection settles all callers and a later refresh retries', async () => {
+  const pending = deferred<number>();
+  let calls = 0;
+  const read = createNotificationAuthorizationReader(() => {
+    calls++;
+    return calls === 1 ? pending.promise : Promise.resolve(0);
+  });
+  const snapshots = Array.from({ length: 8 }, (_, now) =>
+    notificationPermissionSnapshot(now, 'darwin', true, read));
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  pending.reject(new Error('Notification settings query timed out'));
+  for (const result of await Promise.all(snapshots)) {
+    assert.equal(result.status, 'unknown');
+    assert.match(result.reason ?? '', /timed out/);
+  }
+  assert.equal((await notificationPermissionSnapshot(10, 'darwin', true, read)).status, 'not_determined');
+  assert.equal(calls, 2);
+});
+
+test('a synchronous module load failure also clears the in-flight reader', async () => {
+  let calls = 0;
+  const read = createNotificationAuthorizationReader(() => {
+    if (++calls === 1) throw new Error('module could not be loaded');
+    return Promise.resolve(2);
+  });
+  const failed = await notificationPermissionSnapshot(1, 'darwin', true, read);
+  assert.equal(failed.status, 'unknown');
+  assert.match(failed.reason ?? '', /module could not be loaded/);
+  assert.equal((await notificationPermissionSnapshot(2, 'darwin', true, read)).status, 'granted');
+  assert.equal(calls, 2);
 });

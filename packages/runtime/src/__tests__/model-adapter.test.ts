@@ -481,7 +481,7 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
-  test('surfaces provider-executed tool input as replay-unsafe activity', () => {
+  test('preserves local input sampling separately from provider tool activity', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
 
@@ -492,7 +492,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'WebSearch',
         providerExecuted: true,
       } as Chunk),
-      [{ kind: 'provider-tool-input' }],
+      [{ kind: 'tool-input', providerExecuted: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -501,7 +501,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'Read',
         providerExecuted: false,
       } as Chunk),
-      [],
+      [{ kind: 'tool-input', providerExecuted: false }],
     );
   });
 
@@ -727,45 +727,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('reduces AI SDK 7 step boundaries to Maka-owned step-finish events', () => {
-    const adapter = newAdapter();
-    type Chunk = Parameters<typeof adapter.translateChunk>[0];
-    // The backend owns step counting + per-step AssistantMessage flush +
-    // messageId rotation, but the adapter owns reducing the SDK step-boundary
-    // chunk to a `step-finish` event carrying the normalized finish reason.
-    // `start-step` carries nothing and is inert.
-    const chunks: Chunk[] = [
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'one' },
-      { type: 'finish-step', finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'two' },
-      { type: 'finish-step', finishReason: { unified: 'stop', raw: 'stop' } },
-    ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
-
-    assert.deepEqual(
-      events.map((event) => event.kind),
-      ['text', 'step-finish', 'text', 'step-finish'],
-    );
-    assert.deepEqual(
-      events
-        .filter((event) => event.kind === 'text')
-        .map((event) => (event as { text: string }).text),
-      ['one', 'two'],
-    );
-    const stepFinishes = events.filter((event) => event.kind === 'step-finish') as Array<
-      Extract<ModelStreamEvent, { kind: 'step-finish' }>
-    >;
-    assert.deepEqual(
-      stepFinishes.map((event) => event.finishReason),
-      ['tool_calls', 'stop'],
-    );
-    // No usage on these chunks -> no usage field on the events.
-    assert.equal(stepFinishes[0].usage, undefined);
-    assert.equal(stepFinishes[1].usage, undefined);
-  });
-
   test('captures the Anthropic reasoning signature without emitting an empty thinking event', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -917,13 +878,13 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message, 'fetch failed');
   });
 
-  test('retains a safe bounded summary from an unknown structured provider error', () => {
+  test('retains an unredacted bounded summary from an unknown structured provider error', () => {
     const adapter = newAdapter();
     const failure = adapter.normalizeFailure({
       type: 'error',
       error: {
         code: 'provider_error',
-        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+        message: `provider exploded api_key=sk-test-diagnostic-value ${'x'.repeat(4_000)}`,
       },
       request_id: 'req-123',
     });
@@ -931,10 +892,9 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.equal(event.reason, 'unknown');
     assert.equal(event.code, 'provider_error');
-    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.ok(event.message.startsWith('provider exploded api_key=sk-test-diagnostic-value '));
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
     assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
-    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

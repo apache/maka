@@ -25,6 +25,7 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
+  selectedSkillIds,
   skillMentionQuery,
   slashCommandQuery,
 } from '../chat-input-behavior.js';
@@ -155,5 +156,25 @@ describe('shared chat input behavior', () => {
     release();
     await action;
     assert.deepEqual(states, ['drop']);
+  });
+
+  it('recognizes selected Skill ids independently of labels, case and chip anchors', () => {
+    const draft = '/skill:Writer\u00a0/skill:writer-extra\n/skill:writer /';
+    assert.deepEqual(selectedSkillIds(draft, ''), new Set(['writer', 'writer-extra']));
+    assert.deepEqual(selectedSkillIds('path/skill:writer https://example/skill:writer /', ''), new Set());
+  });
+
+  it('excludes only the active explicit Skill query, not another occurrence of that Skill', () => {
+    assert.deepEqual(selectedSkillIds('/skill:writer', 'skill:writer'), new Set());
+    assert.deepEqual(selectedSkillIds('/skill:writer\u00a0 /skill:Writer', 'skill:Writer'), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /skill:wri', 'skill:wri'), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /SKILL:writer', 'SKILL:writer'), new Set(['writer']));
+  });
+
+  it('derives selection from each draft without retaining deleted or previous-session Skills', () => {
+    assert.deepEqual(selectedSkillIds('/skill:writer /', ''), new Set(['writer']));
+    assert.deepEqual(selectedSkillIds('/', ''), new Set());
+    assert.deepEqual(selectedSkillIds('/skill:reviewer /', ''), new Set(['reviewer']));
+    assert.deepEqual(selectedSkillIds('/skill:writer /', ''), new Set(['writer']));
   });
 });

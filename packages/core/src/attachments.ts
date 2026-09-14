@@ -284,3 +284,18 @@ export function attachmentKindFromMimeType(
   }
   return 'other';
 }
+
+export type AttachmentIngestBlockedCode =
+  | 'item_too_large'
+  | 'items_invalid'
+  | 'count_limit'
+  | 'duplicate_source'
+  | 'source_expired'
+  | 'total_size_exceeded';
+
+export class AttachmentIngestBlockedError extends Error {
+  constructor(readonly code: AttachmentIngestBlockedCode) {
+    super('Attachment ingest was blocked');
+    this.name = 'AttachmentIngestBlockedError';
+  }
+}

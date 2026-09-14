@@ -81,10 +81,6 @@ type WorkspaceSuccessorCandidateVerifier = (
   candidateOutcome: object,
 ) => WorkspaceSuccessorAuthorityInput;
 type ManagedMutationNoEffectVerifier = (noEffectOutcome: object) => ManagedMutationNoEffectClaimV1;
-type WorkspaceHeadReader = (
-  workspaceId: string,
-  workspaceEpochId: string,
-) => Promise<WorkspaceHeadRecordV1 | undefined>;
 export interface ManagedMutationReservationRecordV1 {
   readonly workspaceInstanceId: string;
   readonly repositoryId: string;
@@ -111,7 +107,6 @@ interface WorkspaceBaselineAuthorityRegistration {
   candidateVerifier?: WorkspaceSuccessorCandidateVerifier;
   noEffectVerifier?: ManagedMutationNoEffectVerifier;
   readonly terminalWriter: ManagedMutationTerminalAuthorityWriter;
-  readonly readHead: WorkspaceHeadReader;
   readonly readActiveManagedMutation: ManagedMutationReservationReader;
   readonly bindStorageRoot: WorkspaceStorageRootBinder;
   boundRootId?: string;
@@ -128,7 +123,6 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
   successorWriter: WorkspaceSuccessorAuthorityWriter,
   terminalWriter: ManagedMutationTerminalAuthorityWriter,
   bindStorageRoot: WorkspaceStorageRootBinder,
-  readHead: WorkspaceHeadReader,
   readActiveManagedMutation: ManagedMutationReservationReader,
 ): void {
   if (workspaceBaselineAuthorityWriters.has(store)) {
@@ -138,7 +132,6 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
     writer,
     successorWriter,
     terminalWriter,
-    readHead,
     readActiveManagedMutation,
     bindStorageRoot,
   });
@@ -151,16 +144,6 @@ export function readActiveManagedMutationInternal(
   const registration = workspaceBaselineAuthorityWriters.get(store);
   if (!registration) throw new Error('Managed mutation reservation reader is unavailable');
   return registration.readActiveManagedMutation(workspaceInstanceId);
-}
-
-export function readWorkspaceHeadInternal(
-  store: object,
-  workspaceId: string,
-  workspaceEpochId: string,
-): Promise<WorkspaceHeadRecordV1 | undefined> {
-  const registration = workspaceBaselineAuthorityWriters.get(store);
-  if (!registration) throw new Error('Workspace baseline authority reader is unavailable');
-  return registration.readHead(workspaceId, workspaceEpochId);
 }
 
 /**

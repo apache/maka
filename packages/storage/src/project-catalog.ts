@@ -17,14 +17,13 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 import type { SessionHeader } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
+import { execGitText } from './git-exec.js';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
@@ -33,8 +32,6 @@ import {
 import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
-
-const execFileAsync = promisify(execFile);
 
 export class ProjectPathMismatchError extends Error {
   readonly name = 'ProjectPathMismatchError';
@@ -864,6 +861,12 @@ export async function resolveProjectLocation(input: {
   path: string;
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
+  // Regular files are not valid projects. Without this check, a file inside a
+  // Git worktree reaches `git -C <file> rev-parse ...`, whose numeric failure
+  // is not treated as an invalid path by the Host coordinator and drains it.
+  if (!(await stat(canonicalPath)).isDirectory()) {
+    throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
+  }
   if (!(await hasEnclosingGitEntry(canonicalPath))) {
     return {
       canonicalPath,
@@ -912,29 +915,10 @@ function isPathWithin(root: string, candidate: string): boolean {
 async function resolveGitLocation(
   canonicalPath: string,
 ): Promise<NonNullable<ResolvedProjectLocation['git']>> {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_COMMON_DIR;
-  const { stdout: locationOutput } = await execFileAsync(
-    'git',
-    [
-      '-C',
-      canonicalPath,
-      'rev-parse',
-      '--path-format=absolute',
-      '--show-toplevel',
-      '--git-dir',
-      '--git-common-dir',
-    ],
-    {
-      env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024,
-      timeout: 3_000,
-      windowsHide: true,
-    },
+  const locationOutput = await execGitText(
+    canonicalPath,
+    ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'],
+    { maxBuffer: 64 * 1024, timeoutMs: 3_000 },
   );
   const [worktreeRootRaw, gitDirRaw, commonDirRaw] = locationOutput.trim().split(/\r?\n/);
   if (!worktreeRootRaw || !gitDirRaw || !commonDirRaw) {

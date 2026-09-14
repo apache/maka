@@ -38,6 +38,7 @@ import {
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from './history-compact-checkpoint.js';
@@ -53,16 +54,20 @@ import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
+  parseToolResultEventAddress,
 } from './tool-result-archive-resource.js';
 import {
   deserializeToolResultArchive,
   isArchivedToolResultPlaceholder,
   type ArchivedToolResultPlaceholder,
+  type LedgerArchivedToolResultPlaceholder,
+  buildLedgerArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
 import { rewriteDurableToolResultProjectionArtifactRefs } from './durable-tool-result-projection.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import {
   buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
   decodeModelProjectionTransition,
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
@@ -73,6 +78,14 @@ import {
   reduceEffectiveModelProjections,
 } from './model-projection-transition-ledger.js';
 import { archivedToolResultProjection } from './tool-result-archive-transition.js';
+import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
+import { createHash } from 'node:crypto';
+import {
+  readToolResultPage,
+  readableToolResult,
+  resolveReadInput,
+  READ_PAGE_MAX_CHARS,
+} from './read-page.js';
 
 export interface ConversationCopySlice {
   readonly messages: readonly StoredMessage[];
@@ -122,6 +135,7 @@ export type ConversationCopyArtifactReferenceMap =
     });
 
 export type ConversationCopyMessageReferenceMap = ConversationCopyArtifactReferenceMap & {
+  readonly ledgerArchives?: Map<string, LedgerArchivedToolResultPlaceholder>;
   readonly runIds: ReadonlyMap<string, string>;
   readonly runtimeEventIds: ReadonlyMap<string, string>;
   readonly providerTraceIds: ReadonlyMap<string, string>;
@@ -538,6 +552,7 @@ export async function cloneConversationRuntimeLedger(
     runtimeEventIds,
     providerTraceIds,
     agentRunEventIds: operationalEventIds,
+    ledgerArchives: new Map(),
   };
   const clonedEventBySourceId = new Map<string, RuntimeEvent>();
   for (const plan of flattenedPlans) {
@@ -569,6 +584,102 @@ export async function cloneConversationRuntimeLedger(
     string,
     { projection: DurableToolResultProjection; transitionId: string }
   >();
+  const clonedTransitions = new Map<AgentRunEvent, ModelProjectionTransition | null>();
+  const visiting = new Set<string>();
+  const finished = new Set<string>();
+  const transitionsByTarget = new Map<string, AgentRunEvent[]>();
+  for (const plan of flattenedPlans) {
+    for (const record of plan.operationalEvents) {
+      if (record.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
+      const transition = decodeModelProjectionTransition(record.data?.transition, record.sessionId);
+      const group = transitionsByTarget.get(transition.target.runtimeEventId) ?? [];
+      group.push(record);
+      transitionsByTarget.set(transition.target.runtimeEventId, group);
+    }
+  }
+  // ArchiveRead can itself be archived. Resolve its referenced target first,
+  // then rebuild this result's transitions against its final copied projection.
+  const finishTarget = (sourceId: string): void => {
+    if (finished.has(sourceId)) return;
+    if (visiting.has(sourceId)) throw new Error('Cyclic copied archive reference');
+    visiting.add(sourceId);
+    const target = clonedEventBySourceId.get(sourceId);
+    if (target?.content?.kind === 'function_response' && target.content.name === 'Read') {
+      target.content.result = rewriteReadPage(
+        target.content.result,
+        references,
+        clonedEventBySourceId,
+      );
+      const projection = target.content.modelProjection;
+      if (projection?.kind === 'json')
+        target.content.modelProjection = {
+          ...projection,
+          value: rewriteReadPage(
+            projection.value,
+            references,
+            clonedEventBySourceId,
+          ) as typeof projection.value,
+        };
+    }
+    if (target?.content?.kind === 'function_response' && target.content.name === 'ArchiveRead') {
+      const resolveResult = (value: unknown): unknown =>
+        rewriteArchiveReadResult(value, references, (ref) => {
+          const identity = parseToolResultArchiveResourceRef(ref);
+          if (identity?.storage === 'ledger' && clonedEventBySourceId.has(identity.runtimeEventId))
+            finishTarget(identity.runtimeEventId);
+        });
+      target.content.result = resolveResult(target.content.result);
+      const projection = target.content.modelProjection;
+      if (projection?.kind === 'json')
+        target.content.modelProjection = {
+          ...projection,
+          value: resolveResult(projection.value) as typeof projection.value,
+        };
+    }
+    for (const record of transitionsByTarget.get(sourceId) ?? []) {
+      clonedTransitions.set(
+        record,
+        cloneModelProjectionTransition(
+          record,
+          references,
+          clonedEventBySourceId,
+          transitionIds,
+          transitionState,
+        ),
+      );
+    }
+    visiting.delete(sourceId);
+    finished.add(sourceId);
+  };
+  for (const sourceId of clonedEventBySourceId.keys()) finishTarget(sourceId);
+  for (const event of clonedEventBySourceId.values()) {
+    if (event.content?.kind === 'function_call' && event.content.name === 'Read') {
+      const args = event.content.args;
+      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string')
+        event.content = {
+          ...event.content,
+          args: {
+            ...args,
+            ...rewriteReadInput(
+              args as Record<string, unknown> & { path: string },
+              references,
+              clonedEventBySourceId,
+            ),
+          },
+        };
+    }
+    if (event.content?.kind === 'text')
+      event.content.text = rewriteCopiedText(event.content.text, references, clonedEventBySourceId);
+    if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
+      const args = event.content.args;
+      if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
+        event.content = {
+          ...event.content,
+          args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
+        };
+      }
+    }
+  }
   const preparedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
     const clonedOperationalEvents = plan.operationalEvents.flatMap((event) => {
@@ -583,10 +694,9 @@ export async function cloneConversationRuntimeLedger(
         sourceCompactableEvents.get(plan.run.runId) ?? [],
         clonedEventBySourceId,
         checkpointIds,
-        transitionIds,
-        transitionState,
         providerTraceIds,
         logicalCallIds,
+        clonedTransitions,
       );
       return clonedEvent ? [clonedEvent] : [];
     });
@@ -604,9 +714,35 @@ export async function cloneConversationRuntimeLedger(
       terminalEvent,
     };
   });
-  const copiedMessages = input.copiedMessages.map((message) =>
-    rewriteConversationCopyMessage(message, references),
+  const archiveReadCalls = new Set(
+    flattenedPlans.flatMap((plan) =>
+      plan.events.flatMap((event) =>
+        event.content?.kind === 'function_response' &&
+        (event.content.name === 'ArchiveRead' || event.content.name === 'Read')
+          ? [`${event.turnId}:${event.content.id}`]
+          : [],
+      ),
+    ),
   );
+  const copiedMessages = input.copiedMessages.map((message) => {
+    const copied = rewriteConversationCopyMessage(message, references);
+    if (copied.type === 'user' || copied.type === 'assistant')
+      return { ...copied, text: rewriteCopiedText(copied.text, references, clonedEventBySourceId) };
+    if (
+      copied.type === 'tool_result' &&
+      archiveReadCalls.has(`${copied.turnId}:${copied.toolUseId}`)
+    ) {
+      return {
+        ...copied,
+        content: rewriteReadPage(
+          rewriteArchiveReadResult(copied.content, references),
+          references,
+          clonedEventBySourceId,
+        ) as ToolResultContent,
+      };
+    }
+    return copied;
+  });
 
   const importedSourceEventIds = new Set<string>();
   const orderedBatches = input.plan.inlineRuntimeEvents.flatMap((event) => {
@@ -658,6 +794,123 @@ export async function cloneConversationRuntimeLedger(
       sourceRunId,
       targetRunId,
     })),
+  };
+}
+
+function rewriteLedgerArchiveText(
+  text: string,
+  references: ConversationCopyMessageReferenceMap,
+): string {
+  for (const [source, target] of references.ledgerArchives ?? [])
+    text = text.split(source).join(target.resourceRef!);
+  for (const [source, target] of references.runtimeEventIds)
+    text = text
+      .split(`maka://runtime/tool-results/${encodeURIComponent(source)}`)
+      .join(`maka://runtime/tool-results/${encodeURIComponent(target)}`);
+  return text;
+}
+
+/** Text identifies generated addresses; the structured Read rewriter owns their semantics. */
+function rewriteCopiedText(
+  text: string,
+  references: ConversationCopyMessageReferenceMap,
+  clonedEvents: ReadonlyMap<string, RuntimeEvent>,
+): string {
+  return rewriteLedgerArchiveText(text, references).replace(
+    /maka:\/\/read\/[A-Za-z0-9_-]+\?at=\d+&sha=[a-f0-9]{32}(?![A-Za-z0-9_?&#=%/-])/g,
+    (path) => rewriteReadInput({ path }, references, clonedEvents).path,
+  );
+}
+
+function rewriteReadInput(
+  input: Record<string, unknown> & { path: string },
+  references: ConversationCopyMessageReferenceMap,
+  clonedEvents: ReadonlyMap<string, RuntimeEvent>,
+): Record<string, unknown> & { path: string } {
+  let original: string;
+  try {
+    original = resolveReadInput(input).path;
+  } catch {
+    return input;
+  }
+  const prefix = 'maka://runtime/tool-results/';
+  const eventId = parseToolResultEventAddress(original);
+  if (original.startsWith(prefix) && !eventId) return input;
+  const path = eventId
+    ? `${prefix}${encodeURIComponent(references.runtimeEventIds.get(eventId) ?? eventId)}`
+    : rewriteLedgerArchiveText(
+        references.mode === 'exact'
+          ? rewriteAttachmentResourceRefs(original, references.artifactIds)
+          : original,
+        references,
+      );
+  if (!input.path.startsWith('maka://read/')) return { ...input, path };
+  const url = new URL(input.path);
+  if (eventId && path !== original) {
+    const copied = clonedEvents.get(eventId);
+    const projection = copied && baseToolResultProjection(copied);
+    const digest =
+      projection &&
+      createHash('sha256')
+        .update(readableToolResult(serializeToolResultProjectionV1(projection)))
+        .digest('hex')
+        .slice(0, 32);
+    if (digest !== url.searchParams.get('sha')) return { path };
+  }
+  url.pathname = `/${Buffer.from(path).toString('base64url')}`;
+  return { ...input, path: url.toString() };
+}
+
+function rewriteReadPage(
+  value: unknown,
+  references: ConversationCopyMessageReferenceMap,
+  clonedEvents: ReadonlyMap<string, RuntimeEvent>,
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const page = value as Record<string, unknown>;
+  if (page.kind === 'json')
+    return { ...page, value: rewriteReadPage(page.value, references, clonedEvents) };
+  const next = page.next;
+  if (!next || typeof next !== 'object' || !('path' in next) || typeof next.path !== 'string')
+    return value;
+  const rewritten = rewriteReadInput(
+    next as Record<string, unknown> & { path: string },
+    references,
+    clonedEvents,
+  );
+  const reset = next.path.startsWith('maka://read/') && !rewritten.path.startsWith('maka://read/');
+  return {
+    ...page,
+    next: rewritten,
+    ...(reset
+      ? {
+          continuationReset: 'The copied resource changed. Use next to read it from the beginning.',
+        }
+      : {}),
+  };
+}
+
+/** Only ArchiveRead's defined envelope is rewritten, never its opaque content/items. */
+function rewriteArchiveReadResult(
+  value: unknown,
+  references: ConversationCopyMessageReferenceMap,
+  before?: (ref: string) => void,
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'json')
+    return { ...record, value: rewriteArchiveReadResult(record.value, references, before) };
+  if (record.kind !== 'tool_result_archive' || typeof record.ref !== 'string') return value;
+  before?.(record.ref);
+  const mapped = references.ledgerArchives?.get(record.ref);
+  if (!mapped) return value;
+  return {
+    ...record,
+    ref: mapped.resourceRef,
+    ...(record.storage === 'ledger' && typeof record.runtimeEventId === 'string'
+      ? { runtimeEventId: mapped.runtimeEventId }
+      : {}),
+    ...(typeof record.originalBytes === 'number' ? { originalBytes: mapped.originalBytes } : {}),
   };
 }
 
@@ -873,10 +1126,9 @@ function cloneAgentRunEvent(
   sourceCompactableEvents: readonly RuntimeEvent[],
   clonedRuntimeEvents: ReadonlyMap<string, RuntimeEvent>,
   checkpointIds: Map<string, string>,
-  transitionIds: Map<string, string>,
-  transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
   providerTraceIds: ReadonlyMap<string, string>,
   logicalCallIds: ReadonlyMap<string, string>,
+  clonedTransitions: ReadonlyMap<AgentRunEvent, ModelProjectionTransition | null>,
 ): EmittedAgentRunEvent | null {
   if (event.type === 'event_corrupt') {
     throw new Error(`Cannot copy corrupt AgentRun event ${event.id}`);
@@ -909,6 +1161,18 @@ function cloneAgentRunEvent(
     if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
     if (match.reason) return null;
+    // Rebinding a digest must not make an already stale source summary valid.
+    const sourceEffective = reduceEffectiveModelProjections(
+      match.coveredRuntimeEvents,
+      [...clonedTransitions.keys()].map((record) =>
+        decodeModelProjectionTransition(record.data?.transition, record.sessionId),
+      ),
+    ).events;
+    if (
+      sourceCheckpoint.coverage.effectiveSourceDigest !==
+      historyCompactSourceDigest(sourceEffective)
+    )
+      return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // re-runnable here on structure and truncation (the size floor needs the
@@ -938,7 +1202,11 @@ function cloneAgentRunEvent(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
-      summary: sourceCheckpoint.summary,
+      effectiveCoveredRuntimeEvents: reduceEffectiveModelProjections(
+        coveredRuntimeEvents,
+        [...clonedTransitions.values()].filter((transition) => transition !== null),
+      ).events,
+      summary: rewriteCopiedText(sourceCheckpoint.summary, references, clonedRuntimeEvents),
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
@@ -958,13 +1226,7 @@ function cloneAgentRunEvent(
       checkpoint,
     };
   } else if (event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE) {
-    const cloned = cloneModelProjectionTransition(
-      event,
-      references,
-      clonedRuntimeEvents,
-      transitionIds,
-      transitionState,
-    );
+    const cloned = clonedTransitions.get(event);
     // Every transition whose target is in the copied slice was gathered into
     // this run's ledger, wherever it was recorded. So a transition that finds no
     // cloned target has genuinely lost its target as well, and dropping it
@@ -1007,16 +1269,51 @@ function cloneModelProjectionTransition(
   }
   const clonedTarget = clonedRuntimeEvents.get(source.target.runtimeEventId);
   if (!clonedTarget) return null;
-  const placeholder = source.replacement.kind === 'json' ? source.replacement.value : undefined;
-  if (!isArchivedToolResultPlaceholder(placeholder)) {
+  const rawPlaceholder = source.replacement.kind === 'json' ? source.replacement.value : undefined;
+  if (!isArchivedToolResultPlaceholder(rawPlaceholder)) {
     throw new Error(`Cannot copy unsupported model projection transition ${event.id}`);
   }
+  const placeholder = rawPlaceholder as ArchivedToolResultPlaceholder;
   const existing = transitionState.get(clonedTarget.id);
   const sourceProjection = existing?.projection ?? baseToolResultProjection(clonedTarget);
   if (!sourceProjection) {
     throw new Error(`Cannot copy model projection transition ${event.id} onto its target`);
   }
-  const rewritten = rewriteArchivedToolResult(placeholder, references);
+  let rewritten: ArchivedToolResultPlaceholder;
+  if (placeholder.rewriteVersion === 2) {
+    const { previousTransitionId: _previous, ...rest } = placeholder;
+    const serialized = serializeToolResultProjectionV1(sourceProjection);
+    rewritten = buildLedgerArchivedToolResultPlaceholder({
+      ...rest,
+      runtimeEventId: clonedTarget.id,
+      sourceProjectionDigest: durableToolResultProjectionDigest(sourceProjection),
+      bodySha256: createHash('sha256').update(serialized).digest('hex'),
+      originalBytes: Buffer.byteLength(serialized),
+      ...(source.previousTransitionId
+        ? {
+            previousTransitionId: requiredMappedId(
+              transitionIds,
+              source.previousTransitionId,
+              'model projection transition',
+            ),
+          }
+        : {}),
+    });
+    if (rewritten.page) {
+      delete rewritten.page;
+      rewritten.page = readToolResultPage(
+        serialized,
+        { path: rewritten.resourceRef! },
+        READ_PAGE_MAX_CHARS - JSON.stringify(rewritten).length - 32,
+      );
+    }
+    references.ledgerArchives?.set(
+      placeholder.resourceRef ?? buildToolResultArchiveResourceRef(placeholder),
+      rewritten,
+    );
+  } else {
+    rewritten = rewriteArchivedToolResult(placeholder, references);
+  }
   const transition = buildModelProjectionTransition({
     sessionId: references.targetSessionId,
     target: {
@@ -1026,7 +1323,7 @@ function cloneModelProjectionTransition(
       toolName: source.target.toolName,
     },
     sourceProjection,
-    replacement: archivedToolResultProjection(rewritten),
+    replacement: archivedToolResultProjection(rewritten, source.replacement),
     // The applied chain is copied in fold order, so a predecessor is always
     // rebuilt before its successor. An unmapped one means the chain broke, and
     // rooting the successor instead would change what the fold decides.
@@ -1492,6 +1789,18 @@ function rewriteToolResultContent(
     return { ...content, ref: rewriteStorageRef(content.ref, references) };
   }
   if (content.kind === 'archived_tool_result') {
+    if (content.rewriteVersion === 2 && content.resourceRef) {
+      const rewritten = references.ledgerArchives?.get(content.resourceRef);
+      if (!rewritten)
+        throw new Error('Cannot copy ledger archive without its committed transition');
+      return {
+        ...content,
+        runtimeEventId: rewritten.runtimeEventId,
+        resourceRef: rewritten.resourceRef,
+        bodySha256: rewritten.bodySha256,
+        originalBytes: rewritten.originalBytes,
+      };
+    }
     const snapshot = rewriteArchivedSnapshot(content, references);
     if (snapshot) return snapshot;
     return {
@@ -1810,6 +2119,11 @@ function rewriteArchivedToolResult(
   value: ArchivedToolResultPlaceholder,
   references: ConversationCopyMessageReferenceMap,
 ): ArchivedToolResultPlaceholder {
+  if (value.rewriteVersion === 2) {
+    const rewritten = references.ledgerArchives?.get(buildToolResultArchiveResourceRef(value));
+    if (!rewritten) throw new Error('Cannot copy ledger archive without its committed transition');
+    return rewritten;
+  }
   const artifactId = rewriteOwnedArtifactId(value.artifactId, references);
   const resource = value.resourceRef
     ? parseToolResultArchiveResourceRef(value.resourceRef)
@@ -1822,7 +2136,7 @@ function rewriteArchivedToolResult(
       'RuntimeEvent',
     ),
     artifactId,
-    ...(resource && artifactId !== value.artifactId
+    ...(resource && resource.storage !== 'ledger' && artifactId !== value.artifactId
       ? {
           resourceRef: buildToolResultArchiveResourceRef({
             ...resource,

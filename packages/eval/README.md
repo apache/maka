@@ -48,6 +48,11 @@ Maka subjects ask the Runtime Host client to run one owned execution in a dedica
 
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
 
+The mock-backed multi-VM coordinator and deterministic fault simulator are documented in
+[Fleet scheduling](FLEET.md). They expose a separate library API; `maka eval run` retains its
+existing local scheduling and file format. Remote VM transport and real fleet execution adapters
+are not connected yet.
+
 ## Experiment spec format
 
 A spec decodes to the `ExperimentSpec` interface ([`experiment.ts:46-70`](src/experiment.ts)), validated field-by-field by `parseExperimentSpec` ([`spec.ts:22`](src/spec.ts)) — there is no external JSON-schema dependency; the decoder is hand-written and strict (unrecognized top-level keys are rejected).
@@ -187,7 +192,7 @@ system prompt, disables product identity/personalization/skills/workspace-memory
 admits only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `apply_patch` as tool candidates,
 and exposes a foreground-only Bash schema without `run_in_background` or `pty`. Provider-specific
 routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
-`Edit`, and Runtime-owned `ArchiveRead` remains available for archived tool results. A real
+`Edit`, and `Read` also accepts Session-scoped Maka tool-result paths. A real
 `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
 developer prompt and complete tool schema.
 

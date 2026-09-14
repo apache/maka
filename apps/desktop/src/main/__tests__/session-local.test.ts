@@ -122,7 +122,10 @@ test('local acceptance survives restart with attachment bytes and an immutable d
   const db = await database(t);
   const record = db.store.enqueue('authority-1', intent());
   assert.equal(record.state, 'saved');
-  assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  // POSIX permission bits do not describe Windows ACLs.
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  }
   db.store.update({
     ...record,
     state: 'sending',
@@ -301,6 +304,101 @@ test('offline intents are dispatched only after connectivity returns', async (t)
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.originHostEpoch, 'epoch-1');
   assert.equal(calls[0]!.content.attachments?.length, 1);
+});
+
+for (const refusal of ['operation-error', 'blocked-skill'] as const) {
+  test(`a retained ${refusal} local message does not block later sends`, async (t) => {
+    const { store, beforeClose } = await database(t);
+    const calls: string[] = [];
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority',
+      profileId: 'profile',
+      scope: { hostId: 'root', targetEpoch: 'target' },
+      client: client('epoch'),
+      submit: async (input) => {
+        calls.push(input.messageId);
+        if (input.messageId === 'message-1') {
+          if (refusal === 'blocked-skill')
+            return { disposition: 'blocked', skillInvocation: accepted.skillInvocation };
+          throw new RuntimeHostOperationError('turn.message.submit', 'session_busy', 'busy');
+        }
+        return accepted;
+      },
+    };
+    const service = new DesktopSessionLocalService(store, {
+      targets: () => [target],
+      changed() {},
+      onError: (error) => assert.fail(String(error)),
+    });
+    beforeClose.push(() => service.close());
+    store.enqueue('authority', intent());
+    service.wake();
+    await waitFor(() => store.get('authority', 'message-1')?.state === 'failed');
+    const failed = store.get('authority', 'message-1');
+
+    store.enqueue('authority', intent('message-2'));
+    store.enqueue('authority', intent('message-3'));
+    service.wake();
+    await waitFor(() => store.get('authority', 'message-3')?.state === 'accepted');
+
+    assert.deepEqual(calls, ['message-1', 'message-2', 'message-3']);
+    assert.equal(store.get('authority', 'message-2')?.state, 'accepted');
+    assert.deepEqual(store.get('authority', 'message-1'), failed);
+    const retained = service.listMessages(target, 'session-1')[0]!;
+    assert.equal(retained.state, 'failed');
+    assert.equal(retained.text, 'hello');
+    assert.equal(retained.canCancel, true);
+    assert.ok(retained.error);
+  });
+}
+
+test('an unknown Host outcome blocks later local sends until the original message is reconciled', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const calls: string[] = [];
+  const originalAck = deferred<TurnMessageSubmitResult>();
+  let reconcile = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+    client: client('epoch'),
+    submit: async (input) => {
+      calls.push(input.messageId);
+      if (input.messageId === 'message-1') {
+        if (reconcile) return originalAck.promise;
+        throw new RuntimeHostRequestInterruptedError(
+          'turn.message.submit',
+          'command',
+          'dispatched',
+          'connection_lost',
+        );
+      }
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  store.enqueue('authority', intent());
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'unknown');
+  store.enqueue('authority', intent('message-2'));
+  store.enqueue('authority', intent('other-session', 'session-2'));
+  service.wake();
+  await waitFor(() => store.get('authority', 'other-session')?.state === 'accepted');
+  assert.deepEqual(calls, ['message-1', 'other-session']);
+  assert.equal(store.get('authority', 'message-2')?.state, 'saved');
+
+  reconcile = true;
+  service.reconcile(target, 'session-1', 'message-1');
+  await waitFor(() => calls.length === 3);
+  assert.equal(store.get('authority', 'message-2')?.state, 'saved');
+  originalAck.resolve(accepted);
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.deepEqual(calls, ['message-1', 'other-session', 'message-1', 'message-2']);
 });
 
 test('lost ACK recovery never changes epoch or ID and does not block another Session', async (t) => {
@@ -540,6 +638,47 @@ test('attachment retries across restart reuse committed uploads and release stag
   assert.deepEqual(db.store.stagedAttachments('authority', 'message-1'), []);
 });
 
+test('local creation preserves a plugin executor in the pending Session projection', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+  let create!: Parameters<Ipc['handle']>[1];
+  registerDesktopSessionLocalIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        if (channel === 'session-local:create') create = handler;
+      },
+    },
+    service,
+    approvals: createAttachmentApprovalRegistry(),
+    resizeImage: async (bytes) => bytes,
+    resolveWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
+    changed() {},
+  });
+
+  const summary = (await create(
+    {} as IpcMainInvokeEvent,
+    target.scope,
+    { executorId: 'codex.app-server' },
+  )) as DesktopSessionSummaryInput;
+  assert.equal(summary.backend, 'plugin-executor');
+  assert.equal(summary.executorId, 'codex.app-server');
+  assert.equal(summary.llmConnectionId, undefined);
+  assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
+  assert.equal(summary.model, 'codex.app-server');
+  assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
+});
+
 test('local submit preserves picked-file approvals until durable admission succeeds', async (t) => {
   const { store, path, beforeClose } = await database(t);
   const file = join(path, '..', 'picked.txt');
@@ -608,16 +747,15 @@ test('local submit preserves picked-file approvals until durable admission succe
     largeFiles.push({ path: imagePath, name, size: 33 * 1024 * 1024 });
   }
   const largePicked = approvals.issueApprovals(7, largeFiles);
-  await assert.rejects(
-    () =>
-      submit(
-        { sender: { id: 7 } } as IpcMainInvokeEvent,
-        target.scope,
-        'session-1',
-        'current_turn',
-        { ...draft, messageId: 'too-large', attachmentItems: largePicked },
-      ),
-    /附件总量超出大小限制/,
+  assert.deepEqual(
+    await submit(
+      { sender: { id: 7 } } as IpcMainInvokeEvent,
+      target.scope,
+      'session-1',
+      'current_turn',
+      { ...draft, messageId: 'too-large', attachmentItems: largePicked },
+    ),
+    { ok: false, reason: 'attachment_blocked', code: 'total_size_exceeded' },
   );
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);

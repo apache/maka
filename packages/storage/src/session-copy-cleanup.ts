@@ -27,6 +27,7 @@ import {
   type ProcessLifetimeOwner,
   type ProcessLifetimeRecoveryClaim,
 } from './process-lifetime-owner.js';
+import { isSafeStorageId } from './storage-id.js';
 
 export interface SessionCopyCreationLease {
   sessionId: string;
@@ -534,7 +535,7 @@ function samePersistedCreation(
 function normalizeSessionId(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Invalid Session copy id');
   const normalized = value.trim();
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(normalized)) {
+  if (!isSafeStorageId(normalized)) {
     throw new Error('Invalid Session copy id');
   }
   return normalized;

@@ -26,7 +26,10 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
-import { normalizeExternalSessionQueryText } from '@maka/core/external-session';
+import {
+  normalizeExternalSessionQueryText,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import type {
   DesktopRuntimeHostRef,
@@ -43,6 +46,10 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
+import {
+  MAKA_BUNDLE_SOURCE_ID,
+  SessionBundleImportPanel,
+} from '../features/session-bundle/index.js';
 import { getExternalSessionImportCopy } from '../locales/external-session-import-copy.js';
 import { localizedShellErrorMessage } from '../locales/shell-copy.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
@@ -205,6 +212,7 @@ type ImportBatchOutcome = {
    * once for the whole run.
    */
   noModel: boolean;
+  sourceLimits: readonly { name: string; limit: ExternalSessionLimit }[];
 };
 
 const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
@@ -213,6 +221,7 @@ const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
   failed: [],
   unknown: [],
   noModel: false,
+  sourceLimits: [],
 };
 
 function recordImportBatchResult(
@@ -267,12 +276,15 @@ function isSameAttempt(
  * control would be a promise no coordinator can keep.
  */
 export function ImportTasksSettingsPage(props: {
+  /** Whether the bundle source is offered. Only the Local Host mounts its feature. */
+  offersBundleSource?: boolean;
   /** Hands the freshly imported task to the shell, which opens it. */
   onImported(session: DesktopSessionSummary): void;
   /** Opens the newest still-existing task previously imported from a row. */
   onOpenImported?(sessionId: string): void;
 }) {
   const host = useRuntimeHostSettingsTarget();
+  const offersBundleSource = props.offersBundleSource;
   const locale = useUiLocale();
   const copy = getExternalSessionImportCopy(locale);
   const mountedRef = useMountedRef();
@@ -385,7 +397,11 @@ export function ImportTasksSettingsPage(props: {
       const result = await window.maka.externalSessions.listSources(host);
       if (generation !== requestGeneration.current) return;
       setAdapterIds(result.adapterIds);
-      setAdapterId(result.adapterIds[0] ?? null);
+      // With no other agent installed, the bundle file is the only source --
+      // and it is one, so this page is no longer empty in that case.
+      setAdapterId(
+        result.adapterIds[0] ?? (offersBundleSource === true ? MAKA_BUNDLE_SOURCE_ID : null),
+      );
     } catch (error) {
       if (generation !== requestGeneration.current) return;
       setSourceError(localizedShellErrorMessage(error, copy.loadFailedFallback, locale));
@@ -394,7 +410,7 @@ export function ImportTasksSettingsPage(props: {
         setSourceProbe('resolved');
       }
     }
-  }, [copy.loadFailedFallback, host, locale]);
+  }, [copy.loadFailedFallback, host, locale, offersBundleSource]);
 
   const loadCatalog = useCallback(
     async (sourceId: string, cursor?: string) => {
@@ -524,9 +540,21 @@ export function ImportTasksSettingsPage(props: {
   }, [loadSources]);
 
   useEffect(() => {
-    if (adapterId === null) return;
+    // The bundle source is a file the user picks, not a directory the Host can
+    // enumerate -- asking it for a catalog is a request it must refuse.
+    if (adapterId === null || adapterId === MAKA_BUNDLE_SOURCE_ID) return;
     void loadCatalog(adapterId);
   }, [adapterId, includeArchived, search, loadCatalog]);
+
+  // The bundle source is always offered; the adapters only appear when their
+  // agent is installed on this machine.
+  // The bundle source joins the adapters only where the feature that answers it
+  // is mounted, which is beside the Local Host. Offering it elsewhere is a row
+  // that names a Local action on a Host-scoped page -- and picks itself when no
+  // agent is installed.
+  const sourceIds =
+    offersBundleSource === true ? [...adapterIds, MAKA_BUNDLE_SOURCE_ID] : adapterIds;
+  const isMakaSource = offersBundleSource === true && adapterId === MAKA_BUNDLE_SOURCE_ID;
 
   const hasCatalogImportInFlight = catalog.sessions.some(
     (session) => session.importState.isImporting,
@@ -711,6 +739,8 @@ export function ImportTasksSettingsPage(props: {
             setImportError(copy.importFailedNoModel);
           } else if (outcome.reason === 'source_unreadable') {
             setImportError(copy.importFailedSourceUnreadable);
+          } else if (outcome.reason === 'source_limit_exceeded') {
+            setImportError(copy.importFailedSourceLimit(outcome.limit));
           } else {
             const _exhaustive: never = outcome.reason;
             return _exhaustive;
@@ -730,6 +760,9 @@ export function ImportTasksSettingsPage(props: {
       adapterId,
       catalog.sessions.length,
       copy.importFailedFallback,
+      copy.importFailedNoModel,
+      copy.importFailedSourceUnreadable,
+      copy.importFailedSourceLimit,
       locale,
       mountedRef,
       props,
@@ -831,6 +864,11 @@ export function ImportTasksSettingsPage(props: {
               // A missing model blocks every row identically; the summary raises
               // its actionable banner once for the whole run.
               outcome = { ...outcome, noModel: true };
+            } else if (result.reason === 'source_limit_exceeded') {
+              outcome = {
+                ...outcome,
+                sourceLimits: [...outcome.sourceLimits, { name: session.name, limit: result.limit }],
+              };
             } else if (result.reason !== 'source_unreadable') {
               const _exhaustive: never = result.reason;
               return _exhaustive;
@@ -876,7 +914,12 @@ export function ImportTasksSettingsPage(props: {
     marked,
   ]);
 
-  const noSource = sourceProbe === 'resolved' && !sourceError && adapterIds.length === 0;
+  // Beside a Remote target with no agent installed there is nothing to pick,
+  // nothing to filter and nothing to list; empty controls would be worse than
+  // the sentence that says why. Beside the Local Host the bundle source is
+  // always there, so this never fires.
+  const noSource =
+    sourceProbe === 'resolved' && !sourceError && sourceIds.length === 0;
   const catalogEmpty =
     adapterId !== null && !catalogLoading && !catalogError && catalog.sessions.length === 0;
   // The shared normalizer decides what counts as a filter, so the empty-state
@@ -911,8 +954,7 @@ export function ImportTasksSettingsPage(props: {
     );
   }
 
-  // No adapter on this machine is the whole page: there is no source to pick,
-  // no filter that would change anything, and nothing to list.
+
   if (noSource) {
     return (
       <SettingsPage>
@@ -923,21 +965,22 @@ export function ImportTasksSettingsPage(props: {
 
   return (
     <SettingsPage as="section" aria-label={copy.listAria}>
-      {/* One source is the common case — Codex is the only adapter that ships
-          — and a segmented control with a single segment is a control nobody
-          can operate. The description names the source instead, and the switch
-          appears when there is actually something to switch between. */}
+      {/* Maka's own bundle is a source like the others -- "where is this
+          conversation coming from" -- so it belongs in the same switch rather
+          than a section of its own. It is the only one always available: the
+          adapters appear when their agent is installed, and a file the user
+          already has needs nothing installed. */}
       <SettingsSection
         title={copy.sourceLabel}
         description={
-          adapterIds.length === 1 && adapterId !== null
+          sourceIds.length === 1 && adapterId !== null
             ? sourceLabel(adapterId, copy.sourceNames)
             : undefined
         }
         variant="bare"
       >
         <VStack gap={3}>
-          {adapterIds.length > 1 && adapterId !== null && (
+          {sourceIds.length > 1 && adapterId !== null && (
             <SegmentedControl
               label={copy.sourceLabel}
               value={adapterId}
@@ -946,11 +989,14 @@ export function ImportTasksSettingsPage(props: {
               onChange={setAdapterId}
               isDisabled={catalogLoading}
             >
-              {adapterIds.map((id) => (
+              {sourceIds.map((id) => (
                 <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.sourceNames)} />
               ))}
             </SegmentedControl>
           )}
+          {isMakaSource && <SessionBundleImportPanel />}
+          {!isMakaSource && (
+          <>
           <TextInput
             label={copy.searchLabel}
             description={copy.searchHelp}
@@ -965,9 +1011,12 @@ export function ImportTasksSettingsPage(props: {
             onChange={setIncludeArchived}
             isDisabled={catalogLoading}
           />
+          </>
+          )}
         </VStack>
       </SettingsSection>
 
+      {isMakaSource || noSource ? null : (
       <SettingsSection description={copy.duplicateNote}>
         <VStack gap={3}>
           {catalogError && (
@@ -1040,6 +1089,9 @@ export function ImportTasksSettingsPage(props: {
                     // The one globally-actionable failure: name the fix that
                     // unblocks every row at once.
                     importRun.summary.noModel ? copy.importFailedNoModel : null,
+                    ...importRun.summary.sourceLimits.map(({ name, limit }) =>
+                      `${name}: ${copy.importFailedSourceLimit(limit)}`,
+                    ),
                   ]
                     .filter(Boolean)
                     .join(' ') || undefined
@@ -1273,6 +1325,7 @@ export function ImportTasksSettingsPage(props: {
           )}
         </VStack>
       </SettingsSection>
+      )}
     </SettingsPage>
   );
 }

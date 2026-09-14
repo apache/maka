@@ -27,7 +27,11 @@ import {
 } from '@maka/core/model-call-attempt';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { preparedPromptComposition } from './request-shape.js';
-import { rawFinishReasonString } from './model-protocol.js';
+import {
+  rawFinishReasonString,
+  type ModelFailure,
+  type ModelStepOutcome,
+} from './model-protocol.js';
 import { providerFailureDiagnostic } from './provider-error-classification.js';
 import { latestContextProjectionInput } from './latest-context-snapshot.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
@@ -272,6 +276,8 @@ export interface TrackProviderStreamInput {
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doStream: () => PromiseLike<ProviderStreamResult>;
+  /** The adapter owns semantic settlement; the tracker retains raw metering evidence. */
+  onAttempt?: (settle: (outcome: ModelStepOutcome) => Promise<void>) => void;
   /**
    * The compaction boundary THIS request's prompt was built from (#2323).
    *
@@ -350,6 +356,7 @@ export function withProviderStreamTracking(input: {
   abortSignal?: AbortSignal;
   historyCompactRoute?: HistoryCompactRoute;
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  onAttempt?: TrackProviderStreamInput['onAttempt'];
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -359,6 +366,7 @@ export function withProviderStreamTracking(input: {
           providerId: model.provider,
           modelId: model.modelId,
           params,
+          ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           ...(input.historyCompactBoundary
@@ -426,6 +434,7 @@ export class ProviderRequestTracker {
    * that call, not new calls, so they share this id.
    */
   private readonly logicalCallIdByStep = new Map<number, string>();
+  private readonly requestCompositionIdByStep = new Map<number, string>();
 
   constructor(private readonly input: ProviderRequestTrackerInput) {}
 
@@ -433,8 +442,11 @@ export class ProviderRequestTracker {
     return this.input.traceId;
   }
 
-  setStep(step: number): void {
+  setStep(step: number, requestCompositionId?: string): void {
     this.step = step;
+    if (requestCompositionId !== undefined) {
+      this.requestCompositionIdByStep.set(step, requestCompositionId);
+    }
   }
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
@@ -447,12 +459,32 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     let sawOutput = false;
     const attempt = this.beginAttempt(step, composition, input);
+    let evidence: { reason?: string; usage?: ProviderRequestUsageLike; error?: unknown } = {};
+    input.onAttempt?.(async (outcome) => {
+      await attempt.finalize(
+        outcome.kind === 'completed'
+          ? 'completed'
+          : outcome.failure.kind === 'abort'
+            ? 'aborted'
+            : 'failed',
+        {
+          ...evidence,
+          ...(outcome.kind === 'completed'
+            ? { reason: outcome.finishReason }
+            : { failure: outcome.failure }),
+        },
+      );
+    });
+    const finalize: typeof attempt.finalize = async (status, finish) => {
+      evidence = { ...evidence, ...finish };
+      if (!input.onAttempt) await attempt.finalize(status, finish);
+    };
 
     let result: ProviderStreamResult;
     try {
       result = await input.doStream();
     } catch (error) {
-      await attempt.finalize(abortStatus(input.abortSignal, error), { error });
+      await finalize(abortStatus(input.abortSignal, error), { error });
       throw error;
     }
 
@@ -462,7 +494,7 @@ export class ProviderRequestTracker {
         try {
           const next = await reader.read();
           if (next.done) {
-            await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
+            await finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
             controller.close();
             return;
           }
@@ -472,19 +504,19 @@ export class ProviderRequestTracker {
             attempt.observeOutput();
           }
           if (part?.type === 'finish') {
-            await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
+            await finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
               reason: rawFinishReasonString(part.finishReason),
               usage: asUsage(part.usage),
             });
           } else if (part?.type === 'error') {
-            await attempt.finalize(
+            await finalize(
               input.abortSignal?.aborted ? 'aborted' : sawOutput ? 'interrupted' : 'failed',
               { error: part.error },
             );
           }
           controller.enqueue(next.value);
         } catch (error) {
-          await attempt.finalize(
+          await finalize(
             input.abortSignal?.aborted
               ? 'aborted'
               : sawOutput
@@ -499,7 +531,7 @@ export class ProviderRequestTracker {
         try {
           await reader.cancel(reason);
         } finally {
-          await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
+          await finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
         }
       },
     });
@@ -539,7 +571,12 @@ export class ProviderRequestTracker {
     observeOutput(): void;
     finalize(
       status: ProviderRequestAttemptStatus,
-      finish?: { reason?: string; usage?: ProviderRequestUsageLike; error?: unknown },
+      finish?: {
+        reason?: string;
+        usage?: ProviderRequestUsageLike;
+        error?: unknown;
+        failure?: ModelFailure;
+      },
     ): Promise<void>;
   } {
     const attempt = (this.attemptsByStep.get(step) ?? 0) + 1;
@@ -564,7 +601,12 @@ export class ProviderRequestTracker {
     let abortListener: (() => void) | undefined;
     const finalize = async (
       status: ProviderRequestAttemptStatus,
-      finish?: { reason?: string; usage?: ProviderRequestUsageLike; error?: unknown },
+      finish?: {
+        reason?: string;
+        usage?: ProviderRequestUsageLike;
+        error?: unknown;
+        failure?: ModelFailure;
+      },
     ): Promise<void> => {
       if (settled) return;
       const provisional = status === 'aborted' && finish?.usage === undefined;
@@ -577,8 +619,16 @@ export class ProviderRequestTracker {
       const completedAt = this.input.now();
       const usage = strictProviderRequestUsage(finish?.usage);
       const contextWindow = positiveInteger(this.input.contextWindow);
-      const failure =
+      const diagnostic =
         finish?.error !== undefined ? providerFailureDiagnostic(finish.error) : undefined;
+      const failure = finish?.failure
+        ? {
+            ...diagnostic,
+            errorClass: finish.failure.kind,
+            retryable: finish.failure.retryable,
+            ...(finish.failure.code ? { providerCode: finish.failure.code } : {}),
+          }
+        : diagnostic;
       const finishReason = finish?.reason;
       const firstTokenMs = timeToFirstTokenMs;
       accountingSettlement = accountingSettlement.then(async () => {
@@ -603,6 +653,9 @@ export class ProviderRequestTracker {
             ? { connectionSlug: accounting.connectionSlug }
             : {}),
           step: Math.max(0, step),
+          ...(this.requestCompositionIdByStep.get(step)
+            ? { requestCompositionId: this.requestCompositionIdByStep.get(step) }
+            : {}),
           attempt: Math.max(0, attempt - 1),
           callKind: accounting.callKind,
           ...((input.historyCompactRoute ?? accounting.historyCompactRoute) !== undefined

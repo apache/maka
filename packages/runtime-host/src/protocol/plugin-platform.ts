@@ -26,6 +26,9 @@ import {
   type MakaCompositionOperation,
   type MakaPluginRootId,
 } from '@maka/runtime/plugin-runtime';
+import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
+import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
+import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -86,7 +89,14 @@ export interface PluginPackageProjection {
 }
 
 export interface PluginPlatformQueryInput {
-  readonly view: 'status' | 'packages' | 'entries' | 'failures';
+  readonly view:
+    | 'status'
+    | 'packages'
+    | 'entries'
+    | 'tools'
+    | 'commands'
+    | 'executors'
+    | 'failures';
   readonly rootId?: MakaPluginRootId;
   readonly cursor?: string;
   readonly limit?: number;
@@ -113,6 +123,21 @@ export type PluginPlatformQueryResult =
   | {
       readonly view: 'entries';
       readonly items: readonly MakaCompositionEntryInspection[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly view: 'tools';
+      readonly items: readonly PluginToolInspection[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly view: 'commands';
+      readonly items: readonly PluginCommandInspection[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly view: 'executors';
+      readonly items: readonly PluginExecutorInspection[];
       readonly nextCursor: string | null;
     }
   | {
@@ -255,7 +280,11 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
     ['view'],
     ['rootId', 'cursor', 'limit'],
   );
-  if (!['status', 'packages', 'entries', 'failures'].includes(input.view as string)) {
+  if (
+    !['status', 'packages', 'entries', 'tools', 'commands', 'executors', 'failures'].includes(
+      input.view as string,
+    )
+  ) {
     throw invalidProtocolFrame('Invalid Plugin Platform query view');
   }
   const view = input.view as PluginPlatformQueryInput['view'];
@@ -276,8 +305,16 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
   ) {
     throw invalidProtocolFrame('Plugin Platform status query does not accept paging');
   }
-  if (input.rootId !== undefined && view !== 'entries') {
-    throw invalidProtocolFrame('Plugin root identity is only valid for Entry queries');
+  if (
+    input.rootId !== undefined &&
+    view !== 'entries' &&
+    view !== 'tools' &&
+    view !== 'commands' &&
+    view !== 'executors'
+  ) {
+    throw invalidProtocolFrame(
+      'Plugin root identity is only valid for Entry, Tool, Command, and Executor queries',
+    );
   }
   let rootId: MakaPluginRootId | undefined;
   if (input.rootId !== undefined) {
@@ -349,7 +386,9 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
     if (
       !Array.isArray(output.items) ||
       output.items.length > 64 ||
-      !['packages', 'entries', 'failures'].includes(view as string)
+      !['packages', 'entries', 'tools', 'commands', 'executors', 'failures'].includes(
+        view as string,
+      )
     ) {
       throw invalidProtocolFrame('Invalid Plugin Platform page');
     }
@@ -362,7 +401,13 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
         ? { view, items: output.items.map(decodePackageProjection), nextCursor }
         : view === 'entries'
           ? { view, items: decodeInspections(output.items), nextCursor }
-          : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
+          : view === 'tools'
+            ? { view, items: output.items.map(decodeToolInspection), nextCursor }
+            : view === 'commands'
+              ? { view, items: output.items.map(decodeCommandInspection), nextCursor }
+              : view === 'executors'
+                ? { view, items: output.items.map(decodeExecutorInspection), nextCursor }
+                : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
   }
   requireEncodedByteLimit(
     decoded,
@@ -370,6 +415,64 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
     PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
   );
   return decoded;
+}
+
+function decodeCommandInspection(value: unknown): PluginCommandInspection {
+  const item = requireExactRecord(value, 'Plugin Command inspection', [
+    'entryId',
+    'scopeId',
+    'extensionId',
+    'generation',
+    'name',
+    'description',
+    'aliases',
+  ]);
+  if (!Array.isArray(item.aliases) || item.aliases.length > 64) {
+    throw invalidProtocolFrame('Invalid Plugin Command aliases');
+  }
+  return {
+    entryId: requireId(item.entryId, 'Plugin Entry identity'),
+    scopeId: requireString(item.scopeId, 'Plugin scope identity', 256),
+    extensionId: requireId(item.extensionId, 'Plugin package identity'),
+    generation: requireCount(item.generation, 'Plugin generation'),
+    name: requireString(item.name, 'Plugin Command name', 128),
+    description: requireString(item.description, 'Plugin Command description', 4096),
+    aliases: item.aliases.map((alias) => requireString(alias, 'Plugin Command alias', 128)),
+  };
+}
+
+function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
+  const item = requireExactRecord(value, 'Plugin Executor inspection', [
+    'entryId',
+    'scopeId',
+    'extensionId',
+    'generation',
+    'id',
+    'displayName',
+    'capabilities',
+  ]);
+  const capabilities = requireExactRecord(item.capabilities, 'Plugin Executor capabilities', [
+    'thinking',
+    'toolActivity',
+  ]);
+  if (
+    typeof capabilities.thinking !== 'boolean' ||
+    typeof capabilities.toolActivity !== 'boolean'
+  ) {
+    throw invalidProtocolFrame('Invalid Plugin Executor capabilities');
+  }
+  return {
+    entryId: requireId(item.entryId, 'Plugin Entry identity'),
+    scopeId: requireString(item.scopeId, 'Plugin scope identity', 256),
+    extensionId: requireId(item.extensionId, 'Plugin package identity'),
+    generation: requireCount(item.generation, 'Plugin generation'),
+    id: requireString(item.id, 'Plugin Executor id', 128),
+    displayName: requireString(item.displayName, 'Plugin Executor display name', 256),
+    capabilities: {
+      thinking: capabilities.thinking,
+      toolActivity: capabilities.toolActivity,
+    },
+  };
 }
 
 function decodePlatformFailure(value: unknown): PluginPlatformFailureProjection {
@@ -668,6 +771,27 @@ function decodeInspections(value: unknown): readonly MakaCompositionEntryInspect
         : { diagnostic: requireString(inspection.diagnostic, 'Plugin diagnostic', 4096) }),
     };
   });
+}
+
+function decodeToolInspection(value: unknown): PluginToolInspection {
+  const inspection = requireExactRecord(value, 'Plugin Tool inspection', [
+    'entryId',
+    'scopeId',
+    'extensionId',
+    'generation',
+    'toolName',
+    'activeCalls',
+    'retired',
+  ]);
+  return {
+    entryId: requireId(inspection.entryId, 'Plugin Tool Entry identity'),
+    scopeId: decodeRootId(inspection.scopeId),
+    extensionId: requireId(inspection.extensionId, 'Plugin Tool package identity'),
+    generation: requireCount(inspection.generation, 'Plugin Tool generation'),
+    toolName: requireString(inspection.toolName, 'Plugin Tool name', 128),
+    activeCalls: requireCount(inspection.activeCalls, 'Plugin Tool active call count'),
+    retired: requireBoolean(inspection.retired),
+  };
 }
 
 function decodeEntries(value: unknown): readonly MakaCompositionEntry[] {

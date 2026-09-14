@@ -509,6 +509,7 @@ function rewindToHeaderEra(db: DatabaseSync): void {
     'ALTER TABLE runtime_continuation_claims RENAME COLUMN target_opening_json TO target_run_header_json',
   );
   db.exec('ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT');
+  // Opening facts were introduced in v16, regardless of the current version.
   db.exec('PRAGMA user_version = 15');
 }
 

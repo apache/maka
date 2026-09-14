@@ -55,6 +55,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
+import { readLedgerMessages } from './ledger-transcript.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -302,16 +303,7 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const backends = new BackendRegistry();
-      backends.register(
-        'ai-sdk',
-        (ctx) =>
-          new FakeBackend({
-            sessionId: ctx.sessionId,
-            header: ctx.header,
-            store: ctx.store,
-            appendMessage: ctx.appendMessage,
-          }),
-      );
+      backends.register('ai-sdk', (ctx) => new FakeBackend({ sessionId: ctx.sessionId }));
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
       let markReached!: () => void;
       const reached = new Promise<void>((resolve) => {
@@ -759,8 +751,15 @@ export class ExecutionFixture {
     }
   }
 
+  /**
+   * @param recordedPromptEventId The id the Run already recorded its prompt
+   * under, for the crash that happened after `begin()` wrote it. An older build
+   * derived that id differently, so it is a parameter rather than the id
+   * recovery would derive today.
+   */
   async seedLegacyRootWithoutSourceTranscripts(
     runState: 'missing' | 'created' | 'terminal' = 'terminal',
+    recordedPromptEventId?: string,
   ): Promise<{
     turnId: string;
     runId: string;
@@ -843,6 +842,17 @@ export class ExecutionFixture {
               toolMode: 'direct',
             },
           },
+        });
+      }
+      if (runState !== 'missing' && recordedPromptEventId) {
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, runId, {
+          ...run,
+          id: recordedPromptEventId,
+          ts: admittedAt,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', ...normalizedInput },
         });
       }
       if (runState === 'terminal') {
@@ -973,7 +983,7 @@ export class ExecutionFixture {
     let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      const messages = await stores.sessionStore.readMessages(this.sessionId);
+      const messages = await readLedgerMessages(stores.runtimeEventStore, this.sessionId);
       const source = messages.find(
         (message): message is Extract<StoredMessage, { type: 'user' }> =>
           message.type === 'user' && message.turnId === sourceTurnId,
@@ -1058,12 +1068,18 @@ export class ExecutionFixture {
       }
       assert.ok(result.admission.userMessageId);
       if (createUserMessage) {
-        await stores.sessionStore.appendMessage(this.sessionId, {
-          type: 'user',
+        assert.ok(createRun, 'a seeded UserMessage needs the invocation that carries it');
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, result.admission.runId, {
           id: result.admission.userMessageId,
+          sessionId: this.sessionId,
+          invocationId: result.admission.runId,
+          runId: result.admission.runId,
           turnId,
           ts: admittedAt,
-          ...content,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', ...content },
         });
       }
       return {
@@ -1149,11 +1165,11 @@ export class ExecutionFixture {
       const runs = invocations.filter((candidate) => candidate.turnId === turnId);
       const run = invocations.find((candidate) => candidate.runId === admission.runId);
       assert.ok(run);
-      const messages = await stores.sessionStore.readMessages(this.sessionId);
       const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
         this.sessionId,
         admission.runId,
       );
+      const messages = await readLedgerMessages(stores.runtimeEventStore, this.sessionId);
       return {
         runs,
         userMessages: messages.filter(
@@ -1201,7 +1217,7 @@ export class ExecutionFixture {
     let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
     try {
       stores = await openInteractiveExecutionStoresForRead(reader.lease);
-      return (await stores.sessionStore.readMessages(this.sessionId)).filter(
+      return (await readLedgerMessages(stores.runtimeEventStore, this.sessionId)).filter(
         (message): message is Extract<StoredMessage, { type: 'user' }> => message.type === 'user',
       );
     } finally {

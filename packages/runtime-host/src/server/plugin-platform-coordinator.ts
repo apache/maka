@@ -17,12 +17,17 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import {
   MakaPluginRuntimeError,
   type MakaCompositionApplyInput,
   type MakaCompositionEntryInspection,
 } from '@maka/runtime/plugin-runtime';
+import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
+import type { PluginCommandInspection } from '@maka/runtime/plugin-command-service';
+import type { PluginExecutorInspection } from '@maka/runtime/plugin-executor-service';
 import type {
   OperationOutcome,
   PluginPackageExportInput,
@@ -73,6 +78,24 @@ export class HostPluginPlatformCoordinator {
         if (input.view === 'entries') {
           const inspections = flattenInspections(this.platform.inspect(input.rootId));
           return { ok: true, result: boundedPage('entries', inspections, input) };
+        }
+        if (input.view === 'tools') {
+          return {
+            ok: true,
+            result: boundedPage('tools', this.platform.inspectTools(input.rootId), input),
+          };
+        }
+        if (input.view === 'commands') {
+          return {
+            ok: true,
+            result: boundedPage('commands', this.platform.inspectCommands(input.rootId), input),
+          };
+        }
+        if (input.view === 'executors') {
+          return {
+            ok: true,
+            result: boundedPage('executors', this.platform.inspectExecutors(input.rootId), input),
+          };
         }
         if (input.view === 'failures') {
           return { ok: true, result: boundedPage('failures', failures, input) };
@@ -173,12 +196,27 @@ function boundedPage(
   input: PluginPlatformQueryInput,
 ): Extract<PluginPlatformQueryResult, { readonly view: 'entries' }>;
 function boundedPage(
+  view: 'tools',
+  values: readonly PluginToolInspection[],
+  input: PluginPlatformQueryInput,
+): Extract<PluginPlatformQueryResult, { readonly view: 'tools' }>;
+function boundedPage(
+  view: 'commands',
+  values: readonly PluginCommandInspection[],
+  input: PluginPlatformQueryInput,
+): Extract<PluginPlatformQueryResult, { readonly view: 'commands' }>;
+function boundedPage(
+  view: 'executors',
+  values: readonly PluginExecutorInspection[],
+  input: PluginPlatformQueryInput,
+): Extract<PluginPlatformQueryResult, { readonly view: 'executors' }>;
+function boundedPage(
   view: 'failures',
   values: readonly PluginPlatformFailureProjection[],
   input: PluginPlatformQueryInput,
 ): Extract<PluginPlatformQueryResult, { readonly view: 'failures' }>;
 function boundedPage<T>(
-  view: 'packages' | 'entries' | 'failures',
+  view: 'packages' | 'entries' | 'tools' | 'commands' | 'executors' | 'failures',
   values: readonly T[],
   input: PluginPlatformQueryInput,
 ): PluginPlatformQueryResult {
@@ -189,18 +227,14 @@ function boundedPage<T>(
   if (cursor > values.length)
     throw new HostPluginPlatformError('stale_cursor', 'Plugin Platform query cursor is stale');
   const items: T[] = [];
+  const budget = new JsonArrayPageBudget(PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES, {
+    view,
+    items: [],
+    nextCursor: null,
+  });
   for (let index = cursor; index < values.length && items.length < limit; index += 1) {
-    const candidate = [...items, values[index] as T];
-    if (
-      Buffer.byteLength(
-        JSON.stringify({
-          view,
-          items: candidate,
-          nextCursor: encodeCursor(view, input.rootId, digest, index + 1),
-        }),
-        'utf8',
-      ) > PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES
-    ) {
+    // Preserve the existing non-null cursor reservation, including the last item.
+    if (!budget.tryAppend(values[index], encodeCursor(view, input.rootId, digest, index + 1))) {
       break;
     }
     items.push(values[index] as T);
@@ -218,7 +252,7 @@ function boundedPage<T>(
 
 interface PageCursor {
   readonly version: 1;
-  readonly view: 'packages' | 'entries' | 'failures';
+  readonly view: 'packages' | 'entries' | 'tools' | 'commands' | 'executors' | 'failures';
   readonly rootId?: string;
   readonly digest: string;
   readonly offset: number;

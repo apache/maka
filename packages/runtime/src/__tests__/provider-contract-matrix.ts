@@ -62,8 +62,6 @@ export const PROVIDER_CONTRACT_DIMENSIONS = [
 
 export type ProviderContractDimension = (typeof PROVIDER_CONTRACT_DIMENSIONS)[number];
 
-export type ProviderContractCellState = 'generated' | 'override' | 'not-applicable';
-
 /** The four request wires a generated cell can be executed against. */
 export type ProviderContractWire =
   | 'openai-chat'

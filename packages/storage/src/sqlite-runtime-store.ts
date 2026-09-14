@@ -84,10 +84,12 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
+  buildImmutableRuntimePrefixProof,
   continuationStartEventMatchesClaim,
   decodeContinuationClaim,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
+  type ImmutableRuntimePrefixProofV1,
   type RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
 import {
@@ -130,31 +132,41 @@ import {
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
+import {
+  RuntimeTranscriptQuery,
+  TERMINAL_RUNTIME_EVENT_SQL,
+  type RuntimeTranscriptInvocationHeader,
+  type RuntimeTranscriptInvocationRequest,
+  type RuntimeTranscriptLandmark,
+} from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
-/**
- * `isTerminalRuntimeEvent` asked in SQL.
- *
- * The TypeScript predicate stays the authority; this only lets a query find the
- * terminal event without decoding every row it passes over. Both have to say the
- * same thing, so the SQL half is written once here instead of at each query.
- */
-const TERMINAL_RUNTIME_EVENT_SQL = `(
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )`;
-
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
+
+export interface ImmutableRuntimePrefixProofReadBudget {
+  readonly maxEvents: number;
+  readonly maxBytes: number;
+  readonly maxRecordBytes: number;
+}
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error(`Invalid RuntimeEvent scan ${name}`);
+    }
+  }
+}
+
+function assertImmutableRuntimePrefixProofReadBudget(
+  budget: ImmutableRuntimePrefixProofReadBudget,
+): void {
+  for (const [name, value] of Object.entries(budget)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Invalid immutable RuntimeEvent prefix proof ${name}`);
     }
   }
 }
@@ -549,6 +561,51 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  private transcriptQuery(): RuntimeTranscriptQuery {
+    return new RuntimeTranscriptQuery(this.db, (sessionId, invocationId) => {
+      // By invocation rather than by run: both shelves key their opening on it,
+      // so a page's records cost the page instead of the Session's Turns.
+      const opening = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        invocationId,
+      }).at(0);
+      if (!opening) throw new Error(`Transcript invocation ${invocationId} is missing`);
+      return this.completeInvocationRecordSync(opening);
+    });
+  }
+
+  async readTranscriptHighWater(sessionId: string): Promise<number | null> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
+  }
+
+  async readTranscriptInvocations<T>(
+    sessionId: string,
+    request: RuntimeTranscriptInvocationRequest,
+    project: (
+      turn: RuntimeTranscriptInvocationHeader,
+      events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
+    ) => T,
+  ): Promise<T[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(request.limit);
+    return this.readTransaction(() =>
+      this.transcriptQuery().invocations(sessionId, request, project),
+    );
+  }
+
+  async readTranscriptLandmarks(
+    sessionId: string,
+    throughOrdinal: number,
+    limit: number,
+  ): Promise<RuntimeTranscriptLandmark[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
+    return this.readTransaction(() =>
+      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
+    );
+  }
+
   /**
    * Enumerate a Session's invocations: the opening fact names each one, and its
    * highest-sequence event says whether it ended.
@@ -689,6 +746,8 @@ export class SqliteRuntimeStore
             1 AS from_events
           FROM runtime_events
           WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+            ${options.runId === undefined ? '' : 'AND run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND invocation_id = :invocationId'}
           UNION ALL
           SELECT
             NULL,
@@ -700,15 +759,15 @@ export class SqliteRuntimeStore
             0
           FROM runtime_legacy_invocation_openings AS legacy
           WHERE legacy.session_id = :sessionId
+            ${options.runId === undefined ? '' : 'AND legacy.run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND legacy.invocation_id = :invocationId'}
             AND NOT EXISTS (
               SELECT 1 FROM runtime_events
               WHERE runtime_events.invocation_id = legacy.invocation_id
                 AND runtime_events.event_kind = 'invocation_opened'
             )
         )
-        WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
-          AND (:runId IS NULL OR run_id = :runId)
-          AND (
+        WHERE (
             :beforeOpenedAt IS NULL
             OR opened_at < :beforeOpenedAt
             OR (opened_at = :beforeOpenedAt AND invocation_id < :beforeInvocationId)
@@ -718,8 +777,8 @@ export class SqliteRuntimeStore
       `)
       .all({
         sessionId,
-        invocationId: options.invocationId ?? null,
-        runId: options.runId ?? null,
+        ...(options.invocationId === undefined ? {} : { invocationId: options.invocationId }),
+        ...(options.runId === undefined ? {} : { runId: options.runId }),
         beforeOpenedAt: options.before?.openedAt ?? null,
         beforeInvocationId: options.before?.invocationId ?? null,
         limit: options.limit ?? -1,
@@ -1138,6 +1197,76 @@ export class SqliteRuntimeStore
     );
   }
 
+  async readImmutableRuntimePrefixProof(
+    input: { sessionId: string; runId: string; upToEventSeq?: number },
+    budget: ImmutableRuntimePrefixProofReadBudget,
+  ): Promise<ImmutableRuntimePrefixProofV1> {
+    assertImmutableRuntimePrefixProofReadBudget(budget);
+    if (
+      input.upToEventSeq !== undefined &&
+      (!Number.isSafeInteger(input.upToEventSeq) || input.upToEventSeq <= 0)
+    ) {
+      throw new Error('Invalid immutable RuntimeEvent prefix high-water');
+    }
+    const highWater = input.upToEventSeq ?? null;
+    const cursor = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+          length(CAST(payload_json AS BLOB)) AS stored_bytes,
+          CASE WHEN length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END AS payload_json
+        FROM runtime_events
+        WHERE session_id = ? AND run_id = ?
+          AND (? IS NULL OR event_seq <= ?)
+        ORDER BY event_seq ASC
+      `)
+      .iterate(budget.maxRecordBytes, input.sessionId, input.runId, highWater, highWater)
+      [Symbol.iterator]() as Iterator<RuntimeEventPrefixProofStorageRow>;
+    const firstRow = cursor.next();
+    if (firstRow.done) throw new Error('immutable RuntimeEvent prefix is empty');
+    let count = 0;
+    let bytes = 0;
+    let lastEventSeq = 0;
+    const decode = function* (): Iterable<{ eventSeq: number; event: RuntimeEvent }> {
+      let step: IteratorResult<RuntimeEventPrefixProofStorageRow> = firstRow;
+      while (!step.done) {
+        const row = step.value;
+        count += 1;
+        if (count > budget.maxEvents) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its event limit');
+        }
+        const payloadJson = row.payload_json;
+        if (payloadJson === null) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its record byte limit');
+        }
+        bytes += requireRuntimeEventScanCount(row.stored_bytes);
+        if (bytes > budget.maxBytes) {
+          throw new Error('Immutable RuntimeEvent prefix proof exceeds its byte limit');
+        }
+        lastEventSeq = requireRuntimeEventScanCount(row.event_seq);
+        yield {
+          eventSeq: lastEventSeq,
+          event: decodeRuntimeEventStorageRow({ ...row, payload_json: payloadJson }),
+        };
+        step = cursor.next();
+      }
+    };
+    const proof = buildImmutableRuntimePrefixProof(
+      {
+        sessionId: firstRow.value.session_id,
+        invocationId: firstRow.value.invocation_id,
+        runId: firstRow.value.run_id,
+        turnId: firstRow.value.turn_id,
+      },
+      decode(),
+    );
+    if (input.upToEventSeq !== undefined && lastEventSeq !== input.upToEventSeq) {
+      throw new Error(
+        `immutable RuntimeEvent prefix high-water ${input.upToEventSeq} is unavailable`,
+      );
+    }
+    return proof;
+  }
+
   async claimContinuation(input: { claim: ContinuationClaimV1 }): Promise<ContinuationClaimResult> {
     const claim = decodeContinuationClaim(input.claim);
     if (
@@ -1452,6 +1581,58 @@ export class SqliteRuntimeStore
         throw new Error(`RuntimeEvent Session ordinal identity mismatch for ${event.id}`);
       }
       return { ordinal: row.ordinal, event };
+    });
+  }
+
+  async resequenceSessionEventOrdinals(sessionId: string): Promise<void> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    this.transaction(() => {
+      // Lifted above the range first: the second statement renumbers into the
+      // space these rows occupy, and (session_id, ordinal) is a primary key.
+      // Shifting up rather than below zero keeps every intermediate value
+      // inside the table's own `ordinal > 0`, and lands them past the 1..N the
+      // renumber assigns, since the count cannot exceed the maximum.
+      const { shift } = this.db
+        .prepare(`
+        SELECT COALESCE(MAX(ordinal), 0) AS shift
+        FROM runtime_session_event_ordinals
+        WHERE session_id = ?
+      `)
+        .get(sessionId) as { shift: number };
+      this.db
+        .prepare(`
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = ordinal + :shift
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId, shift });
+      this.db
+        .prepare(`
+        WITH opening AS (
+          SELECT invocation_id, CAST(json_extract(payload_json, '$.ts') AS INTEGER) AS opened_at
+          FROM runtime_events
+          WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+        ),
+        ordered AS MATERIALIZED (
+          SELECT
+            o.event_id AS event_id,
+            ROW_NUMBER() OVER (
+              ORDER BY COALESCE(opening.opened_at, e.committed_at), e.invocation_id, o.ordinal
+            ) AS ordinal
+          FROM runtime_session_event_ordinals o
+          JOIN runtime_events e ON e.event_id = o.event_id
+          LEFT JOIN opening ON opening.invocation_id = e.invocation_id
+          WHERE o.session_id = :sessionId
+        )
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = (
+          SELECT ordered.ordinal
+          FROM ordered
+          WHERE ordered.event_id = runtime_session_event_ordinals.event_id
+        )
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId });
     });
   }
 
@@ -1825,14 +2006,12 @@ export class SqliteRuntimeStore
   }
 
   private registerWorkspaceBaselineAuthorityWriter(): void {
-    const readWorkspaceHead = this.readWorkspaceHead.bind(this);
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
       (input, rootId) => this.#commitManagedMutationTerminal(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
-      readWorkspaceHead,
       (workspaceInstanceId) => this.#readActiveManagedMutation(workspaceInstanceId),
     );
   }
@@ -4663,6 +4842,11 @@ function compareWorkspaceHeadRow(
 interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
   event_seq: number;
 }
+
+type RuntimeEventPrefixProofStorageRow = Omit<RuntimeEventPrefixStorageRow, 'payload_json'> & {
+  stored_bytes: number;
+  payload_json: string | null;
+};
 
 interface ContinuationClaimStorageRow {
   claim_id: string;

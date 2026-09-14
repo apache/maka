@@ -103,6 +103,21 @@ describe('TUI copy resources', () => {
     assert.equal(getTuiPickerCopy('zh-TW').defaultMarker, '預設');
   });
 
+  test('describes /setup as provider onboarding in every locale', () => {
+    for (const locale of UI_LOCALES) {
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['primary-guidance'][locale].commands.setup,
+        /api[ -]?key/iu,
+        `primary-guidance/${locale}`,
+      );
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['connection-identity'][locale].emptyChoiceRecovery,
+        /api[ -]?key/iu,
+        `connection-identity/${locale}`,
+      );
+    }
+  });
+
   test('formats the English MCP count with ICU plural rules', () => {
     const template = TUI_COPY_RESOURCES['mcp-status'].en.toolCount;
 
@@ -129,6 +144,12 @@ describe('TUI copy resources', () => {
       ),
       '/skill:nope（未找到）',
     );
+  });
+
+  test('localizes current Todo indicator and overlay copy', () => {
+    assert.equal(TUI_COPY_RESOURCES.todo.en.open, '/todo to view');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-CN'].open, '/todo 查看');
+    assert.equal(TUI_COPY_RESOURCES.todo['zh-TW'].unavailable, '待辦不可用');
   });
 
   test('localizes stable onboarding failure codes at the TUI boundary', () => {

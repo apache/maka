@@ -160,16 +160,7 @@ async function runCrashChild(): Promise<void> {
   const runStore = createSqliteAgentRunStore(workspaceRoot);
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
-  backends.register(
-    'ai-sdk',
-    (ctx) =>
-      new FakeBackend({
-        sessionId: ctx.sessionId,
-        header: ctx.header,
-        store: ctx.store,
-        appendMessage: ctx.appendMessage,
-      }),
-  );
+  backends.register('ai-sdk', (ctx) => new FakeBackend({ sessionId: ctx.sessionId }));
   let id = 0;
   let resolveSelectedFailpoint!: () => void;
   const selectedFailpointReached = new Promise<void>((resolve) => {
@@ -244,16 +235,7 @@ function createManager(workspaceRoot: string): {
   const runStore = createSqliteAgentRunStore(workspaceRoot);
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
-  backends.register(
-    'ai-sdk',
-    (ctx) =>
-      new FakeBackend({
-        sessionId: ctx.sessionId,
-        header: ctx.header,
-        store: ctx.store,
-        appendMessage: ctx.appendMessage,
-      }),
-  );
+  backends.register('ai-sdk', (ctx) => new FakeBackend({ sessionId: ctx.sessionId }));
   let id = 100;
   return {
     agentRunStore: runStore,

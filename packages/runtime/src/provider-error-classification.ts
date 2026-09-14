@@ -20,7 +20,7 @@
 import { RetryError } from 'ai';
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
+import { isAuthenticationErrorText } from '@maka/core/redaction';
 import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
 
 /**
@@ -142,6 +142,7 @@ const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
 const OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR = 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR';
 const RUNTIME_RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  'MODEL_STREAM_TIMEOUT',
   OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR,
   'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
 ]);
@@ -239,6 +240,7 @@ function retryMetadataFromFacts(
     return { retryable: true, retryAfterMs };
   }
   const retryable =
+    errorClass === 'stream_truncated' ||
     errorClass === 'network' ||
     errorClass === 'provider_unavailable' ||
     status === 408 ||
@@ -383,7 +385,7 @@ function failureSummaryFromFacts(facts: ProviderErrorFacts): ProviderFailureSumm
     MODEL_FAILURE_MESSAGE_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
   );
   const summary = `${truncateUtf8(
-    redactSecrets(message ?? 'Provider request failed'),
+    message ?? 'Provider request failed',
     messageBudget,
     '…',
   )}${suffix}`;
@@ -396,7 +398,7 @@ function failureSummaryFromFacts(facts: ProviderErrorFacts): ProviderFailureSumm
 /**
  * Projects provider errors into a small durable fingerprint. Unlike the
  * presentation summary, this intentionally excludes provider messages and
- * response bodies: even redacted free text can echo prompts or credentials.
+ * response bodies: free text can echo prompts or credentials.
  */
 export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
   const facts = extractProviderErrorFacts(error);
@@ -528,7 +530,7 @@ function boundedProviderField(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const normalized = String(value).trim();
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
+  return truncateUtf8(normalized, PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
 }
 
 function boundedProviderMessage(value: unknown, parseJson = true): string | undefined {
@@ -553,7 +555,7 @@ function boundedProviderMessage(value: unknown, parseJson = true): string | unde
     }
   }
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
+  return truncateUtf8(normalized, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
 }
 
 /**
@@ -682,6 +684,8 @@ function classifyProviderFacts(facts: ProviderErrorFacts): ModelFailureKind {
   const { text, statusCode, code, structuredCodes } = evidence;
   const normalizedCode = code.toLowerCase();
   if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'network';
+  if (code === 'MODEL_STREAM_TIMEOUT') return 'timeout';
+  if (structuredCodes.includes('gateway_stream_terminated')) return 'stream_truncated';
   if (
     PROVIDER_CAPACITY_CODES.has(normalizedCode) ||
     structuredCodes.some((c) => PROVIDER_CAPACITY_CODES.has(c))

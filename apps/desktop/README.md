@@ -123,24 +123,30 @@ using Xcode Command Line Tools and the pinned `node-api-headers` development
 dependency. Other platforms skip this build. The module uses Node-API 8 and is
 unpacked from ASAR so electron-builder can sign and load it with the app.
 Knip excludes only this generated `.node` import from source resolution;
-the packaged smoke test verifies its runtime loading.
+the real-package verifier checks its unpacked location, architecture, and IPC loading.
 
 Queries run off the JS thread with a three-second native callback deadline,
 without requesting authorization, sending a notification, or replacing
-Electron's notification delegate. A new snapshot reads the current setting.
+Electron's notification delegate. Overlapping notification reads share pending
+native work; settlement clears that work so a later refresh reads the current
+setting. Capability and health snapshots read only accessibility and screen
+recording, and never wait for notification authorization.
 Denied and not-yet-requested remain distinct; provisional authorization permits
 only quiet delivery. Query/load failures remain unknown with a diagnostic.
 Authorization does not guarantee a banner, sound, or delivery during Focus.
 
-After building Desktop, run this on macOS:
+After producing the release DMG, run the existing macOS package verifier:
 
 ```sh
-npm --workspace @maka/desktop run smoke:notification-settings
+npm run verify:macos -- arm64
 ```
 
-This packages and ad-hoc signs a minimal app with the production native module
-and ASAR policy, then queries its fresh application identity. It does not grant
-permission or change the installed Maka application's settings.
+This verifies the real signed/notarized Maka bundle, launches it with isolated
+profile storage, and reads the production permissions IPC concurrently and again
+after settlement. It accepts granted, denied, or not-determined authorization,
+but rejects unknown/error and fixture results. It does not grant permission or
+change system notification settings; isolated profile storage does not change
+the application's macOS notification identity.
 
 ## Three layers
 

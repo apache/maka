@@ -30,6 +30,7 @@ import type { UsageLogRow } from "@maka/core/usage-stats/types";
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
   buildCapabilitySnapshotCollection,
+  buildCapabilityPermissionSnapshot,
   buildPermissionSnapshot,
 } from "./capability-snapshot.js";
 import { openSystemPermissionPane, requestPermissionAccess } from "./permissions-actions.js";
@@ -58,6 +59,8 @@ export function registerRuntimeHostPermissionsIpc(
 ): void {
   const permissions = (now = Date.now()) =>
     permissionSnapshotE2eFixture(now) ?? buildPermissionSnapshot(now);
+  const capabilityPermissions = (now = Date.now()) =>
+    permissionSnapshotE2eFixture(now) ?? buildCapabilityPermissionSnapshot(now);
 
   deps.ipcMain.handle("permissions:getSnapshot", () => permissions());
   deps.ipcMain.handle(
@@ -69,7 +72,7 @@ export function registerRuntimeHostPermissionsIpc(
     (_event, permissionId: unknown) => requestPermissionAccess(permissionId),
   );
   handleReconnectableRead(deps.ipcMain, "capabilities:getSnapshot", async () => {
-    const snapshot = await permissions();
+    const snapshot = capabilityPermissions();
     return buildCapabilitySnapshotCollection({
       settings: await deps.getSettings(),
       permissions: snapshot,
@@ -80,7 +83,7 @@ export function registerRuntimeHostPermissionsIpc(
   });
   handleReconnectableRead(deps.ipcMain, "health:getSnapshot", async () => {
     const now = Date.now();
-    const permissionSnapshot = await permissions(now);
+    const permissionSnapshot = capabilityPermissions(now);
     const [settings, connections] = await Promise.all([
       deps.getSettings(),
       deps.listConnections(),

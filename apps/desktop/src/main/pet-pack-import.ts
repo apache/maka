@@ -32,6 +32,8 @@ import {
 } from '@maka/storage/pet-pack-store';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import type { createMainWindowController } from './main-window.js';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { nativeFileDialogCopy } from './native-file-dialog-copy.js';
 
 type MainWindowController = Pick<
   ReturnType<typeof createMainWindowController>,
@@ -123,6 +125,7 @@ export function registerPetPackIpc(input: {
   readonly settingsStore: Pick<SettingsStore, 'get' | 'update'>;
   readonly store?: PetPackStore;
   readonly now?: () => number;
+  readonly resolveLocale: () => Promise<UiLocale>;
 }): void {
   const store = input.store ?? createPetPackStore(input.workspaceRoot);
   const now = input.now ?? Date.now;
@@ -207,7 +210,7 @@ export function registerPetPackIpc(input: {
   );
   input.ipcMain.handle('pets:importLocalDirectory', async (): Promise<PetPackImportResult> => {
     const selection = await input.mainWindowController.showOpenDialog({
-      title: 'Import custom pet',
+      title: nativeFileDialogCopy(await input.resolveLocale()).importCustomPet,
       properties: ['openDirectory'],
     });
     if (selection.canceled || selection.filePaths.length === 0) {

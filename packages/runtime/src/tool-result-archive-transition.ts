@@ -17,63 +17,36 @@
  * under the License.
  */
 
-/**
- * The one writer that turns a Tool Result prune decision into durable truth
- * (#4283).
- *
- * Both prune paths — the current Turn's active prune before the next provider
- * step, and the prior Turn's stale prune before compaction — come through here.
- * They used to keep their replacement in a Turn-local map and a policy-carried
- * ref table respectively, so each owned a private recovery contract and neither
- * survived a restart. Now each records one `ModelProjectionTransition`, and the
- * Session reducer is the only thing that decides what the model sees.
- *
- * Write order is the whole safety argument:
- *
- * 1. Archive the replaced body. A failure here leaves the projection untouched.
- * 2. Append the transition. A failure here leaves an artifact nothing points
- *    at — unreachable by the reducer, so safe to reclaim once something does —
- *    and again leaves the projection untouched.
- * 3. Only then may a caller show the replacement.
- *
- * There is no state in which the model has lost content the ledger cannot
- * explain, and none in which a completed tool effect is repeated.
- */
-
 import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { DURABLE_TOOL_RESULT_PROJECTION_VERSION } from '@maka/core/durable-tool-result-projection';
 import {
   buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
-import type { ActiveToolResultSupersession } from './active-tool-result-working-set.js';
-import {
-  estimateTokens,
-  finitePositive,
-  sha256,
-  turnKey,
-  utf8ByteLength,
-} from './context-budget-helpers.js';
-import {
-  durableProjectionToToolResultOutput,
-  projectionArtifactMedia,
-} from './durable-tool-result-projection.js';
-import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
+import { estimateTokens, sha256, utf8ByteLength } from './context-budget-helpers.js';
+import { projectionArtifactMedia } from './durable-tool-result-projection.js';
+import { baseToolResultProjection } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildArchivedToolResultPlaceholder,
+  buildLedgerArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
-  serializeToolResultForArchive,
   type ArchivedToolResultPlaceholder,
   type ArchivedToolResultReason,
-  type StaleToolResultArchiveCandidate,
-  type StaleToolResultPrunePolicy,
+  type ToolResultArchiveCandidate,
+  type ToolResultPrunePolicy,
 } from './tool-result-archive.js';
+import type {
+  ToolResultArchiveRecorder,
+  ToolResultArchiveLocation,
+} from './tool-result-archive-capability.js';
+import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 
-const DEFAULT_MAX_TOOL_RESULT_ESTIMATED_TOKENS = 2048;
+import { READ_PAGE_MAX_CHARS, readToolResultPage } from './read-page.js';
 
 export type ModelProjectionTransitionRecorder = (
   transition: ModelProjectionTransition,
@@ -88,49 +61,26 @@ export type ModelProjectionTransitionRecorder = (
  * body that is not the one removed from the model's view.
  */
 export function serializedToolResultProjection(projection: DurableToolResultProjection): string {
-  const output = durableProjectionToToolResultOutput(projection);
-  return serializeToolResultForArchive(
-    output.type === 'execution-denied' ? { kind: 'text', text: output.reason ?? '' } : output.value,
-  );
+  return serializeToolResultProjectionV1(projection);
 }
 
 /** The replacement a pruned Tool Result projects to. */
 export function archivedToolResultProjection(
   placeholder: ArchivedToolResultPlaceholder,
+  source?: DurableToolResultProjection,
 ): DurableToolResultProjection {
   return {
     version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
     kind: 'json',
     value: placeholder as unknown as Record<string, never>,
+    ...(source && 'isError' in source && source.isError ? { isError: true as const } : {}),
   };
 }
 
 export interface ToolResultArchiveTransitionServices {
   sessionId: string;
-  archiveToolResult: (input: {
-    sessionId: string;
-    runtimeEventId: string;
-    turnId: string;
-    toolCallId: string;
-    toolName: string;
-    result: unknown;
-    serializedResult: string;
-    bodySha256: string;
-    originalBytes: number;
-    originalEstimatedTokens: number;
-    rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
-    reason: ArchivedToolResultReason;
-  }) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
+  archiveToolResult: ToolResultArchiveRecorder;
   recordTransition: ModelProjectionTransitionRecorder;
-  /**
-   * Re-read the durable ledger after an append.
-   *
-   * A successful append does not make this transition the fold's answer: a
-   * concurrent Turn can append a rival successor to the same source, and the
-   * fold accepts exactly one of them. Without this seam the caller would show a
-   * replacement that the next read replaces with the other writer's.
-   */
-  loadTransitions?: () => Promise<{ transitions: ModelProjectionTransition[] }>;
   now: () => number;
 }
 
@@ -146,29 +96,22 @@ export interface ToolResultArchiveTransitionRequest {
   originalEstimatedTokens: number;
   reason: ArchivedToolResultReason;
   previousTransitionId?: string;
-  supersession?: ActiveToolResultSupersession;
   /** Raw execution fact kept only so the archive writer can name the artifact. */
   result?: unknown;
-}
-
-export interface ToolResultArchiveTransitionOutcome {
-  placeholder: ArchivedToolResultPlaceholder;
-  transition: ModelProjectionTransition;
 }
 
 /**
  * Archive one body and commit the transition that replaces its projection.
  *
- * Returns `undefined` when either durable step fails: the caller then leaves
- * the model-visible content exactly as it was, which is the only outcome that
- * keeps "visible history is append-only" true under partial failure.
+ * This is a write attempt, not a projection decision. The caller must read
+ * the durable ledger afterwards, including after a failed or uncertain write.
  */
 export async function archiveToolResultAsTransition(
   services: ToolResultArchiveTransitionServices,
   request: ToolResultArchiveTransitionRequest,
-): Promise<ToolResultArchiveTransitionOutcome | undefined> {
+): Promise<void> {
   const bodySha256 = sha256(request.serializedResult);
-  let archived: { artifactId: string } | void;
+  let archived: ToolResultArchiveLocation | void;
   try {
     archived = await Promise.resolve(
       services.archiveToolResult({
@@ -184,16 +127,22 @@ export async function archiveToolResultAsTransition(
         originalEstimatedTokens: request.originalEstimatedTokens,
         rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
         reason: request.reason,
+        sourceProjectionDigest: durableToolResultProjectionDigest(request.sourceProjection),
+        ...(request.previousTransitionId
+          ? { previousTransitionId: request.previousTransitionId }
+          : {}),
       }),
     );
   } catch {
     return undefined;
   }
-  const artifactId = archived?.artifactId;
-  if (typeof artifactId !== 'string' || artifactId.trim().length === 0) return undefined;
-
-  const placeholder = buildArchivedToolResultPlaceholder({
-    artifactId,
+  if (!archived) return undefined;
+  if (
+    !archived.ledger &&
+    (typeof archived.artifactId !== 'string' || archived.artifactId.trim().length === 0)
+  )
+    return undefined;
+  const common = {
     runtimeEventId: request.runtimeEventId,
     toolCallId: request.toolCallId,
     toolName: request.toolName,
@@ -201,8 +150,27 @@ export async function archiveToolResultAsTransition(
     originalEstimatedTokens: request.originalEstimatedTokens,
     originalBytes: request.originalBytes,
     reason: request.reason,
-    ...(request.supersession ? { supersession: request.supersession } : {}),
-  });
+  };
+  let placeholder: ArchivedToolResultPlaceholder;
+  try {
+    placeholder = archived.ledger
+      ? buildLedgerArchivedToolResultPlaceholder({
+          ...common,
+          storage: 'ledger',
+          sourceProjectionDigest: durableToolResultProjectionDigest(request.sourceProjection),
+          ...(request.previousTransitionId
+            ? { previousTransitionId: request.previousTransitionId }
+            : {}),
+        })
+      : buildArchivedToolResultPlaceholder({ ...common, artifactId: archived.artifactId });
+    placeholder.page = readToolResultPage(
+      request.serializedResult,
+      { path: placeholder.resourceRef! },
+      READ_PAGE_MAX_CHARS - JSON.stringify(placeholder).length - 32,
+    );
+  } catch {
+    return undefined;
+  }
 
   let transition: ModelProjectionTransition;
   try {
@@ -218,92 +186,60 @@ export async function archiveToolResultAsTransition(
       // The placeholder inside the replacement is the whole archive record:
       // artifact id, body digest and original size. The transition does not
       // repeat them — one fact, one place.
-      replacement: archivedToolResultProjection(placeholder),
+      replacement: archivedToolResultProjection(placeholder, request.sourceProjection),
       ...(request.previousTransitionId
         ? { previousTransitionId: request.previousTransitionId }
         : {}),
       now: services.now(),
     });
-    await services.recordTransition(transition);
-    const winner = await winningTransition(services, transition);
-    if (winner && winner.transitionId !== transition.transitionId) {
-      // The rival won. Show what the ledger says, not what this writer wrote;
-      // its own record stays durable and inert, and the body it archived is
-      // unreachable exactly as a refused transition's archive should be.
-      const replaced = winner.replacement.kind === 'json' ? winner.replacement.value : undefined;
-      if (!isArchivedToolResultPlaceholder(replaced)) return undefined;
-      return { placeholder: replaced, transition: winner };
+    if (
+      placeholder.rewriteVersion === 2 &&
+      Buffer.byteLength(JSON.stringify(transition)) > 32 * 1024
+    )
+      return undefined;
+    if (archived.ledger && archived.commitTransition) {
+      if (!(await archived.commitTransition(transition, services.recordTransition)))
+        return undefined;
+    } else {
+      await services.recordTransition(transition);
     }
   } catch {
-    // The archive artifact is now unreferenced: nothing in the effective
-    // history names it, which is what reducer-derived reachability reports. It
-    // is content-addressed, so a retry of the same decision reuses it rather
-    // than publishing a second one. No cleanup pass consumes that reachability
-    // yet, so such an artifact is retained until one does — it cannot break
-    // replay, but it is not reclaimed either (#4283).
+    // A storage failure does not prove that no transition committed. Only the
+    // caller's subsequent authoritative read can decide what is effective.
     return undefined;
   }
-  return { placeholder, transition };
 }
 
-/** The transition the durable fold accepts for this target, after an append. */
-async function winningTransition(
-  services: ToolResultArchiveTransitionServices,
-  appended: ModelProjectionTransition,
-): Promise<ModelProjectionTransition | undefined> {
-  if (!services.loadTransitions) return appended;
-  const { transitions } = await services.loadTransitions();
-  return nextInChain(transitions, appended.previousTransitionId, appended.sourceProjectionDigest, {
-    id: appended.target.toolCallId,
-    name: appended.target.toolName,
-  });
-}
-
-/**
- * Prior-Turn results large enough to archive before compaction.
- *
- * Collection reads events the transition reducer has already folded, so a
- * result an earlier transition replaced is measured at its replacement size and
- * simply falls below the threshold — there is no second "already pruned?"
- * predicate to keep in step with the fold.
- */
-export function collectStaleToolResultArchiveCandidates(
+export function collectToolResultArchiveCandidates(
   events: readonly RuntimeEvent[],
-  prunePolicy: StaleToolResultPrunePolicy | undefined,
+  prunePolicy: ToolResultPrunePolicy | undefined,
   charsPerToken: number,
-): StaleToolResultArchiveCandidate[] {
+): ToolResultArchiveCandidate[] {
   if (prunePolicy?.enabled !== true) return [];
-  const maxResultEstimatedTokens =
-    finitePositive(prunePolicy.maxResultEstimatedTokens) ??
-    DEFAULT_MAX_TOOL_RESULT_ESTIMATED_TOKENS;
-  const minRecentTurnsFull = Math.max(0, Math.floor(prunePolicy.minRecentTurnsFull ?? 1));
-  const protectedTurnIds = recentTurnIds(events, minRecentTurnsFull);
-  const candidates: StaleToolResultArchiveCandidate[] = [];
+  const candidates: ToolResultArchiveCandidate[] = [];
   for (const event of events) {
     const content = event.content;
     if (
       event.partial ||
       event.modelVisibility === 'hidden' ||
       content?.kind !== 'function_response' ||
-      protectedTurnIds.has(turnKey(event))
+      content.providerExecuted
     ) {
       continue;
     }
     const sourceProjection = baseToolResultProjection(event);
-    if (!sourceProjection) continue;
+    if (
+      !sourceProjection ||
+      (sourceProjection.kind === 'json' && isArchivedToolResultPlaceholder(sourceProjection.value))
+    )
+      continue;
     const serializedResult = serializedToolResultProjection(sourceProjection);
     const originalBytes = utf8ByteLength(serializedResult);
     const media = projectionArtifactMedia(sourceProjection);
-    // An artifact serializes to a short reference and materializes to real
-    // image bytes, so the string alone would price a screenshot at nothing.
     const originalEstimatedTokens =
       estimateTokens(serializedResult.length, charsPerToken) +
       media.length * MATERIALIZED_IMAGE_TOKENS;
-    // A result that carries media is always a candidate: archiving it drops
-    // whole images from the request, which is worth doing whatever the
-    // reference text around them happens to weigh. The size gate is there to
-    // spare small text results, so it only decides those.
-    if (media.length === 0 && originalEstimatedTokens <= maxResultEstimatedTokens) continue;
+    if (media.length > 0 || serializedResult.length <= READ_PAGE_MAX_CHARS) continue;
     candidates.push({
       runtimeEventId: event.id,
       turnId: event.turnId,
@@ -315,45 +251,8 @@ export function collectStaleToolResultArchiveCandidates(
       originalEstimatedTokens,
       originalBytes,
       rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
-      reason: 'stale_tool_result_pruned_before_compact',
+      reason: 'tool_result_pruned',
     });
   }
   return candidates;
-}
-
-/**
- * Archive artifacts the effective history still needs.
- *
- * Derived from the folded events, never from a parallel bookkeeping table: an
- * artifact is reachable exactly when a placeholder the model can still see names
- * it. An archive whose transition was refused is therefore unreachable by
- * construction.
- *
- * This is the reachability authority a reclaiming pass must ask; no such pass
- * exists yet, so nothing here is reclaimed today (#4283). Adding one is what
- * makes an unreferenced archive temporary rather than retained.
- */
-export function collectReachableArchiveArtifactIds(events: readonly RuntimeEvent[]): Set<string> {
-  const reachable = new Set<string>();
-  for (const event of events) {
-    const content = event.content;
-    if (content?.kind !== 'function_response') continue;
-    if (isArchivedToolResultPlaceholder(content.result)) {
-      reachable.add(content.result.artifactId);
-    }
-  }
-  return reachable;
-}
-
-function recentTurnIds(events: readonly RuntimeEvent[], count: number): Set<string> {
-  if (count <= 0) return new Set();
-  const order: string[] = [];
-  const seen = new Set<string>();
-  for (const event of events) {
-    const key = turnKey(event);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    order.push(key);
-  }
-  return new Set(order.slice(Math.max(0, order.length - count)));
 }

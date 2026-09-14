@@ -271,8 +271,9 @@
      OS reports (macOS: traffic lights on the left; Windows: caption buttons on
      the right; Linux: neither, so the design floors stand). */
   padding-left: var(--maka-titlebar-gutter-left);
-  padding-right: var(--maka-titlebar-gutter-right);
+  padding-right: calc(var(--maka-titlebar-gutter-right) + var(--maka-titlebar-workbar-reserve, 0px));
   -webkit-app-region: drag;
+  transition: padding-right var(--duration-large) var(--ease-out-strong);
 
   /* Three columns, not a flex row, because the middle one has to line up with
      something OUTSIDE this strip. The strip spans the whole window while the
@@ -319,6 +320,19 @@
      change to the sidebar's motion, not to this strip. */
 }
 
+:where(
+  .appFrame:has(.maka-session-workbar[data-placement='right']:not([data-collapsed]))
+)
+  .maka-window-titlebar {
+  --maka-titlebar-workbar-reserve: calc(
+    var(--maka-session-workbar-width) + var(--agents-content-area-gap)
+  );
+}
+
+.appFrame:has(.maka-workbar-resize-handle[data-resizing]) .maka-window-titlebar {
+  transition: none;
+}
+
 /* Drag regions are hit-tested from element rects, and the top layer is invisible
    to that pass: a `showModal()` dialog paints over the titlebar, but its controls
    inside the titlebar rect still reach the OS as window drags. */
@@ -348,37 +362,13 @@ dialog:modal {
   color: var(--muted-foreground);
 }
 
-/* The session's identity: left-aligned at the content column's left edge.
-
-   It sits in the titlebar's second grid column, which opens exactly where the
-   sidebar column ends, so the breadcrumb reads as the heading of the
-   conversation plate beneath it. Laid out in flow instead, it anchored to the
-   icon rail and landed mid-sidebar — straddling the seam, aligned to neither
-   column. Collapsing the sidebar narrows column 1 and the breadcrumb follows it
-   left — flush with the plate while the sidebar is wide enough to be the
-   binding measure, and held off the icon rail by the strip's own gap once the
-   icons are wider than the collapsed column. Both readings are one rule: the
-   column's floor is the sidebar, its ceiling the icons.
-
-   `padding-left` keeps the text off the seam itself. It matches the inset the
-   sidebar's own rows carry, so the two columns' text starts read as a pair
-   rather than one label welded to the divider.
-
-   Both plates below reserve the full `--h-titlebar` (`.mainColumn` via
-   `--maka-plate-titlebar-clearance`, `.maka-session-panel` directly), so this
-   strip is empty for its whole width and the label collides with nothing.
-
-   `min-width: 0` + `justify-self: start`: the column is `minmax(0, 1fr)`, so on
-   a narrow window this is what gives way, truncating its own segments instead
-   of squeezing the two action clusters that flank it. `no-drag` covers only
-   this box — the strip stays draggable on both sides of the text, exactly as it
-   already is around the icon clusters. */
+/* The title hugs its controls; the remaining track stays draggable. */
 .maka-titlebar-identity {
   grid-column: 2;
   justify-self: start;
   min-width: 0;
-  /* Never the whole column: what is left of it is the strip's drag band. */
   max-width: calc(100% - var(--maka-titlebar-drag-reserve));
+  box-sizing: border-box;
   display: flex;
   padding-left: var(--space-3);
   -webkit-app-region: no-drag;
@@ -388,109 +378,40 @@ dialog:modal {
 
 .maka-titlebar-identity__action {
   flex: 0 0 auto;
+  display: inline-flex;
 }
 
-/* Every box between the strip's column and the text has to agree to shrink, or
-   none of them do. `min-width: 0` on the outer box alone clamped only that box:
-   the nav, the crumb buttons and the segments kept `min-width: auto`, so with a
-   long name the text ran on past the clamp — measured 2408px inside a 1320px
-   window — painting over the workspace actions and, worse, spilling the visible
-   tail into the strip's DRAG region, where a click on the session name reaches
-   the OS as a window drag. The ellipsis never engaged, because nothing upstream
-   ever handed these elements a smaller size to ellipsize into. */
-.maka-titlebar-identity__breadcrumbs {
+.maka-titlebar-identity__name {
   min-width: 0;
   overflow: hidden;
+  padding-inline: var(--space-1);
 }
 
-.maka-titlebar-identity__breadcrumbs > ol > li > button {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.maka-titlebar-identity__breadcrumbs > ol {
-  min-width: 0;
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
-
-.maka-titlebar-identity__breadcrumbs > ol > li {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.maka-titlebar-identity__segment {
-  display: block;
-  min-width: 0;
+.maka-titlebar-identity__segment--session {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Astryx styles every non-current crumb as a link, and its hover is an
-   underline. In this app an underline means "this leaves for the open web"
-   (`.maka-web-search-preview a` is its only other use); these two crumbs open a
-   folder and start a rename. Both are in-app actions, so they take the hover
-   the rest of the app's controls take — the `--state-hover-bg` wash — and the
-   underline is declined.
-
-   Keyed on the button rather than the segment span so the wash covers the whole
-   hit target. What clears the StyleX atom is LAYER ORDER, not specificity:
-   product CSS imports into `components`, which cascade-layers.css declares
-   last, and Astryx's atoms carry `:not(#\#):not(#\#)` — on specificity alone
-   the atom wins. */
-.maka-titlebar-identity__breadcrumbs button {
-  border-radius: var(--radius-control);
-  padding-inline: var(--space-1);
-  transition: background-color var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-titlebar-identity__breadcrumbs button:hover {
-  text-decoration: none;
-  background: var(--state-hover-bg);
-}
-
-.maka-titlebar-identity__breadcrumbs button:focus-visible {
-  /* Inset, not outline: the breadcrumb item ancestor clips 3px of an
-     outward ring (measured by the T5 geometry probe) — a ring that cannot
-     fully paint is worse than none. Same idiom as the workbar launcher. */
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
-
-/* The session name carries the weight of the pair: it is what the window is
-   showing, and the project is the context it sits in. Astryx gives every
-   non-current crumb the same secondary ink, and this one has to be non-current
-   to stay clickable (see the `isCurrent={false}` note in the component), so the
-   emphasis is restored here rather than inherited.
-
-   The target is the sidebar's own selected row — same size, same weight, same
-   ink. One session should not have two different weights depending on which
-   surface is naming it, and the titlebar has no business being the lighter of
-   the two. */
-.maka-titlebar-identity__segment--session {
   font-weight: var(--font-weight-medium);
   color: var(--foreground);
 }
 
-/* The rename field stands in for the session crumb ALONE — it renders inside
-   that crumb, so the project crumb and the separator keep their places — and it
-   matches the label it replaces exactly in size, weight and ink, because the
-   name must not shift when it becomes editable.
+.maka-titlebar-menu__project {
+  padding: var(--space-1) var(--space-2);
+  color: var(--muted-foreground);
+  font-size: var(--text-label-size);
+  line-height: var(--text-label-leading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
-   `field-sizing: content` is what keeps the row still: the field opens at the
-   width of the text it is editing and grows with what is typed. A fixed width
-   made starting a rename shove everything beside it, which is the same jump
-   from the other direction. `min-width` keeps an empty field clickable; the
-   `max-width` is the truncation ceiling the label itself has.
+.maka-titlebar-menu__project-name {
+  font-weight: var(--font-weight-medium);
+  color: var(--foreground);
+}
 
-   The field claims no box of its own beyond that: no border, and a focus line
-   drawn with `box-shadow`, which paints outside layout. The bottom border it
-   used to carry was 1px the crumb did not have, so the trail lost a pixel of
-   height the moment the field appeared. */
 .maka-titlebar-identity__rename-input {
   min-width: 2rem;
-  max-width: min(20rem, 100%);
+  max-width: 100%;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -504,18 +425,12 @@ dialog:modal {
   background: transparent;
   border: 0;
   outline: 0;
-  box-shadow: 0 1px 0 oklch(from var(--focus-ring) l c h / 0.4);
+  box-shadow: 0 1px 0 var(--focus-ring);
   field-sizing: content;
   padding-block: 0;
-  /* The crumb button's own inline padding, so the first glyph does not step
-     4px left the moment the label becomes a field. */
   padding-inline: var(--space-1);
   min-width: 2rem;
-  max-width: min(20rem, 100%);
-}
-
-.maka-titlebar-identity__rename-input input:focus {
-  box-shadow: 0 1px 0 var(--focus-ring);
+  max-width: 100%;
 }
 
 .mainColumn {

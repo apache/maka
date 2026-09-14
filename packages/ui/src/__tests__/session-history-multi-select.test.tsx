@@ -76,13 +76,13 @@ function installDomStubs(window: ReturnType<typeof parseHTML>['window']): void {
  */
 function pointerEvent(
   window: ReturnType<typeof parseHTML>['window'],
-  type: 'click' | 'contextmenu',
+  type: 'click' | 'contextmenu' | 'pointerdown' | 'pointerup',
   modifiers: Record<string, unknown> = {},
 ): Event {
   const event = new window.Event(type, { bubbles: true, cancelable: true });
   Object.assign(event, {
     detail: 1,
-    button: type === 'contextmenu' ? 2 : 0,
+    button: type === 'contextmenu' || type.startsWith('pointer') ? 2 : 0,
     metaKey: false,
     ctrlKey: false,
     shiftKey: false,
@@ -129,6 +129,8 @@ interface Harness {
   archives: number;
   document: Document;
   clickRow(sessionId: string, modifiers?: Record<string, unknown>): Promise<void>;
+  beginRightClickRow(sessionId: string): Promise<boolean>;
+  endRightClickRow(sessionId: string): Promise<void>;
   rightClickRow(sessionId: string): Promise<boolean>;
   openRowMenu(sessionId: string): Promise<void>;
   clickMenuItem(index: number): Promise<void>;
@@ -264,13 +266,30 @@ async function mount(
         rowButton(sessionId).dispatchEvent(pointerEvent(window, 'click', modifiers));
       });
     },
-    rightClickRow: async (sessionId) => {
+    beginRightClickRow: async (sessionId) => {
       const event = pointerEvent(window, 'contextmenu');
       await act(() => {
+        rowButton(sessionId).dispatchEvent(pointerEvent(window, 'pointerdown'));
         rowButton(sessionId).dispatchEvent(event);
       });
       // Whether the rail claimed the press. Unclaimed, it goes on to the native
       // menu, which is the whole answer for a row the rail cannot act on.
+      return event.defaultPrevented;
+    },
+    endRightClickRow: async (sessionId) => {
+      await act(async () => {
+        rowButton(sessionId).dispatchEvent(pointerEvent(window, 'pointerup'));
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+    },
+    rightClickRow: async (sessionId) => {
+      const event = pointerEvent(window, 'contextmenu');
+      await act(async () => {
+        rowButton(sessionId).dispatchEvent(pointerEvent(window, 'pointerdown'));
+        rowButton(sessionId).dispatchEvent(event);
+        rowButton(sessionId).dispatchEvent(pointerEvent(window, 'pointerup'));
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
       return event.defaultPrevented;
     },
     openRowMenu: async (sessionId) => {
@@ -520,8 +539,16 @@ test('right-clicking a pickable row opens its menu', async () => {
   // right-click cannot drift into two lists of items that disagree.
   const harness = await mount({ selectedIds: ['b'] });
   try {
-    const prevented = await harness.rightClickRow('b');
+    const prevented = await harness.beginRightClickRow('b');
     assert.equal(prevented, true);
+    assert.equal(
+      harness.document
+        .querySelector('[data-session-id="b"] .maka-session-row-action')
+        ?.getAttribute('data-menu-open'),
+      null,
+      'the unfinished secondary-button gesture must not light-dismiss the menu it opens',
+    );
+    await harness.endRightClickRow('b');
     assert.equal(
       harness.document
         .querySelector('[data-session-id="b"] .maka-session-row-action')

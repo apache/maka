@@ -87,6 +87,11 @@ function generatedMetadataProviderType(providerType: ProviderType): ProviderType
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
 }
 
+/** Whether discovery is the complete usable model catalog for this account. */
+export function providerReportsCompleteModelCatalog(providerType: ProviderType): boolean {
+  return providerType === 'github-copilot';
+}
+
 /**
  * Whether the active metadata describes this model at all. `lookupModelMetadata`
  * answers "no" with an empty object, and callers were reading that sentinel by

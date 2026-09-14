@@ -28,6 +28,7 @@ import {
   StorageRootAuthorityError,
   type StorageRootLease,
 } from './root-authority.js';
+import { assertSafeStorageId } from './storage-id.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveGoalAuthorityWriter');
 const writers = new WeakSet<object>();
@@ -300,5 +301,5 @@ function cloneSnapshot(snapshot: GoalAuthoritySnapshot): GoalAuthoritySnapshot {
 }
 
 function requireId(value: string, label: string): void {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new TypeError(`${label} identity is invalid`);
+  assertSafeStorageId(value, `${label} identity is invalid`);
 }

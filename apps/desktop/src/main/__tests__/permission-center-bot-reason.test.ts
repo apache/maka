@@ -26,6 +26,7 @@ import { build } from 'esbuild';
 import { UI_LOCALES, type UiLocale } from '@maka/core/ui-locale';
 import type { HealthSignal } from '@maka/core/health';
 import { botStatusReasonMessage, getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
+import { getCapabilityReasonCopy } from '../../renderer/locales/capability-reason-copy.js';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../../renderer/locales/settings-health-copy.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
@@ -99,8 +100,8 @@ test('health center renders localized bot capability reasons in all locales', ()
   }
 });
 
-test('health center keeps the interim CJK passthrough for non-bot capability reasons', () => {
-  const signal: HealthSignal = {
+test('health center resolves non-bot capability codes through the shared catalog', () => {
+  const signal = (reason: string): HealthSignal => ({
     id: 'capability:computer_use',
     label: 'Computer Use',
     scope: 'capability',
@@ -109,9 +110,18 @@ test('health center keeps the interim CJK passthrough for non-bot capability rea
     source: 'capability_snapshot',
     checkedAt: 1,
     message: 'capability_degraded',
-    detail: { kind: 'capability_reason', reason: 'maka-cu service 启动失败、已退出或已停止。' },
+    detail: { kind: 'capability_reason', reason },
     relatedCapabilityId: 'computer_use',
-  };
-  assert.equal(localizedSignalDetail(signal, getHealthCenterCopy('zh-CN'), 'zh-CN'), 'maka-cu service 启动失败、已退出或已停止。');
-  assert.equal(localizedSignalDetail(signal, getHealthCenterCopy('en'), 'en'), 'See the corresponding settings page for details.');
+  });
+  for (const locale of UI_LOCALES) {
+    const copy = getHealthCenterCopy(locale);
+    assert.equal(
+      localizedSignalDetail(signal('cu_executor_start_failed'), copy, locale),
+      getCapabilityReasonCopy(locale).cu_executor_start_failed,
+    );
+    assert.equal(
+      localizedSignalDetail(signal('maka-cu service 启动失败、已退出或已停止。'), copy, locale),
+      copy.signalDetail(signal('future_code')),
+    );
+  }
 });

@@ -52,7 +52,13 @@ export async function readCanonicalTurnSnapshot(
 
   const logical = await readLogicalRuntimeExecution(stores.runtimeEventStore, identity, run);
   if (!logical) throw new Error('Admitted logical execution disappeared');
-  if (logical.pendingHandoff) return { sessionId, turnId, runId, status: 'running' };
+  const rootExecutionKind =
+    logical.root.opening.root.kind === 'context_compact'
+      ? ({ rootExecutionKind: 'context_compact' } as const)
+      : {};
+  if (logical.pendingHandoff) {
+    return { sessionId, turnId, runId, status: 'running', ...rootExecutionKind };
+  }
   const terminal = classifyTerminalRuntimeLedger(logical.tip, logical.events);
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
@@ -105,7 +111,13 @@ export async function readCanonicalTurnSnapshot(
   // No terminal event means the run is still open. Whether it is parked is the
   // pending-interaction store's answer, not something the run restates.
   const parked = await hasPendingInteraction(stores, sessionId, logical.tip.runId);
-  return { sessionId, turnId, runId, status: parked ? 'waiting_for_user' : 'running' };
+  return {
+    sessionId,
+    turnId,
+    runId,
+    status: parked ? 'waiting_for_user' : 'running',
+    ...rootExecutionKind,
+  };
 }
 
 /** Is this run waiting on a request the user has not answered? */

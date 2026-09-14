@@ -301,7 +301,7 @@ const fileLineCapGitReviewSnapshot: GitReviewSnapshot = {
 // Source-level truncation: a large changeset whose file list the source capped,
 // so `truncated` is set and the panel shows its 变化过多 banner. Each file is
 // ordinary — no single file trips the per-file cap here.
-const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 24 }, (_, index) => {
+const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 40 }, (_, index) => {
   const path = `src/feature-${String(index).padStart(2, '0')}.ts`;
   return {
     path,
@@ -785,6 +785,7 @@ function bridge(options: {
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
       openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
+      showInFolder: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
@@ -825,10 +826,13 @@ function bridge(options: {
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: () => () => undefined,
+      subscribeUpdates: () => () => undefined,
       start: async () => {
         throw new Error('Terminal stories mount an existing resource');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => {
         if (options.terminalAttach === 'missing') return null;
         return {
@@ -842,7 +846,6 @@ function bridge(options: {
       detach: async () => undefined,
       write: async () => {
         if (options.terminalWriteFails) throw new Error('write failed');
-        return null;
       },
       subscribePtyData: unsubscribe,
       subscribeResync: unsubscribe,
@@ -860,7 +863,6 @@ function bridge(options: {
       close: async () => undefined,
       getState: async () => browserState,
       subscribeState: unsubscribe,
-      subscribeLive: unsubscribe,
     },
     sideChat: {
       listSessions: async () => [TOOL_PICKER_SOURCE_SESSION, SIDE_CHAT_SESSION],
@@ -868,7 +870,6 @@ function bridge(options: {
         {
           turnId: 'source-turn',
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),
@@ -892,7 +893,14 @@ function bridge(options: {
       }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
-      steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      submitFollowUp: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
@@ -1088,6 +1096,31 @@ export const SeveralFacesAtColumnFloor: Story = {
   render: () => (
     <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
   ),
+  play: async ({ canvasElement }) => {
+    // Astryx's TabList hides its own overflow scrollbar (`scrollbar-width:
+    // none`) and scrolls the strip instead. The app default must not override
+    // that: as a `*` rule in `layer(components)` it out-ranked the component
+    // layer and re-showed the bar (#2538). The app default now lives in the
+    // lower `base` layer, so it no longer competes with the strip's `none`.
+    const tablist = await within(canvasElement).findByRole('tablist');
+    const nodes = [tablist, ...tablist.querySelectorAll<HTMLElement>('*')];
+    const strip = nodes.find((node) => getComputedStyle(node).overflowX === 'auto');
+    if (!strip) {
+      throw new Error('expected the tab strip to expose a horizontal scroll container');
+    }
+    expect(getComputedStyle(strip).scrollbarWidth).toBe('none');
+
+    // Keeping the default universal is equally important: `scrollbar-width`
+    // does not inherit, so a root-only rule would leave this scrollport `auto`.
+    const reviewPanel = await waitFor(() => {
+      const element = canvasElement.querySelector<HTMLElement>(
+        '.maka-session-review-panel',
+      );
+      if (!element) throw new Error('expected the review panel to render');
+      return element;
+    });
+    expect(getComputedStyle(reviewPanel).scrollbarWidth).toBe('thin');
+  },
 };
 
 // Below 991px the column stacks under the conversation at full width. The
@@ -1163,7 +1196,22 @@ export const ChangesTruncated: Story = {
   decorators: [bridge({ review: { ok: true, snapshot: sourceTruncatedGitReviewSnapshot } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByText('变化过多，仅显示前一部分文件');
+    const canvas = within(canvasElement);
+    await canvas.findByText('变化过多，仅显示前一部分文件');
+    await userEvent.click(await canvas.findByRole('button', { name: '再显示 20 个文件' }));
+
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-review-panel');
+    if (!panel) throw new Error('the changes panel is missing');
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelectorAll('.maka-session-review-file').length,
+      ).toBe(40);
+      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight);
+    });
+
+    panel.scrollTop = panel.scrollHeight;
+    await waitFor(() => expect(panel.scrollTop).toBeGreaterThan(0));
+    panel.scrollTop = 0;
   },
 };
 

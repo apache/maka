@@ -71,7 +71,7 @@ export function decodeJsonLines(
   handlers: JsonLineDecoderHandlers,
 ): string {
   let rest = buffer + chunk;
-  if (rest.length > handlers.maxBufferBytes) {
+  if (Buffer.byteLength(rest, 'utf8') > handlers.maxBufferBytes) {
     handlers.onOverflow();
     return rest;
   }

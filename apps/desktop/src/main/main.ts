@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import { resolveSystemUiLocale, type UiCatalog } from '@maka/core/ui-locale';
 import {
   DEV_LOSER_EXIT_CODE,
   developmentLaunchResultFile,
@@ -43,7 +43,7 @@ import {
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
 import { showFatalStartupError } from './native-diagnostic-dialog.js';
-import { isIsolatedE2e } from './startup-context.js';
+import { isIsolatedE2e, revealMode } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
 import { showBrowserMessageBox } from './browser-message-box.js';
@@ -112,32 +112,19 @@ if (!app.requestSingleInstanceLock()) {
         .whenReady()
         .then(() => {
           const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
-          const isSimplifiedChinese = locale === 'zh-CN';
-          const isTraditionalChinese = locale === 'zh-TW';
+          const copy = DEV_SINGLETON_COPY[locale];
           return showBrowserMessageBox(
             {
               type: 'warning',
-              title: isSimplifiedChinese
-                ? 'Maka Dev 已在运行'
-                : isTraditionalChinese
-                  ? 'Maka Dev 已在執行'
-                  : 'Maka Dev is already running',
-              message: isSimplifiedChinese
-                ? '另一个 Maka Dev 实例正在使用此开发配置。'
-                : isTraditionalChinese
-                  ? '另一個 Maka Dev 執行個體正在使用此開發設定。'
-                  : 'Another Maka Dev instance is using this development profile.',
-              detail: isSimplifiedChinese
-                ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
-                : isTraditionalChinese
-                  ? `開發設定：${profilePath}\n\n請先退出正在執行的執行個體，然後重試。`
-                  : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
-              buttons: [isSimplifiedChinese ? '退出' : isTraditionalChinese ? '退出' : 'Exit'],
+              title: copy.title,
+              message: copy.message,
+              detail: copy.detail(profilePath),
+              buttons: [copy.exit],
               defaultId: 0,
               cancelId: 0,
             },
             undefined,
-            { locale },
+            { locale, revealMode },
           );
         })
         .catch((error) => {
@@ -262,7 +249,10 @@ if (!app.requestSingleInstanceLock()) {
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
             showMessageBox: (options) =>
-              showBrowserMessageBox(options, desktopStartupProgressWindow(), { locale }),
+              showBrowserMessageBox(options, desktopStartupProgressWindow(), {
+                locale,
+                revealMode,
+              }),
           });
         }
       } finally {
@@ -271,3 +261,29 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
 }
+
+const DEV_SINGLETON_COPY = {
+  'zh-CN': {
+    title: 'Maka Dev 已在运行',
+    message: '另一个 Maka Dev 实例正在使用此开发配置。',
+    detail: (profilePath: string) => `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`,
+    exit: '退出',
+  },
+  'zh-TW': {
+    title: 'Maka Dev 已在執行',
+    message: '另一個 Maka Dev 執行個體正在使用此開發設定。',
+    detail: (profilePath: string) => `開發設定：${profilePath}\n\n請先退出正在執行的執行個體，然後重試。`,
+    exit: '退出',
+  },
+  en: {
+    title: 'Maka Dev is already running',
+    message: 'Another Maka Dev instance is using this development profile.',
+    detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+    exit: 'Exit',
+  },
+} satisfies UiCatalog<{
+  title: string;
+  message: string;
+  detail(profilePath: string): string;
+  exit: string;
+}>;

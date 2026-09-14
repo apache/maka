@@ -42,7 +42,7 @@ import {
 } from './message.js';
 import { defineOperation } from './operation-spec.js';
 import {
-  decodeMessageContent,
+  decodeMessageAdmissionContent,
   decodeTurnSnapshot,
   type MessageContent,
   type TurnSnapshot,
@@ -142,6 +142,7 @@ export interface SessionProjectionFrame extends SubscriptionEnvelope {
 }
 
 export interface SessionAssistantDelta {
+  interrupted?: true;
   kind: 'text' | 'thinking';
   turnId: string;
   runId: string;
@@ -314,6 +315,7 @@ export type OrderedSubscriptionFrame = Exclude<
 >;
 
 const SUBSCRIPTION_OPEN_ERRORS = [
+  'transcript_preparing',
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
@@ -738,6 +740,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     'text',
     'reset',
     'complete',
+    'interrupted',
   ]);
   assertRequiredKeys(record, 'Session assistant delta', [
     'kind',
@@ -752,6 +755,12 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   }
   if (record.complete !== undefined && record.complete !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta completion');
+  }
+  if (
+    record.interrupted !== undefined &&
+    (record.interrupted !== true || record.complete !== true)
+  ) {
+    throw invalidProtocolFrame('Interrupted assistant delta must be complete');
   }
   if (record.reset !== undefined && record.reset !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta reset');
@@ -778,6 +787,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
           ),
     ...(record.reset === true ? { reset: true as const } : {}),
     ...(record.complete === true ? { complete: true as const } : {}),
+    ...(record.interrupted === true ? { interrupted: true as const } : {}),
   };
 }
 
@@ -802,7 +812,7 @@ function decodeSessionSteeringEvent(record: Record<string, unknown>): SessionSte
     turnId: requireEntityId(record.turnId, 'turnId'),
     ts: requireCount(record.ts, 'Session steering event timestamp'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content),
+    content: decodeMessageAdmissionContent(record.content),
   };
 }
 

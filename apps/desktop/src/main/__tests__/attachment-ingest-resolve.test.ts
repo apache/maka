@@ -45,7 +45,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /最多/,
+      { code: 'count_limit' },
     );
     assert.equal(statCalls, 0);
   });
@@ -61,7 +61,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      { code: /^(source_expired|items_invalid)$/ },
     );
     assert.equal(statCalls, 0);
   });
@@ -78,7 +78,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      { code: /^(source_expired|items_invalid)$/ },
     );
     assert.equal(statCalls, 0);
   });
@@ -96,7 +96,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           stat: async () => (statCalls++, { size: 200 }),
           maxBytes: 100,
         }),
-      /超出大小限制/,
+      { code: 'item_too_large' },
     );
     assert.equal(statCalls, 1);
   });
@@ -121,7 +121,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
             stat: async () => (statCalls++, { size: 1 }),
             maxBytes: 100,
           }),
-        /超出大小限制/,
+        { code: 'item_too_large' },
       );
       assert.equal(statCalls, 0);
       assert.equal(decodeCalls, 0, 'must reject by base64 string length before Buffer.from');
@@ -149,7 +149,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 10 }),
         }),
-      /过期|无效/,
+      { code: /^(source_expired|items_invalid)$/ },
     );
   });
 
@@ -165,11 +165,17 @@ describe('resolveIngestItems (pre-read validation)', () => {
     for (const item of items) assert.ok(approvals.peekApproval(1, item.approvalId));
     const competing = await prepareIngestItems({ ...input, items: [items[1]] });
     assert.equal(competing.commit(() => 'admitted'), 'admitted');
-    assert.throws(() => plan.commit(() => assert.fail('must not admit an invalid plan')), /过期|无效/);
+    assert.throws(
+      () => plan.commit(() => assert.fail('must not admit an invalid plan')),
+      { code: 'source_expired' },
+    );
     assert.ok(approvals.peekApproval(1, items[0]!.approvalId), 'a lost race must not burn the other approval');
     const remaining = await prepareIngestItems({ ...input, items: [items[0]] });
     approvals.clearSender(1);
-    assert.throws(() => remaining.commit(() => assert.fail('must not admit after sender teardown')), /过期|无效/);
+    assert.throws(
+      () => remaining.commit(() => assert.fail('must not admit after sender teardown')),
+      { code: 'source_expired' },
+    );
   });
 
   test('resolves a mix of approved paths and blobs into ingest files', async () => {
@@ -204,7 +210,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /无效/,
+      { code: 'items_invalid' },
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -227,7 +233,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /重复/,
+      { code: 'duplicate_source' },
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -246,7 +252,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      { code: 'items_invalid' },
     );
     await assert.rejects(
       () =>
@@ -256,7 +262,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      { code: 'items_invalid' },
     );
   });
 });
@@ -440,7 +446,7 @@ describe('resolveAttachmentRefs', () => {
             throw new Error('snapshot must not run');
           },
         }),
-        /超出大小限制/,
+        { code: 'item_too_large' },
       );
       assert.equal(snapshots, 0);
     } finally {

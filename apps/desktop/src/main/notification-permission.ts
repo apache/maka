@@ -32,11 +32,26 @@ function readNativeAuthorizationStatus(): Promise<number> {
   return bridge.getAuthorizationStatus();
 }
 
+export function createNotificationAuthorizationReader(
+  read: () => Promise<number> = readNativeAuthorizationStatus,
+): () => Promise<number> {
+  let inFlight: Promise<number> | undefined;
+  return () => {
+    // Share only pending work: a later refresh must observe System Settings changes.
+    inFlight ??= Promise.resolve().then(read).finally(() => {
+      inFlight = undefined;
+    });
+    return inFlight;
+  };
+}
+
+const readAuthorizationStatus = createNotificationAuthorizationReader();
+
 export async function notificationPermissionSnapshot(
   now: number,
   platform: NodeJS.Platform,
   supported: boolean,
-  readAuthorizationStatus: () => Promise<number> = readNativeAuthorizationStatus,
+  read: () => Promise<number> = readAuthorizationStatus,
 ): Promise<OsPermissionSnapshot> {
   const snapshot: OsPermissionSnapshot = {
     id: 'notifications',
@@ -47,12 +62,12 @@ export async function notificationPermissionSnapshot(
     // Reading settings must never trigger a consent prompt or send a notification.
     canRequest: false,
   };
-  if (!supported) return { ...snapshot, reason: 'Electron 通知能力不可用' };
+  if (!supported) return { ...snapshot, reason: 'notifications_unsupported' };
   if (platform !== 'darwin') {
-    return { ...snapshot, reason: 'Electron 无法可靠读取当前系统的通知授权状态' };
+    return { ...snapshot, reason: 'notifications_status_unreadable' };
   }
   try {
-    const status = await readAuthorizationStatus();
+    const status = await read();
     switch (status) {
       case 0:
         return { ...snapshot, status: 'not_determined' };

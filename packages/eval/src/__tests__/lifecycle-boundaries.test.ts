@@ -33,6 +33,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { FileAttemptStore } from '../attempt-store.js';
 import type { ExperimentCell, ExperimentSpec, JsonObject } from '../experiment.js';
@@ -601,7 +602,7 @@ test('the Maka shim projects only a completed subject as a zero exit', async () 
               )},shortCircuit:true}:n(s,c)}`,
             )}",import.meta.url)`,
           )}`,
-          shim.pathname,
+          fileURLToPath(shim),
           Buffer.from(
             JSON.stringify({
               rootPath: join(root, 'state'),
@@ -859,7 +860,9 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
       // These subjects run `/usr/bin/true` and never reach the provider, so
       // each one is an infrastructure failure and exits nonzero: the exit code
       // now carries the semantic status for the relay's benefit.
-      const stdout = await execFileAsync(process.execPath, [wrapper.pathname, ...args], { env })
+      const stdout = await execFileAsync(process.execPath, [fileURLToPath(wrapper), ...args], {
+        env,
+      })
         .then((settled) => settled.stdout)
         .catch((error: { stdout?: string }) => {
           assert.equal(typeof error.stdout, 'string');

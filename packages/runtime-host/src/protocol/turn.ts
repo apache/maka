@@ -21,6 +21,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   DIRECTORY_REFERENCE_MAX_COUNT,
+  hasMeaningfulMessageContent,
   isCanonicalAttachmentRef,
   type ContextCompactionOutcome,
   type MessageContent,
@@ -188,6 +189,14 @@ export type TurnProviderRetry =
 export type LiveTurnSnapshot = TurnSnapshotBase & {
   status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
   providerRetry?: TurnProviderRetry;
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run, so
+   * the renderer can show a "compacting" transcript row while it is in flight.
+   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+   * emits no assistant text, and this survives a Desktop reconnect because the
+   * Host re-projects the live snapshot.
+   */
+  rootExecutionKind?: 'context_compact';
 };
 
 export type TurnSnapshot =
@@ -464,7 +473,15 @@ export function decodeMessageAdmissionContent(
   value: unknown,
   allowEmptyText = false,
 ): MessageContent {
-  const content = decodeMessageContent(value, allowEmptyText);
+  // Structure first with text emptiness unconstrained, then apply the
+  // shared meaningful-content predicate: a quote or an attachment carries
+  // the turn by itself, so empty inline text is admissible when either is
+  // present (#4804). A truly contentless Message still throws, with the
+  // same frame error the text-length rule produced.
+  const content = decodeMessageContent(value, true);
+  if (!allowEmptyText && !hasMeaningfulMessageContent(content)) {
+    throw invalidProtocolFrame('Invalid Message text');
+  }
   if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
     throw invalidProtocolFrame('Session context references are Host-owned');
   }
@@ -653,6 +670,13 @@ function requirePositiveCount(value: unknown, label: string): number {
   return count;
 }
 
+function requireContextCompactRootExecutionKind(value: unknown): 'context_compact' {
+  if (value !== 'context_compact') {
+    throw invalidProtocolFrame('Invalid Turn rootExecutionKind');
+  }
+  return value;
+}
+
 export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   const record = requireRecord(value, 'Turn snapshot');
   const base = {
@@ -725,13 +749,16 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     record,
     'non-terminal Turn snapshot',
     ['sessionId', 'turnId', 'runId', 'status'],
-    ['providerRetry'],
+    ['providerRetry', 'rootExecutionKind'],
   );
   return {
     ...base,
     status,
     ...(record.providerRetry !== undefined
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
+      : {}),
+    ...(record.rootExecutionKind !== undefined
+      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
       : {}),
   };
 }

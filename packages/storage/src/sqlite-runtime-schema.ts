@@ -25,12 +25,13 @@ import {
 } from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
 import {
   buildInvocationOpenedEvent,
   buildSyntheticTerminalRuntimeEvent,
 } from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 17;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 18;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -614,6 +615,12 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       ON runtime_continuation_claims(target_session_id, target_turn_id)
       WHERE json_extract(target_opening_json, '$.source.kind') <> 'handoff';
     `,
+  ],
+  [
+    18,
+    `
+    CREATE INDEX IF NOT EXISTS runtime_events_terminal ON runtime_events(invocation_id, event_seq) WHERE ${TERMINAL_RUNTIME_EVENT_SQL};
+  `,
   ],
 ]);
 

@@ -62,6 +62,26 @@ test('session creation forwards the caller name for a mode that carries none', a
   );
 });
 
+test('session creation forwards a plugin executor without a model target', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+
+  await ipc.invoke('sessions:create', { executorId: 'codex.app-server' });
+
+  assert.equal(creates[0]?.executorId, 'codex.app-server');
+  assert.equal(creates[0]?.modelTarget, undefined);
+  await assert.rejects(
+    ipc.invoke('sessions:create', {
+      executorId: 'codex',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai',
+      model: 'gpt-5',
+    }),
+    /cannot include a model target/,
+  );
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {

@@ -78,3 +78,29 @@ test('compare fails only on growth per rule', () => {
     ['locale-literal-compare 1->2', 'cjk-sniff 0->1'],
   );
 });
+
+test('flags a Han fallback handed to the en-only helper', () => {
+  assert.deepEqual(rules("generalizedErrorMessage(error, '处理失败')"), [
+    'han-fallback-to-en-helper',
+  ]);
+  assert.deepEqual(rules("generalizedErrorMessage(error, 'Runtime Host lifecycle failed')"), []);
+  assert.deepEqual(rules("generalizedErrorMessageForLocale(error, '处理失败', locale)"), []);
+});
+
+test('flags a literal title in a native dialog call', () => {
+  assert.deepEqual(
+    rules(`showOpenDialog({
+      title: 'Import custom pet',
+      properties: ['openDirectory'],
+    })`),
+    ['native-dialog-literal'],
+  );
+  assert.deepEqual(rules("showSaveDialog({ title: 'Export session', filters: [] })"), [
+    'native-dialog-literal',
+  ]);
+  assert.deepEqual(
+    rules("showOpenDialog({ title: copy.importCustomPet, properties: ['openDirectory'] })"),
+    [],
+  );
+  assert.deepEqual(rules("const meta = { title: 'Daily review', author: 'maka' };"), []);
+});
