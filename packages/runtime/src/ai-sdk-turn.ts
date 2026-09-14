@@ -147,7 +147,7 @@ import {
 } from './request-shape.js';
 import { toolAvailabilityHash } from './tool-availability.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
-import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
+import { AiSdkMessageProjection, hasFinalizedReasoning } from './ai-sdk-message-projection.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityPlan } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
@@ -904,9 +904,31 @@ export class AiSdkTurn {
         resetStep();
         return;
       }
-      const stepId = currentStepMessageId;
-      if (hasThinking) {
-        for (const part of stepThinkingParts) {
+      // A provider may finalize one reasoning item before the next item fails.
+      // Keep completed and interrupted parts in separate transcript rows so
+      // missing-ledger recovery preserves the same model visibility.
+      const fragments: { thinking: AssistantThinkingPart[]; text: string; interrupted: boolean }[] =
+        [];
+      for (const part of stepThinkingParts) {
+        const partInterrupted = interrupted && !hasFinalizedReasoning(part);
+        let fragment = fragments.at(-1);
+        if (!fragment || fragment.interrupted !== partInterrupted) {
+          fragment = { thinking: [], text: '', interrupted: partInterrupted };
+          fragments.push(fragment);
+        }
+        fragment.thinking.push(part);
+      }
+      if (stepText.length > 0) {
+        let fragment = fragments.at(-1);
+        if (!fragment || fragment.interrupted !== interrupted) {
+          fragment = { thinking: [], text: '', interrupted };
+          fragments.push(fragment);
+        }
+        fragment.text = stepText;
+      }
+      for (const [index, fragment] of fragments.entries()) {
+        const stepId = index === 0 ? currentStepMessageId : this.deps.newId();
+        for (const part of fragment.thinking) {
           queue.push({
             type: 'thinking_complete',
             id: this.deps.newId(),
@@ -914,7 +936,7 @@ export class AiSdkTurn {
             ts: this.deps.now(),
             messageId: stepId,
             text: part.text,
-            ...(interrupted ? { interrupted: true } : {}),
+            ...(fragment.interrupted ? { interrupted: true } : {}),
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
             // No sanitiser here, unlike the tool call below: these options are
             // not the provider's object. `translateChunk` rebuilds reasoning
@@ -927,19 +949,19 @@ export class AiSdkTurn {
               : {}),
           } satisfies ThinkingCompleteEvent);
         }
+        queue.push({
+          type: 'text_complete',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          messageId: stepId,
+          text: fragment.text,
+          ...(fragment.interrupted ? { interrupted: true } : {}),
+          ...(index === fragments.length - 1 && stepTextProviderOptions !== undefined
+            ? { providerOptions: stepTextProviderOptions }
+            : {}),
+        } satisfies TextCompleteEvent);
       }
-      queue.push({
-        type: 'text_complete',
-        id: this.deps.newId(),
-        turnId,
-        ts: this.deps.now(),
-        messageId: stepId,
-        text: stepText,
-        ...(interrupted ? { interrupted: true } : {}),
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-      } satisfies TextCompleteEvent);
       this.finalAssistantText = stepText.length > 0 ? stepText : undefined;
       resetStep();
     };
@@ -2160,7 +2182,6 @@ export class AiSdkTurn {
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
               terminalRetry = { error: terminalProviderError, retry };
-              if (attemptCanReplay()) await flushStep(true);
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'
@@ -2521,7 +2542,7 @@ export class AiSdkTurn {
         // `finish-step`; this keeps their and this step's streamed-out output on
         // BOTH exits — user stop and provider error / watchdog timeout — so the
         // transcript keeps what the user actually saw.
-        await flushStep().catch(() => {});
+        await flushStep(!this.aborted).catch(() => {});
         if (this.aborted) {
           queue.push({
             type: 'abort',

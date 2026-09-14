@@ -75,6 +75,7 @@ import {
 } from '../history-compact-checkpoint.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
@@ -10703,73 +10704,92 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  test('does not retry a network failure after provider continuation metadata on thinking', async () => {
-    // Continuation identity (Responses reasoning item ids, encrypted
-    // content) cannot be replayed into a fresh request, so thinking that
-    // carries it stays non-recoverable even though the failure itself is
-    // retryable. The second reasoning part's delta is the fail trigger:
-    // stream ordering guarantees the metadata on the first part's
-    // reasoning-end was already consumed when it arrives.
-    const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
-    let failCurrentStream: (() => void) | undefined;
-    let calls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        calls += 1;
-        const failing = midStreamFailureStream(
-          [
-            { type: 'stream-start', warnings: [] },
-            { type: 'reasoning-start', id: 'reasoning-1' },
-            {
-              type: 'reasoning-delta',
-              id: 'reasoning-1',
-              delta: 'completed provider reasoning',
-            },
-            {
-              type: 'reasoning-end',
-              id: 'reasoning-1',
-              providerMetadata: {
-                openai: {
-                  itemId: 'reasoning-item-1',
-                  reasoningEncryptedContent: 'encrypted-reasoning',
-                },
-              },
-            },
-            { type: 'reasoning-start', id: 'reasoning-2' },
-            { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
-          ],
-          connectionResetFailure(),
-        );
-        failCurrentStream = failing.fail;
-        return { stream: failing.stream };
+  for (const { label, providerMetadata } of [
+    {
+      label: 'encrypted Responses',
+      providerMetadata: {
+        openai: { itemId: 'reasoning-item-1', reasoningEncryptedContent: 'encrypted-reasoning' },
       },
-    });
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      providerRetrySleep: async () => {},
-    });
+    },
+    {
+      label: 'redacted Anthropic',
+      providerMetadata: { anthropic: { redactedData: 'redacted-reasoning' } },
+    },
+  ] as { label: string; providerMetadata: Record<string, Record<string, string>> }[]) {
+    test(`preserves finalized ${label} thinking when the next part fails without retrying`, async () => {
+      // Continuation identity (Responses reasoning item ids, encrypted
+      // content) cannot be replayed into a fresh request, so thinking that
+      // carries it stays non-recoverable even though the failure itself is
+      // retryable. The second reasoning part's delta is the fail trigger:
+      // stream ordering guarantees the metadata on the first part's
+      // reasoning-end was already consumed when it arrives.
+      const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
+      let failCurrentStream: (() => void) | undefined;
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          const failing = midStreamFailureStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'reasoning-1', providerMetadata },
+              {
+                type: 'reasoning-delta',
+                id: 'reasoning-1',
+                delta: 'completed provider reasoning',
+              },
+              {
+                type: 'reasoning-end',
+                id: 'reasoning-1',
+                providerMetadata,
+              },
+              { type: 'reasoning-start', id: 'reasoning-2' },
+              { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
+            ],
+            connectionResetFailure(),
+          );
+          failCurrentStream = failing.fail;
+          return { stream: failing.stream };
+        },
+      });
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        providerRetrySleep: async () => {},
+      });
 
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send(durable.input())) {
-      durable.record(event);
-      events.push(event);
-      if (event.type === 'thinking_delta' && event.text === 'second thought') {
-        failCurrentStream?.();
+      const events: SessionEvent[] = [];
+      for await (const event of backend.send(durable.input())) {
+        durable.record(event);
+        events.push(event);
+        if (event.type === 'thinking_delta' && event.text === 'second thought') {
+          failCurrentStream?.();
+        }
       }
-    }
 
-    assert.equal(calls, 1);
-    assert.equal(
-      events.some((event) => event.type === 'provider_retry'),
-      false,
-    );
-    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-  });
+      assert.equal(calls, 1);
+      assert.equal(
+        events.some((event) => event.type === 'provider_retry'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+      assert.deepEqual(
+        durable.ledger.flatMap((event) =>
+          event.content?.kind === 'thinking'
+            ? [[event.content.text, event.modelVisibility ?? 'visible']]
+            : [],
+        ),
+        [
+          ['completed provider reasoning', 'visible'],
+          ['second thought', 'hidden'],
+        ],
+      );
+    });
+  }
 
   test('retries DeepSeek OpenAI Chat reasoning marked only for field replay', async () => {
     const timers = manualWatchdogTimer();
@@ -11297,6 +11317,7 @@ describe('AiSdkBackend RunTrace', () => {
   });
 
   test('does not retry after provider-executed tool input starts', async () => {
+    const durable = durableTurnHarness('turn-provider-tool-failure', 'hi');
     const timers = manualWatchdogTimer();
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -11306,6 +11327,10 @@ describe('AiSdkBackend RunTrace', () => {
           stream: hangingProviderStream(
             [
               { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'partial-thinking' },
+              { type: 'reasoning-delta', id: 'partial-thinking', delta: 'unfinished reasoning' },
+              { type: 'text-start', id: 'partial-text' },
+              { type: 'text-delta', id: 'partial-text', delta: 'unfinished answer' },
               {
                 type: 'tool-input-start',
                 id: 'provider-tool-1',
@@ -11332,14 +11357,10 @@ describe('AiSdkBackend RunTrace', () => {
       providerRetrySleep: async () => {},
     });
 
-    const events: SessionEvent[] = [];
-    const eventsPromise = collectEvents(
-      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
-      events,
-    );
-    await waitFor(() => timers.armCount() >= 4);
+    const eventsPromise = drainDurably(backend.send(durable.input()), durable);
+    await waitFor(() => timers.armCount() >= 8);
     timers.fire();
-    await eventsPromise;
+    const events = await eventsPromise;
 
     assert.equal(calls, 1);
     assert.equal(
@@ -11348,6 +11369,13 @@ describe('AiSdkBackend RunTrace', () => {
     );
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const fragments = durable.ledger.filter(
+      (event) =>
+        event.role === 'model' &&
+        (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+    );
+    assert.equal(fragments.length, 2);
+    for (const fragment of fragments) assert.equal(fragment.modelVisibility, 'hidden');
   });
 
   test('does not retry an idle watchdog timeout after text continuation metadata', async () => {
@@ -13750,7 +13778,9 @@ describe('AiSdkBackend thinking persistence', () => {
     }
 
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    const parts = appended[0]?.thinking?.parts;
+    const parts = appended.flatMap(
+      (message) => message.thinking?.parts ?? (message.thinking ? [message.thinking] : []),
+    );
     assert.deepEqual(
       parts?.map((part) => [
         part.text,
@@ -13759,6 +13789,21 @@ describe('AiSdkBackend thinking persistence', () => {
       [
         ['valid summary', 'reasoning-item-a'],
         ['unsafe item summary', undefined],
+      ],
+    );
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId: 'session-1', invocationId: 'inv-1', runId: 'run-1', turnId: 'turn-1' },
+      messages: JSON.parse(JSON.stringify(appended)),
+    });
+    assert.deepEqual(
+      backfilled.events.flatMap((event) =>
+        event.content?.kind === 'thinking'
+          ? [[event.content.text, event.modelVisibility ?? 'visible']]
+          : [],
+      ),
+      [
+        ['valid summary', 'visible'],
+        ['unsafe item summary', 'hidden'],
       ],
     );
 
@@ -13888,10 +13933,14 @@ describe('AiSdkBackend thinking persistence', () => {
     }
 
     assert.deepEqual(
-      appended[0]?.thinking?.parts?.map((part) => [
-        part.text,
-        (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
-      ]),
+      appended
+        .flatMap(
+          (message) => message.thinking?.parts ?? (message.thinking ? [message.thinking] : []),
+        )
+        .map((part) => [
+          part.text,
+          (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+        ]),
       [
         ['valid summary', 'reasoning-item-a'],
         ['late duplicate', undefined],
