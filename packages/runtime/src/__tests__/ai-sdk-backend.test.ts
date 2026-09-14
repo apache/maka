@@ -75,6 +75,7 @@ import {
 } from '../history-compact-checkpoint.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
@@ -8196,8 +8197,8 @@ describe('AiSdkBackend usage telemetry', () => {
           reason,
         })),
       [
-        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'stream_truncated' },
-        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'stream_truncated' },
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'stream_truncated' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'stream_truncated' },
       ],
     );
     assert.equal(
@@ -8206,6 +8207,104 @@ describe('AiSdkBackend usage telemetry', () => {
     );
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
+
+  for (const visibleText of [false, true]) {
+    test(`isolates undispatched local calls after truncation (visible text: ${visibleText})`, async () => {
+      const durable = durableTurnHarness('turn-local-truncated', 'do the work');
+      const executed: string[] = [];
+      const assistants: AssistantMessage[] = [];
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          const chunks: LanguageModelV4StreamPart[] = [{ type: 'stream-start', warnings: [] }];
+          if (calls === 2 && visibleText) {
+            chunks.push(
+              { type: 'text-start', id: 'partial' },
+              { type: 'text-delta', id: 'partial', delta: 'Partial answer' },
+            );
+          }
+          if (calls < 4) {
+            chunks.push({
+              type: 'tool-call',
+              toolCallId: `call-${calls}`,
+              toolName: 'Write',
+              input: JSON.stringify({ value: ['prior', 'discarded', 'fresh'][calls - 1] }),
+              providerExecuted: false,
+            });
+          } else {
+            chunks.push(
+              { type: 'text-start', id: 'final' },
+              { type: 'text-delta', id: 'final', delta: 'Done' },
+              { type: 'text-end', id: 'final' },
+            );
+          }
+          if (calls !== 2) {
+            chunks.push({
+              type: 'finish',
+              finishReason: { unified: calls < 4 ? 'tool-calls' : 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 3, text: 3, reasoning: 0 },
+              },
+            });
+          }
+          return {
+            stream: simulateReadableStream({
+              chunks,
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [
+          {
+            ...testTool('Write', z.object({ value: z.string() })),
+            impl: async (input) => {
+              executed.push((input as { value: string }).value);
+              return { ok: true };
+            },
+          },
+        ],
+        appendMessage: async (message) => {
+          if (message.type === 'assistant') assistants.push(message);
+        },
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        providerRetrySleep: async () => {},
+      });
+      const events = await drainDurably(backend.send(durable.input()), durable);
+      assert.equal(calls, 4);
+      assert.deepEqual(executed, ['prior', 'fresh']);
+      assert.equal(
+        events.some(
+          (event) =>
+            (event.type === 'tool_start' || event.type === 'tool_result') &&
+            event.toolUseId === 'call-2',
+        ),
+        false,
+      );
+      assert.equal(JSON.stringify(durable.ledger).includes('discarded'), false);
+      assert.deepEqual(
+        assistants.map((message) => message.text),
+        visibleText ? ['Partial answer', 'Done'] : ['Done'],
+      );
+      const error = events.find((event) => event.type === 'error');
+      assert.equal(error, undefined);
+      if (visibleText) assert.equal(assistants[0]?.interrupted, true);
+      assert.equal(
+        events.some((event) => event.type === 'token_usage'),
+        false,
+      );
+      assert.equal(JSON.stringify(model.doStreamCalls.slice(2)).includes('discarded'), false);
+      assert.equal(JSON.stringify(model.doStreamCalls.slice(2)).includes('Partial answer'), false);
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    });
+  }
 
   test('records exhaustion of output-free truncated stream recovery', async () => {
     const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
@@ -8243,94 +8342,51 @@ describe('AiSdkBackend usage telemetry', () => {
       (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
     );
 
-    assert.equal(calls, 2);
+    assert.equal(calls, 10);
     assert.equal(error?.reason, 'stream_truncated');
-    assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 2 });
+    assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 10 });
     assert.equal(error?.message, 'Provider stream ended without finishing (other)');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
-  for (const output of ['text', 'tool'] as const) {
-    // The upstream cut the SSE connection mid-answer: chunks arrived, no
-    // `finish` frame did. The stream then ends without yielding an error and
-    // without throwing, so every guard that watches for a thrown failure sees
-    // nothing. Reporting `end_turn` here tells the caller the model said its
-    // piece when the connection simply died — a benchmark cell recorded
-    // `status: completed` on exactly this shape while the agent was still
-    // mid-task.
-    test(`does not retry a truncated provider stream after ${output} activity`, async () => {
-      const durable = durableTurnHarness('turn-truncated', 'analyse the image');
-      let calls = 0;
-      const model = new MockLanguageModelV4({
-        doStream: async () => {
-          calls += 1;
-          return {
-            stream: simulateReadableStream({
-              chunks: [
-                { type: 'stream-start', warnings: [] },
-                ...(output === 'text'
-                  ? [
-                      { type: 'text-start', id: 'text-1' },
-                      { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
-                    ]
-                  : [
-                      {
-                        type: 'tool-input-start',
-                        id: 'search-1',
-                        toolName: 'web_search',
-                        providerExecuted: true,
-                      },
-                    ]),
-              ] as LanguageModelV4StreamPart[],
-              initialDelayInMs: null,
-              chunkDelayInMs: null,
-            }),
-          };
-        },
-      });
-      const backend = createBackend({
-        connection: connection(),
-        modelId: 'mock-model-id',
-        modelFactory: () => model,
-        tools: [],
-        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-        providerRetrySleep: async () => {},
-      });
-
-      const events = await drainDurably(backend.send(durable.input()), durable);
-      const complete = events.find(
-        (event): event is Extract<SessionEvent, { type: 'complete' }> => event.type === 'complete',
-      );
-
-      // Not merely "some other stop reason": `max_tokens` would also satisfy that
-      // and still record the turn as completed downstream, which is the bug.
-      assert.equal(
-        complete?.stopReason,
-        'error',
-        'a stream that never delivered a finish frame did not end the turn',
-      );
-      assert.equal(calls, 1);
-      assert.equal(
-        events.some((event) => event.type === 'provider_retry'),
-        false,
-      );
-      // And it must say so. A failed terminal whose only trace is the stop reason
-      // leaves the session's lastError empty and the request ledger reading
-      // `success` — the same silence that let the benchmark cell pass unnoticed.
-      assert.ok(
-        events.some((event) => event.type === 'error'),
-        'a failed terminal must be accompanied by an error event',
-      );
-      const error = events.find(
-        (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
-      );
-      assert.equal(error?.reason, 'stream_truncated', error?.message ?? 'error event missing');
-      assert.deepEqual(error?.retry, {
-        decision: 'declined',
-        because: output === 'tool' ? 'side_effects' : 'observable_output',
-      });
+  test('does not retry a truncated stream after provider tool input starts', async () => {
+    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-input-start',
+                id: 'search-1',
+                toolName: 'web_search',
+                providerExecuted: true,
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
     });
-  }
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(calls, 1);
+    const error = events.find((event) => event.type === 'error');
+    assert.equal(error?.reason, 'stream_truncated');
+    assert.deepEqual(error?.retry, { decision: 'declined', because: 'side_effects' });
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
 
   test('rejects continuation-capable tools before side effects without a durable reader', async () => {
     const loop = countingToolLoopModel(1);
@@ -10398,8 +10454,8 @@ describe('AiSdkBackend RunTrace', () => {
           reason,
         })),
       [
-        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'timeout' },
-        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'timeout' },
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'timeout' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'timeout' },
       ],
     );
     assert.equal(
@@ -10414,7 +10470,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  test('retries a retryable network failure after partial thinking by sealing it', async () => {
+  test('seals partial thinking and discards local tool intents after a retryable network failure', async () => {
     // Incident shape: the provider streamed thinking deltas, then the
     // connection reset mid-step (ECONNRESET after ~120s). Recovery safety
     // depends on what the attempt emitted, not on which side detected the
@@ -10452,6 +10508,13 @@ describe('AiSdkBackend RunTrace', () => {
             { type: 'stream-start', warnings: [] },
             { type: 'reasoning-start', id: 'reasoning-1' },
             { type: 'reasoning-delta', id: 'reasoning-1', delta: 'partial thought' },
+            {
+              type: 'tool-call',
+              toolCallId: 'discarded-call',
+              toolName: 'Write',
+              input: '{"value":"discarded"}',
+              providerExecuted: false,
+            },
           ],
           connectionResetFailure(),
         );
@@ -10466,7 +10529,7 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [testTool('Write', z.object({ value: z.string() }))],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       providerRetrySleep: async () => {},
     });
@@ -10491,8 +10554,8 @@ describe('AiSdkBackend RunTrace', () => {
           reason,
         })),
       [
-        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'network' },
-        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'network' },
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'network' },
       ],
     );
     assert.equal(
@@ -10511,6 +10574,11 @@ describe('AiSdkBackend RunTrace', () => {
     const retryPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
     assert.equal(retryPrompt.includes('partial thought'), false);
     assert.match(retryPrompt, /review the commits/);
+    assert.equal(
+      events.some((event) => event.type === 'tool_start' || event.type === 'tool_result'),
+      false,
+    );
+    assert.equal(JSON.stringify(durable.ledger).includes('discarded-call'), false);
   });
 
   test('retries a retryable network failure before any observable output', async () => {
@@ -10572,11 +10640,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
-  test('stops after one sealed-thinking network recovery in the same provider step', async () => {
-    // Every attempt streams thinking and is cut mid-stream. The first cut
-    // seals and retries; the second is terminal, so one recovery per step
-    // bounds how many severed-thinking fragments a systematically cutting
-    // gateway can leave in the transcript.
+  test('bounds repeated thinking failures by the shared request budget', async () => {
     const durable = durableTurnHarness('turn-econnreset-thinking-budget', 'review the commits');
     const assistants: AssistantMessage[] = [];
     let failCurrentStream: (() => void) | undefined;
@@ -10621,92 +10685,111 @@ describe('AiSdkBackend RunTrace', () => {
       }
     }
 
-    assert.equal(calls, 2);
+    assert.equal(calls, 10);
     assert.equal(
       events.filter(
         (event): event is Extract<SessionEvent, { type: 'provider_retry' }> =>
           event.type === 'provider_retry' && event.phase === 'scheduled',
       ).length,
-      1,
+      9,
     );
     const error = events.find(
       (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
     );
     assert.equal(error?.reason, 'network');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.equal(assistants.length, 2);
+    assert.equal(assistants.length, 10);
     assert.equal(assistants[0]?.thinking?.text, 'partial thought 1');
     assert.equal(assistants[1]?.thinking?.text, 'partial thought 2');
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  test('does not retry a network failure after provider continuation metadata on thinking', async () => {
-    // Continuation identity (Responses reasoning item ids, encrypted
-    // content) cannot be replayed into a fresh request, so thinking that
-    // carries it stays non-recoverable even though the failure itself is
-    // retryable. The second reasoning part's delta is the fail trigger:
-    // stream ordering guarantees the metadata on the first part's
-    // reasoning-end was already consumed when it arrives.
-    const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
-    let failCurrentStream: (() => void) | undefined;
-    let calls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        calls += 1;
-        const failing = midStreamFailureStream(
-          [
-            { type: 'stream-start', warnings: [] },
-            { type: 'reasoning-start', id: 'reasoning-1' },
-            {
-              type: 'reasoning-delta',
-              id: 'reasoning-1',
-              delta: 'completed provider reasoning',
-            },
-            {
-              type: 'reasoning-end',
-              id: 'reasoning-1',
-              providerMetadata: {
-                openai: {
-                  itemId: 'reasoning-item-1',
-                  reasoningEncryptedContent: 'encrypted-reasoning',
-                },
-              },
-            },
-            { type: 'reasoning-start', id: 'reasoning-2' },
-            { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
-          ],
-          connectionResetFailure(),
-        );
-        failCurrentStream = failing.fail;
-        return { stream: failing.stream };
+  for (const { label, providerMetadata } of [
+    {
+      label: 'encrypted Responses',
+      providerMetadata: {
+        openai: { itemId: 'reasoning-item-1', reasoningEncryptedContent: 'encrypted-reasoning' },
       },
-    });
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      providerRetrySleep: async () => {},
-    });
+    },
+    {
+      label: 'redacted Anthropic',
+      providerMetadata: { anthropic: { redactedData: 'redacted-reasoning' } },
+    },
+  ] as { label: string; providerMetadata: Record<string, Record<string, string>> }[]) {
+    test(`preserves finalized ${label} thinking when the next part fails without retrying`, async () => {
+      // Continuation identity (Responses reasoning item ids, encrypted
+      // content) cannot be replayed into a fresh request, so thinking that
+      // carries it stays non-recoverable even though the failure itself is
+      // retryable. The second reasoning part's delta is the fail trigger:
+      // stream ordering guarantees the metadata on the first part's
+      // reasoning-end was already consumed when it arrives.
+      const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
+      let failCurrentStream: (() => void) | undefined;
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          const failing = midStreamFailureStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'reasoning-1', providerMetadata },
+              {
+                type: 'reasoning-delta',
+                id: 'reasoning-1',
+                delta: 'completed provider reasoning',
+              },
+              {
+                type: 'reasoning-end',
+                id: 'reasoning-1',
+                providerMetadata,
+              },
+              { type: 'reasoning-start', id: 'reasoning-2' },
+              { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
+            ],
+            connectionResetFailure(),
+          );
+          failCurrentStream = failing.fail;
+          return { stream: failing.stream };
+        },
+      });
+      const backend = createBackend({
+        connection: connection(),
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        providerRetrySleep: async () => {},
+      });
 
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send(durable.input())) {
-      durable.record(event);
-      events.push(event);
-      if (event.type === 'thinking_delta' && event.text === 'second thought') {
-        failCurrentStream?.();
+      const events: SessionEvent[] = [];
+      for await (const event of backend.send(durable.input())) {
+        durable.record(event);
+        events.push(event);
+        if (event.type === 'thinking_delta' && event.text === 'second thought') {
+          failCurrentStream?.();
+        }
       }
-    }
 
-    assert.equal(calls, 1);
-    assert.equal(
-      events.some((event) => event.type === 'provider_retry'),
-      false,
-    );
-    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-  });
+      assert.equal(calls, 1);
+      assert.equal(
+        events.some((event) => event.type === 'provider_retry'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+      assert.deepEqual(
+        durable.ledger.flatMap((event) =>
+          event.content?.kind === 'thinking'
+            ? [[event.content.text, event.modelVisibility ?? 'visible']]
+            : [],
+        ),
+        [
+          ['completed provider reasoning', 'visible'],
+          ['second thought', 'hidden'],
+        ],
+      );
+    });
+  }
 
   test('retries DeepSeek OpenAI Chat reasoning marked only for field replay', async () => {
     const timers = manualWatchdogTimer();
@@ -10893,56 +10976,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
-  test('stops after one recovered idle watchdog timeout in the same provider step', async () => {
-    const timers = manualWatchdogTimer();
-    let calls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async (options) => {
-        calls += 1;
-        return {
-          stream: hangingProviderStream(
-            [
-              { type: 'stream-start', warnings: [] },
-              { type: 'reasoning-start', id: `reasoning-${calls}` },
-              {
-                type: 'reasoning-delta',
-                id: `reasoning-${calls}`,
-                delta: `partial thought ${calls}`,
-              },
-            ],
-            options.abortSignal,
-          ),
-        };
-      },
-    });
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      streamWatchdogTimer: timers.clock,
-      providerRetrySleep: async () => {},
-    });
-
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-      if (event.type === 'thinking_delta' && event.text.startsWith('partial thought')) {
-        timers.fire();
-      }
-    }
-
-    assert.equal(calls, 2);
-    assert.equal(
-      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
-        .length,
-      1,
-    );
-    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-  });
-
-  test('retries post-tool continuation once without re-running the durable tool result', async () => {
+  test('exhausts continuation retries without re-running the durable tool result', async () => {
     const timers = manualWatchdogTimer();
     const durable = durableTurnHarness('turn-1', 'read notes');
     let providerCalls = 0;
@@ -11001,13 +11035,13 @@ describe('AiSdkBackend RunTrace', () => {
 
     const events: SessionEvent[] = [];
     const eventsPromise = collectEvents(backend.send(durable.input()), events, durable.record);
-    await waitFor(() => providerCalls === 2);
-    timers.fire();
-    await waitFor(() => providerCalls === 3);
-    timers.fire();
+    for (let request = 2; request <= 11; request += 1) {
+      await waitFor(() => providerCalls === request);
+      timers.fire();
+    }
     await eventsPromise;
 
-    assert.equal(providerCalls, 3);
+    assert.equal(providerCalls, 11);
     assert.equal(toolCalls, 1);
     assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
     assert.equal(
@@ -11017,7 +11051,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(
       events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
         .length,
-      1,
+      9,
     );
     assert.equal(
       events.find((event) => event.type === 'error')?.reason,
@@ -11088,7 +11122,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
-  test('does not retry an idle watchdog timeout after partial answer text', async () => {
+  test('bounds repeated partial-answer timeouts by the shared request budget', async () => {
     const timers = manualWatchdogTimer();
     const traces: RunTraceEvent[] = [];
     let calls = 0;
@@ -11123,10 +11157,11 @@ describe('AiSdkBackend RunTrace', () => {
       if (event.type === 'text_delta' && event.text === 'partial answer') timers.fire();
     }
 
-    assert.equal(calls, 1);
+    assert.equal(calls, 10);
     assert.equal(
-      events.some((event) => event.type === 'provider_retry'),
-      false,
+      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
+        .length,
+      9,
     );
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
@@ -11282,6 +11317,7 @@ describe('AiSdkBackend RunTrace', () => {
   });
 
   test('does not retry after provider-executed tool input starts', async () => {
+    const durable = durableTurnHarness('turn-provider-tool-failure', 'hi');
     const timers = manualWatchdogTimer();
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -11291,6 +11327,10 @@ describe('AiSdkBackend RunTrace', () => {
           stream: hangingProviderStream(
             [
               { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'partial-thinking' },
+              { type: 'reasoning-delta', id: 'partial-thinking', delta: 'unfinished reasoning' },
+              { type: 'text-start', id: 'partial-text' },
+              { type: 'text-delta', id: 'partial-text', delta: 'unfinished answer' },
               {
                 type: 'tool-input-start',
                 id: 'provider-tool-1',
@@ -11317,14 +11357,10 @@ describe('AiSdkBackend RunTrace', () => {
       providerRetrySleep: async () => {},
     });
 
-    const events: SessionEvent[] = [];
-    const eventsPromise = collectEvents(
-      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
-      events,
-    );
-    await waitFor(() => timers.armCount() >= 4);
+    const eventsPromise = drainDurably(backend.send(durable.input()), durable);
+    await waitFor(() => timers.armCount() >= 8);
     timers.fire();
-    await eventsPromise;
+    const events = await eventsPromise;
 
     assert.equal(calls, 1);
     assert.equal(
@@ -11333,6 +11369,13 @@ describe('AiSdkBackend RunTrace', () => {
     );
     assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const fragments = durable.ledger.filter(
+      (event) =>
+        event.role === 'model' &&
+        (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+    );
+    assert.equal(fragments.length, 2);
+    for (const fragment of fragments) assert.equal(fragment.modelVisibility, 'hidden');
   });
 
   test('does not retry an idle watchdog timeout after text continuation metadata', async () => {
@@ -13735,7 +13778,9 @@ describe('AiSdkBackend thinking persistence', () => {
     }
 
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    const parts = appended[0]?.thinking?.parts;
+    const parts = appended.flatMap(
+      (message) => message.thinking?.parts ?? (message.thinking ? [message.thinking] : []),
+    );
     assert.deepEqual(
       parts?.map((part) => [
         part.text,
@@ -13744,6 +13789,21 @@ describe('AiSdkBackend thinking persistence', () => {
       [
         ['valid summary', 'reasoning-item-a'],
         ['unsafe item summary', undefined],
+      ],
+    );
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId: 'session-1', invocationId: 'inv-1', runId: 'run-1', turnId: 'turn-1' },
+      messages: JSON.parse(JSON.stringify(appended)),
+    });
+    assert.deepEqual(
+      backfilled.events.flatMap((event) =>
+        event.content?.kind === 'thinking'
+          ? [[event.content.text, event.modelVisibility ?? 'visible']]
+          : [],
+      ),
+      [
+        ['valid summary', 'visible'],
+        ['unsafe item summary', 'hidden'],
       ],
     );
 
@@ -13873,10 +13933,14 @@ describe('AiSdkBackend thinking persistence', () => {
     }
 
     assert.deepEqual(
-      appended[0]?.thinking?.parts?.map((part) => [
-        part.text,
-        (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
-      ]),
+      appended
+        .flatMap(
+          (message) => message.thinking?.parts ?? (message.thinking ? [message.thinking] : []),
+        )
+        .map((part) => [
+          part.text,
+          (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+        ]),
       [
         ['valid summary', 'reasoning-item-a'],
         ['late duplicate', undefined],

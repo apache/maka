@@ -21,7 +21,7 @@ import { useContext, useMemo, useState, type ComponentProps, type CSSProperties 
 import { ChatView, useUiLocale } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, Link, Text } from '@astryxdesign/core';
-import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
+import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
 import type { WorkHubDelegationState, WorkHubLinkedWork } from '../model/linked-work.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
@@ -50,6 +50,7 @@ export function WorkHubDelegationStatus(props: {
 export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { workLinks: readonly WorkHubLinkedWork[]; onOpenWork(sessionId: string): void; promptStates?: ReadonlyMap<string, WorkHubDelegationState> }) {
   const { onOpenWork, workLinks: assignments, promptStates, ...chat } = props;
   const highlight = useContext(WorkHubHighlightContext);
+  const workHubIdentityHue = useWorkHubIdentityHue(assignments.map((work) => work.targetSessionId));
   const locale = useUiLocale();
   const copy = workHubLiveCopy[locale];
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -78,7 +79,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
   const promptRailDecorations = useMemo(() => new Map([...workByTurn].map(([turnId, sessionId]) => [turnId, {
     accentColor: `oklch(var(--workhub-${highlight.sessionId === sessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(sessionId)})`,
     highlighted: highlight.sessionId === sessionId,
-  }])), [workByTurn, highlight.sessionId]);
+  }])), [workByTurn, highlight.sessionId, workHubIdentityHue]);
   const promptTextByTurn = new Map(chat.messages?.flatMap((message) => message.type === 'user' ? [[message.turnId, message.text.slice(0, 80)] as const] : []));
   const turnDecorations = new Map([...worksByTurn].map(([turnId, works]) => [turnId, {
     accentColor: promptRailDecorations.get(turnId)?.accentColor,
@@ -90,6 +91,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       label={`${copy.filterConversation}: ${works[0]!.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}
       tooltip={`${copy.filterConversation}: ${works[0]!.targetSessionName}`}
       aria-pressed={highlight.selectedWork?.sessionId === works[0]!.targetSessionId}
+      data-work-highlighted={highlight.sessionId === works[0]!.targetSessionId}
       onMouseEnter={() => highlight.highlight(works[0]!.targetSessionId)}
       onMouseLeave={() => highlight.highlight(undefined)}
       onFocus={() => highlight.highlight(works[0]!.targetSessionId)}

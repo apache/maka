@@ -133,6 +133,8 @@ export interface DesktopConversationCopy {
     unarchive: string;
     delete: string;
     archived: string;
+    startTask: string;
+    openSession: string;
   };
   reviewPanel: {
     ariaLabel: string;
@@ -516,6 +518,8 @@ const COPY = {
       unarchive: '恢复',
       delete: '删除',
       archived: '已归档',
+      startTask: '开始任务',
+      openSession: '打开会话',
     },
     reviewPanel: {
       ariaLabel: 'Git 变更',
@@ -755,6 +759,8 @@ const COPY = {
       unarchive: '恢復',
       delete: '刪除',
       archived: '已歸檔',
+      startTask: '開始任務',
+      openSession: '開啟工作階段',
     },
     reviewPanel: {
       ariaLabel: 'Git 變更',
@@ -985,6 +991,8 @@ const COPY = {
       unarchive: 'Restore',
       delete: 'Delete',
       archived: 'Archived',
+      startTask: 'Start task',
+      openSession: 'Open session',
     },
     reviewPanel: {
       ariaLabel: 'Git changes',

@@ -26,7 +26,7 @@ import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
-import { WorkHubHighlightProvider, WorkHubHighlightContext } from './workhub-work-identity.js';
+import { WorkHubHighlightProvider, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
@@ -265,6 +265,7 @@ function WorkHubContents() {
     void task.catch(controller.report);
   };
   return (
+    <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
@@ -296,7 +297,7 @@ function WorkHubContents() {
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
-            <div hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
+            <div className="workHubComposerContent" hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
@@ -336,10 +337,10 @@ function WorkHubContents() {
                 </div>
               }
             />
-            </div>
             {!progress && floating && !conversationExpanded && (
               <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={toggleConversation} />
             )}
+            </div>
           </div>
         }
       >
@@ -378,5 +379,6 @@ function WorkHubContents() {
         </div>
       </ChatSurfaceLayout>
     </section>
+    </WorkHubHueProvider>
   );
 }

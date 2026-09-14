@@ -234,7 +234,7 @@ export const ExistingConversation: Story = {
     await waitFor(() => expect(announcement).toBeEmptyDOMElement());
     await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
 
-    // Closing replaces the wheel with a new trigger and restores focus next frame.
+    // Closing restores focus to the same trigger next frame.
     await waitFor(() => expect(within(canvasElement).getByRole('button', {
       name: /切换当前任务模型|Switch model for this task/,
     })).toHaveFocus());
