@@ -27,6 +27,7 @@ const LOCKOUT_WINDOW_SEC = 15 * 60;
 const LOCKOUT_PER_ADDRESS = 5;
 const LOCKOUT_GLOBAL = 20;
 const DUMMY_TOTP_SECRET = Buffer.alloc(20);
+const tableQueues = new WeakMap<SessionTable, Promise<unknown>>();
 
 export interface SessionTable {
   sessions: Map<string, { expiresAt: number }>;
@@ -92,6 +93,30 @@ export async function verifyLogin(input: {
   table: SessionTable;
   clientAddress: string;
 }): Promise<VerifyLoginResult> {
+  return serializeTable(input.table, () => verifyLoginLocked(input));
+}
+
+function serializeTable<T>(table: SessionTable, operation: () => Promise<T>): Promise<T> {
+  const previous = tableQueues.get(table) ?? Promise.resolve();
+  const run = previous.then(operation);
+  tableQueues.set(
+    table,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
+async function verifyLoginLocked(input: {
+  file: WebAccessFile;
+  passphrase: string;
+  otp: string;
+  now: number;
+  table: SessionTable;
+  clientAddress: string;
+}): Promise<VerifyLoginResult> {
   const locked = lockoutRetryAfter(input.table, input.clientAddress, input.now);
   if (locked !== null) {
     return { ok: false, reason: 'lockout', retryAfterSec: locked };
@@ -106,13 +131,11 @@ export async function verifyLogin(input: {
     verifyTotp(DUMMY_TOTP_SECRET, input.otp || '000000', input.now, new Set());
   }
 
+  const remaining = await consumeRecovery(input.file.recovery, input.otp);
   let recoveryRemaining: string[] | undefined;
-  if (passOk && !totpOk) {
-    const remaining = await consumeRecovery(input.file.recovery, input.otp);
-    if (remaining) {
-      totpOk = true;
-      recoveryRemaining = remaining;
-    }
+  if (passOk && !totpOk && remaining) {
+    totpOk = true;
+    recoveryRemaining = remaining;
   }
 
   if (!input.file.enabled || !passOk || !totpOk) {

@@ -142,3 +142,76 @@ test('verifyLogin accepts a recovery code and omits its hash from recoveryRemain
   assert.deepEqual(ok.recoveryRemaining, [keepHash]);
   assert.equal(ok.recoveryRemaining?.includes(usedHash), false);
 });
+
+test('verifyLogin still walks recovery hashes when the passphrase is wrong', async () => {
+  const used = 'ABCDE12345';
+  const keep = 'FGHIJ67890';
+  const { file } = await enrolledFile({
+    recovery: [await hashSecret(used), await hashSecret(keep)],
+  });
+  const table = createSessionTable();
+  const now = Math.floor(Date.now() / 1000);
+  const result = await verifyLogin({
+    file,
+    passphrase: 'wrong-passphrase!!',
+    otp: used,
+    now,
+    table,
+    clientAddress: '127.0.0.1',
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, 'invalid');
+});
+
+test('overlapping verifyLogin serializes lockout and TOTP replay', async () => {
+  const { file, secret } = await enrolledFile();
+  const now = Math.floor(Date.now() / 1000);
+  const lockTable = createSessionTable();
+  const overlapping = await Promise.all(
+    Array.from({ length: 6 }, () =>
+      verifyLogin({
+        file,
+        passphrase: 'wrong-passphrase!!',
+        otp: '000000',
+        now,
+        table: lockTable,
+        clientAddress: '10.0.0.8',
+      }),
+    ),
+  );
+  assert.equal(
+    overlapping.filter((result) => !result.ok && result.reason === 'invalid').length,
+    5,
+  );
+  assert.equal(
+    overlapping.filter((result) => !result.ok && result.reason === 'lockout').length,
+    1,
+  );
+
+  const replayTable = createSessionTable();
+  const otp = totpAt(secret, now, { digits: 6, period: 30 });
+  const replayed = await Promise.all([
+    verifyLogin({
+      file,
+      passphrase: PASSPHRASE,
+      otp,
+      now,
+      table: replayTable,
+      clientAddress: '1.1.1.1',
+    }),
+    verifyLogin({
+      file,
+      passphrase: PASSPHRASE,
+      otp,
+      now,
+      table: replayTable,
+      clientAddress: '1.1.1.2',
+    }),
+  ]);
+  assert.equal(replayed.filter((result) => result.ok).length, 1);
+  const replayFail = replayed.find((result) => !result.ok);
+  assert.ok(replayFail);
+  if (!replayFail || replayFail.ok) return;
+  assert.equal(replayFail.reason, 'invalid');
+});
