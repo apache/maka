@@ -224,18 +224,6 @@ export function externalSessionMatchesQuery(
   );
 }
 
-export function pageExternalSessionSummaries<T>(
-  summaries: readonly T[],
-  query: Pick<ExternalSessionQuery, 'offset' | 'limit'> = {},
-): readonly T[] {
-  const offset = query.offset ?? 0;
-  const limit = query.limit ?? summaries.length;
-  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0) {
-    throw new Error('Invalid external Session adapter page');
-  }
-  return summaries.slice(offset, offset + limit);
-}
-
 /**
  * The comparable form of one side of a text match.
  *
