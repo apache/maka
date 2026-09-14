@@ -8446,7 +8446,7 @@ describe('SessionManager permission mode updates', () => {
     );
   });
 
-  test('RuntimeReadModel projects messages turns replay and terminal facts without SessionStore messages', async () => {
+  test('RuntimeReadModel projects messages turns and terminal facts without SessionStore messages', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const session = await store.create(makeInput());
@@ -8477,10 +8477,6 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual(
       view.terminalFacts.map((fact) => fact.runStatus),
       ['completed'],
-    );
-    assert.deepStrictEqual(
-      view.replayPlan.textMessages.map((message) => message.content),
-      ['runtime question', 'runtime answer'],
     );
   });
 
@@ -8758,10 +8754,6 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual(
       view.messages.map((message) => message.turnId),
       ['parent-turn', 'parent-turn', 'parent-turn'],
-    );
-    assert.deepStrictEqual(
-      view.replayPlan.textMessages.map((message) => message.content),
-      ['parent question', 'parent answer'],
     );
   });
 

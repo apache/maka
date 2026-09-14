@@ -273,7 +273,6 @@ export class AgentRun {
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
-  private sawCompletion = false;
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
@@ -1164,7 +1163,6 @@ export class AgentRun {
       (ev.type === 'complete' || ev.type === 'abort') && !this.turnFailed;
     const turnStatus = terminalSessionEvent ? turnStatusFromEvent(ev) : undefined;
     if (terminalSessionEvent) {
-      this.sawCompletion = true;
       if (ev.type === 'abort' && !this.abortSource) this.abortSource = ev.reason;
       if (ev.type === 'complete' && ev.stopReason === 'user_stop' && !this.abortSource)
         this.abortSource = 'user_stop';

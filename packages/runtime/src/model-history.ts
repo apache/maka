@@ -316,8 +316,6 @@ export interface RuntimeEventReplayDiagnostic {
   detail?: Record<string, unknown>;
 }
 
-export type RuntimeEventReplaySemanticKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
-
 export type RuntimeEventModelReplayItem =
   | {
       kind: 'text';
@@ -510,7 +508,6 @@ function replayToolIdentity(invocationId: string, toolCallId: string): string {
 export interface RuntimeEventModelReplayPlan {
   items: RuntimeEventModelReplayItem[];
   textMessages: TextModelMessage[];
-  semanticKinds: RuntimeEventReplaySemanticKind[];
   diagnostics: RuntimeEventReplayDiagnostic[];
   hasProviderNativeSemantics: boolean;
 }
@@ -963,16 +960,11 @@ export function buildRuntimeEventModelReplayPlan(
           }
         : { role: item.role, content: item.content },
     );
-  const semanticKinds = [...new Set(items.map((item) => item.kind))];
   return {
     items,
     textMessages,
-    semanticKinds,
     diagnostics,
-    hasProviderNativeSemantics:
-      semanticKinds.includes('thinking') ||
-      semanticKinds.includes('tool_call') ||
-      semanticKinds.includes('tool_result'),
+    hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
 }
 
