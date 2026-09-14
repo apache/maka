@@ -21,10 +21,10 @@
 
 .maka-model-wheel-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
 .maka-model-wheel-anchor > button { min-width: 0; max-width: 100%; }
-.maka-model-wheel-anchor[data-open='true'] > button { width: 100%; }
-.maka-model-wheel-popup { border-radius: var(--radius-container); background: var(--background-elevated); box-shadow: var(--shadow-med); }
+.maka-model-wheel-anchor[data-open='true'] > button { visibility: hidden; }
+.maka-model-wheel-expanded { border-radius: 10px; background: color-mix(in oklch, var(--background-elevated) 94%, transparent); backdrop-filter: blur(12px); }
 .maka-model-wheel { position: relative; width: min(264px, 55vw); max-width: 100%; }
-.maka-model-wheel::before { content: ''; position: absolute; inset: 44px 0; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
+.maka-model-wheel::before { content: ''; position: absolute; inset: 50% 0 auto; height: 44px; translate: 0 -50%; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
 .maka-model-wheel-viewport { position: relative; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; mask-image: linear-gradient(transparent, black 32%, black 68%, transparent); outline: none; }
 .maka-model-wheel-viewport:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
 .maka-model-wheel-viewport[data-dragging='true'] { scroll-snap-type: none; cursor: grabbing; }
