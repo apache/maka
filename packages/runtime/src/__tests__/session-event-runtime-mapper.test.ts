@@ -242,6 +242,50 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     }
   });
 
+  test('provider-executed tool_result keeps providerOptions for replay', () => {
+    const memory = createSessionEventMapMemory();
+    mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'tool_start',
+        toolUseId: 'search-1',
+        toolName: 'WebSearch',
+        args: {},
+        providerExecuted: true,
+      }),
+      ctx,
+      memory,
+    );
+    const providerOptions = {
+      google: {
+        serverToolCallId: 'search-1',
+        serverToolType: 'GOOGLE_SEARCH_WEB',
+      },
+    };
+    const result = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'tool_result',
+        toolUseId: 'search-1',
+        isError: false,
+        content: { kind: 'json', value: {} },
+        providerExecuted: true,
+        providerOutput: {},
+        providerOptions,
+      }),
+      ctx,
+      memory,
+    );
+
+    assert.equal(result.content?.kind, 'function_response');
+    assert.deepEqual(
+      result.content?.kind === 'function_response' ? result.content.providerOptions : undefined,
+      providerOptions,
+    );
+    assert.notStrictEqual(
+      result.content?.kind === 'function_response' ? result.content.providerOptions : undefined,
+      providerOptions,
+    );
+  });
+
   test('owns independent tool args across SessionEvent to RuntimeEvent mappings', () => {
     const sourceArgs = { content: 'approved', layout: { cols: 120 } };
     const sourceEvent = ev({

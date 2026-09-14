@@ -409,12 +409,15 @@ export type ModelStreamEvent =
   /** Tool input was sampled; only providerExecuted also implies external activity. */
   | { kind: 'tool-input'; providerExecuted: boolean }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
+  | { kind: 'source'; url: string; title?: string }
   | {
       kind: 'provider-tool-result';
       toolCallId: string;
       toolName: string;
       output: unknown;
       isError?: boolean;
+      /** Opaque provider metadata required to reconstruct a native toolResponse. */
+      providerOptions?: ProviderOptions;
     }
   | { kind: 'step-finish'; usage?: NormalizedUsage; finishReason?: ModelFinishReason }
   | { kind: 'finish'; finishReason?: ModelFinishReason }

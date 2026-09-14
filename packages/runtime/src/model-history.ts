@@ -372,6 +372,7 @@ export type RuntimeEventModelReplayItem =
       isError: boolean;
       modelProjection?: DurableToolResultProjection;
       providerExecuted?: boolean;
+      providerOptions?: NonNullable<ModelMessage['providerOptions']>;
       eventId: string;
       ts: number;
     };
@@ -910,6 +911,13 @@ export function buildRuntimeEventModelReplayPlan(
           isError: event.content.isError === true,
           ...(event.content.providerExecuted !== undefined
             ? { providerExecuted: event.content.providerExecuted }
+            : {}),
+          ...(event.content.providerOptions !== undefined
+            ? {
+                providerOptions: event.content.providerOptions as NonNullable<
+                  ModelMessage['providerOptions']
+                >,
+              }
             : {}),
           eventId: event.id,
           ts: event.ts,

@@ -69,9 +69,19 @@ export function resolveHostedWebSearchCapability(
     return null;
   }
   if (stored?.capabilities?.webSearch === true) {
-    return adapter;
+    return adapter.adapter === 'google-grounding' ? googleGroundingCapability(id) : adapter;
   }
   return providerDefaultHostedWebSearchCapability(providerType, id, adapter);
+}
+
+/**
+ * Google grounding returns Search Suggestions and Links with display and
+ * retention requirements that Maka's durable `web_search` rows cannot satisfy.
+ * Keep this provider path fail-closed until a compliant ephemeral display and
+ * retention seam exists.
+ */
+function googleGroundingCapability(_modelId: string): HostedWebSearchCapability {
+  return { adapter: 'google-grounding', implemented: false };
 }
 
 function providerHostedWebSearchAdapter(
@@ -98,6 +108,9 @@ function providerHostedWebSearchAdapter(
     case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
+      // implemented is produced only by googleGroundingCapability (Gemini 3+
+      // mix). A true here would be overwritten on every live path and would
+      // lie if a stored webSearch:true ever returned the adapter as-is.
       return { adapter: 'google-grounding', implemented: false };
     case 'zai':
     case 'zai-coding-plan':
@@ -140,7 +153,9 @@ function providerDefaultHostedWebSearchCapability(
     case 'openai-responses-compatible':
       return null;
     case 'google':
-      return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId) ? capability : null;
+      return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId)
+        ? googleGroundingCapability(modelId)
+        : null;
     case 'zai':
     case 'zai-coding-plan':
       return /^glm-(?:4\.5|4\.6|4\.7|5)(?:[.-]|$)/i.test(modelId) ? capability : null;

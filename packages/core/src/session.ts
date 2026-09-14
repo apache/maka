@@ -881,6 +881,8 @@ export interface ToolResultMessage {
   isError: boolean;
   content: ToolResultContent;
   providerExecuted?: boolean;
+  /** Opaque provider metadata required to reconstruct a native toolResponse on replay. */
+  providerOptions?: Record<string, unknown>;
   /** Raw provider result retained only for provider-native replay. */
   providerOutput?: unknown;
   durationMs?: number;
@@ -1279,6 +1281,7 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   [
     'durationMs',
     'providerExecuted',
+    'providerOptions',
     'providerOutput',
     'origin',
     'modelVisibility',
@@ -1584,6 +1587,7 @@ function decodeMessage(
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
+        (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         isOptionalFiniteDuration(message.durationMs) &&
         isToolActivityIdentity(message)
       )
