@@ -903,6 +903,25 @@ export class McpClientManager {
       )
         throw new McpToolCallError(serverId, toolName, 'tool binding is stale');
     };
+    let forwardedProgressTotal: number | undefined;
+    let forwardedProgressCurrent = -1;
+    const forwardProgress = (progress: unknown): void => {
+      const mapped = mapMcpToolProgress(progress);
+      if (!mapped) return;
+      if (
+        (forwardedProgressTotal !== undefined && mapped.total !== forwardedProgressTotal) ||
+        mapped.current <= forwardedProgressCurrent
+      ) {
+        return;
+      }
+      forwardedProgressTotal ??= mapped.total;
+      forwardedProgressCurrent = mapped.current;
+      try {
+        options.onProgress?.(mapped.current, mapped.total);
+      } catch {
+        // Progress is advisory: a listener failure must not fail the tool.
+      }
+    };
     try {
       const originalArguments = requestInteraction ? structuredClone(args) : args;
       let continuation: { inputResponses?: Record<string, ElicitResult>; requestState?: string } =
@@ -926,19 +945,7 @@ export class McpClientManager {
             signal,
             timeout: options.timeoutMs ?? this.timeouts.callToolMs,
             toolDefinition: structuredClone(preparation.value.definitionForSdk),
-            ...(options.onProgress
-              ? {
-                  onprogress: (progress: unknown) => {
-                    const mapped = mapMcpToolProgress(progress);
-                    if (!mapped) return;
-                    try {
-                      options.onProgress!(mapped.current, mapped.total);
-                    } catch {
-                      // Progress is advisory: a listener failure must not fail the tool.
-                    }
-                  },
-                }
-              : {}),
+            ...(options.onProgress ? { onprogress: forwardProgress } : {}),
             ...(requestInteraction ? { allowInputRequired: true } : {}),
           },
         );

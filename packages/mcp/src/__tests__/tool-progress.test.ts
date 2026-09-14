@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  mapMcpToolProgress,
-  MCP_TOOL_PROGRESS_MAX_TOTAL,
-} from '../tool-progress.js';
+import { mapMcpToolProgress, MCP_TOOL_PROGRESS_MAX_TOTAL } from '../tool-progress.js';
 
 test('maps integer MCP progress onto the Host current/total pair', () => {
   assert.deepEqual(mapMcpToolProgress({ progress: 0, total: 1 }), { current: 0, total: 1 });
@@ -31,7 +28,10 @@ test('maps integer MCP progress onto the Host current/total pair', () => {
     total: 3,
   });
   assert.deepEqual(
-    mapMcpToolProgress({ progress: MCP_TOOL_PROGRESS_MAX_TOTAL, total: MCP_TOOL_PROGRESS_MAX_TOTAL }),
+    mapMcpToolProgress({
+      progress: MCP_TOOL_PROGRESS_MAX_TOTAL,
+      total: MCP_TOOL_PROGRESS_MAX_TOTAL,
+    }),
     { current: MCP_TOOL_PROGRESS_MAX_TOTAL, total: MCP_TOOL_PROGRESS_MAX_TOTAL },
   );
 });

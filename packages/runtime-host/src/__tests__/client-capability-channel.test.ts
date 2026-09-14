@@ -233,8 +233,10 @@ test('Client Capability channel forwards admitted tool progress before the resul
     call: async (_frame, options) => {
       await options.accept({ kind: 'none' });
       options.progress?.(1, 3);
-      options.progress?.(1, 1_025);
       options.progress?.(2, 3);
+      options.progress?.(3, 3);
+      options.progress?.(2, 3);
+      options.progress?.(1, 1_025);
       return { content: [] };
     },
   };
@@ -291,7 +293,7 @@ test('Client Capability channel forwards admitted tool progress before the resul
     {
       kind: 'client.capability.progress',
       invocationId: 'progress-invocation',
-      current: 2,
+      current: 3,
       total: 3,
     },
     {

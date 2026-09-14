@@ -28,6 +28,8 @@ import {
   formatRuntimeHostCapabilityProviderReadyMessage,
 } from '../runtime-host-capability-provider-command.js';
 
+type McpCallToolOptions = NonNullable<Parameters<McpClientManager['callTool']>[2]>;
+
 test('TUI MCP control keeps its capability provider on the pure import boundary', async () => {
   const [tuiSource, providerSource] = await Promise.all([
     readFile(new URL('../tui-mcp-control.js', import.meta.url), 'utf8'),
@@ -120,7 +122,7 @@ test('MCP capability publication freezes an accepted callable tool snapshot', as
     callTool: async (
       actualBinding: McpToolBinding,
       arguments_: Record<string, unknown>,
-      options: { onProgress?: (current: number, total: number) => void } = {},
+      options: McpCallToolOptions = {},
     ) => {
       assert.equal(accepted, true);
       assert.equal(actualBinding, binding);
@@ -180,7 +182,7 @@ test('MCP capability publication forwards admitted tool progress', async () => {
     callTool: async (
       actualBinding: McpToolBinding,
       _arguments: Record<string, unknown>,
-      options: { onProgress?: (current: number, total: number) => void } = {},
+      options: McpCallToolOptions = {},
     ) => {
       assert.equal(accepted, true);
       assert.equal(actualBinding, binding);
