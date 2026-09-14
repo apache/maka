@@ -22,7 +22,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import { stableJsonLength } from './context-budget-helpers.js';
-import { groupEventsByTurn } from './model-history.js';
+import { groupEventsByTurn, formatTextWithInlineRefs } from './model-history.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import type { ModelMessage } from './model-protocol.js';
@@ -120,10 +120,14 @@ function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMess
     if (event.partial === true || !runtimeEventHasModelVisibleContent(event)) continue;
     const content = event.content;
     if (content?.kind === 'text' && (event.role === 'user' || event.role === 'model')) {
-      const text = content.text.trim();
-      if (text.length > 0) {
-        messages.push({ role: event.role === 'user' ? 'user' : 'assistant', content: text });
-      }
+      // The gate above already decided visibility through the shared
+      // predicate, which is satisfied by non-empty text or by the structured
+      // carriers — so every event reaching here projects, with its trimmed
+      // text and staged refs rendered by the shared inline-ref formatter.
+      messages.push({
+        role: event.role === 'user' ? 'user' : 'assistant',
+        content: formatTextWithInlineRefs({ ...content, text: content.text.trim() }),
+      });
       continue;
     }
     if (content?.kind !== 'function_response') continue;

@@ -44,10 +44,10 @@ A story earns its place by rendering pixels no other story renders. A second lev
 
 Two facts decide it, and both were guessed wrong once:
 
-- **Where a story renders.** CI mounts every story exactly once at 1280 wide in light. It does not maintain a viewport, theme or screenshot matrix. Responsive and theme behaviour belongs in a focused component contract or the real desktop E2E harness.
+- **Where a story renders.** The smoke runner owns the actual viewport and theme coverage; check `scripts/storybook-visual-smoke.mjs` rather than assuming Storybook toolbar parameters create CI jobs. It currently selects a narrow viewport for story IDs containing `narrow` and additional theme/palette/forced-color runs for selected sentinels. A responsive or theme contract needs an explicit browser scenario for its required conditions, not an Electron window merely because the default smoke does not exercise them.
 - **Whether `play` reaches the state.** `play` drives a story into the state a reviewer needs to see, and CI runs it — so the state it lands on is the state the smoke reads, and a story that only differs by a `play` step is a second state, not a variant.
 
-Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, pin it somewhere that runs — a `packages/ui` test or an e2e journey.
+Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, prefer an existing unit or component test. A browser or Electron test needs a boundary that the lower tier cannot verify; see [Electron admission](../e2e/AGENTS.md).
 
 ## The frame matters, not just the component
 
@@ -67,7 +67,7 @@ The render smoke waits for Storybook's `storyFinished` event before it reads the
 
 That makes `play` the right home for a behavioural contract whose subject is the browser: a live Selection, a caret between text nodes, an undo transaction, a portal's identity across a re-render. None of those exist in a `packages/ui` DOM shim, and none of them need Electron.
 
-It is still not a place for geometry or theme matrices. CI mounts every story once, at 1280 wide, in light; a contract that depends on any other viewport or scheme belongs in a `packages/ui` test or the desktop E2E harness. And a rule that is pure state — which commands a Session offers, what a query parses to — belongs in a unit test, where it costs milliseconds instead of a browser.
+Real layout, browser scrolling, and responsive/theme behavior belong in this browser tier. Assert the relevant geometry against the production component and frame, with the viewport and theme explicitly exercised by the runner. A fake DOM cannot establish real layout, and needing another viewport is not a reason to launch Electron. Pure state — which commands a Session offers, what a query parses to — belongs in a unit test, where it costs milliseconds instead of a browser.
 
 Write the assertion so it can only pass for the reason it names. A story that mounts the surface and then observes it cannot see anything that happened during the mount, so a probe that must be installed first (a constructor count, an event before the first paint) belongs in a test that owns the global.
 

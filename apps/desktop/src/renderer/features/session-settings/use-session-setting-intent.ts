@@ -135,6 +135,8 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
 
   return {
     clear: intent.clear,
+    abandonPlanProposal: services.abandonPlanProposal,
+    setCollaborationMode: services.setCollaborationMode,
     overlays: intent.overlayByChannel,
     setSessionModel: (sessionId: string, modelTarget: SessionModelTarget) =>
       intent.request('modelConfiguration', sessionId, modelConfigurationIntentForModel(modelTarget)),

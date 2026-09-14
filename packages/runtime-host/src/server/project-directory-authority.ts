@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { realpathSync, statSync } from 'node:fs';
 import { opendir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -121,6 +123,10 @@ export class HostProjectDirectoryAuthority {
     const names = await boundedDirectoryNames(directory);
     const start = input.kind === 'directory_list_start' ? 0 : firstNameAfter(names, input.cursor);
     const entries: { name: string }[] = [];
+    const budget = new JsonArrayPageBudget(
+      PROJECT_DIRECTORY_PAGE_MAX_BYTES,
+      directoryPage(input, [], null),
+    );
     for (let index = start; index < names.length; index += 1) {
       const name = names[index];
       if (!name) continue;
@@ -132,11 +138,8 @@ export class HostProjectDirectoryAuthority {
         // Entries can disappear while a directory is being listed.
       }
       if (!contained) continue;
-      const page = directoryPage(input, [...entries, { name }], name);
-      if (
-        entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS ||
-        Buffer.byteLength(JSON.stringify(page), 'utf8') > PROJECT_DIRECTORY_PAGE_MAX_BYTES
-      ) {
+      // Keep reserving the candidate directory name, even for a possible final page.
+      if (entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS || !budget.tryAppend({ name }, name)) {
         if (entries.length === 0) {
           throw new TypeError('Project directory entry exceeds the response limit');
         }

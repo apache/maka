@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test, after, type TestContext } from 'node:test';
+import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-archive-evidence';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { openToolResultArchiveEvidenceReader } from '../tool-result-archive-evidence.js';
 import { MODEL_PROJECTION_TARGET_SQL } from '../sqlite-core-execution-schema.js';
@@ -138,7 +139,7 @@ test('target evidence ignores 12k unrelated records, survives reopen and checks 
 
 test('checks byte and record budgets before fetching any ledger JSON', async (t) => {
   const f = await fixture(t);
-  f.insert(1, 'response', 'x'.repeat(3 * 1024 * 1024));
+  f.insert(1, 'response', 'x'.repeat(TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES));
   let materialized = 0;
   const prepare = DatabaseSync.prototype.prepare;
   t.mock.method(DatabaseSync.prototype, 'prepare', function (this: DatabaseSync, sql: string) {
@@ -178,7 +179,7 @@ test('checks byte and record budgets before fetching any ledger JSON', async (t)
     .prepare(
       "UPDATE runtime_events SET payload_json = json_set(payload_json, '$.content.modelProjection.text', ?) WHERE event_id = 'response'",
     )
-    .run('x'.repeat(3 * 1024 * 1024));
+    .run('x'.repeat(TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES));
   assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
     ok: false,
     reason: 'too_large',

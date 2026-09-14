@@ -780,8 +780,7 @@ class NonInteractiveInteractionController {
   readonly #tasks = new Set<Promise<void>>();
   readonly #unsubscribe: () => void;
   #failure: Error | undefined;
-  readonly #failureSignal: Promise<Error>;
-  #publishFailure!: (error: Error) => void;
+  readonly #failureWaiters = new Set<(error: Error) => void>();
 
   constructor(
     driver: RuntimeHostMakaSessionDriver,
@@ -789,15 +788,25 @@ class NonInteractiveInteractionController {
   ) {
     this.#driver = driver;
     this.#stop = stop;
-    this.#failureSignal = new Promise((resolve) => {
-      this.#publishFailure = resolve;
-    });
     this.#unsubscribe = driver.subscribePendingInteractions((pending) => this.#accept(pending));
   }
 
   race<T>(operation: Promise<T>): Promise<T> {
     this.throwIfFailed();
-    return Promise.race([operation, this.#failureSignal.then((error) => Promise.reject(error))]);
+    return new Promise((resolve, reject) => {
+      this.#failureWaiters.add(reject);
+      // Detach completed waits so the controller does not retain consumed event payloads.
+      operation.then(
+        (value) => {
+          this.#failureWaiters.delete(reject);
+          resolve(value);
+        },
+        (error) => {
+          this.#failureWaiters.delete(reject);
+          reject(error);
+        },
+      );
+    });
   }
 
   async settle(): Promise<void> {
@@ -844,7 +853,8 @@ class NonInteractiveInteractionController {
   #fail(error: Error): void {
     if (this.#failure) return;
     this.#failure = error;
-    this.#publishFailure(error);
+    for (const reject of this.#failureWaiters) reject(error);
+    this.#failureWaiters.clear();
   }
 }
 

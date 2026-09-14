@@ -90,7 +90,14 @@ test('does not report an invalid backend result as completed', async (t) => {
   const filesystem = createBoundaryFilesystemExecutor({
     workspace: createLocalWorkspaceExecutor(),
     worker: {
-      execute: async () => ({ kind: 'read', content: 'wrong operation' }),
+      execute: async () => ({
+        kind: 'read',
+        content: 'wrong operation',
+        offset: 0,
+        returnedLines: 1,
+        totalLines: 1,
+        next: null,
+      }),
     },
   });
 

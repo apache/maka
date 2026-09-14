@@ -950,7 +950,7 @@ export class ShellRunProcessManager
       sourceToolCallId: input.sourceToolCallId,
       ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
       cwd: input.cwd,
-      command: redactSecrets(input.command),
+      command: input.command,
       status: 'starting',
       startedAt,
       updatedAt: startedAt,
@@ -2035,13 +2035,16 @@ function normalizeBackgroundTimeoutMs(value: number | undefined): number | undef
   return value;
 }
 
-function splitPtyData(data: string): string[] {
-  const codePoints = Array.from(data);
-  const chunks: string[] = [];
-  for (let offset = 0; offset < codePoints.length; offset += PTY_RAW_INPUT_CHUNK_CODE_POINTS) {
-    chunks.push(codePoints.slice(offset, offset + PTY_RAW_INPUT_CHUNK_CODE_POINTS).join(''));
+function* splitPtyData(data: string): Generator<string> {
+  // Bound each published piece without materializing the entire callback as code points.
+  let offset = 0;
+  while (offset < data.length) {
+    const start = offset;
+    for (let count = 0; count < PTY_RAW_INPUT_CHUNK_CODE_POINTS && offset < data.length; count++) {
+      offset += data.codePointAt(offset)! > 0xffff ? 2 : 1;
+    }
+    yield data.slice(start, offset);
   }
-  return chunks;
 }
 
 function encodedPtyDataBytes(data: string): number {

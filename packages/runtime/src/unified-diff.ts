@@ -70,26 +70,29 @@ export function createEditUnifiedDiff(
   match: { startLine: number; endLine: number },
 ): string | undefined {
   if (oldContent.includes('\0') || newContent.includes('\0')) return undefined;
-  const oldLines = splitLines(oldContent);
-  const newLines = splitLines(newContent);
+  const oldLineCount = countLines(oldContent);
+  const newLineCount = countLines(newContent);
   const startIndex = match.startLine - 1;
   const oldEndIndex = match.endLine - 1;
-  if (startIndex < 0 || oldEndIndex < startIndex || oldEndIndex >= oldLines.length) {
+  if (startIndex < 0 || oldEndIndex < startIndex || oldEndIndex >= oldLineCount) {
     return undefined;
   }
 
   const windowStart = Math.max(0, startIndex - CONTEXT_LINES);
   const oldAfterStart = oldEndIndex + 1;
-  const newAfterStart = oldAfterStart + newLines.length - oldLines.length;
-  const oldWindow = oldLines.slice(
+  const newAfterStart = oldAfterStart + newLineCount - oldLineCount;
+  const oldWindow = readDiffWindow(
+    oldContent,
     windowStart,
-    Math.min(oldLines.length, oldAfterStart + CONTEXT_LINES),
+    Math.min(oldLineCount, oldAfterStart + CONTEXT_LINES),
   );
-  const newWindow = newLines.slice(
+  if (!oldWindow) return undefined;
+  const newWindow = readDiffWindow(
+    newContent,
     windowStart,
-    Math.min(newLines.length, Math.max(windowStart, newAfterStart) + CONTEXT_LINES),
+    Math.min(newLineCount, Math.max(windowStart, newAfterStart) + CONTEXT_LINES),
   );
-  if (isDiffWindowTooLarge(oldWindow) || isDiffWindowTooLarge(newWindow)) return undefined;
+  if (!newWindow) return undefined;
   const ops = diffLines(oldWindow, newWindow);
   if (ops.every((op) => op.kind === 'keep')) return undefined;
   const diff = [
@@ -104,15 +107,42 @@ function isUndiffable(content: string): boolean {
   return content.includes('\0') || Buffer.byteLength(content, 'utf8') > MAX_DIFF_SOURCE_BYTES;
 }
 
-function isDiffWindowTooLarge(lines: string[]): boolean {
-  return lines.length > MAX_DIFF_SOURCE_LINES || isUndiffable(lines.join('\n'));
-}
-
 function splitLines(content: string): string[] {
   const lines = content.split('\n');
   // A trailing newline terminates the last line rather than starting an empty
   // one; newline-termination differences are deliberately invisible.
   if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+function countLines(content: string): number {
+  let count = content.length > 0 && !content.endsWith('\n') ? 1 : 0;
+  for (let index = content.indexOf('\n'); index !== -1; index = content.indexOf('\n', index + 1)) {
+    count += 1;
+  }
+  return count;
+}
+
+/** Collect only the requested lines, failing before an oversized window is materialized. */
+function readDiffWindow(content: string, startLine: number, endLine: number): string[] | undefined {
+  // Preserve Array.slice's fractional/NaN index normalization.
+  const from = Math.trunc(startLine) || 0;
+  const until = Math.trunc(endLine) || 0;
+  const lines: string[] = [];
+  let bytes = 0;
+  let offset = 0;
+  for (let lineIndex = 0; offset < content.length && lineIndex < until; lineIndex += 1) {
+    const newline = content.indexOf('\n', offset);
+    const end = newline === -1 ? content.length : newline;
+    if (lineIndex >= from) {
+      if (lines.length === MAX_DIFF_SOURCE_LINES) return undefined;
+      const line = content.slice(offset, end);
+      bytes += Buffer.byteLength(line, 'utf8') + (lines.length > 0 ? 1 : 0);
+      if (bytes > MAX_DIFF_SOURCE_BYTES) return undefined;
+      lines.push(line);
+    }
+    offset = end + 1;
+  }
   return lines;
 }
 

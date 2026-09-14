@@ -163,7 +163,7 @@ The prior-history path for a normal Send begins in `AiSdkBackend.buildPriorMessa
 2. Prepare the context-budget policy.
 3. Load the latest compatible ledger-backed checkpoint.
 4. Validate and replay the existing checkpoint against the immutable RuntimeEvent sequence.
-5. Apply stale oversized Tool Result pruning only to the uncovered projected remainder.
+5. Prepare oversized text Tool Results with the same size rule for current and prior turns.
 6. When an active request has a valid user-declared Maka window and the previous accepted request's real usage crosses it, select a safe prefix and retained tail.
 7. If the old checkpoint does not cover the new fold, call a compactor to create a rolling successor.
 8. Validate and durably record the successor before using it.
@@ -172,7 +172,7 @@ The prior-history path for a normal Send begins in `AiSdkBackend.buildPriorMessa
 
 The ordering reveals three properties.
 
-First, checkpoint source matching always sees the immutable RuntimeEvent ledger. Stale Tool Result pruning shapes only the uncovered replay remainder, so a moving recent-turn window cannot invalidate an otherwise matching checkpoint by changing the bytes used for its digest.
+First, checkpoint source matching always sees the immutable RuntimeEvent ledger. Tool Result pruning records separate durable projection transitions; checkpoint replay validates both immutable coverage identity and the effective covered digest.
 
 Second, compaction happens inside **model-history projection**, not inside the RuntimeEvent append path. Events already produced by the model and tools do not change when a later context budget changes.
 
@@ -453,7 +453,9 @@ Both preserve canonical source, but they do not create parallel compaction autho
 
 Active Tool Result Prune remains a deterministic non-LLM rewrite. It archives an eligible raw Tool Result, appends a durable projection transition to the AgentRun event ledger, and derives the current request from the effective-history reducer. The same reducer supplies later replay, restart, budgeting, and compaction. Prune neither summarizes a span nor creates a checkpoint, and canonical RuntimeEvents remain unchanged.
 
-The placeholder carries a bounded `maka://archive/...` address and instructions for `ArchiveRead`; model replay deterministically reconstructs that address for legacy placeholders. Runtime does not eagerly expand the archived body back into every request. The model calls `ArchiveRead` only when it needs the detail, and the Host validates the Session, hash, and byte size before returning a bounded inspect or query result. A later checkpoint replaces covered placeholders with its summary and intentionally carries no archive roots. The complete Tool Result remains in the canonical RuntimeEvent ledger, but model reachability does not become a permanent cross-checkpoint authority.
+Tool-result pruning uses one `toolResultPrune.enabled` switch and the same fixed size rule for current and prior turns. Text projections above 7,500 serialized characters become a bounded first page with a `next` Read input; images retain their existing materialization policy. `Read` accepts a required `path` and optional zero-based line `offset` and `limit`. Its serialized response is bounded even with pruning disabled or a large explicit limit. The requested range defines where pagination stops. A long line is split automatically using a content-checked continuation address. ArchiveRead, its inspect/query/search operations, and the former active/stale tuning fields are removed without aliases.
+
+A tool-result address is `maka://runtime/tool-results/<event-id>`. Host resolves it inside the invoking Session, verifies the accepted projection transition, and reconstructs the original model body from the event ledger. The model does not copy hashes or internal transition identity. Transition recording still precedes replacement, and replay, compression tails, and overflow retries all use the same effective-projection reducer. Checkpoint source matching continues to use immutable event identity and validates the effective covered digest.
 
 ## What compaction is not
 

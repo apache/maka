@@ -124,10 +124,11 @@ type CallKind =
   | 'terminated'
   | 'terminatedMidBody'
   | 'partialThenTerminated'
+  | 'partialToolInputThenOverflow'
   | 'partialThenOverflowPart';
 
 const RETRY_STEP_TEXT_SENTINEL = 'RETRY_STEP_TEXT_SENTINEL reasoning before the big read';
-const BIG_RESULT = 'BIG_RESULT_'.repeat(200);
+const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 
 interface ReactiveFixtureOptions {
   script: CallKind[];
@@ -174,7 +175,7 @@ interface ReactiveFixtureOptions {
    */
   slowAppendMessage?: boolean;
   /** Enable the active tool-result prune with a small threshold + archive seam. */
-  activeToolResultPrune?: boolean;
+  toolResultPrune?: boolean;
   /** Test-only gate before a numbered provider request starts. */
   beforeStream?: (call: number) => Promise<void>;
   /** Test-only replacement for the Runtime-owned retry clock. */
@@ -344,6 +345,18 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
             finishReason: { unified: 'error', raw: undefined },
             usage: usage(0, 0),
           },
+        ],
+        initialDelayInMs: null,
+        chunkDelayInMs: null,
+      });
+    }
+    if (kind === 'partialToolInputThenOverflow') {
+      return simulateReadableStream({
+        chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'tool-input-start', id: 'unfinished', toolName: 'Read' },
+          { type: 'tool-input-delta', id: 'unfinished', delta: '{"path":"' },
+          { type: 'error', error: { message: 'Bad Request', code: 'context_length_exceeded' } },
         ],
         initialDelayInMs: null,
         chunkDelayInMs: null,
@@ -659,7 +672,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
           : { id: 'mock-model-id', contextWindow },
       ],
       ...(options.declareContextWindow
-        ? { relayModelProfiles: { 'mock-model-id': { contextWindow } } }
+        ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
         : {}),
     },
     apiKey: 'sk-test',
@@ -722,11 +735,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         enabled: true,
         ...(midTurnEnabled ? { midTurn: { enabled: true } } : {}),
       },
-      ...(options.activeToolResultPrune
-        ? { activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 100 } }
-        : {}),
+      ...(options.toolResultPrune ? { toolResultPrune: { enabled: true } } : {}),
     },
-    ...(options.activeToolResultPrune
+    ...(options.toolResultPrune
       ? {
           toolResultArchive: testToolResultArchive({
             archiveToolResult: () => ({ artifactId: 'artifact-archived-1' }),
@@ -1138,28 +1149,50 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
   });
 
-  test('does not retry a terminated request after visible output was emitted', async () => {
+  test('preserves interrupted text while retrying from the completed tool step', async () => {
     const fixture = buildReactiveFixture({ script: ['tool', 'partialThenTerminated', 'done'] });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    assert.equal(JSON.stringify(fixture.model.doStreamCalls[2]?.prompt).includes('partial'), false);
     assert.equal(
-      fixture.events.some((event) => event.type === 'text_delta' && event.text === 'partial'),
+      fixture.events.some(
+        (event) => event.type === 'text_complete' && event.text === 'partial' && event.interrupted,
+      ),
       true,
     );
   });
 
-  test('surfaces the tenth transport failure without spending another sample', async () => {
+  test('counts overflow recovery within the ten-request budget', async () => {
+    const failures = Array.from({ length: 10 }, () => 'terminated' as const);
+    const scripts: CallKind[][] = [
+      ['overflow', ...failures],
+      [...failures.slice(1), 'overflow', 'done'],
+    ];
+    for (const script of scripts) {
+      const fixture = buildReactiveFixture({
+        script: ['tool', ...script],
+      });
+      await runTurn(fixture);
+
+      assert.equal(fixture.model.doStreamCalls.length, 11);
+      assert.equal(complete(fixture)?.stopReason, 'error');
+      assert.deepEqual(fixture.toolExecutions, ['one.md']);
+      assert.equal(fixture.recorded.length, script[0] === 'overflow' ? 1 : 0);
+    }
+  });
+
+  test('recovers after partial tool arguments without treating missing usage as complete', async () => {
     const fixture = buildReactiveFixture({
-      script: ['tool', ...Array.from({ length: 10 }, () => 'terminated' as const)],
+      script: ['tool', 'partialToolInputThenOverflow', 'done'],
     });
     await runTurn(fixture);
-
-    assert.equal(fixture.model.doStreamCalls.length, 11);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
-    assert.equal(fixture.recorded.length, 0);
+    assert.equal(fixture.llmCalls.length, 0);
   });
 
   test('compacts once and retries after a mid-stream context-length overflow', async () => {
@@ -1592,18 +1625,18 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
   });
 
-  test('does not recover an overflow after the failed stream emitted a tool call', async () => {
+  test('discards an undispatched tool call before overflow compaction recovery', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'toolThenOverflowPart', 'done'],
       bigPriors: true,
     });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
-    assert.equal(fixture.recorded.length, 0);
-    assert.equal(fixture.summarizerCalls(), 0);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls(), 1);
   });
 
   test('does not recover an overflow after the failed stream emitted visible text', async () => {
@@ -1777,7 +1810,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     const fixture = buildReactiveFixture({
       script: ['bigread', 'overflow', 'done'],
       bigPriors: true,
-      activeToolResultPrune: true,
+      toolResultPrune: true,
     });
     await runTurn(fixture);
 
