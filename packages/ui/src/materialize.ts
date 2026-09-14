@@ -1062,7 +1062,8 @@ export function projectTurnTools(
  *  - leftover buffered tools (abort / pure-tool turn with no assistant row)
  *    flush as a trailing tools group.
  *
- * Empty text/thinking produce no item. Adjacent thinking blocks merge with
+ * Empty text/thinking produce no item, except text carrying an interruption
+ * divider. Adjacent thinking blocks merge with
  * a blank line; adjacent tools groups merge into one group.
  */
 function buildTurnTimeline(

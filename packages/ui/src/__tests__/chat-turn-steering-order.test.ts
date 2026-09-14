@@ -24,7 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
-import type { TurnViewModel } from '../materialize.js';
+import { materializeTurns, type TurnViewModel } from '../materialize.js';
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
@@ -32,6 +32,22 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
+
+test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'user', turnId: 'turn', ts: 1, text: 'request' },
+    { type: 'assistant', id: 'partial', turnId: 'turn', ts: 2, modelId: 'mock', text: '', interrupted: true, thinking: { text: 'partial thought' } },
+  ];
+  const [turn] = materializeTurns(messages, 'en');
+  assert.ok(turn);
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en', children: createElement(TurnView, { turn }),
+  }));
+  const { document } = parseHTML(`<html><body>${markup}</body></html>`);
+  assert.equal(document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
+  assert.match(document.body.textContent, /partial thought/);
+  assert.match(document.body.textContent, /Response stream ended before completion/);
+});
 
 test('renders steering where it arrived in the assistant timeline', () => {
   const turn: TurnViewModel = {

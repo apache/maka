@@ -1199,6 +1199,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
 
   return (
     <>
+    {(!props.interrupted || props.text.length > 0) && (
     <ChatMessageBubble
       variant="ghost"
       data-maka-transcript-boundary=""
@@ -1250,6 +1251,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
         </Tooltip>
       )}
     </ChatMessageBubble>
+    )}
     {props.interrupted && (
       <ChatSystemMessage variant="divider">
         {copy.providerRetryReason.stream_truncated}
