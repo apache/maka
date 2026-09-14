@@ -28,6 +28,7 @@ import type {
   ComputerHistoryTimelineEntry,
 } from '@maka/core/computer-history';
 import {
+  createFakeComputerHistoryAnalysisModel,
   createFakeModuleHubServices,
   ModuleHubServicesProvider,
   useComputerHistoryController,
@@ -64,7 +65,10 @@ function services(overrides: Partial<ModuleHubServices['computerHistory']> = {})
       applications: async (bundleIds) => bundleIds.map((bundleIdentifier) => ({ bundleIdentifier, name: 'Example App', iconDataUrl: null })),
       timeline: async () => ({ status: STATUS, entries: [entry('a'), entry('b')] }),
       detail: async (id) => detail(id),
-      getAnalysisModel: async () => 'fixture-analysis-model',
+      getAnalysisModel: async () => createFakeComputerHistoryAnalysisModel({
+        modelKey: 'fixture-analysis-model',
+        models: [{ key: 'fixture-analysis-model', label: 'Fixture analysis model', connectionName: 'Fixture' }],
+      }),
       ...overrides,
     },
   });

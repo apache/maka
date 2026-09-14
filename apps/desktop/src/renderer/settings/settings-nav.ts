@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type ComponentType } from 'react';
+import type { ComponentType } from 'react';
 import {
   Activity,
   BarChart3,
@@ -156,6 +156,12 @@ export function readLastSettingsSection(): SettingsSection {
 
 export function navLabel(section: SettingsSection, locale: UiLocale): string {
   return getSettingsNavigationCopy(locale).sections[section].label;
+}
+
+export function computerHistorySettingsBackLabel(locale: UiLocale): string {
+  const label = navLabel('computer-history', locale);
+  return locale === 'en' ? `Back to ${label} settings`
+    : locale === 'zh-TW' ? `返回${label}設定` : `返回${label}设置`;
 }
 
 export function settingsSectionScope(

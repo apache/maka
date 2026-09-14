@@ -23,7 +23,8 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import type { SessionSummary } from '@maka/core/session';
 import { createDefaultSettings } from '@maka/core/settings';
-import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
+import { DEFAULT_DAILY_REVIEW_CONFIG, type DailyReviewConfig } from '@maka/core/daily-review';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { DesktopRuntimeHostProfileSnapshot } from '../src/preload/bridge-contract';
 import type {
   ComputerHistoryApplication,
@@ -47,6 +48,7 @@ import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions'
 import SettingsModal from '../src/renderer/settings/settings-modal';
 import { ConnectionSettingsServicesProvider } from '../src/renderer/features/connection-settings';
 import { createDesktopConnectionSettingsServices } from '../src/renderer/platform/desktop/create-connection-settings-services';
+import { createDesktopModuleHubServices, type DesktopModuleHubBridge } from '../src/renderer/platform/desktop/create-module-hub-services';
 import { createUiLocaleUpdateGate } from '../src/renderer/settings/ui-locale-update-gate';
 import { withScopedMakaBridge } from './maka-bridge';
 import { useSettingsModal } from '../src/renderer/use-settings-modal';
@@ -61,7 +63,22 @@ const settingsHosts: DesktopRuntimeHostProfileSnapshot = {
     { profile: { id: 'synthetic-remote', name: 'QA Remote', kind: 'remote', rootId: 'synthetic-root', transport: { kind: 'ssh', destination: 'synthetic.example.test', remotePort: 43123, websocketPath: '/runtime-host' } }, enabled: true, isDefault: true, readiness: 'ready', hostId: 'synthetic-remote-host' },
   ],
 };
-const readAnalysisConfig = fn(async (_host: { profileId: string; hostId: string }) => DEFAULT_DAILY_REVIEW_CONFIG);
+const analysisConnection: ProjectedLlmConnection = {
+  connectionId: 'synthetic-analysis', name: 'Fixture provider', slug: 'fixture',
+  providerType: 'openai', enabled: true, createdAt: 0, updatedAt: 0,
+  defaultModel: 'analysis-model', enabledModelIds: ['analysis-model', 'alternate-analysis'],
+  catalogEntries: [
+    { id: 'analysis-model', displayName: 'Analysis model', canUseAsChatDefault: true, isDefault: true, supportsVision: false, thinkingLevels: [] },
+    { id: 'alternate-analysis', displayName: 'Alternate analysis', canUseAsChatDefault: true, isDefault: false, supportsVision: false, thinkingLevels: [] },
+  ],
+};
+let analysisConfig: DailyReviewConfig = { ...DEFAULT_DAILY_REVIEW_CONFIG };
+let analysisConnections: ProjectedLlmConnection[] = [analysisConnection];
+const readAnalysisConfig = fn(async (_host: { profileId: string; hostId: string }) => structuredClone(analysisConfig));
+const writeAnalysisConfig = fn(async (patch: Partial<DailyReviewConfig>, _host: { profileId: string; hostId: string }) => {
+  analysisConfig = { ...analysisConfig, ...patch };
+  return structuredClone(analysisConfig);
+});
 const settingsBridge = {
   settings: {
     getClient: async () => settingsSnapshot,
@@ -71,14 +88,23 @@ const settingsBridge = {
     usageStats: async () => null,
   },
   runtimeHostProfiles: { getSnapshot: async () => settingsHosts, subscribeChanges: subscription },
-  connections: { getSnapshot: async () => ({ connections: [], defaultConnection: null }), subscribeEvents: subscription },
-  dailyReview: { getConfig: readAnalysisConfig, setConfig: fn() },
+  connections: {
+    getSnapshot: async () => ({ connections: structuredClone(analysisConnections), defaultConnection: analysisConnections[0]?.slug ?? null }),
+    subscribeEvents: subscription, hasSecret: async () => true, getRequestHeaders: async () => [],
+  },
+  dailyReview: { getConfig: readAnalysisConfig, setConfig: writeAnalysisConfig },
 };
 
 const meta = {
   title: 'Product/Computer History',
   component: HistorySurface,
   decorators: [withScopedMakaBridge(settingsBridge)],
+  beforeEach: ({ args }) => {
+    analysisConfig = { ...DEFAULT_DAILY_REVIEW_CONFIG };
+    analysisConnections = args.scenario === 'missing-model' ? [] : [analysisConnection];
+    readAnalysisConfig.mockClear();
+    writeAnalysisConfig.mockClear();
+  },
   parameters: { layout: 'fullscreen' },
   args: {
     scenario: 'populated', withSidebar: false, onCreateDraft: fn(),
@@ -311,6 +337,7 @@ type HistoryProbes = {
 };
 
 function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?: readonly ComputerHistoryApplication[]): ModuleHubComputerHistoryService {
+  const analysis = createDesktopModuleHubServices(settingsBridge as unknown as DesktopModuleHubBridge).computerHistory;
   let entries = scenario === 'empty' || scenario === 'unsupported' ? [] : [...fixtureEntries()];
   if (scenario === 'multi-day') entries.push(...entries.slice(-2).map((entry) => ({
     ...entry, id: `${entry.id}-yesterday`,
@@ -405,7 +432,8 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
       if (scenario === 'summary-failed') status = { ...status, summaryState: 'idle', summaryError: undefined };
       return structuredClone(status);
     },
-    getAnalysisModel: async () => scenario === 'missing-model' ? null : 'Fixture provider / analysis-model',
+    getAnalysisModel: analysis.getAnalysisModel,
+    setAnalysisModel: analysis.setAnalysisModel,
   };
 }
 
@@ -733,11 +761,28 @@ export const Settings: Story = {
       expect(canvas.getByRole('button', { name: '电脑历史设置' })).toHaveFocus();
     });
     settings = await openHistorySettings(canvasElement);
-    await userEvent.click(settings.getByRole('button', { name: '配置' }));
+    await userEvent.click(await settings.findByRole('button', { name: '选择摘要模型' }));
+    await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('option', { name: /Alternate analysis/ }));
+    await waitFor(() => expect(writeAnalysisConfig).toHaveBeenCalledWith(
+      { modelKey: 'fixture::alternate-analysis' },
+      { profileId: 'local', hostId: 'synthetic-local-host' },
+    ));
+    await waitFor(() => expect(settings.getByRole('button', { name: '选择摘要模型' })).toBeEnabled());
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
+    pane.scrollTop = 80;
+    const settingsPosition = pane.scrollTop;
+    await userEvent.click(settings.getByRole('button', { name: '管理连接' }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-maka-assistant-target="settings.models"]')).toHaveAttribute('aria-current', 'page'));
     await waitFor(() => expect(readAnalysisConfig).toHaveBeenCalledWith({ profileId: 'local', hostId: 'synthetic-local-host' }));
     expect(readAnalysisConfig.mock.calls.every(([host]) => host.profileId === 'local')).toBe(true);
-    await userEvent.click(canvasElement.querySelector<HTMLElement>('[data-maka-assistant-target="settings.computer-history"]')!);
+    await userEvent.click(canvas.getByRole('button', { name: '返回电脑历史设置' }));
     settings = within(await canvas.findByRole('region', { name: '电脑历史' }));
+    await waitFor(() => {
+      expect(settings.getByRole('button', { name: '选择摘要模型' })).toHaveFocus();
+      expect(settings.getByRole('button', { name: '选择摘要模型' })).toHaveTextContent('Alternate analysis');
+      expect(pane.scrollTop).toBe(settingsPosition);
+    });
+    expect(writeAnalysisConfig).toHaveBeenCalledTimes(1);
     expect(settings.getByRole('switch', { name: '包含文本内容' })).not.toBeChecked();
     expect(settings.getByRole('switch', { name: '允许模型生成摘要' })).not.toBeChecked();
     expect(args.onSettingsWrite).not.toHaveBeenCalled();

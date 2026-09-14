@@ -22,7 +22,7 @@ import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { Selector } from '@astryxdesign/core/Selector';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { ComputerHistoryClearScope } from '@maka/core/computer-history';
-import { Button, HStack, IconButton, Switch, Text, TextInput, useUiLocale } from '@maka/ui';
+import { Button, HStack, IconButton, Switch, Text, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ArrowRight, Globe, Plus, RefreshCcw, ShieldCheck, Trash2, X } from '@maka/ui/icons';
 import { SettingsField, SettingsPage, SettingsRow, SettingsSection } from '../../../application/contracts/settings-presentation/index.js';
 import { useComputerHistoryApplications } from '../controller/use-computer-history-applications.js';
@@ -33,6 +33,7 @@ import { computerHistorySettingsCopy, normalizeHistoryExclusion } from './comput
 
 type SourceType = 'applications' | 'websites';
 type ConsentKey = 'enabled' | 'captureText' | 'summariesEnabled' | 'summaryTextEnabled';
+const DEFAULT_MODEL = '__maka_history_default_model__';
 
 export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }: {
   onConfigureModel: () => void;
@@ -41,6 +42,8 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
   const locale = useUiLocale();
   const copy = computerHistorySettingsCopy(locale);
   const controller = useComputerHistorySettings();
+  const toast = useToast();
+  const mountedRef = useMountedRef();
   const { status, pending } = controller;
   const recent = useRecentHistoryApplications();
   const metadata = useComputerHistoryApplications([...status?.settings.blockedApplications ?? [], ...recent.applications]);
@@ -48,6 +51,7 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
   const [inputs, setInputs] = useState({ applications: '', websites: '' });
   const [inputError, setInputError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [savedModelKey, setSavedModelKey] = useState<string | null>(null);
   const [scope, setScope] = useState<ComputerHistoryClearScope>('last_hour');
   const [confirmScope, setConfirmScope] = useState<ComputerHistoryClearScope | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
@@ -56,7 +60,24 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
   const busy = pending !== null;
   const unavailable = status && (!status.platformSupported ? copy.unsupported : !status.helperAvailable ? copy.unavailable : null);
   const disabled = busy || !status || Boolean(controller.statusError);
-  const hasModel = Boolean(controller.modelLabel?.trim()) && !controller.modelError;
+  const hasModel = controller.modelAvailable;
+  const model = controller.model;
+  const effectiveModel = model?.models.find((option) => option.key === controller.modelLabel);
+  const defaultModel = model?.models.find((option) => option.key === model.defaultModelKey);
+  const modelOptions = [
+    {
+      value: DEFAULT_MODEL, label: copy.defaultModel,
+      description: defaultModel ? `${defaultModel.connectionName} · ${defaultModel.label}` : copy.modelMissing,
+      disabled: !defaultModel,
+    },
+    ...(model?.models.map((option) => ({
+      value: option.key, label: option.label, description: option.connectionName,
+      disabled: false,
+    })) ?? []),
+  ];
+  if (model?.modelKey && !model.models.some((option) => option.key === model.modelKey)) {
+    modelOptions.push({ value: model.modelKey, label: model.modelKey, description: copy.modelUnavailable, disabled: true });
+  }
   const sources = status ? source === 'applications' ? status.settings.blockedApplications : status.settings.blockedDomains : [];
   const field = source === 'applications' ? 'blockedApplications' : 'blockedDomains';
 
@@ -66,6 +87,19 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
     const saved = await operation();
     if (saved && sequence === feedbackSequence.current) setFeedback(success);
     return saved;
+  }
+
+  async function saveModel(value: string) {
+    const key = value === DEFAULT_MODEL ? '' : value;
+    setSavedModelKey(null);
+    try {
+      const saved = await controller.selectModel(key);
+      if (mountedRef.current && saved) setSavedModelKey(key);
+    } catch (error) {
+      if (!mountedRef.current) {
+        toast.error(copy.modelSaveFailed, error instanceof Error ? error.message : String(error));
+      }
+    }
   }
 
   function saveConsent(key: ConsentKey, value: boolean) {
@@ -139,8 +173,36 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
         {consent('summaryTextEnabled', copy.summaryText, copy.summaryTextHelp.replace('{model}', hasModel ? controller.modelLabel! : copy.modelMissing))}
         <SettingsRow
           label={copy.model}
-          description={<>{copy.modelAuthority}{controller.modelError ? <span role="alert" className="computer-history-settings-error"> {copy.modelReadFailed} {controller.modelError}</span> : null}</>}
-          end={<span className="computer-history-settings-model"><span>{controller.modelError ? copy.modelReadFailed : controller.modelLabel || copy.modelMissing}</span><Button label={copy.configure} icon={<ArrowRight size={16} aria-hidden />} variant="ghost" size="sm" isDisabled={busy} onClick={onConfigureModel} /></span>}
+          description={copy.modelAuthority}
+          end={<span className="computer-history-settings-model" data-computer-history-model>
+            <Selector
+              label={copy.selectModel}
+              isLabelHidden
+              hasSearch
+              width="100%"
+              value={model ? model.modelKey || DEFAULT_MODEL : undefined}
+              placeholder={controller.modelError ? copy.modelReadFailed : copy.modelLoading}
+              options={modelOptions}
+              isLoading={(!model && !controller.modelError) || pending === 'model'}
+              isDisabled={busy || !model || Boolean(controller.modelError)}
+              disabledMessage={pending === 'model' ? copy.modelSaving : controller.modelError ? copy.modelReadFailed : undefined}
+              onChange={(value) => void saveModel(value)}
+            />
+            <span className="computer-history-settings-model-meta">
+              <Text type="supporting" color="secondary">
+                {effectiveModel?.connectionName ?? (model ? copy.modelUnavailable : '')}
+              </Text>
+              <Button label={copy.configure} icon={<ArrowRight size={14} aria-hidden />} variant="ghost" size="sm" isDisabled={busy} onClick={onConfigureModel} />
+            </span>
+            {controller.modelError ? <span role="alert" className="computer-history-settings-error">
+              {copy.modelReadFailed} {controller.modelError}
+              <Button label={copy.modelRetry} icon={<RefreshCcw size={14} aria-hidden />} variant="ghost" size="sm" isDisabled={busy} onClick={() => void controller.refresh()} />
+            </span> : controller.modelSaveError ? <span role="alert" className="computer-history-settings-error">
+              {copy.modelSaveFailed} {controller.modelSaveError}
+            </span> : <Text role="status" type="supporting" color="secondary">
+              {pending === 'model' ? copy.modelSaving : savedModelKey !== null && savedModelKey === model?.modelKey ? copy.modelSaved : model && !hasModel ? copy.modelRequired : ''}
+            </Text>}
+          </span>}
         />
       </SettingsSection>
       <SettingsSection title={copy.exclusions} description={copy.exclusionsHelp} variant="bare">

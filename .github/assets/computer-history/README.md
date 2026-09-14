@@ -195,3 +195,41 @@ deletion removes one fixture row; this UI check does not claim to validate
 backend dependency invalidation. No compositing, retouching or post-capture
 blurring was applied; the background blur is the production dialog backdrop.
 These assets retain the existing authorized feature-branch convention.
+
+## Inline Summary Model Selection
+
+Captured on September 14, 2026 (Asia/Shanghai). The user selected alternative A:
+an inline searchable selector and a separate Manage connections action.
+
+| Images | Viewport | State |
+| --- | --- | --- |
+| `model-{before,after}-1240-{light,dark}.png` | 1240 x 820 | Matched analysis section, scrollTop 282 |
+| `model-{before,after}-390-{light,dark}.png` | 390 x 844 | Matched analysis section, scrollTop 482 |
+| `model-after-1240-light-selector.png` | 1240 x 820 | Open model selector |
+| `model-after-390-dark-selector.png` | 390 x 844 | Open model selector, narrow/dark |
+| `model-manage-local-1240-light.png` | 1240 x 820 | Models destination with contextual return |
+| `model-manage-local-390-light.png` | 390 x 844 | Models destination with wrapped Host selector |
+
+Both revisions render production `SettingsModal`, `ComputerHistorySettingsPage`,
+and Desktop adapters against the same in-memory synthetic bridge. The baseline
+freezes changed source files from `ef78153f396252648bfb9046b2f59f694dd4f539`.
+The fixture selects a remote settings profile while History resolves the local
+Host, exposes invented Coproxy Astra/Luna entries, and enables all four consent
+switches. Paired images use identical content, viewport, scroll position,
+`zh-CN`, Asia/Shanghai, DPR 1, 100% zoom, and fixed clock
+`2026-09-14T00:30:00Z`.
+
+The final browser matrix passed 18 groups: matched light/dark desktop/narrow
+rendering, search/dismiss without writes, exact model-only saves, canonical
+default, missing/unavailable models, catalog retry, local Host failure without
+remote fallback, three locales, contextual return with scroll/focus restoration,
+and deferred save success/failure across remount. There were no unexpected
+browser errors or external requests. All 39 local QA screenshots were checked
+for geometry; the selected public images were visually inspected.
+
+The ignored rerunnable harness is
+`docs/local/computer-history-production-qa/verify-model-production.mjs`.
+No native capture, model request, credentials, or private history were used for
+these images. They are copied unchanged from Playwright output. The GitHub CLI
+does not expose a native attachment option; these files reuse this PR's existing
+feature-branch asset convention.

@@ -66,7 +66,11 @@ import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
-import * as ModuleHub from '../features/module-hub/index.js';
+import {
+  ComputerHistorySettingsPage,
+  HistoryModelSettingsNavigation,
+  type HistoryModelSettingsNavigationState,
+} from '../features/module-hub/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { ProjectsSettingsPage } from './projects-settings-page';
@@ -83,6 +87,7 @@ import { SettingsSkeleton } from './settings-skeleton';
 import {
   SETTINGS_NAV,
   computerHistoryModelSettingsProfile,
+  computerHistorySettingsBackLabel,
   groupedNav,
   navLabel,
   readLastSettingsSection,
@@ -183,10 +188,15 @@ export function SettingsSurface(props: SettingsSurfaceProps) {
   return (
     <ConnectionSettingsServicesConsumer>
       {(connectionSettingsServices) => (
-        <SettingsSurfaceContent
-          {...props}
-          connectionSettingsServices={connectionSettingsServices}
-        />
+        <HistoryModelSettingsNavigation initialSection={() => props.request?.section ?? readLastSettingsSection()}>
+          {(navigation) => (
+            <SettingsSurfaceContent
+              {...props}
+              navigation={navigation}
+              connectionSettingsServices={connectionSettingsServices}
+            />
+          )}
+        </HistoryModelSettingsNavigation>
       )}
     </ConnectionSettingsServicesConsumer>
   );
@@ -195,13 +205,15 @@ export function SettingsSurface(props: SettingsSurfaceProps) {
 function SettingsSurfaceContent(
   props: SettingsSurfaceProps & {
     readonly connectionSettingsServices: ConnectionSettingsServices;
+    readonly navigation: HistoryModelSettingsNavigationState;
   },
 ) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
   const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
+  const { navigation } = props;
+  const { section, navigate: setSection, mainPaneRef } = navigation;
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -219,41 +231,21 @@ function SettingsSurfaceContent(
     setCreateProviderRequest(props.initialCreateProviderType);
   }, [props.initialCreateProviderType]);
 
-  // When the parent updates the navigation request (e.g. the palette opens
-  // Settings with a different section while it's already mounted), reflect
-  // its section into the local state.
+  // Parent navigation requests also retire any contextual history return.
   useEffect(() => {
-    if (props.request?.section && props.request.section !== section) {
-      setSection(props.request.section);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.request?.section]);
+    if (props.request?.section) setSection(props.request.section);
+  }, [props.request?.section, setSection]);
 
-  // Focus follows the active section's nav button: on mount, and whenever
-  // `section` changes (nav click — a native-focus no-op — or a ⌘K palette
-  // jump while the modal is already open, where nothing else moves focus).
-  // Keyed on `section`, NOT on any parent callback prop: parent callbacks
-  // (e.g. onClose) are recreated on every AppShell render — which happens
-  // per streamed token — and keying a focus side effect on one yanks focus
-  // away from anything the user opened inside Settings dozens of times a
-  // second while a session streams.
+  // Streaming recreates parent callbacks; only section changes reclaim focus.
   useEffect(() => {
-    props.initialFocusRef.current?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref identity is stable; re-run only on section change.
+    if (!navigation.restoringHistory) props.initialFocusRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- focus follows section changes only.
   }, [section]);
 
-  // PR-MODEL-OAUTH-SECTION-0: ProvidersPanel's OAuth cards dispatch a
-  // `maka:jumpToSettingsSection` window event to navigate between
-  // Settings sections without threading another prop through. The event
-  // payload is the destination SettingsSection id.
+  // ProvidersPanel's OAuth cards use this event to jump between sections.
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ section?: SettingsSection }>).detail;
-      // PR-OAUTH-CARD-LIVE-STATE-0: validate against SETTINGS_NAV so
-      // a dispatched section id that doesn't match any nav item falls
-      // through to the default fallback page silently. Previously
-      // any truthy string was accepted; a typo would land the user
-      // on "该设置页已纳入 Maka 设置树…" with no clear cause.
       if (
         detail?.section &&
         SETTINGS_NAV.some((item) => item.id === detail.section)
@@ -263,11 +255,12 @@ function SettingsSurfaceContent(
     };
     window.addEventListener('maka:jumpToSettingsSection', handler);
     return () => window.removeEventListener('maka:jumpToSettingsSection', handler);
-  }, []);
+  }, [setSection]);
 
   useEffect(() => {
     safeLocalStorageSet('maka-settings-section-v1', section);
   }, [section]);
+
   const defaultSettings = useMemo(() => createDefaultSettings(), []);
   const snapshotCache = useMemo(
     () => props.snapshotCache ?? settingsSnapshotCacheFor(window.maka),
@@ -428,7 +421,7 @@ function SettingsSurfaceContent(
     }
     selectedProfileChangedByUserRef.current = true;
     commitSelectedRuntimeHostProfile(profileId);
-    setSection('daily-review');
+    navigation.openHistoryModels();
   }
   const selectedRuntimeHostSettings = settingsResourceSnapshot(
     runtimeHostSettings,
@@ -907,7 +900,7 @@ function SettingsSurfaceContent(
                           }
                         : undefined}
                       endContent={item.badge ? <Badge variant="neutral" label={item.badge} /> : undefined}
-                      onClick={() => setSection(item.id)}
+                      onClick={() => navigation.navigate(item.id)}
                     />
                   ))}
                 </SideNavSection>
@@ -917,6 +910,7 @@ function SettingsSurfaceContent(
         )}
         content={(
           <section
+            ref={mainPaneRef}
             className="settingsMainPane"
             data-agents-view="settings"
             role="main"
@@ -937,6 +931,17 @@ function SettingsSurfaceContent(
               contentWidth={920}
               header={(
                 <LayoutHeader padding={6}>
+                  {navigation.canReturnToHistory ? (
+                    <Button
+                      data-computer-history-model-back
+                      className="settingsHistoryModelBack"
+                      variant="ghost"
+                      size="sm"
+                      label={computerHistorySettingsBackLabel(locale)}
+                      icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
+                      onClick={navigation.returnToHistory}
+                    />
+                  ) : null}
                   <div className="settingsPageHeader">
                     <div className="settingsPageHeaderTitleStack">
                       <h2>{headerCopy.label}</h2>
@@ -952,7 +957,7 @@ function SettingsSurfaceContent(
                           value={selectedProfileId ?? runtimeHosts?.defaultProfileId ?? 'local'}
                           options={runtimeHostOptions}
                           isDisabled={!runtimeHosts}
-                          width={220}
+                          width="100%"
                           onChange={(profileId) => {
                             selectedProfileChangedByUserRef.current = true;
                             commitSelectedRuntimeHostProfile(profileId);
@@ -1263,7 +1268,7 @@ function SettingsPageBody(props: {
       return <DailyReviewSettingsPage connections={props.connections} />;
     case 'computer-history':
       return (
-        <ModuleHub.ComputerHistorySettingsPage
+        <ComputerHistorySettingsPage
           onConfigureModel={props.onConfigureComputerHistoryModel}
           onOpenHistory={props.onOpenComputerHistory}
         />

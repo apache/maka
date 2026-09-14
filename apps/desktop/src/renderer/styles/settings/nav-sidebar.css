@@ -29,6 +29,12 @@
   -webkit-app-region: no-drag;
 }
 
+.settingsHistoryModelBack {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  text-align: start;
+}
 
 
 .settingsLoadingSkeleton {
@@ -76,6 +82,7 @@
      Electron traffic-light clearance shared with the settings navigation. */
   padding-top: var(--space-6);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   /* X close button moved to the sidebar `返回应用` — header hosts the
      page title only, left-aligned. */
@@ -85,12 +92,16 @@
 
 .settingsPageHeaderTitleStack {
   display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
   gap: var(--space-1-5);
 }
 
 .settingsRuntimeHostSelector {
   margin-left: auto;
   min-width: 0;
+  width: 220px;
+  max-width: 100%;
 }
 
 .settingsPageHeader h2 {

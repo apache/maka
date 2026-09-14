@@ -20,8 +20,17 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ComputerHistoryApplication } from '@maka/core/computer-history';
-import type { DesktopRuntimeHostProfileChangedEvent } from '../../preload/bridge-contract.js';
-import type { ModuleHubRuntimeHostRef } from '../../renderer/features/module-hub/testing.js';
+import type { DailyReviewConfig } from '@maka/core/daily-review';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import type {
+  DesktopRuntimeHostProfileChangedEvent,
+  DesktopRuntimeHostProfileSnapshot,
+} from '../../preload/bridge-contract.js';
+import type {
+  ComputerHistoryAnalysisModel,
+  ModuleHubRuntimeHostRef,
+} from '../../renderer/features/module-hub/index.js';
 import {
   createDesktopModuleHubServices,
   type DesktopModuleHubBridge,
@@ -42,6 +51,82 @@ function methodRecorder(calls: Call[], prefix: string) {
             },
     },
   );
+}
+
+const LOCAL_ANALYSIS_HOST = { profileId: 'local-profile', hostId: 'local-host' };
+
+function analysisConnection(overrides: Partial<ProjectedLlmConnection> = {}): ProjectedLlmConnection {
+  return {
+    connectionId: 'connection-local',
+    slug: 'local-provider',
+    name: 'Coproxy',
+    providerType: 'openai',
+    enabled: true,
+    defaultModel: 'old-model',
+    enabledModelIds: ['old-model', 'next-model'],
+    catalogEntries: [
+      { id: 'old-model', displayName: ' Current analysis ', canUseAsChatDefault: true, isDefault: true, supportsVision: false, thinkingLevels: [] },
+      { id: 'next-model', displayName: 'Next analysis', canUseAsChatDefault: true, isDefault: false, supportsVision: false, thinkingLevels: [] },
+    ],
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides,
+  };
+}
+
+function analysisFixture() {
+  const calls: Call[] = [];
+  const state = {
+    profiles: {
+      defaultProfileId: 'remote',
+      entries: [
+        {
+          profile: { id: 'remote', name: 'Remote', kind: 'remote', rootId: 'remote-root', transport: { kind: 'tls', url: 'https://example.invalid' } },
+          enabled: true, isDefault: true, readiness: 'ready', hostId: 'remote-host',
+        },
+        {
+          profile: { id: LOCAL_ANALYSIS_HOST.profileId, name: 'Local', kind: 'local' },
+          enabled: true, isDefault: false, readiness: 'ready', hostId: LOCAL_ANALYSIS_HOST.hostId,
+        },
+      ],
+    } as DesktopRuntimeHostProfileSnapshot,
+    config: { enabled: true, executeTime: '09:30', modelKey: 'local-provider::old-model' } as DailyReviewConfig,
+    connections: [analysisConnection()],
+    beforeWrite: async () => {},
+    beforeCatalog: async () => {},
+  };
+  const bridge = {
+    runtimeHostProfiles: {
+      getDefaultHost: async () => { assert.fail('History must not use the selected/default remote Host'); },
+      getSnapshot: async () => {
+        calls.push({ name: 'profiles', args: [] });
+        return state.profiles;
+      },
+    },
+    dailyReview: {
+      getConfig: async (host: ModuleHubRuntimeHostRef) => {
+        calls.push({ name: 'config', args: [host] });
+        return { ...state.config };
+      },
+      setConfig: async (patch: Partial<DailyReviewConfig>, host: ModuleHubRuntimeHostRef) => {
+        calls.push({ name: 'save', args: [patch, host] });
+        await state.beforeWrite();
+        state.config = { ...state.config, ...patch };
+        return { ...state.config };
+      },
+    },
+    connections: {
+      getSnapshot: async (sessionId: string | undefined, host: ModuleHubRuntimeHostRef) => {
+        calls.push({ name: 'catalog', args: [sessionId, host] });
+        await state.beforeCatalog();
+        return { connections: state.connections, defaultConnection: 'local-provider' };
+      },
+    },
+    computerHistory: {
+      updateSettings: async () => { assert.fail('Selecting a model must not change History consent'); },
+    },
+  } as unknown as DesktopModuleHubBridge;
+  return { state, calls, bridge, service: createDesktopModuleHubServices(bridge).computerHistory };
 }
 
 describe('createDesktopModuleHubServices', () => {
@@ -120,98 +205,214 @@ describe('createDesktopModuleHubServices', () => {
     await assert.rejects(services.computerHistory.revealSummary('10min-1789273200000'), (error) => error === failure);
   });
 
-  it('reads the analysis model from the ready local Host, never a selected remote', async () => {
-    const modelKey = ' provider::local-model ';
-    let readiness = 'ready';
-    const targets: unknown[] = [];
-    const services = createDesktopModuleHubServices({
-      runtimeHostProfiles: {
-        getDefaultHost: async () => { throw new Error('Must not use the default'); },
-        getSnapshot: async () => ({
-          entries: [
-            { profile: { id: 'remote', kind: 'remote' }, readiness: 'ready', hostId: 'remote-host' },
-            { profile: { id: 'local-profile', kind: 'local' }, readiness, hostId: 'local-host' },
-          ],
-        }),
-      },
-      dailyReview: {
-        getConfig: async (target: unknown) => {
-          targets.push(target);
-          return { modelKey };
-        },
-      },
-      connections: {
-        getSnapshot: async () => { assert.fail('An explicit model does not require the default catalog'); },
-      },
-    } as unknown as DesktopModuleHubBridge);
-    assert.equal(await services.computerHistory.getAnalysisModel(), 'provider::local-model');
-    readiness = 'unavailable';
-    await assert.rejects(services.computerHistory.getAnalysisModel(), /Local Runtime Host is unavailable/);
-    assert.deepEqual(targets, [
-      { profileId: 'local-profile', hostId: 'local-host' },
+  it('reads the selection and Host catalog from the ready local Host, never a selected remote', async () => {
+    const { state, calls, service } = analysisFixture();
+    state.config = { ...state.config, modelKey: ' local-provider::old-model ' };
+    const result: ComputerHistoryAnalysisModel = await service.getAnalysisModel();
+    assert.deepEqual(result, {
+      host: LOCAL_ANALYSIS_HOST,
+      modelKey: 'local-provider::old-model',
+      defaultModelKey: 'local-provider::old-model',
+      models: [
+        { key: 'local-provider::old-model', label: 'Current analysis', connectionName: 'Coproxy' },
+        { key: 'local-provider::next-model', label: 'Next analysis', connectionName: 'Coproxy' },
+      ],
+    });
+    assert.deepEqual(calls.filter((call) => call.name !== 'profiles'), [
+      { name: 'config', args: [LOCAL_ANALYSIS_HOST] },
+      { name: 'catalog', args: [undefined, LOCAL_ANALYSIS_HOST] },
     ]);
   });
 
-  it('resolves an empty analysis key through the canonical local default, not the selected remote', async () => {
-    const calls: Call[] = [];
-    const localTarget = { profileId: 'local-profile', hostId: 'local-host' };
-    const services = createDesktopModuleHubServices({
-      runtimeHostProfiles: {
-        getDefaultHost: async () => { assert.fail('Selected remote is not the history model authority'); },
-        getSnapshot: async () => ({
-          defaultProfileId: 'remote',
-          entries: [
-            { profile: { id: 'remote', kind: 'remote' }, readiness: 'ready', hostId: 'remote-host', isDefault: true },
-            { profile: { id: 'local-profile', kind: 'local' }, readiness: 'ready', hostId: 'local-host', isDefault: false },
-          ],
+  it('rejects missing, disabled, unready, and unidentified local Hosts before reading or writing models', async () => {
+    for (const condition of ['missing', 'disabled', 'connecting', 'reconnecting', 'unavailable', 'unidentified'] as const) {
+      const { state, calls, service } = analysisFixture();
+      state.profiles = {
+        ...state.profiles,
+        entries: state.profiles.entries.flatMap((entry) => {
+          if (entry.profile.kind !== 'local') return [entry];
+          if (condition === 'missing') return [];
+          return [{
+            ...entry,
+            enabled: condition !== 'disabled',
+            readiness: ['connecting', 'reconnecting', 'unavailable'].includes(condition)
+              ? condition as 'connecting' | 'reconnecting' | 'unavailable' : 'ready',
+            hostId: condition === 'unidentified' ? undefined : entry.hostId,
+          }];
         }),
-      },
-      dailyReview: {
-        getConfig: async (target: unknown) => { calls.push({ name: 'config', args: [target] }); return { modelKey: ' ' }; },
-      },
-      connections: {
-        getSnapshot: async (sessionId: unknown, target: unknown) => {
-          calls.push({ name: 'catalog', args: [sessionId, target] });
-          return {
-            connections: [
-              { slug: 'non-default', defaultModel: '' },
-              { slug: 'local-provider', defaultModel: 'local-model' },
-            ],
-          };
-        },
-      },
-    } as unknown as DesktopModuleHubBridge);
-    assert.equal(await services.computerHistory.getAnalysisModel(), 'local-provider::local-model');
-    assert.deepEqual(calls, [
-      { name: 'config', args: [localTarget] },
-      { name: 'catalog', args: [undefined, localTarget] },
+      };
+      await assert.rejects(service.getAnalysisModel(), /Local Runtime Host is unavailable/, condition);
+      await assert.rejects(service.setAnalysisModel('local-provider::next-model', LOCAL_ANALYSIS_HOST), /Local Runtime Host is unavailable/, condition);
+      assert.ok(calls.every((call) => call.name === 'profiles'), condition);
+    }
+  });
+
+  it('offers only enabled Host catalog entries with safe display names and no invented fallback', async () => {
+    const { state, service } = analysisFixture();
+    const hostEntries = analysisConnection().catalogEntries;
+    state.connections = [
+      analysisConnection({
+        enabledModelIds: ['old-model', 'not-chat', 'no-entry'],
+        catalogEntries: [...hostEntries, { ...hostEntries[1]!, id: 'not-chat', canUseAsChatDefault: false }],
+      }),
+      analysisConnection({
+        slug: 'second-account', name: 'private@example.invalid', providerType: 'openai-codex',
+        defaultModel: '', enabledModelIds: ['host-only'],
+        catalogEntries: [{ ...hostEntries[1]!, id: 'host-only', displayName: ' ' }],
+      }),
+      analysisConnection({ slug: 'disabled', enabled: false }),
+      analysisConnection({ slug: 'unknown', providerType: 'unknown-provider' as ProjectedLlmConnection['providerType'] }),
+      analysisConnection({ slug: 'empty-host-catalog', catalogEntries: [] }),
+    ];
+    const result = await service.getAnalysisModel();
+    assert.deepEqual(result.models, [
+      { key: 'local-provider::old-model', label: 'Current analysis', connectionName: 'Coproxy' },
+      { key: 'second-account::host-only', label: 'host-only', connectionName: 'OpenAI OAuth' },
     ]);
+    assert.equal(JSON.stringify(result).includes('private@example.invalid'), false);
   });
 
-  it('returns no analysis model only when the local catalog has no canonical default target', async () => {
-    let connections: { slug: string; defaultModel: string; enabledModelIds?: string[] }[] = [];
-    const services = createDesktopModuleHubServices({
-      runtimeHostProfiles: {
-        getSnapshot: async () => ({ entries: [{ profile: { id: 'local', kind: 'local' }, readiness: 'ready', hostId: 'local-host' }] }),
-      },
-      dailyReview: { getConfig: async () => ({ modelKey: '' }) },
-      connections: { getSnapshot: async () => ({ connections }) },
-    } as unknown as DesktopModuleHubBridge);
-    assert.equal(await services.computerHistory.getAnalysisModel(), null);
-    connections = [{ slug: 'configured', defaultModel: '', enabledModelIds: ['available-but-not-default'] }];
-    assert.equal(await services.computerHistory.getAnalysisModel(), null, 'an available model is not an implicit default');
+  it('keeps follow-default distinct and recognizes only an actually offerable canonical default', async () => {
+    const { state, service } = analysisFixture();
+    state.config = { ...state.config, modelKey: ' ' };
+    assert.equal((await service.getAnalysisModel()).modelKey, '');
+    assert.equal((await service.getAnalysisModel()).defaultModelKey, 'local-provider::old-model');
+    for (const connection of [
+      analysisConnection({ defaultModel: '' }),
+      analysisConnection({ defaultModel: 'removed-model' }),
+      analysisConnection({
+        catalogEntries: analysisConnection().catalogEntries.map((entry) =>
+          entry.id === 'old-model' ? { ...entry, canUseAsChatDefault: false } : entry),
+      }),
+      analysisConnection({ enabled: false }),
+    ]) {
+      state.connections = [connection];
+      assert.equal((await service.getAnalysisModel()).defaultModelKey, null);
+      await assert.rejects(service.setAnalysisModel('', LOCAL_ANALYSIS_HOST), /no longer available/);
+    }
+    state.connections = [];
+    assert.deepEqual(await service.getAnalysisModel(), {
+      host: LOCAL_ANALYSIS_HOST, modelKey: '', defaultModelKey: null, models: [],
+    });
   });
 
-  it('propagates local default catalog read failure instead of reporting an unconfigured model', async () => {
-    const failure = new Error('Local connection catalog unavailable');
-    const services = createDesktopModuleHubServices({
-      runtimeHostProfiles: {
-        getSnapshot: async () => ({ entries: [{ profile: { id: 'local', kind: 'local' }, readiness: 'ready', hostId: 'local-host' }] }),
-      },
-      dailyReview: { getConfig: async () => ({ modelKey: '' }) },
-      connections: { getSnapshot: async () => { throw failure; } },
-    } as unknown as DesktopModuleHubBridge);
-    await assert.rejects(services.computerHistory.getAnalysisModel(), (error) => error === failure);
+  it('preserves an unavailable saved key without offering it or accepting it on save', async () => {
+    const { state, calls, service } = analysisFixture();
+    state.config = { ...state.config, modelKey: 'removed-provider::removed-model' };
+    const result = await service.getAnalysisModel();
+    assert.equal(result.modelKey, 'removed-provider::removed-model');
+    assert.equal(result.models.some((model) => model.key === result.modelKey), false);
+    await assert.rejects(service.setAnalysisModel(result.modelKey, result.host), /no longer available/);
+    state.connections = [analysisConnection({ enabledModelIds: ['old-model'] })];
+    await assert.rejects(service.setAnalysisModel('local-provider::next-model', result.host), /no longer available/);
+    assert.equal(calls.some((call) => call.name === 'save'), false);
+  });
+
+  it('saves only modelKey to the local Daily Review authority, preserving schedule and History consent', async () => {
+    const { state, calls, service } = analysisFixture();
+    const snapshot = await service.getAnalysisModel();
+    const updated = await service.setAnalysisModel('local-provider::next-model', snapshot.host);
+    assert.equal(updated.modelKey, 'local-provider::next-model');
+    assert.deepEqual(updated.host, LOCAL_ANALYSIS_HOST);
+    assert.deepEqual(state.config, { enabled: true, executeTime: '09:30', modelKey: 'local-provider::next-model' });
+    const reset = await service.setAnalysisModel('', snapshot.host);
+    assert.equal(reset.modelKey, '');
+    assert.equal(reset.defaultModelKey, 'local-provider::old-model');
+    assert.deepEqual(calls.filter((call) => call.name === 'save'), [
+      { name: 'save', args: [{ modelKey: 'local-provider::next-model' }, LOCAL_ANALYSIS_HOST] },
+      { name: 'save', args: [{ modelKey: '' }, LOCAL_ANALYSIS_HOST] },
+    ]);
+    assert.ok(calls.filter((call) => call.name === 'config').every((call) =>
+      (call.args[0] as ModuleHubRuntimeHostRef).profileId === LOCAL_ANALYSIS_HOST.profileId));
+    assert.ok(calls.filter((call) => call.name === 'catalog').every((call) =>
+      (call.args[1] as ModuleHubRuntimeHostRef).profileId === LOCAL_ANALYSIS_HOST.profileId));
+  });
+
+  it('rejects remote and stale snapshot targets and a Host changed during catalog reads', async () => {
+    const { state, calls, service } = analysisFixture();
+    const snapshot = await service.getAnalysisModel();
+    await assert.rejects(service.setAnalysisModel('local-provider::next-model', { profileId: 'remote', hostId: 'remote-host' }), /Host changed/);
+    state.profiles = {
+      ...state.profiles,
+      entries: state.profiles.entries.map((entry) => entry.profile.kind === 'local' ? { ...entry, hostId: 'replacement' } : entry),
+    };
+    await assert.rejects(service.setAnalysisModel('local-provider::next-model', snapshot.host), /Host changed/);
+    const replacement = await service.getAnalysisModel();
+    state.beforeCatalog = async () => {
+      state.profiles = { ...state.profiles, entries: state.profiles.entries.filter((entry) => entry.profile.kind !== 'local') };
+    };
+    await assert.rejects(service.setAnalysisModel('local-provider::next-model', replacement.host), /Local Runtime Host is unavailable/);
+    assert.equal(calls.some((call) => call.name === 'save'), false);
+  });
+
+  it('rejects a stale read if the local Host changes before the snapshot completes', async () => {
+    const { state, service } = analysisFixture();
+    state.beforeCatalog = async () => {
+      state.profiles = {
+        ...state.profiles,
+        entries: state.profiles.entries.map((entry) => entry.profile.kind === 'local' ? { ...entry, hostId: 'replacement' } : entry),
+      };
+    };
+    await assert.rejects(service.getAnalysisModel(), /Host changed/);
+  });
+
+  it('makes returning readers wait through an in-flight save and rejects duplicate saves', { timeout: 2_000 }, async () => {
+    const { state, calls, service } = analysisFixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    state.beforeWrite = () => { entered.resolve(); return release.promise; };
+    const saving = service.setAnalysisModel('local-provider::next-model', LOCAL_ANALYSIS_HOST);
+    await assert.rejects(service.setAnalysisModel('', LOCAL_ANALYSIS_HOST), /already in progress/);
+    await entered.promise;
+    const readsBefore = calls.filter((call) => call.name === 'config').length;
+    let settled = false;
+    const returning = service.getAnalysisModel().finally(() => { settled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(calls.filter((call) => call.name === 'config').length, readsBefore);
+    release.resolve();
+    const [saved, reread] = await Promise.all([saving, returning]);
+    assert.equal(saved.modelKey, 'local-provider::next-model');
+    assert.equal(reread.modelKey, saved.modelKey);
+    assert.equal(calls.filter((call) => call.name === 'save').length, 1);
+  });
+
+  it('exposes failed writes while waiting readers recover persisted state and subsequent saves remain usable', { timeout: 2_000 }, async () => {
+    const { state, service } = analysisFixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const failure = new Error('Model write failed');
+    state.beforeWrite = async () => { entered.resolve(); await release.promise; throw failure; };
+    const saving = assert.rejects(
+      service.setAnalysisModel('local-provider::next-model', LOCAL_ANALYSIS_HOST),
+      (error) => error === failure,
+    );
+    await entered.promise;
+    const returning = service.getAnalysisModel();
+    release.resolve();
+    await saving;
+    assert.equal((await returning).modelKey, 'local-provider::old-model');
+    state.beforeWrite = async () => {};
+    assert.equal((await service.setAnalysisModel('local-provider::next-model', LOCAL_ANALYSIS_HOST)).modelKey, 'local-provider::next-model');
+  });
+
+  it('propagates fresh config/catalog failures instead of reporting an absent model or a successful save', async () => {
+    const { state, bridge, service } = analysisFixture();
+    const failure = new Error('Catalog read failed');
+    state.beforeCatalog = async () => { throw failure; };
+    await assert.rejects(service.getAnalysisModel(), (error) => error === failure);
+    state.beforeCatalog = async () => {};
+    state.beforeWrite = async () => {
+      state.beforeCatalog = async () => { throw failure; };
+    };
+    await assert.rejects(service.setAnalysisModel('local-provider::next-model', LOCAL_ANALYSIS_HOST), (error) => error === failure);
+    assert.equal(state.config.modelKey, 'local-provider::next-model', 'write can commit even when confirmation fails');
+    await assert.rejects(service.getAnalysisModel(), (error) => error === failure);
+    state.beforeCatalog = async () => {};
+    assert.equal((await service.getAnalysisModel()).modelKey, 'local-provider::next-model');
+    bridge.dailyReview.getConfig = async () => { throw failure; };
+    await assert.rejects(service.getAnalysisModel(), (error) => error === failure);
   });
 
   it('maps host-scoped Skills, Scheduled Tasks, Daily Review, and clipboard operations', async () => {

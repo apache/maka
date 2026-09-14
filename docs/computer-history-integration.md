@@ -92,12 +92,25 @@ recording status. Pause/resume also preserves the open document.
 Settings reads status and analysis-model configuration independently. An
 unreadable archive does not prevent disabling collection or clearing data.
 Recent-application discovery is an optional bounded timeline read, independent
-of settings health. Model configuration explicitly selects the local Runtime
-Host before opening Daily Review settings; a remote task target cannot redirect
-Computer History's model authority. An empty analysis model key resolves through
-that local Host's canonical default model, matching execution admission; catalog
-failures remain errors rather than appearing as missing configuration. History
-viewing does not read model settings.
+of settings health. Recording-setting readback does not wait for the model
+catalog, including when the catalog stalls.
+
+The summary model is selected in Computer History settings from the ready local
+Runtime Host's offerable catalog. Searching or dismissing the selector does not
+save. Selecting a model writes only the shared Daily Review `modelKey`; the page
+discloses that this changes the model for both features. It does not change
+recording consent or Daily Review scheduling. An empty key follows the local
+Host's canonical default rather than choosing the first available model. A saved
+unavailable key stays visible but cannot authorize new summary consent.
+Catalog failures remain errors with retry and connection-management controls.
+
+Manage connections opens Models settings for this Mac, with a contextual return
+to Computer History settings. A selected remote task or settings profile cannot
+redirect the history model's reads or writes. The adapter revalidates Host
+identity and catalog availability before saving, rejects concurrent history
+model saves, and makes returning readers wait for its pending save to settle.
+Failures after leaving the settings page are reported through the app's toast.
+History viewing does not read model settings.
 
 Application names and icons are resolved locally from bundle identifiers using
 Launch Services and `NSWorkspace`. The helper returns a 48px PNG, never the

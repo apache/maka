@@ -22,11 +22,11 @@ import { test, type TestContext } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ComputerHistorySettings, ComputerHistoryStatus } from '@maka/core/computer-history';
 import {
-  ComputerHistorySettingsPage, createFakeModuleHubServices, ModuleHubServicesProvider,
+  ComputerHistorySettingsPage, createFakeComputerHistoryAnalysisModel, createFakeModuleHubServices, ModuleHubServicesProvider,
   type ModuleHubServices,
 } from '../../renderer/features/module-hub/testing.js';
 
@@ -69,7 +69,10 @@ function harness(t: TestContext, overrides: Partial<ModuleHubServices['computerH
     computerHistory: {
       ...createFakeModuleHubServices().computerHistory,
       status: async () => structuredClone(status),
-      getAnalysisModel: async () => 'coproxy::gpt-6-astra',
+      getAnalysisModel: async () => createFakeComputerHistoryAnalysisModel({
+        modelKey: 'coproxy::gpt-6-astra',
+        models: [{ key: 'coproxy::gpt-6-astra', label: 'GPT-6 Astra', connectionName: 'Coproxy' }],
+      }),
       timeline: async () => { throw new Error('Synthetic archive unavailable'); },
       updateSettings: async (patch) => {
         patches.push(patch);
@@ -86,7 +89,9 @@ function harness(t: TestContext, overrides: Partial<ModuleHubServices['computerH
     render: () => act(async () => root.render(createElement(LocaleProvider, {
       locale,
       children: createElement(AstryxLocaleProvider, {
-        children: createElement(ModuleHubServicesProvider, { services }, createElement(ComputerHistorySettingsPage, { onConfigureModel() {} })),
+        children: createElement(ToastProvider, {
+          children: createElement(ModuleHubServicesProvider, { services }, createElement(ComputerHistorySettingsPage, { onConfigureModel() {} })),
+        }),
       }),
     }))),
     control(label: string) {
@@ -136,7 +141,12 @@ for (const [locale, text, summary, capture] of [
 
 test('missing or failed model prevents enabling but still permits revoking consent with an unavailable helper', async (t) => {
   let modelFails = false;
-  const h = harness(t, { getAnalysisModel: async () => { if (modelFails) throw new Error('Model read failed'); return null; } });
+  const h = harness(t, {
+    getAnalysisModel: async () => {
+      if (modelFails) throw new Error('Model read failed');
+      return createFakeComputerHistoryAnalysisModel();
+    },
+  });
   h.setStatus({ platformSupported: false, helperAvailable: false });
   await h.render();
   const text = h.control('Use recorded text in summaries');

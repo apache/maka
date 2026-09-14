@@ -26,7 +26,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import type { ComputerHistoryStatus, ComputerHistoryTimeline, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import {
-  ComputerHistoryPage, ComputerHistorySettingsPage, createFakeModuleHubServices,
+  ComputerHistoryPage, ComputerHistorySettingsPage, createFakeComputerHistoryAnalysisModel, createFakeModuleHubServices,
   ModuleHubServicesProvider, type ModuleHubServices,
 } from '../../renderer/features/module-hub/testing.js';
 
@@ -171,7 +171,7 @@ for (const page of ['settings', 'history'] as const) {
       computerHistory: {
         ...createFakeModuleHubServices().computerHistory,
         status: async () => STATUS,
-        getAnalysisModel: async () => null,
+        getAnalysisModel: async () => createFakeComputerHistoryAnalysisModel(),
         timeline: async () => ({ status: STATUS, entries: deleted ? [entry('b')] : [entry('a'), entry('b')] }),
         detail: async (id) => ({ entry: entry(id), events: [], eventTotal: 0, rawAvailable: false, truncated: false }),
         clear: remove, deleteEntry: remove, applications: async () => [],

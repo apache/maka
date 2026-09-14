@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModuleHubServices } from "./ports.js";
+import type { ComputerHistoryAnalysisModel, ModuleHubServices } from "./ports.js";
 import type { NavSelection } from "@maka/ui";
 import type { ModuleHubHostModel } from "./controller/use-module-hub-controller.js";
 import type { HistoryDraftHostInput } from "./controller/use-computer-history-draft.js";
@@ -32,6 +32,7 @@ export { useComputerHistorySettings, useRecentHistoryApplications } from "./cont
 export { normalizeHistoryExclusion } from "./ui/computer-history-settings-copy.js";
 export { useComputerHistoryApplications } from "./controller/use-computer-history-applications.js";
 export { useHistorySettingsFocus } from "./ui/use-history-settings-focus.js";
+export { useHistoryModelSettingsNavigation } from "./ui/history-model-settings-navigation.js";
 
 export { ModuleHubServicesProvider } from "./services-context.js";
 export type { ModuleHubServices } from "./ports.js";
@@ -77,6 +78,18 @@ const noopSubscription = (): (() => void) => () => undefined;
 const notConfigured = (operation: string): never => {
   throw new Error(`Fake ${operation} is not configured`);
 };
+
+export function createFakeComputerHistoryAnalysisModel(
+  overrides: Partial<ComputerHistoryAnalysisModel> = {},
+): ComputerHistoryAnalysisModel {
+  return {
+    host: { profileId: "local", hostId: "local" },
+    modelKey: "",
+    defaultModelKey: null,
+    models: [],
+    ...overrides,
+  };
+}
 
 export function createFakeHistoryDraftHostInput(
   overrides: Partial<HistoryDraftHostInput> = {},
@@ -224,6 +237,7 @@ export function createFakeModuleHubServices(
       deleteEntry: async () => notConfigured("computerHistory.deleteEntry"),
       retrySummary: async () => notConfigured("computerHistory.retrySummary"),
       getAnalysisModel: async () => notConfigured("computerHistory.getAnalysisModel"),
+      setAnalysisModel: async () => notConfigured("computerHistory.setAnalysisModel"),
     },
     clipboard: {
       writeText: async () => undefined,

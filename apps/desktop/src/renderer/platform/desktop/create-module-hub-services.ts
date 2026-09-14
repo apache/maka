@@ -17,9 +17,12 @@
  * under the License.
  */
 
+import { offerableCatalogEntries, providerDefaultsOf, providerMenuLabel } from '@maka/core/llm-connections';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type {
+  ComputerHistoryAnalysisModel,
   ModuleHubClipboardService,
+  ModuleHubRuntimeHostRef,
   ModuleHubServices,
 } from '../../features/module-hub/index.js';
 
@@ -50,6 +53,57 @@ export function createDesktopModuleHubServices(
   const clientSettingsSupported =
     typeof getClientSettings === 'function' &&
     typeof updateClientSettings === 'function';
+  let analysisModelWrite: Promise<ComputerHistoryAnalysisModel> | undefined;
+
+  async function localAnalysisHost(
+    expected?: ModuleHubRuntimeHostRef,
+  ): Promise<ModuleHubRuntimeHostRef> {
+    const snapshot = await bridge.runtimeHostProfiles.getSnapshot();
+    const local = snapshot.entries.find((entry) => entry.profile.kind === 'local');
+    if (!local?.enabled || local.readiness !== 'ready' || !local.hostId) {
+      throw new Error('Local Runtime Host is unavailable');
+    }
+    if (expected && (
+      expected.profileId !== local.profile.id || expected.hostId !== local.hostId
+    )) {
+      throw new Error('Local analysis Host changed; refresh the model selection');
+    }
+    return { profileId: local.profile.id, hostId: local.hostId };
+  }
+
+  // Saves use this helper directly; the public reader waits for the save itself.
+  async function readAnalysisModel(
+    expected?: ModuleHubRuntimeHostRef,
+  ): Promise<ComputerHistoryAnalysisModel> {
+    const getConfig = bridge.dailyReview.getConfig;
+    if (!getConfig) throw new Error('Daily Review configuration is unavailable');
+    const host = await localAnalysisHost(expected);
+    const [config, catalog] = await Promise.all([
+      getConfig.call(bridge.dailyReview, host),
+      bridge.connections.getSnapshot(undefined, host),
+    ]);
+    await localAnalysisHost(host);
+    const models = new Map<string, ComputerHistoryAnalysisModel['models'][number]>();
+    let defaultModelKey: string | null = null;
+    for (const connection of catalog.connections) {
+      const provider = providerDefaultsOf(connection.providerType);
+      if (!provider) continue;
+      const providerLabel = providerMenuLabel(connection.providerType) ?? connection.providerType;
+      // Match chat choices: API names are user-facing; OAuth names can identify accounts.
+      const connectionName = provider.authKind === 'oauth_token'
+        ? providerLabel : connection.name.trim() || providerLabel;
+      for (const entry of offerableCatalogEntries(connection)) {
+        const key = `${connection.slug}::${entry.id}`;
+        models.set(key, {
+          key,
+          label: entry.displayName?.trim() || entry.id,
+          connectionName,
+        });
+        if (entry.id === connection.defaultModel.trim()) defaultModelKey = key;
+      }
+    }
+    return { host, modelKey: config.modelKey.trim(), defaultModelKey, models: [...models.values()] };
+  }
 
   return {
     runtimeHosts: {
@@ -143,24 +197,33 @@ export function createDesktopModuleHubServices(
       deleteEntry: (id) => bridge.computerHistory.deleteEntry(id),
       retrySummary: () => bridge.computerHistory.retrySummary(),
       async getAnalysisModel() {
-        const getConfig = bridge.dailyReview.getConfig;
-        if (!getConfig) throw new Error('Daily Review configuration is unavailable');
-        const snapshot = await bridge.runtimeHostProfiles.getSnapshot();
-        const local = snapshot.entries.find((entry) => entry.profile.kind === 'local');
-        if (!local || local.readiness !== 'ready' || !local.hostId) {
-          throw new Error('Local Runtime Host is unavailable');
+        while (analysisModelWrite) {
+          // A failed save still requires a fresh read of the retained selection.
+          await analysisModelWrite.catch(() => undefined);
         }
-        const target = {
-          profileId: local.profile.id,
-          hostId: local.hostId,
-        };
-        const config = await getConfig.call(bridge.dailyReview, target);
-        const explicit = config.modelKey.trim();
-        if (explicit) return explicit;
-        // Only the canonical default target has a projected defaultModel.
-        const catalog = await bridge.connections.getSnapshot(undefined, target);
-        const connection = catalog.connections.find((entry) => entry.defaultModel.trim());
-        return connection ? `${connection.slug}::${connection.defaultModel.trim()}` : null;
+        return readAnalysisModel();
+      },
+      async setAnalysisModel(modelKey, host) {
+        if (analysisModelWrite) throw new Error('An analysis model update is already in progress');
+        const target = { profileId: host.profileId, hostId: host.hostId };
+        const key = modelKey.trim();
+        const write = Promise.resolve().then(async () => {
+          const setConfig = bridge.dailyReview.setConfig;
+          if (!setConfig) throw new Error('Daily Review configuration is unavailable');
+          const current = await readAnalysisModel(target);
+          const selectedKey = key || current.defaultModelKey;
+          if (!current.models.some((model) => model.key === selectedKey)) {
+            throw new Error('The selected analysis model is no longer available');
+          }
+          await setConfig.call(bridge.dailyReview, { modelKey: key }, current.host);
+          return readAnalysisModel(target);
+        });
+        analysisModelWrite = write;
+        try {
+          return await write;
+        } finally {
+          analysisModelWrite = undefined;
+        }
       },
     },
     clipboard: {

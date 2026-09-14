@@ -26,6 +26,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import type { ComputerHistoryApplication, ComputerHistoryStatus } from '@maka/core/computer-history';
 import {
   ComputerHistoryAppIcon,
+  createFakeComputerHistoryAnalysisModel,
   createFakeModuleHubServices,
   ModuleHubServicesProvider,
   type ModuleHubServices,
@@ -189,7 +190,7 @@ test('native batch failure preserves history and resolved icons; manual refresh 
   const service = services({
     status: async () => status,
     timeline: async () => ({ status, entries: [entry] }),
-    getAnalysisModel: async () => null,
+    getAnalysisModel: async () => createFakeComputerHistoryAnalysisModel(),
     applications: async (batch) => {
       if (failed && batch.includes(ids[32]!)) throw new Error('Native application helper unavailable');
       return batch.map(metadata);

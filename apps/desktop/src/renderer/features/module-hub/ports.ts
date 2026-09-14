@@ -243,6 +243,20 @@ export interface ModuleHubClipboardService {
   writeText(text: string): Promise<void>;
 }
 
+export interface ComputerHistoryAnalysisModel {
+  readonly host: ModuleHubRuntimeHostRef;
+  /** Shared Daily Review selection; empty means follow the local Host default. */
+  readonly modelKey: string;
+  /** Canonical local default only when it is currently offerable. */
+  readonly defaultModelKey: string | null;
+  /** Only currently offerable models; a saved modelKey may be absent. */
+  readonly models: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly connectionName: string;
+  }[];
+}
+
 /** Local desktop history only; no selected/default remote Host routing. */
 export interface ModuleHubComputerHistoryService {
   status(): Promise<ComputerHistoryStatus>;
@@ -259,8 +273,13 @@ export interface ModuleHubComputerHistoryService {
   clear(scope: ComputerHistoryClearScope): Promise<ComputerHistoryStatus>;
   deleteEntry(id: string): Promise<ComputerHistoryStatus>;
   retrySummary(): Promise<ComputerHistoryStatus>;
-  /** Local Daily Review model key, or null when unset. Unavailable reads reject. */
-  getAnalysisModel(): Promise<string | null>;
+  /** Fresh local selection/catalog after any adapter-owned save settles. Failed reads reject. */
+  getAnalysisModel(): Promise<ComputerHistoryAnalysisModel>;
+  /** Updates only the shared model key on the same local Host; concurrent saves reject. */
+  setAnalysisModel(
+    modelKey: string,
+    host: ModuleHubRuntimeHostRef,
+  ): Promise<ComputerHistoryAnalysisModel>;
 }
 
 /** Environment capabilities owned by the Module Hub feature slice. */

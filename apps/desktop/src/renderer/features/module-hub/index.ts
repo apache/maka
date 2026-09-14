@@ -19,10 +19,16 @@
 
 export { ModuleHubServicesProvider } from './services-context.js';
 export { ComputerHistorySettingsPage } from './ui/computer-history-settings-page.js';
+export {
+  HistoryModelSettingsNavigation,
+  type HistoryModelSettingsNavigationState,
+} from './ui/history-model-settings-navigation.js';
 export type { HistoryDraftHostInput } from './controller/use-computer-history-draft.js';
 export type {
+  ComputerHistoryAnalysisModel,
   ModuleHubClipboardService,
   ModuleHubComputerHistoryService,
+  ModuleHubRuntimeHostRef,
   ModuleHubServices,
 } from './ports.js';
 export { ModuleHubHost, ModuleHubHostView } from './ui/module-hub-host.js';

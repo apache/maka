@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComputerHistoryClearScope, ComputerHistorySettings, ComputerHistoryStatus } from '@maka/core/computer-history';
+import type { ComputerHistoryAnalysisModel } from '../ports.js';
 import { useModuleHubServices } from '../services-context.js';
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -29,7 +30,8 @@ export function useComputerHistorySettings() {
   const sequence = useRef(0);
   const pendingRef = useRef(false);
   const [status, setStatus] = useState<ComputerHistoryStatus | null>(null);
-  const [modelLabel, setModelLabel] = useState<string | null>(null);
+  const [model, setModel] = useState<ComputerHistoryAnalysisModel | null>(null);
+  const [modelSaveError, setModelSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -40,23 +42,30 @@ export function useComputerHistorySettings() {
     if (!lifecycle.active) return false;
     const generation = lifecycle.generation;
     const read = ++sequence.current;
-    const [health, model] = await Promise.allSettled([service.status(), service.getAnalysisModel()]);
-    if (!lifecycle.active || lifecycle.generation !== generation || read !== sequence.current) return false;
-    if (health.status === 'fulfilled') {
-      setStatus(health.value);
-      setStatusError(null);
-    } else {
-      setStatusError(message(health.reason));
-    }
-    if (model.status === 'fulfilled') {
-      setModelLabel(model.value);
-      setModelError(null);
-    } else {
-      setModelLabel(null);
-      setModelError(message(model.reason));
-    }
-    setLoading(false);
-    return health.status === 'fulfilled';
+    const current = () => lifecycle.active && lifecycle.generation === generation && read === sequence.current;
+    // Recording recovery must not wait for a model catalog or an in-flight model save.
+    const health = service.status().then(
+      (value) => {
+        if (!current()) return false;
+        setStatus(value);
+        setStatusError(null);
+        setLoading(false);
+        return true;
+      },
+      (error: unknown) => {
+        if (current()) {
+          setStatusError(message(error));
+          setLoading(false);
+        }
+        return false;
+      },
+    );
+    void service.getAnalysisModel().then(
+      (value) => { if (current()) { setModel(value); setModelError(null); } },
+      (error: unknown) => { if (current()) setModelError(message(error)); },
+    );
+    const loaded = await health;
+    return loaded && current();
   }, [service, lifecycle]);
 
   useEffect(() => {
@@ -65,7 +74,8 @@ export function useComputerHistorySettings() {
     pendingRef.current = false;
     setPending(null);
     setStatus(null);
-    setModelLabel(null);
+    setModel(null);
+    setModelSaveError(null);
     setStatusError(null);
     setModelError(null);
     setActionError(null);
@@ -112,8 +122,48 @@ export function useComputerHistorySettings() {
     }
   }, [lifecycle, refresh]);
 
+  const selectModel = async (key: string): Promise<boolean> => {
+    if (!lifecycle.active || pendingRef.current || !model || modelError) return false;
+    if (key === model.modelKey) {
+      setModelSaveError(null);
+      return true;
+    }
+    const effective = key || model.defaultModelKey;
+    if (!effective || !model.models.some((option) => option.key === effective)) return false;
+    const generation = lifecycle.generation;
+    const current = () => lifecycle.active && lifecycle.generation === generation;
+    pendingRef.current = true;
+    ++sequence.current;
+    setPending('model');
+    setModelSaveError(null);
+    try {
+      const saved = await service.setAnalysisModel(key, model.host);
+      if (!current()) return false;
+      setModel(saved);
+      setModelError(null);
+      return true;
+    } catch (error) {
+      if (current()) {
+        setModelSaveError(message(error));
+        // A failed confirmation may follow a committed write. Re-establish
+        // the actual provider before allowing new summary consent.
+        setModelError(message(error));
+        void refresh();
+      }
+      // The page reports late failures through the app's toast after navigation.
+      throw error;
+    } finally {
+      if (current()) {
+        pendingRef.current = false;
+        setPending(null);
+      }
+    }
+  };
+  const modelLabel = model?.modelKey || model?.defaultModelKey || null;
+  const modelAvailable = !modelError && Boolean(modelLabel && model?.models.some((option) => option.key === modelLabel));
+
   return {
-    status, modelLabel, loading, pending, statusError, modelError, actionError, refresh,
+    status, model, modelLabel, modelAvailable, modelSaveError, loading, pending, statusError, modelError, actionError, refresh, selectModel,
     update: (patch: Partial<ComputerHistorySettings>, key: string) =>
       run(key, () => service.updateSettings(patch)),
     requestPermissions: () => run('permissions', () => service.requestPermissions()),

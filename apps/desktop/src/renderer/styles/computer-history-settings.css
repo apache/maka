@@ -23,7 +23,6 @@
 }
 
 .computer-history-settings-status,
-.computer-history-settings-model,
 .computer-history-settings-delete {
   display: flex;
   align-items: center;
@@ -39,7 +38,26 @@
 }
 
 .computer-history-settings-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  width: 270px;
   max-width: 100%;
+}
+
+.computer-history-settings-model-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.computer-history-settings-model > [role="status"] {
+  min-height: 20px;
+}
+
+.computer-history-settings .astryx-item:has([data-computer-history-model]) [popover]:has(.astryx-selector-popup) {
+  max-width: calc(100vw - 32px);
 }
 
 @container settings-rows (max-width: 460px) {
@@ -48,9 +66,10 @@
     align-items: stretch;
   }
 
-  .computer-history-settings .astryx-item:has(.computer-history-settings-model) > span:last-child {
+  .computer-history-settings .astryx-item > span:has(.computer-history-settings-model) {
     min-width: 0;
     max-width: 100%;
+    width: 100%;
     margin-inline-start: 0;
   }
 
