@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isAllowedWebOrigin } from '../origin.js';
+import { isAllowedWebOrigin, originMatchesHost } from '../origin.js';
 
 test('isAllowedWebOrigin allows loopback http and ts.net https only', () => {
   assert.equal(isAllowedWebOrigin('http://localhost:5173'), true);
@@ -28,4 +28,12 @@ test('isAllowedWebOrigin allows loopback http and ts.net https only', () => {
   assert.equal(isAllowedWebOrigin('https://evil.example'), false);
   assert.equal(isAllowedWebOrigin('http://evil.ts.net'), false);
   assert.equal(isAllowedWebOrigin(undefined), false);
+});
+
+test('originMatchesHost compares Origin host to Host and ignores 80/443', () => {
+  assert.equal(originMatchesHost('http://127.0.0.1:5173', '127.0.0.1:5173'), true);
+  assert.equal(originMatchesHost('https://maka.tail1234.ts.net', 'maka.tail1234.ts.net'), true);
+  assert.equal(originMatchesHost('https://maka.tail1234.ts.net:443', 'maka.tail1234.ts.net'), true);
+  assert.equal(originMatchesHost('https://other.tail1234.ts.net', 'maka.tail1234.ts.net'), false);
+  assert.equal(originMatchesHost('http://localhost:5173', '127.0.0.1:5173'), false);
 });

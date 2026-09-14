@@ -33,3 +33,35 @@ export function isAllowedWebOrigin(origin: string | undefined): boolean {
   }
   return false;
 }
+
+/** Origin host must equal this request's Host, ignoring default ports 80/443. */
+export function originMatchesHost(origin: string, hostHeader: string | undefined): boolean {
+  const fromOrigin = hostKeyFromOrigin(origin);
+  const fromHost = hostKeyFromHostHeader(hostHeader);
+  return fromOrigin !== undefined && fromHost !== undefined && fromOrigin === fromHost;
+}
+
+function stripDefaultPort(hostname: string, port: string): string {
+  const host = hostname.toLowerCase();
+  if (port === '' || port === '80' || port === '443') return host;
+  return `${host}:${port}`;
+}
+
+function hostKeyFromOrigin(origin: string): string | undefined {
+  try {
+    const url = new URL(origin);
+    return stripDefaultPort(url.hostname, url.port);
+  } catch {
+    return undefined;
+  }
+}
+
+function hostKeyFromHostHeader(hostHeader: string | undefined): string | undefined {
+  if (!hostHeader) return undefined;
+  try {
+    const url = new URL(`http://${hostHeader}`);
+    return stripDefaultPort(url.hostname, url.port);
+  } catch {
+    return undefined;
+  }
+}

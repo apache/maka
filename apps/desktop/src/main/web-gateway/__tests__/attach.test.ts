@@ -169,12 +169,25 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
     secureCookies: false,
   });
   const port = await listen(server);
+  const origin = `http://127.0.0.1:${port}`;
+
+  const missingOrigin = await call({
+    port,
+    method: 'POST',
+    path: '/login',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `passphrase=${encodeURIComponent(PASSPHRASE)}`,
+  });
+  assert.equal(missingOrigin.status, 403);
 
   const missingOtp = await call({
     port,
     method: 'POST',
     path: '/login',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      Origin: origin,
+    },
     body: `passphrase=${encodeURIComponent(PASSPHRASE)}`,
   });
   assert.equal(missingOtp.status, 401);
@@ -187,7 +200,10 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
     port,
     method: 'POST',
     path: '/login',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      Origin: origin,
+    },
     body: `passphrase=${encodeURIComponent(PASSPHRASE)}&otp=${encodeURIComponent(otp)}`,
   });
   assert.equal(signedIn.status, 303);
@@ -205,15 +221,23 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
   noCookieBridge.socket?.terminate();
   assert.equal(noCookieBridge.status, 401);
 
-  const missingOrigin = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
+  const missingUpgradeOrigin = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
     Cookie: `maka_web_session=${session}`,
   });
-  missingOrigin.socket?.terminate();
-  assert.equal(missingOrigin.status, 403);
+  missingUpgradeOrigin.socket?.terminate();
+  assert.equal(missingUpgradeOrigin.status, 403);
+
+  const otherTailnet = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
+    Cookie: `maka_web_session=${session}`,
+    Origin: 'https://other.tail1234.ts.net',
+    Host: 'maka.tail1234.ts.net',
+  });
+  otherTailnet.socket?.terminate();
+  assert.equal(otherTailnet.status, 403);
 
   const proxied = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
     Cookie: `maka_web_session=${session}`,
-    Origin: 'http://localhost:5173',
+    Origin: origin,
   });
   t.after(() => proxied.socket?.terminate());
   assert.equal(proxied.status, 101);
@@ -235,6 +259,27 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
   const stolen = await call({ port, method: 'GET', path: '/?token=stolen' });
   assert.equal(stolen.status, 303);
   assert.equal(stolen.headers.location, '/login');
+
+  const loggedOut = await call({
+    port,
+    method: 'POST',
+    path: '/logout',
+    headers: {
+      Origin: origin,
+      Cookie: `maka_web_session=${session}`,
+    },
+  });
+  assert.equal(loggedOut.status, 303);
+  assert.equal(loggedOut.headers.location, '/login');
+
+  const reused = await call({
+    port,
+    method: 'GET',
+    path: '/',
+    headers: { Cookie: `maka_web_session=${session}` },
+  });
+  assert.equal(reused.status, 303);
+  assert.equal(reused.headers.location, '/login');
 });
 
 test('GET / is gated even when web-access.json is missing', async (t) => {
@@ -257,4 +302,5 @@ test('GET / is gated even when web-access.json is missing', async (t) => {
   const login = await call({ port, method: 'GET', path: '/login' });
   assert.equal(login.status, 200);
   assert.match(login.body, /Settings → Web access/);
+  assert.match(String(login.headers['content-security-policy'] ?? ''), /frame-ancestors 'none'/);
 });

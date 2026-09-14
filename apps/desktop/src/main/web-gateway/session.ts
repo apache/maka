@@ -97,6 +97,10 @@ export function lookupSession(table: SessionTable, token: string, now: number): 
   return true;
 }
 
+export function revokeSession(table: SessionTable, token: string): void {
+  table.sessions.delete(hashToken(token));
+}
+
 export async function verifyLogin(input: {
   file: WebAccessFile;
   passphrase: string;

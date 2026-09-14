@@ -17,7 +17,8 @@
  * under the License.
  */
 
-export const LOGIN_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'";
+export const LOGIN_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'";
 
 export function loginPageHtml(error: boolean): string {
   const errorHtml = error ? '<p class="error">Could not sign in</p>' : '';

@@ -22,12 +22,13 @@ import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { loadWebAccess, saveWebAccess } from '../web-access/store.js';
 import { LOGIN_CSP, loginPageHtml } from './login-page.js';
-import { isAllowedWebOrigin } from './origin.js';
+import { isAllowedWebOrigin, originMatchesHost } from './origin.js';
 import {
   createSessionTable,
   expireCookieHeader,
   lookupSession,
   parseCookie,
+  revokeSession,
   sessionCookieHeader,
   type SessionTable,
   verifyLogin,
@@ -124,6 +125,8 @@ async function handleHttp(
     }
     if (method === 'POST' && path === '/logout') {
       if (!allowOrigin(req, res)) return;
+      const token = parseCookie(cookieHeader(req));
+      if (token) revokeSession(table, token);
       writeRedirect(res, 303, '/login', {
         'Set-Cookie': expireCookieHeader({ secure: options.secureCookies }),
       });
@@ -201,8 +204,7 @@ function handleBridgeUpgrade(
     rejectUpgrade(socket, 401, 'Unauthorized');
     return;
   }
-  const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
-  if (!origin || !isAllowedWebOrigin(origin)) {
+  if (!allowUpgradeOrigin(req)) {
     rejectUpgrade(socket, 403, 'Forbidden');
     return;
   }
@@ -262,12 +264,24 @@ function rejectUpgrade(socket: Duplex, code: number, message: string): void {
   socket.destroy();
 }
 
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function allowUpgradeOrigin(req: IncomingMessage): boolean {
+  const origin = headerValue(req.headers.origin);
+  if (!origin || !isAllowedWebOrigin(origin)) return false;
+  return originMatchesHost(origin, headerValue(req.headers.host));
+}
+
 function allowOrigin(req: IncomingMessage, res: ServerResponse): boolean {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  if (isAllowedWebOrigin(origin)) return true;
-  writeJson(res, 403, SIGN_IN_ERROR);
-  return false;
+  const origin = headerValue(req.headers.origin);
+  if (!origin || !isAllowedWebOrigin(origin) || !originMatchesHost(origin, headerValue(req.headers.host))) {
+    writeJson(res, 403, SIGN_IN_ERROR);
+    return false;
+  }
+  return true;
 }
 
 function isHtmlNavigation(req: IncomingMessage, path: string): boolean {
