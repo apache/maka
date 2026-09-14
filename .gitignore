@@ -1,6 +1,8 @@
 node_modules
 dist
 dist-renderer
+.superpowers/
+.worktrees/
 test-results
 storybook-static
 .DS_Store
