@@ -46,6 +46,9 @@ export class ExternalSessionImporter {
   async import(request: ExternalSessionImportRequest): Promise<SessionHeader> {
     const adapter = this.adapters.require(request.adapterId);
     const external = await adapter.readSession(request.sourceSessionId);
+    if (external.messages.length === 0) {
+      throw new Error('External Session has no importable messages');
+    }
 
     return this.sessions.createImportedSession(
       {

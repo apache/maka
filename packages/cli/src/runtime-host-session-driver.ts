@@ -171,6 +171,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readMessages(): Promise<StoredMessage[]>;
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
@@ -1130,6 +1131,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   getSessionId(): string | null {
     return this.#sessionId;
+  }
+
+  getWorkspaceTarget(): WorkspaceTarget | undefined {
+    return this.#workspace.target;
   }
 
   getGoal(): GoalProjection | null {

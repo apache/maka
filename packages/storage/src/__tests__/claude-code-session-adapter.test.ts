@@ -769,6 +769,29 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
+  test('reads only enough ordered transcript summaries to fill each catalog page', async () => {
+    await withClaudeHome(async (home) => {
+      const ids = [
+        'aaaaaaaa-0000-4000-8000-000000000034',
+        'aaaaaaaa-0000-4000-8000-000000000035',
+        'aaaaaaaa-0000-4000-8000-000000000036',
+      ];
+      for (const id of ids) {
+        await seed(home, id, [
+          userRecord(id),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ]);
+      }
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      const first = await adapter.listSessions({ offset: 0, limit: 2 });
+      const second = await adapter.listSessions({ offset: 2, limit: 2 });
+      assert.equal(first.length, 2);
+      assert.equal(second.length, 1);
+      assert.deepEqual(new Set([...first, ...second].map(({ id }) => id)), new Set(ids));
+    });
+  });
+
   test('a rewritten transcript is re-read, a deleted one drops out', async () => {
     // Listing parses every transcript, and the catalog is listed once per
     // search term — so summaries are cached against the file's own mtime and

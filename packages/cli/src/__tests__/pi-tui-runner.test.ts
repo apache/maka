@@ -6014,6 +6014,63 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('keeps an outcome-unknown import uncertain when catalog reconciliation is ambiguous', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    let catalogReads = 0;
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async () => {
+        catalogReads += 1;
+        return {
+          sessions: [
+            {
+              id: 'ses_external',
+              name: 'Ambiguous import',
+              hostCwd: '/repo',
+              importState: {
+                importedCount: catalogReads > 1 ? 2 : 0,
+                importedSessionIds:
+                  catalogReads > 1 ? ['concurrent-import', 'imported-after-loss'] : [],
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      importSession: async () => {
+        throw {
+          operation: 'external-session.import',
+          code: 'commit_outcome_unknown',
+        };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Ambiguous import'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('result is uncertain'));
+    assert.equal(driver.sessionIds.includes('concurrent-import'), false);
+    assert.equal(driver.sessionIds.includes('imported-after-loss'), false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('loads the next Host external catalog page without replacing earlier rows', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);

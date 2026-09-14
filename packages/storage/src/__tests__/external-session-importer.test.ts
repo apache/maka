@@ -38,7 +38,7 @@ describe('ExternalSessionImporter', () => {
     const calls: SessionExternalOrigin[] = [];
     const adapter = fakeAdapter({
       metadata: { name: 'Imported parser work', cwd: '/external/repo' },
-      messages: [],
+      messages: [message()],
     });
     const importer = new ExternalSessionImporter(new ExternalSessionAdapterRegistry([adapter]), {
       createImportedSession: async (_input, _messages, externalOrigin) => {
@@ -118,7 +118,7 @@ describe('ExternalSessionImporter', () => {
     const sessions = createSessionStore(root);
     const importer = new ExternalSessionImporter(
       new ExternalSessionAdapterRegistry([
-        fakeAdapter({ metadata: { name: 'Source name', cwd: '/source' }, messages: [] }),
+        fakeAdapter({ metadata: { name: 'Source name', cwd: '/source' }, messages: [message()] }),
       ]),
       sessions,
     );
@@ -136,6 +136,31 @@ describe('ExternalSessionImporter', () => {
       await sessions.close?.();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('rejects an empty conversion before publishing a Session', async () => {
+    let creates = 0;
+    const importer = new ExternalSessionImporter(
+      new ExternalSessionAdapterRegistry([
+        fakeAdapter({ metadata: { name: 'Synthetic only', cwd: '/source' }, messages: [] }),
+      ]),
+      {
+        createImportedSession: async () => {
+          creates += 1;
+          return {} as SessionHeader;
+        },
+      },
+    );
+
+    await assert.rejects(
+      importer.import({
+        adapterId: 'fake',
+        sourceSessionId: 'source-1',
+        target: target(),
+      }),
+      /no importable messages/,
+    );
+    assert.equal(creates, 0);
   });
 
   test('rejects invalid adapter messages without exposing a partial Session', async () => {
@@ -174,6 +199,10 @@ function target(overrides: Partial<ExternalSessionImportTarget> = {}): ExternalS
     permissionMode: 'ask',
     ...overrides,
   };
+}
+
+function message(): StoredMessage {
+  return { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'hello' };
 }
 
 function fakeAdapter(

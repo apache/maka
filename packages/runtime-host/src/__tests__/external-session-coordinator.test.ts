@@ -85,6 +85,39 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   assert.equal(second.result.nextCursor, null);
 });
 
+test('advances the catalog cursor by source rows when an adapter row is not wire-safe', async () => {
+  const summaries = Array.from({ length: 18 }, (_, index) => ({
+    id: index === 5 ? 'invalid\u0000source' : `source-${index}`,
+    name: `Source ${index}`,
+    cwd: '/external',
+    updatedAt: index,
+  }));
+  const adapter = adapterFixture();
+  adapter.listSessions = async (query) => pageExternalSessionSummaries(summaries, query);
+  const fixture = coordinatorFixture([adapter]);
+
+  const first = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex' },
+    context,
+  );
+  assert.equal(first.ok, true);
+  if (!first.ok) assert.fail('Expected the first catalog page');
+  assert.equal(first.result.sessions.length, 15);
+  assert.equal(first.result.nextCursor, '16');
+
+  const second = await fixture.coordinator.handlers['external-session.catalog.query'](
+    { adapterId: 'codex', cursor: first.result.nextCursor ?? undefined },
+    context,
+  );
+  assert.equal(second.ok, true);
+  if (!second.ok) assert.fail('Expected the second catalog page');
+  assert.equal(second.result.nextCursor, null);
+  assert.deepEqual(
+    [...first.result.sessions, ...second.result.sessions].map(({ id }) => id),
+    summaries.filter(({ id }) => !id.includes('\u0000')).map(({ id }) => id),
+  );
+});
+
 test('resolves a Project filter before calling the Host adapter', async () => {
   const adapter = adapterFixture();
   const filters: unknown[] = [];
@@ -184,7 +217,7 @@ test('reports an unresolved import independently from durable import history', a
           return {
             sourceSessionId,
             metadata: { name: 'Source 0', cwd: '/external' },
-            messages: [],
+            messages: [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }],
           };
         },
       }),

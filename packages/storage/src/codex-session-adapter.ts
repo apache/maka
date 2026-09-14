@@ -214,27 +214,28 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   }
 
   private async scanRolloutCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
-    const candidates = [
-      ...(await walkRolloutFiles(join(this.codexHome, 'sessions'), false)),
-      ...(query.includeArchived
-        ? await walkRolloutFiles(join(this.codexHome, 'archived_sessions'), true)
-        : []),
-    ].sort((a, b) => b.mtimeMs - a.mtimeMs);
     const offset = query.offset ?? 0;
     const limit = query.limit ?? Number.MAX_SAFE_INTEGER;
     const entries: CodexCatalogEntry[] = [];
     let matched = 0;
-    for (const candidate of candidates) {
-      const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
-        () => undefined,
-      );
-      if (head === undefined) continue;
-      const entry = catalogEntryFromRolloutHead(head, candidate);
-      if (!entry || !matchesQuery(entry, query)) continue;
-      if (matched++ < offset) continue;
-      const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
-      if (rolloutPath) entries.push({ ...entry, rolloutPath });
-      if (entries.length === limit) break;
+    for (const [root, archived] of [
+      [join(this.codexHome, 'sessions'), false],
+      ...(query.includeArchived
+        ? ([[join(this.codexHome, 'archived_sessions'), true]] as const)
+        : []),
+    ] as const) {
+      for await (const candidate of iterateRolloutFiles(root, archived)) {
+        const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
+          () => undefined,
+        );
+        if (head === undefined) continue;
+        const entry = catalogEntryFromRolloutHead(head, candidate);
+        if (!entry || !matchesQuery(entry, query)) continue;
+        if (matched++ < offset) continue;
+        const rolloutPath = await this.resolveRolloutPath(candidate.path, entry.id);
+        if (rolloutPath) entries.push({ ...entry, rolloutPath });
+        if (entries.length === limit) return entries;
+      }
     }
     return entries;
   }
@@ -244,7 +245,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       [join(this.codexHome, 'sessions'), false],
       [join(this.codexHome, 'archived_sessions'), true],
     ] as const) {
-      for (const candidate of await walkRolloutFiles(root, archived)) {
+      for await (const candidate of iterateRolloutFiles(root, archived)) {
         if (!rolloutFilenameMatchesId(basename(candidate.path), sessionId)) continue;
         const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
           () => undefined,
@@ -873,34 +874,36 @@ async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
   }
 }
 
-async function walkRolloutFiles(root: string, archived: boolean): Promise<RolloutCandidate[]> {
-  const files: RolloutCandidate[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    let entries: Dirent<string>[];
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path);
-      } else if (
-        entry.isFile() &&
-        entry.name.startsWith('rollout-') &&
-        entry.name.endsWith('.jsonl')
-      ) {
-        try {
-          files.push({ path, mtimeMs: (await stat(path)).mtimeMs, archived });
-        } catch {
-          // The external store may change while it is being scanned.
-        }
+async function* iterateRolloutFiles(
+  root: string,
+  archived: boolean,
+): AsyncGenerator<RolloutCandidate> {
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  // Codex nests active rollouts under YYYY/MM/DD and prefixes filenames with
+  // an ISO timestamp. Reverse lexical traversal therefore preserves the
+  // previous newest-first catalog order without materializing the whole tree.
+  entries.sort((left, right) => right.name.localeCompare(left.name));
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      yield* iterateRolloutFiles(path, archived);
+    } else if (
+      entry.isFile() &&
+      entry.name.startsWith('rollout-') &&
+      entry.name.endsWith('.jsonl')
+    ) {
+      try {
+        yield { path, mtimeMs: (await stat(path)).mtimeMs, archived };
+      } catch {
+        // The external store may change while it is being scanned.
       }
     }
-  };
-  await visit(root);
-  return files;
+  }
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {

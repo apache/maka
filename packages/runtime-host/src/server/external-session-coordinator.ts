@@ -172,56 +172,59 @@ export class HostExternalSessionCoordinator {
         ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
         : undefined;
       const offset = input.cursor === undefined ? 0 : Number(input.cursor);
-      const sessions =
+      const sourceSessions =
         // The term reaches the adapter rather than being applied to the page
         // below: paging happens after this call, so filtering afterwards would
         // search the 16 rows already fetched instead of the source.
-        (
-          await adapter.listSessions({
-            ...(cwd === undefined ? {} : { cwd }),
-            ...(input.includeArchived === undefined
-              ? {}
-              : { includeArchived: input.includeArchived }),
-            ...(input.text === undefined ? {} : { text: input.text }),
-            offset,
-            limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
-          })
-        )
-          .map(toWireSummary)
-          .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
-      const candidates = sessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+        await adapter.listSessions({
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(input.includeArchived === undefined
+            ? {}
+            : { includeArchived: input.includeArchived }),
+          ...(input.text === undefined ? {} : { text: input.text }),
+          offset,
+          limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+        });
+      const sourceCandidates = sourceSessions.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const candidates = sourceCandidates.flatMap((summary, index) => {
+        const session = toWireSummary(summary);
+        return session ? [{ session, nextSourceOffset: offset + index + 1 }] : [];
+      });
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
-        candidates.map(({ id }) => id),
+        candidates.map(({ session }) => session.id),
         EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
       );
       const importsBySource = new Map(imports.map((state) => [state.sourceSessionId, state]));
-      const enrichedCandidates = candidates.map((session) => {
+      const enrichedCandidates = candidates.map(({ session, nextSourceOffset }) => {
         const state = importsBySource.get(session.id);
         return {
-          ...session,
-          importState: {
-            importedCount: state?.livePublishedImportCount ?? 0,
-            importedSessionIds: state?.recentSessionIds ?? [],
-            isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
+          session: {
+            ...session,
+            importState: {
+              importedCount: state?.livePublishedImportCount ?? 0,
+              importedSessionIds: state?.recentSessionIds ?? [],
+              isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
+            },
           },
+          nextSourceOffset,
         };
       });
       const page = boundedCatalogPage(
         enrichedCandidates,
-        offset,
-        sessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS,
+        sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS,
       );
-      const nextOffset = offset + page.length;
+      const nextCursor =
+        page.nextSourceOffset !== undefined
+          ? String(page.nextSourceOffset)
+          : sourceSessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS
+            ? String(offset + sourceCandidates.length)
+            : null;
       return {
         ok: true,
         result: {
-          sessions: page,
-          nextCursor:
-            nextOffset < offset + candidates.length ||
-            sessions.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS
-              ? String(nextOffset)
-              : null,
+          sessions: page.sessions,
+          nextCursor,
         },
       };
     } catch (error) {
@@ -382,28 +385,32 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
 }
 
 function boundedCatalogPage(
-  candidates: readonly ExternalSessionCatalogItem[],
-  offset: number,
+  candidates: readonly {
+    session: ExternalSessionCatalogItem;
+    nextSourceOffset: number;
+  }[],
   hasMore: boolean,
-): ExternalSessionCatalogItem[] {
+): { sessions: ExternalSessionCatalogItem[]; nextSourceOffset?: number } {
   const page: ExternalSessionCatalogItem[] = [];
   const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
     sessions: [],
     nextCursor: null,
   });
-  for (const candidate of candidates) {
-    const nextOffset = offset + page.length + 1;
+  for (const [index, candidate] of candidates.entries()) {
     if (
       !budget.tryAppend(
-        candidate,
-        hasMore || nextOffset < offset + candidates.length ? String(nextOffset) : null,
+        candidate.session,
+        hasMore || index + 1 < candidates.length ? String(candidate.nextSourceOffset) : null,
       )
     ) {
-      break;
+      return {
+        sessions: page,
+        ...(page.length > 0 ? { nextSourceOffset: candidates[index - 1]?.nextSourceOffset } : {}),
+      };
     }
-    page.push(candidate);
+    page.push(candidate.session);
   }
-  return page;
+  return { sessions: page };
 }
 
 function wireSourceSessionId(value: unknown): value is string {
