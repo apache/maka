@@ -327,6 +327,7 @@ function activePlanState(
   } = {},
 ): PlanSessionState {
   const step = overrides.step ?? planStep('pending');
+  const status = overrides.status ?? 'active';
   return {
     schemaVersion: 1,
     sessionId: 'session-1',
@@ -350,14 +351,16 @@ function activePlanState(
         planId: 'plan-1',
         proposalId: 'proposal-1',
         sessionId: 'session-1',
-        status: overrides.status ?? 'active',
+        status,
         steps: [step],
         startedAt: 1,
         updatedAt: 2,
       },
     ],
     latestProposalId: 'proposal-1',
-    activeExecutionId: 'execution-1',
+    // Only an active execution is the Session's current one; a cancelled or
+    // completed execution must not stay selected.
+    ...(status === 'active' ? { activeExecutionId: 'execution-1' } : {}),
   };
 }
 
