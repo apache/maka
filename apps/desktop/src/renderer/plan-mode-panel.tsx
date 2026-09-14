@@ -62,9 +62,18 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     turnId: string;
   } | undefined>(undefined);
 
+  const refreshSequence = useRef(0);
   const refresh = useCallback(async () => {
     if (!session) return;
-    setState(await window.maka.sessions.getPlanState(session.id));
+    // Plan execution writes now refresh while the Turn runs, so reads can
+    // overlap: only the newest read may publish, or a slower earlier response
+    // puts stale progress back on screen, and a response for the Session the
+    // user just left can land after the switch.
+    const sequence = refreshSequence.current + 1;
+    refreshSequence.current = sequence;
+    const next = await window.maka.sessions.getPlanState(session.id);
+    if (refreshSequence.current !== sequence) return;
+    setState(next);
   }, [session?.id]);
 
   useEffect(() => {
