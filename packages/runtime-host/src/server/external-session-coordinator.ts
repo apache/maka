@@ -203,7 +203,15 @@ export class HostExternalSessionCoordinator {
             ...session,
             importState: {
               importedCount: state?.livePublishedImportCount ?? 0,
-              importedSessionIds: state?.recentSessionIds ?? [],
+              // Every field of a row is bounded here, so the page budget can
+              // only ever be filled by several rows: one row is capped well
+              // below it, and the assembly would otherwise have to choose
+              // between overspending and hiding a Session. An id is a key, not
+              // display text, so one that cannot go on the wire is dropped
+              // rather than truncated into an id that resolves to nothing.
+              importedSessionIds: (state?.recentSessionIds ?? [])
+                .filter(wireSessionId)
+                .slice(0, EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS),
               isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
             },
           },
@@ -363,7 +371,7 @@ export class HostExternalSessionCoordinator {
 
 function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogItem | undefined {
   if (
-    !wireSourceSessionId(summary.id) ||
+    !wireSessionId(summary.id) ||
     typeof summary.name !== 'string' ||
     typeof summary.cwd !== 'string'
   ) {
@@ -435,7 +443,7 @@ export function boundedCatalogPage(
   return { sessions: page };
 }
 
-function wireSourceSessionId(value: unknown): value is string {
+function wireSessionId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
