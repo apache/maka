@@ -31,7 +31,6 @@ import type { AgentRunEvent } from '@maka/core/agent-run';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { buildModelProjectionTransition } from '@maka/core/model-projection-transition';
 import {
-  createLedgerToolResultArchiveReader,
   createLedgerArchivePreparer,
   createLedgerArchiveResourceReader,
 } from '../ledger-tool-result-archive-reader.js';
@@ -45,7 +44,7 @@ import { serializedToolResultProjection } from '../tool-result-archive-transitio
 import { serializeToolResultProjectionV1 } from '../tool-result-archive-encoding.js';
 import {
   buildArchivedToolResultPlaceholder,
-  type ToolResultArchiveReaderInput,
+  isArchivedToolResultPlaceholder,
 } from '../tool-result-archive.js';
 
 function fixture(
@@ -93,10 +92,16 @@ function fixture(
     now: 2,
   });
   const records = [envelope(transition)];
-  const reader = createLedgerToolResultArchiveReader({
+  const reader = createLedgerArchiveResourceReader({
     read: async () => ({ ok: true, event, transitions: records }),
   });
-  return { event, placeholder, transition, records, reader, body, source };
+  const request = {
+    storage: 'event' as const,
+    runtimeEventId: event.id,
+    sessionId: 'session',
+    maxBytes: 4 * 1024 * 1024,
+  };
+  return { event, placeholder, transition, records, reader, request, body, source };
 }
 function envelope(transition: ReturnType<typeof buildModelProjectionTransition>): AgentRunEvent {
   return {
@@ -109,6 +114,25 @@ function envelope(transition: ReturnType<typeof buildModelProjectionTransition>)
     data: { runtimeEventId: 'response', part: 'tool_result', transition },
   };
 }
+
+test('an event address resolves and verifies against one evidence snapshot', async () => {
+  const f = fixture();
+  let reads = 0;
+  const reader = createLedgerArchiveResourceReader({
+    read: async () => {
+      if (++reads > 1) throw new Error('second observation is not the same snapshot');
+      return { ok: true, event: f.event, transitions: f.records };
+    },
+  });
+  const result = await reader({
+    storage: 'event',
+    sessionId: 'session',
+    runtimeEventId: f.event.id,
+    maxBytes: 10_000,
+  });
+  assert.deepEqual(result, { ok: true, serializedResult: f.body });
+  assert.equal(reads, 1);
+});
 
 test('reads committed SQLite evidence after reopen without any Artifact payload', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ledger-archive-'));
@@ -151,12 +175,12 @@ test('reads committed SQLite evidence after reopen without any Artifact payload'
     }
     const evidence = await openToolResultArchiveEvidenceReader(owner.lease);
     try {
-      const reader = createLedgerToolResultArchiveReader(evidence);
-      assert.deepEqual(await reader({ ...f.placeholder, sessionId: 'session' }), {
+      const reader = createLedgerArchiveResourceReader(evidence);
+      assert.deepEqual(await reader(f.request), {
         ok: true,
         serializedResult: f.body,
       });
-      assert.equal((await reader({ ...f.placeholder, sessionId: 'foreign' })).ok, false);
+      assert.equal((await reader({ ...f.request, sessionId: 'foreign' })).ok, false);
     } finally {
       evidence.close();
     }
@@ -191,7 +215,7 @@ test('v1 archive encoding is byte-identical for text, JSON, denial and media', (
 
 test('reads the source of an applied archive transition, never the raw result', async () => {
   const f = fixture();
-  assert.deepEqual(await f.reader({ ...f.placeholder, sessionId: 'session' }), {
+  assert.deepEqual(await f.reader(f.request), {
     ok: true,
     serializedResult: f.body,
   });
@@ -200,41 +224,65 @@ test('reads the source of an applied archive transition, never the raw result', 
 test('refuses missing projections instead of applying the legacy tool projector', async () => {
   const f = fixture();
   if (f.event.content?.kind === 'function_response') delete f.event.content.modelProjection;
-  assert.deepEqual(await f.reader({ ...f.placeholder, sessionId: 'session' }), {
+  assert.deepEqual(await f.reader(f.request), {
     ok: false,
     reason: 'source_mismatch',
   });
 });
 
-test('fails closed on Session, identity, encoding, size and hash mismatch', async () => {
-  const f = fixture();
-  for (const override of [
-    { sessionId: 'foreign' },
-    { toolCallId: 'foreign' },
-    { rewriteVersion: 2 },
-    { originalBytes: 999 },
-    { bodySha256: 'f'.repeat(64) },
-    { maxBytes: 1 },
-  ]) {
-    assert.equal(
-      (
-        await f.reader({
-          ...f.placeholder,
-          sessionId: 'session',
-          ...override,
-        } as ToolResultArchiveReaderInput)
-      ).ok,
-      false,
-    );
-  }
-});
-
-test('cannot read an archive without a committed, applicable transition', async () => {
+test('an event address reads the current projection without weakening archive identity', async () => {
   const f = fixture();
   f.records.length = 0;
-  assert.equal((await f.reader({ ...f.placeholder, sessionId: 'session' })).ok, false);
-  f.records.push(envelope({ ...f.transition, sourceProjectionDigest: `sha256:${'a'.repeat(64)}` }));
-  assert.equal((await f.reader({ ...f.placeholder, sessionId: 'session' })).ok, false);
+  assert.deepEqual(await f.reader(f.request), {
+    ok: true,
+    serializedResult: f.body,
+  });
+  assert.deepEqual(await f.reader({ ...f.request, maxBytes: Buffer.byteLength(f.body) - 1 }), {
+    ok: false,
+    reason: 'too_large',
+  });
+  assert.equal(
+    (
+      await f.reader({
+        storage: 'ledger',
+        runtimeEventId: f.event.id,
+        toolCallId: 'call',
+        toolName: 'Read',
+        sourceProjectionDigest: f.transition.sourceProjectionDigest,
+        bodySha256: f.placeholder.bodySha256,
+        originalBytes: f.placeholder.originalBytes,
+        sessionId: 'session',
+        maxBytes: 4 * 1024 * 1024,
+      })
+    ).ok,
+    false,
+  );
+  const current: DurableToolResultProjection = {
+    version: 1,
+    kind: 'text',
+    text: 'current effective output',
+  };
+  f.records.push(
+    envelope(
+      buildModelProjectionTransition({
+        sessionId: 'session',
+        target: f.transition.target,
+        sourceProjection: f.source,
+        replacement: current,
+        now: 2,
+      }),
+    ),
+  );
+  assert.deepEqual(await f.reader(f.request), {
+    ok: true,
+    serializedResult: serializeToolResultProjectionV1(current),
+  });
+  f.records.splice(
+    0,
+    f.records.length,
+    envelope({ ...f.transition, sourceProjectionDigest: `sha256:${'a'.repeat(64)}` }),
+  );
+  assert.equal((await f.reader(f.request)).ok, false);
 });
 
 test('rejects losing siblings using the existing reducer and accepts duplicate appends', async () => {
@@ -249,12 +297,12 @@ test('rejects losing siblings using the existing reducer and accepts duplicate a
   // IDs are the reducer's tie break; do not invent a different winner here.
   const archiveWins = f.transition.transitionId < sibling.transitionId;
   f.records.push(envelope(sibling), envelope(f.transition));
-  assert.equal((await f.reader({ ...f.placeholder, sessionId: 'session' })).ok, archiveWins);
+  assert.equal((await f.reader(f.request)).ok, archiveWins);
   f.records.reverse();
-  assert.equal((await f.reader({ ...f.placeholder, sessionId: 'session' })).ok, archiveWins);
+  assert.equal((await f.reader(f.request)).ok, archiveWins);
 });
 
-test('reconstructs a predecessor replacement rather than the original or final projection', async () => {
+test('reconstructs a predecessor replacement rather than the original projection', async () => {
   const f = fixture();
   const before = buildModelProjectionTransition({
     sessionId: 'session',
@@ -273,16 +321,8 @@ test('reconstructs a predecessor replacement rather than the original or final p
     previousTransitionId: before.transitionId,
     now: 2,
   });
-  const final = buildModelProjectionTransition({
-    sessionId: 'session',
-    target: f.transition.target,
-    sourceProjection: archive.replacement,
-    replacement: { version: 1, kind: 'text', text: 'final' },
-    previousTransitionId: archive.transitionId,
-    now: 3,
-  });
-  f.records.splice(0, f.records.length, envelope(final), envelope(archive), envelope(before));
-  assert.deepEqual(await f.reader({ ...f.placeholder, sessionId: 'session' }), {
+  f.records.splice(0, f.records.length, envelope(archive), envelope(before));
+  assert.deepEqual(await f.reader(f.request), {
     ok: true,
     serializedResult: f.body,
   });
@@ -294,11 +334,11 @@ test('unknown transition versions and incomplete evidence do not expose a source
     runtimeEventId: 'response',
     transition: { ...f.transition, version: 999 },
   };
-  assert.equal((await f.reader({ ...f.placeholder, sessionId: 'session' })).ok, false);
-  const reader = createLedgerToolResultArchiveReader({
+  assert.equal((await f.reader(f.request)).ok, false);
+  const reader = createLedgerArchiveResourceReader({
     read: async () => ({ ok: false, reason: 'too_large' }),
   });
-  assert.deepEqual(await reader({ ...f.placeholder, sessionId: 'session' }), {
+  assert.deepEqual(await reader(f.request), {
     ok: false,
     reason: 'too_large',
   });
@@ -316,16 +356,13 @@ test('new archive commits only a v2 ledger reference and is readable through the
     }),
   };
   const prepare = createLedgerArchivePreparer(evidence);
-  const outcome = await archiveToolResultAsTransition(
+  await archiveToolResultAsTransition(
     {
       sessionId: 'session',
       archiveToolResult: prepare,
       recordTransition: async (transition) => {
         f.records.push(envelope(transition));
       },
-      loadTransitions: async () => ({
-        transitions: f.records.map((row) => row.data!.transition as ModelProjectionTransition),
-      }),
       now: () => 2,
     },
     {
@@ -340,30 +377,22 @@ test('new archive commits only a v2 ledger reference and is readable through the
       reason: 'stale_tool_result_pruned_before_compact',
     },
   );
-  assert.ok(outcome);
-  assert.equal(outcome.placeholder.rewriteVersion, 2);
-  assert.equal(outcome.placeholder.artifactId, undefined);
-  assert.match(outcome.placeholder.resourceRef!, /^maka:\/\/archive-ledger\/v1\//);
-  const reader = createLedgerToolResultArchiveReader(evidence);
-  assert.deepEqual(await reader({ ...outcome.placeholder, sessionId: 'session' }), {
-    ok: true,
-    serializedResult: f.body,
-  });
+  const transition = f.records[0]!.data!.transition as ModelProjectionTransition;
+  assert.equal(transition.replacement.kind, 'json');
+  const placeholder: unknown =
+    transition.replacement.kind === 'json' && transition.replacement.value;
+  assert.ok(isArchivedToolResultPlaceholder(placeholder));
+  assert.equal(placeholder.rewriteVersion, 2);
+  assert.equal(placeholder.artifactId, undefined);
+  assert.match(placeholder.resourceRef!, /^maka:\/\/runtime\/tool-results\//);
   const resource = createLedgerArchiveResourceReader(evidence);
-  const read = await readToolResultArchiveResource(
-    {
-      readArchivedToolResultResource: (input) =>
-        input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
-    },
-    'session',
-    { ref: outcome.placeholder.resourceRef!, operation: 'read' },
-  );
-  assert.match(JSON.stringify(read), /bounded model output/);
-  assert.ok(parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef!));
-  assert.equal(
-    parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef! + '#extra'),
-    null,
-  );
+  const read = await resource({
+    storage: 'event',
+    runtimeEventId: 'response',
+    sessionId: 'session',
+    maxBytes: 4 * 1024 * 1024,
+  });
+  assert.deepEqual(read, { ok: true, serializedResult: f.body });
 });
 
 test('preflight and transition failure leave the source projection unchanged', async () => {
@@ -392,12 +421,9 @@ test('preflight and transition failure leave the source projection unchanged', a
     },
     now: () => 2,
   };
-  assert.equal(
-    await archiveToolResultAsTransition(services, { ...request, serializedResult: '"wrong"' }),
-    undefined,
-  );
+  await archiveToolResultAsTransition(services, { ...request, serializedResult: '"wrong"' });
   assert.equal(writes, 0);
-  assert.equal(await archiveToolResultAsTransition(services, request), undefined);
+  await archiveToolResultAsTransition(services, request);
   assert.equal(writes, 1);
   assert.equal(f.records.length, 0);
   assert.deepEqual(
@@ -409,10 +435,10 @@ test('preflight and transition failure leave the source projection unchanged', a
 test('availability maps to read_failed while corrupt evidence remains corrupt', async () => {
   const f = fixture();
   for (const reason of ['unavailable', 'corrupt'] as const) {
-    const reader = createLedgerToolResultArchiveReader({
+    const reader = createLedgerArchiveResourceReader({
       read: async () => ({ ok: false, reason }),
     });
-    assert.deepEqual(await reader({ ...f.placeholder, sessionId: 'session' }), {
+    assert.deepEqual(await reader(f.request), {
       ok: false,
       reason: reason === 'unavailable' ? 'read_failed' : 'corrupt',
     });

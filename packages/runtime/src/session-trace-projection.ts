@@ -283,6 +283,15 @@ function projectEventSteps(events: readonly RuntimeEvent[]): TraceStep[] {
   const steps: TraceStep[] = [];
   const toolStarts = new Map<string, { id: string; startedAt: number }>();
   const toolStepsByOperation = new Map<string, TraceStep & { kind: 'tool' }>();
+  // A normal tool execution carries both a model function_call and the richer
+  // durable dispatch fact. Only calls with no dispatch anywhere in this turn
+  // belong to the generic lane; otherwise the Inspector would show duplicates.
+  const dispatchedToolCallIds = new Set(
+    events.flatMap((event) => {
+      const dispatch = event.actions?.toolDispatch;
+      return dispatch ? [dispatch.providerToolCallId] : [];
+    }),
+  );
 
   for (const event of events) {
     // A written compaction boundary, which is not the same fact as the
@@ -311,6 +320,22 @@ function projectEventSteps(events: readonly RuntimeEvent[]): TraceStep[] {
           reasonCode: recovery.payload.reasonCode,
         };
       }
+      continue;
+    }
+
+    const genericCall = event.content?.kind === 'function_call' ? event.content : undefined;
+    if (genericCall && !dispatchedToolCallIds.has(genericCall.id)) {
+      toolStarts.set(genericCall.id, { id: event.id, startedAt: event.ts });
+      steps.push({
+        kind: 'tool',
+        id: event.id,
+        turnId: event.turnId,
+        runId: event.runId,
+        startedAt: event.ts,
+        toolName: genericCall.name,
+        toolCallId: genericCall.id,
+        status: 'in_flight',
+      });
       continue;
     }
 

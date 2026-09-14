@@ -64,11 +64,7 @@ import {
   type UpdateNetworkProxyInput,
   type UpdateNetworkProxyResult,
 } from '@maka/core/runtime-policy';
-import {
-  applyModelFactOverridesToConnection,
-  applyModelFactOverridesToCatalogSnapshot,
-  type ModelFactsDocument,
-} from '@maka/core/model-facts';
+import { applyConnectionModelOverrides } from '@maka/core/model-thinking';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
@@ -161,7 +157,6 @@ import {
 } from './oauth-login-receipt-document.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
 import { SerializedOperationLane } from '../serialized-operation-lane.js';
-import { ModelFactsDocumentOwner } from '../model-facts-store.js';
 
 type RootExecutor = <T>(operation: (root: string) => Promise<T>) => Promise<T>;
 
@@ -211,7 +206,6 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
-      readonly modelFactsFingerprint: string;
     });
 
 interface ConnectionTicketRecord {
@@ -286,8 +280,6 @@ export class RuntimePolicyCoordinator {
   private readonly policy = new RuntimePolicyDocumentOwner();
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
-  private readonly modelFacts = new ModelFactsDocumentOwner();
-  private warnedModelFactsFingerprint: string | undefined;
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
   private onboardingRecoveryRequired = false;
 
@@ -630,17 +622,26 @@ export class RuntimePolicyCoordinator {
         readonly providerType: InteractiveOAuthLoginProvider;
       };
       if (input.target.kind === 'create') {
+        const requestedSlug = input.target.slug;
         if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
           return deepFreeze({ kind: 'catalog_full' as const });
+        }
+        if (
+          requestedSlug !== undefined &&
+          catalog.connections.some(({ slug }) => slug === requestedSlug)
+        ) {
+          return deepFreeze({ kind: 'slug_taken' as const });
         }
         connectionBefore = null;
         connectionAfter = newInteractiveOAuthConnection(
           randomUUID(),
-          deriveInteractiveOAuthConnectionSlug(
-            input.target.providerType,
-            catalog.connections.map(({ slug }) => slug),
-          ),
+          requestedSlug ??
+            deriveInteractiveOAuthConnectionSlug(
+              input.target.providerType,
+              catalog.connections.map(({ slug }) => slug),
+            ),
           input.target.providerType,
+          input.target.name,
         );
       } else {
         const existing = findConnection(catalog, { connectionId: input.target.connectionId });
@@ -731,6 +732,20 @@ export class RuntimePolicyCoordinator {
           claimed.connectionBefore,
           claimed.connectionAfter,
         );
+        const requestedSlug = claimed.target.kind === 'create' ? claimed.target.slug : undefined;
+        if (
+          preparedCatalog.kind === 'connection_conflict' &&
+          requestedSlug !== undefined &&
+          catalog.connections.some(
+            ({ connectionId, slug }) =>
+              slug === requestedSlug && connectionId !== claimed.connectionAfter.connectionId,
+          )
+        ) {
+          // A caller-selected identity has one stable, actionable outcome even
+          // when another writer claims it after OAuth admission but before the
+          // token commit. No credential or Connection has been written yet.
+          return deepFreeze({ kind: 'slug_taken' as const });
+        }
         if (preparedCatalog.kind !== 'ready') {
           changed.push('connection');
         }
@@ -857,10 +872,7 @@ export class RuntimePolicyCoordinator {
       if (prepared.kind !== 'ready') return prepared;
       return deepFreeze({
         kind: 'ready' as const,
-        connection: applyModelFactOverridesToConnection(
-          structuredClone(connection),
-          (await this.readModelFacts(root)).document.overrides,
-        ),
+        connection: applyConnectionModelOverrides(structuredClone(connection)),
         secretMaterial: prepared.secretMaterial,
         networkProxy: structuredClone(prepared.networkProxy),
       });
@@ -1595,10 +1607,8 @@ export class RuntimePolicyCoordinator {
         'test_credentials',
       );
       if (prepared.kind !== 'ready') return prepared;
-      const facts = await this.readModelFacts(root);
-      const projectedConnection = applyModelFactOverridesToConnection(
+      const projectedConnection = applyConnectionModelOverrides(
         structuredClone(prepared.connection),
-        facts.document.overrides,
       );
       const modelId =
         rawModelId === null
@@ -1612,10 +1622,7 @@ export class RuntimePolicyCoordinator {
       }
       const ticket = this.issueTicket(
         'connection_test',
-        connectionTestSemanticBasis(
-          prepared,
-          this.modelFacts.fingerprintForConnection(facts.document, prepared.connection),
-        ),
+        connectionTestSemanticBasis({ ...prepared, connection: projectedConnection }),
       );
       return deepFreeze({
         kind: 'ready' as const,
@@ -1648,7 +1655,6 @@ export class RuntimePolicyCoordinator {
           catalog,
           connectionBasis(checked.connection),
           result,
-          claimed.basis.modelFactsFingerprint,
         );
         return deepFreeze({
           kind: 'committed' as const,
@@ -1794,18 +1800,9 @@ export class RuntimePolicyCoordinator {
   }> {
     const connection = findConnection(catalog, { connectionId: basis.connectionId });
     const changed: ConnectionEffectChangedDomain[] = [];
-    const facts = basis.kind === 'connection_test' ? await this.readModelFacts(root) : undefined;
-    if (
-      basis.kind === 'connection_test' &&
-      (!connection ||
-        this.modelFacts.fingerprintForConnection(facts!.document, connection) !==
-          basis.modelFactsFingerprint)
-    ) {
-      changed.push('connection');
-    }
     const effectiveConnection =
       connection && basis.kind === 'connection_test'
-        ? applyModelFactOverridesToConnection(connection, facts!.document.overrides)
+        ? applyConnectionModelOverrides(connection)
         : connection;
     if (
       !effectiveConnection ||
@@ -2231,27 +2228,7 @@ export class RuntimePolicyCoordinator {
   }
 
   private async projectCatalogSnapshot(root: string): Promise<ConnectionCatalogSnapshot> {
-    const facts = await this.readModelFacts(root);
-    const snapshot = catalogSnapshot(await this.catalog.read(root));
-    return deepFreeze(
-      hideStaleModelFactsVerification(
-        applyModelFactOverridesToCatalogSnapshot(snapshot, facts.document.overrides),
-        snapshot,
-        facts.document,
-        this.modelFacts,
-      ),
-    );
-  }
-
-  private async readModelFacts(root: string) {
-    const facts = await this.modelFacts.readWithDiagnostics(root);
-    if (facts.diagnostic !== undefined && this.warnedModelFactsFingerprint !== facts.fingerprint) {
-      process.emitWarning(`model-facts.json is ${facts.diagnostic}; ignoring its overrides`, {
-        type: 'RuntimePolicyWarning',
-      });
-      this.warnedModelFactsFingerprint = facts.fingerprint;
-    }
-    return facts;
+    return deepFreeze(catalogSnapshot(await this.catalog.read(root)));
   }
 
   private async projectCatalogMutation<T extends { readonly kind: string }>(
@@ -2264,46 +2241,6 @@ export class RuntimePolicyCoordinator {
       snapshot: await this.projectCatalogSnapshot(root),
     }) as T;
   }
-}
-
-function hideStaleModelFactsVerification(
-  projected: ConnectionCatalogSnapshot,
-  persisted: ConnectionCatalogSnapshot,
-  document: ModelFactsDocument,
-  owner: ModelFactsDocumentOwner,
-): ConnectionCatalogSnapshot {
-  const persistedById = new Map(
-    persisted.connections.map((connection) => [connection.connectionId, connection] as const),
-  );
-  return {
-    ...projected,
-    connections: projected.connections.map((connection) => {
-      if (connection.lastTest === undefined) return connection;
-      const raw = persistedById.get(connection.connectionId);
-      if (!raw) return connection;
-      const current = owner.fingerprintForConnection(document, raw);
-      const emptyFactsFingerprint = owner.fingerprintForConnection(
-        { ...document, overrides: {} },
-        raw,
-      );
-      // Catalogs written before model facts existed have no marker. They remain
-      // valid until facts for this connection actually exist; every test
-      // recorded by this feature carries a connection-scoped marker and is
-      // checked exactly.
-      if (
-        raw.lastTestModelFactsFingerprint === current ||
-        (raw.lastTestModelFactsFingerprint === undefined && current === emptyFactsFingerprint)
-      ) {
-        return connection;
-      }
-      const {
-        lastTest: _lastTest,
-        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
-        ...withoutLastTest
-      } = connection;
-      return withoutLastTest;
-    }),
-  };
 }
 
 function matchesCredentialExpectation(
@@ -2352,14 +2289,12 @@ function modelFetchSemanticBasis(
 
 function connectionTestSemanticBasis(
   prepared: PreparedConnectionMaterial,
-  modelFactsFingerprint: string,
 ): Extract<SemanticConnectionBasis, { readonly kind: 'connection_test' }> {
   return {
     kind: 'connection_test',
     ...commonSemanticConnectionBasis(prepared),
     requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
     model: connectionTestModelBasis(prepared.connection),
-    modelFactsFingerprint,
   };
 }
 
@@ -2534,7 +2469,31 @@ function normalizeInteractiveOAuthLoginInput(
     if (!isInteractiveOAuthLoginProvider(providerType)) {
       throw codecError('invalid_connection_input', 'OAuth create target provider is unsupported');
     }
-    return { attemptId, target: { kind: 'create', providerType } };
+    if (
+      providerType !== 'openai-codex' &&
+      (target.slug !== undefined || target.name !== undefined)
+    ) {
+      throw codecError(
+        'invalid_connection_input',
+        'Custom OAuth Connection identity is only supported for openai-codex',
+      );
+    }
+    if (providerType !== 'openai-codex') {
+      return { attemptId, target: { kind: 'create', providerType } };
+    }
+    return {
+      attemptId,
+      target: {
+        kind: 'create',
+        providerType,
+        ...(target.slug === undefined
+          ? {}
+          : { slug: decodeConnectionInput(() => decodeConnectionSlug(target.slug)) }),
+        ...(target.name === undefined
+          ? {}
+          : { name: decodeConnectionInput(() => decodeConnectionName(target.name)) }),
+      },
+    };
   }
   if (target?.kind === 'existing') {
     return {
@@ -2552,13 +2511,14 @@ function newInteractiveOAuthConnection(
   connectionId: string,
   slug: string,
   providerType: InteractiveOAuthLoginProvider,
+  name?: string,
 ): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
   const defaults = PROVIDER_REGISTRY[providerType];
   return {
     connectionId,
     revision: 1,
     slug,
-    name: defaults.label,
+    name: name ?? defaults.label,
     providerType,
     enabled: true,
     enabledModelIds: providerFallbackModelIds(defaults),

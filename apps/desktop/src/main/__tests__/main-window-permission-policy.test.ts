@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { EventEmitter } from 'node:events';
 import type { WebContents } from 'electron';
 import {
   allowsMainWindowPermissionCheck,
@@ -188,8 +189,8 @@ describe('main window Chromium permission policy', () => {
         requestHandler = handler;
       },
     };
-    const owner = { session } as unknown as WebContents;
-    const other = { session } as unknown as WebContents;
+    const owner = Object.assign(new EventEmitter(), { session }) as unknown as WebContents;
+    const other = Object.assign(new EventEmitter(), { session }) as unknown as WebContents;
 
     installMainWindowPermissionPolicy(owner, 'file:///Applications/Maka.app/index.html');
     assert.ok(checkHandler);
@@ -226,5 +227,14 @@ describe('main window Chromium permission policy', () => {
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     });
     assert.equal(clipboardGranted, true);
+
+    // Registering the reparentable WorkHub view must preserve the main window's grant.
+    installMainWindowPermissionPolicy(other, 'file:///Applications/Maka.app/index.html');
+    const details = { isMainFrame: true, requestingUrl: 'file:///Applications/Maka.app/index.html?surface=workhub' };
+    assert.equal(checkHandler(owner, 'clipboard-sanitized-write', 'file://', details), true);
+    assert.equal(checkHandler(other, 'clipboard-sanitized-write', 'file://', details), true);
+    other.emit('destroyed');
+    assert.equal(checkHandler(other, 'clipboard-sanitized-write', 'file://', details), false);
+    assert.equal(checkHandler(owner, 'clipboard-sanitized-write', 'file://', details), true);
   });
 });

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 38;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 39;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -37,6 +37,17 @@ export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
 ] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
+  [
+    39,
+    `
+    CREATE TABLE IF NOT EXISTS coordination_transcript_index (
+      sequence INTEGER PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('legacy', 'runtime')),
+      source_sequence INTEGER NOT NULL CHECK (source_sequence >= 0),
+      UNIQUE (source, source_sequence)
+    );
+  `,
+  ],
   [
     1,
     `

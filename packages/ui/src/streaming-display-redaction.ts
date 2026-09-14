@@ -211,6 +211,26 @@ function reversibleInvalidated(delta: string, continuationChars: RegExp): boolea
   return false;
 }
 
+/** Detach only the carried strings after an oversized append has been bounded. */
+export function copyStreamingDisplayRedactionState(
+  state: StreamingDisplayRedactionState,
+): StreamingDisplayRedactionState {
+  const current = PRIVATE_STATE.get(state);
+  if (current === undefined) return state;
+  const overflow = current.overflow === undefined ? undefined : {
+    ...current.overflow,
+    sourceHead: structuredClone(current.overflow.sourceHead),
+    sourceTail: structuredClone(current.overflow.sourceTail),
+    compactedToken: structuredClone(current.overflow.compactedToken),
+  };
+  return stateFor(
+    structuredClone(current.settledText),
+    structuredClone(current.pendingRaw),
+    current.continuationTerminator,
+    { ...configFor(current), ...(overflow === undefined ? {} : { overflow }) },
+  );
+}
+
 /**
  * Apply the existing per-delta tail cap to an already-safe append. The mutable
  * suffix begins at the first character whose whole-prefix redaction changed;

@@ -358,8 +358,8 @@ function mergeLiveOverPersisted(
  * - `tools`: one contiguous group of tool activity. Adjacent groups are
  *   pre-merged; presentation may split ordinary evidence and linked-session
  *   navigation into adjacent native Astryx segments without reordering them.
- * - `user`: an instruction inserted after the turn began, kept at the ledger
- *   position where Runtime acknowledged it.
+ * - `user`: an instruction inserted after the turn began, displayed where
+ *   Runtime acknowledged it.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
@@ -382,6 +382,7 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      interrupted?: true;
       text: string;
       messageId: string;
       ts?: number;
@@ -545,15 +546,11 @@ export function overlayLiveTurn(
   const toolByUseId = new Map(
     current.tools.map((tool) => [tool.toolUseId, tool]),
   );
-  const liveToolIds = new Set<string>();
   const liveContentKeys = new Set<string>();
-  const liveSteeringIds = new Set<string>();
   for (const step of liveTurn.steps) {
-    for (const message of step.leadingSteering ?? []) liveSteeringIds.add(message.id);
     if (step.thinking) liveContentKeys.add(`thinking\0${step.stepId}`);
     if (step.text) liveContentKeys.add(`text\0${step.stepId}`);
     for (const liveTool of step.tools) {
-      liveToolIds.add(liveTool.toolUseId);
       const persisted = toolByUseId.get(liveTool.toolUseId);
       toolByUseId.set(
         liveTool.toolUseId,
@@ -563,31 +560,7 @@ export function overlayLiveTurn(
       );
     }
   }
-  for (const message of liveTurn.pendingSteering ?? []) liveSteeringIds.add(message.id);
-  const timeline: TurnTimelineItem[] = [];
-  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== "user");
-  const deferredSteering: Extract<TurnTimelineItem, { kind: "user" }>[] = [];
-  for (const [index, item] of current.timeline.entries()) {
-    if (item.kind !== "tools") {
-      if (item.kind === "user" && liveSteeringIds.has(item.messageId)) continue;
-      if (
-        item.kind === "user" &&
-        item.steeringEventId !== undefined &&
-        index > lastSettledContentIndex
-      ) {
-        deferredSteering.push(item);
-        continue;
-      }
-      if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
-      timeline.push(item);
-      continue;
-    }
-    const settledItems = item.items.filter(
-      (tool) => !liveToolIds.has(tool.toolUseId),
-    );
-    if (settledItems.length > 0)
-      timeline.push({ kind: "tools", items: settledItems });
-  }
+  const liveTimeline: TurnTimelineItem[] = [];
   const emittedSteeringIds = new Set<string>();
   const appendLiveSteering = (
     messages: readonly LiveSteeringProjection[],
@@ -595,7 +568,7 @@ export function overlayLiveTurn(
     for (const message of messages) {
       if (emittedSteeringIds.has(message.id)) continue;
       emittedSteeringIds.add(message.id);
-      timeline.push({
+      liveTimeline.push({
         kind: "user",
         message: chatItemFromContent(message.id, message.ts, message.content),
         messageId: message.id,
@@ -611,17 +584,18 @@ export function overlayLiveTurn(
     ];
     for (const kind of contentOrder) {
       if (kind === "thinking" && step.thinking?.text) {
-        timeline.push({
+        liveTimeline.push({
           kind: "thinking",
           text: step.thinking.text,
           messageId: step.stepId,
           live: step.thinking.complete !== true,
           truncated: step.thinking.truncated,
         });
-      } else if (kind === "text" && step.text?.text) {
-        timeline.push({
+      } else if (kind === "text" && step.text && (step.text.text || step.text.interrupted)) {
+        liveTimeline.push({
           kind: "text",
           text: step.text.text,
+          ...(step.text.interrupted ? { interrupted: true } : {}),
           messageId: step.stepId,
           live: true,
           complete: step.text.complete,
@@ -633,11 +607,37 @@ export function overlayLiveTurn(
           return projected ? [projected] : [];
         });
         if (stepTools.length > 0)
-          timeline.push({ kind: "tools", items: stepTools });
+          liveTimeline.push({ kind: "tools", items: stepTools });
       }
     }
   }
   appendLiveSteering(liveTurn.pendingSteering ?? []);
+  // Shared entries are handoff points: replace them in place while preserving
+  // live production order. Appending all live content after settled rows moved
+  // an earlier answer (and its steering anchor) behind later persisted steps.
+  const liveEntries = flattenTimelineTools(liveTimeline);
+  const liveIndex = new Map(liveEntries.map((item, index) => [timelineItemKey(item), index]));
+  const timeline: TurnTimelineItem[] = [];
+  let nextLive = 0;
+  const appendLiveThrough = (index: number) => {
+    while (nextLive <= index) timeline.push(liveEntries[nextLive++]!);
+  };
+  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== 'user');
+  const deferredSteering: TurnTimelineItem[] = [];
+  for (const [index, item] of current.timeline.entries()) {
+    if (item.kind === 'user' && item.steeringEventId !== undefined
+      && !liveIndex.has(timelineItemKey(item)) && index > lastSettledContentIndex) {
+      deferredSteering.push(item);
+      continue;
+    }
+    for (const entry of flattenTimelineTools([item])) {
+      const key = timelineItemKey(entry);
+      const livePosition = liveIndex.get(key);
+      if (livePosition !== undefined) appendLiveThrough(livePosition);
+      else if (!liveContentKeys.has(key)) timeline.push(entry);
+    }
+  }
+  appendLiveThrough(liveEntries.length - 1);
   timeline.push(...deferredSteering);
   const mergedTimeline = mergeAdjacentTimeline(timeline);
   const next = {
@@ -1062,7 +1062,8 @@ export function projectTurnTools(
  *  - leftover buffered tools (abort / pure-tool turn with no assistant row)
  *    flush as a trailing tools group.
  *
- * Empty text/thinking produce no item. Adjacent thinking blocks merge with
+ * Empty text/thinking produce no item, except text carrying an interruption
+ * divider. Adjacent thinking blocks merge with
  * a blank line; adjacent tools groups merge into one group.
  */
 function buildTurnTimeline(
@@ -1123,10 +1124,11 @@ function buildTurnTimeline(
               text: message.thinking.text,
               messageId: rowId,
             });
-          } else if (kind === "text" && message.text.length > 0) {
+          } else if (kind === "text" && (message.text.length > 0 || message.interrupted)) {
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
             });
@@ -1146,10 +1148,11 @@ function buildTurnTimeline(
           });
         }
         flushTools(legacy);
-        if (message.text.length > 0) {
+        if (message.text.length > 0 || message.interrupted) {
           raw.push({
             kind: "text",
             text: message.text,
+            ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,
           });
@@ -1189,6 +1192,16 @@ function chatItemFromContent(
       : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
   };
+}
+
+function timelineItemKey(item: TurnTimelineItem): string {
+  return item.kind === 'tools' ? `tool\0${item.items[0]!.toolUseId}` : `${item.kind}\0${item.messageId}`;
+}
+
+function flattenTimelineTools(items: readonly TurnTimelineItem[]): TurnTimelineItem[] {
+  return items.flatMap<TurnTimelineItem>((item) => item.kind === 'tools'
+    ? item.items.map((tool) => ({ kind: 'tools' as const, items: [tool] }))
+    : [item]);
 }
 
 function mergeAdjacentTimeline(

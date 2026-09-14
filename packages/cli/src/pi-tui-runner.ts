@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
 import {
   Key,
   ProcessTerminal,
@@ -33,12 +32,9 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  deriveConnectionSlug,
-  type ModelInfo,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -79,7 +75,6 @@ import type {
   MakaPiTuiTurnActivitySurface,
   MakaPiTuiHostControl,
   ModelChoice,
-  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -167,6 +162,7 @@ import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
   ModelSearchOverlay,
+  SessionSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
@@ -174,10 +170,12 @@ import {
   getTuiPickerCopy,
   modelPickerItems,
   onboardingFailureMessage,
+  onboardingOAuthFailureMessage,
   permissionModePickerItems,
   skillPickerItems,
   thinkingLevelPickerItems,
   type MakaSlashCommand,
+  type SessionSearchChoice,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
 import {
@@ -373,6 +371,9 @@ interface TuiRewindCopy {
   readonly doneKeptDraft: string;
   readonly noTargets: string;
   readonly busy: string;
+  readonly unsupportedQuotes: string;
+  readonly unsupportedAttachments: string;
+  readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
 }
 
@@ -564,6 +565,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
   let sessionPickerOverlayOpen = false;
   let transcriptOverlay: OverlayHandle | undefined;
+  let todoOverlay: OverlayHandle | undefined;
+  const closeTodoOverlay = (): void => {
+    todoOverlay?.hide();
+    todoOverlay = undefined;
+  };
   let transcriptViewer: TranscriptViewerOverlay | undefined;
   let transcriptViewerSessionId: string | undefined;
   const resetTranscriptViewer = (): void => {
@@ -686,6 +692,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const activityStrip = new MakaActivityStripComponent(metadata);
   const pendingQueue = new MakaPendingQueueComponent(state, locale);
   const statusLine = new MakaStatusLineComponent(metadata);
+  const currentTodo = new CurrentTodoStore(
+    {
+      read: async (sessionId) => {
+        if (!input.driver.queryTodo) throw new Error('Todo query unavailable');
+        return input.driver.queryTodo(sessionId);
+      },
+    },
+    () => {
+      if (!closed) tui.requestRender();
+    },
+  );
+  const syncTodoSession = (): void => {
+    currentTodo.setSession(input.driver.getSessionId() ?? undefined);
+  };
+  const unsubscribeTodoChanges = input.driver.subscribeTodoChanges?.((sessionId) => {
+    if (sessionId !== input.driver.getSessionId()) return;
+    syncTodoSession();
+    void currentTodo.refresh();
+  });
+  const todoIndicator: Component = {
+    invalidate() {},
+    render(width) {
+      if (!input.driver.queryTodo) return [];
+      const line = renderTodoIndicator(currentTodo.getState(), { locale, width });
+      return line === undefined ? [] : [line];
+    },
+  };
   // Use the vendor editor's full 20-item autocomplete capacity. Larger command
   // catalogs remain scrollable and keep an exact position/total counter.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
@@ -702,6 +735,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     editorSurface,
     statusLine,
     terminal,
+    todoIndicator,
   );
   const attention = new AttentionController(terminal, {
     baseTitle: input.title,
@@ -1011,6 +1045,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeModelCatalogChanges?.();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
+    unsubscribeTodoChanges?.();
+    currentTodo.dispose();
+    closeTodoOverlay();
     void sideConversation?.stopParentObserver?.();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
@@ -1306,9 +1343,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     })().catch(reportError);
   };
 
-  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search
-  // → API key → model curation, keeping every prompt/verifying/failure/saving/
-  // success notice beside the input field instead of the transcript entry flow.
+  // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
+  // authentication, model curation, and success without transcript notices.
   let wizardOverlay: OverlayHandle | undefined;
   let wizard: OnboardingWizard | undefined;
   // The user's supplied key from the key step ('' reuses the stored secret for an
@@ -1321,11 +1357,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
   let wizardTarget: OnboardingProviderEntry['target'] | undefined;
-  // The identity step's answer for a create target. Null halves keep the wire
-  // target bare so any Host vintage accepts it; an edited slug/name rides on
-  // the target and gets `slug_taken` back when it loses.
-  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
-  let wizardModels: readonly ModelInfo[] = [];
+  let wizardOAuthAbort: AbortController | undefined;
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
   // available — the single source the picker and connection/model lookups read.
@@ -1354,7 +1386,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     currentModelChoice()?.contextWindow ??
     (onInitialTarget() ? input.modelContextWindow : undefined);
   // The Host resolved these when it projected the choice — including a relay's
-  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // declared `modelOverrides[model].thinkingLevels`. A model no choice
   // describes offers none rather than a locally guessed list.
   const currentThinkingLevels = (): readonly ThinkingLevel[] =>
     currentModelChoice()?.thinkingLevels ?? [];
@@ -1642,6 +1674,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }
 
   const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
+    syncTodoSession();
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
     model = summary.model;
@@ -1749,6 +1782,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
     resetTranscriptViewer();
+    closeTodoOverlay();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -2080,7 +2114,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId);
+      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+        // The driver refuses rewind with a machine code when the selected
+        // turn carries structured context the TUI cannot restore (#5109).
+        // Render the localized catalog copy for that code instead of the
+        // driver's English fallback.
+        const code = (error as { code?: unknown })?.code;
+        if (
+          code === 'rewind_unsupported_quotes' ||
+          code === 'rewind_unsupported_attachments' ||
+          code === 'rewind_unsupported_directory_references'
+        ) {
+          const localized =
+            code === 'rewind_unsupported_quotes'
+              ? TUI_REWIND_COPY[locale].unsupportedQuotes
+              : code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+          throw new Error(localized);
+        }
+        throw error;
+      });
       await applySwitchResult(result);
       await discardCurrentSidePair();
       // Record the discarded turn's prompt in the editor history before
@@ -2330,6 +2384,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const syncInteractionOverlays = (): void => {
     if (state.pendingInteraction) {
+      closeTodoOverlay();
       transcriptOverlay?.hide();
       transcriptOverlay = undefined;
     }
@@ -2375,6 +2430,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const closeWizard = (): void => {
+    wizardOAuthAbort?.abort();
+    wizardOAuthAbort = undefined;
     wizardAttempt += 1; // drop any in-flight verify/save before clearing the slots
     wizardOverlay?.hide();
     wizardOverlay = undefined;
@@ -2382,8 +2439,110 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardApiKey = '';
     wizardBaseUrl = '';
     wizardTarget = undefined;
-    wizardIdentity = { slug: null, name: null };
-    wizardModels = [];
+  };
+
+  const discoverWizardOAuthModels = (
+    targetWizard: OnboardingWizard,
+    attempt: number,
+    target: Extract<OnboardingProviderEntry['target'], { readonly kind: 'existing' }>,
+  ): void => {
+    if (!input.onboarding) return;
+    void input.onboarding.verify({ target }).then(
+      (result) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        if (result.kind !== 'ok') {
+          targetWizard.setOAuthModelError(onboardingFailureMessage(result, locale));
+          requestRender();
+          return;
+        }
+        targetWizard.setModels(result.models);
+        requestRender();
+      },
+      () => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        targetWizard.setOAuthModelError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
+        requestRender();
+      },
+    );
+  };
+
+  const startWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!target || !targetWizard) return;
+    if (!input.onboarding?.loginOAuth) {
+      targetWizard.setOAuthError(pickerCopy.onboardingUnavailable);
+      requestRender();
+      return;
+    }
+    wizardOAuthAbort?.abort();
+    const abort = new AbortController();
+    wizardOAuthAbort = abort;
+    const attempt = ++wizardAttempt;
+    requestRender();
+    void input.onboarding
+      .loginOAuth({
+        target,
+        signal: abort.signal,
+        onPresentation: (presentation) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthPresentation(presentation);
+          requestRender();
+        },
+      })
+      .then(
+        (result) => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'unconfirmed') {
+            targetWizard.setOAuthUnconfirmed();
+            requestRender();
+            return;
+          }
+          if (result.kind === 'cancelled') {
+            targetWizard.setOAuthCancelled();
+            wizardAttempt += 1;
+            requestRender();
+            return;
+          }
+          if (result.kind === 'failed') {
+            const message = onboardingOAuthFailureMessage(result.reason, locale);
+            if (result.reason === 'slug_taken' && target.kind === 'create') {
+              targetWizard.setIdentityError(message);
+            } else {
+              targetWizard.setOAuthError(message);
+            }
+            requestRender();
+            return;
+          }
+          const existingTarget = {
+            kind: 'existing' as const,
+            connectionId: result.connection.connectionId,
+          };
+          // Authentication is the durable create/reauthorize commit point. All
+          // later work addresses that exact Connection and never repeats OAuth.
+          wizardTarget = existingTarget;
+          targetWizard.setOAuthAuthenticated();
+          requestRender();
+          discoverWizardOAuthModels(targetWizard, attempt, existingTarget);
+        },
+        () => {
+          if (wizardOAuthAbort === abort) wizardOAuthAbort = undefined;
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          targetWizard.setOAuthError(onboardingOAuthFailureMessage('unavailable', locale));
+          requestRender();
+        },
+      );
+  };
+
+  const continueWizardOAuth = (): void => {
+    const target = wizardTarget;
+    const targetWizard = wizard;
+    if (!targetWizard || target?.kind !== 'existing') return;
+    const attempt = ++wizardAttempt;
+    targetWizard.setOAuthAuthenticated();
+    requestRender();
+    discoverWizardOAuthModels(targetWizard, attempt, target);
   };
 
   // Key submit from the wizard. Slash commands route as commands (so /exit
@@ -2420,7 +2579,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        wizardModels = result.models;
         wizard.setModels(result.models); // advance to the models step
         requestRender();
       },
@@ -2545,15 +2703,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // reselects the same catalog row. A late save may converge only the
         // exact target object captured by its own submit.
         wizardTarget = { ...provider.target };
-        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
-        wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
         requestRender();
       },
       onSubmitIdentity: (identity) => {
-        wizardIdentity = identity;
         if (wizardTarget?.kind === 'create') {
           wizardTarget = {
             kind: 'create',
@@ -2569,6 +2724,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onSubmitKey: submitWizardKey,
+      onStartOAuth: startWizardOAuth,
+      onCancelOAuth: () => {
+        wizard?.setOAuthCancelling();
+        wizardOAuthAbort?.abort();
+        requestRender();
+      },
+      onContinueOAuth: continueWizardOAuth,
+      onReturnToProviders: () => {
+        const targetWizard = wizard;
+        const attempt = ++wizardAttempt;
+        requestRender();
+        if (!targetWizard || !input.onboarding) return;
+        void input.onboarding.listProviders().then(
+          (providers) => {
+            if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+            targetWizard.setProviders(providers);
+            requestRender();
+          },
+          () => {
+            // Keep the cached list usable if refreshing the saved account fails.
+          },
+        );
+      },
       onSubmitModels: submitWizardModels,
       onCancel: () => {
         closeWizard();
@@ -2812,21 +2990,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         foreignByValue.set(`foreign:${summary.source}:${summary.id}`, summary);
       }
     }
+    let overlay: OverlayHandle | undefined;
+    let sessionSearch: SessionSearchOverlay | undefined;
     const renderScope = (): void => {
       const visibleSessions =
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
+      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
-        const location =
-          sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
+        const location = sessionListScope === 'all' && session.cwd ? ` ${session.cwd}` : '';
         const childDetail = session.subagentRuntime
           ? ` subagent:${session.subagentRuntime.profile}`
           : '';
-        return {
+        const item = {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
@@ -2834,26 +3013,38 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
               : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
+        return {
+          item,
+          searchText: [
+            session.name,
+            session.id,
+            session.cwd,
+            session.model,
+            session.llmConnectionSlug,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLocaleLowerCase(),
+        };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
       // belong to this project) so a Tab toggle never makes them vanish.
       for (const [value, summary] of foreignByValue) {
-        items.push({
-          value,
-          label: summary.title,
-          description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+        choices.push({
+          item: {
+            value,
+            label: summary.title,
+            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+          },
+          searchText:
+            `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
         });
       }
-      const list = new SelectList(items, 10, selectListTheme(), {
-        minPrimaryColumnWidth: 20,
-        maxPrimaryColumnWidth: Math.max(20, terminal.columns - 30),
-      });
-      let overlay: OverlayHandle | undefined;
       const closeOverlay = () => {
         sessionPickerOverlayOpen = false;
         overlay?.hide();
       };
-      list.onSelect = (item) => {
+      const onSelect = (item: SelectItem) => {
         const foreign = foreignByValue.get(item.value);
         if (foreign) {
           closeOverlay();
@@ -2864,22 +3055,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         closeOverlay();
         void goToSession(item.value);
       };
-      list.onCancel = () => closeOverlay();
+      const scopeLabel =
+        sessionListScope === 'current'
+          ? pickerCopy.sessionScopeCurrent
+          : pickerCopy.sessionScopeAll;
+      if (sessionSearch) {
+        sessionSearch.updateChoices(choices, scopeLabel);
+        sessionSearch.invalidate();
+        return;
+      }
+      sessionSearch = new SessionSearchOverlay(tui, {
+        locale,
+        choices,
+        scopeLabel,
+        onSelect,
+        onCancel: closeOverlay,
+        onToggleScope: () => {
+          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
+          renderScope();
+        },
+      });
       sessionPickerOverlayOpen = true;
-      overlay = showBottomPicker(
-        new PickerOverlay(list, {
-          title: 'Resume Session',
-          rightLabel: sessionListScope === 'current' ? 'Current' : 'All',
-          hint: 'Tab scope · ↑↓ move · Enter select · Esc close',
-          onInput: (data) => {
-            if (!matchesKey(data, Key.tab) || isKeyRelease(data) || isKeyRepeat(data)) return false;
-            sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-            overlay?.hide();
-            renderScope();
-            return true;
-          },
-        }),
-      );
+      overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
   };
@@ -2945,6 +3142,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return false;
     }
     resetTranscriptViewer();
+    closeTodoOverlay();
+    syncTodoSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
     // Auto while a changed Host default creates with full access; the launch
@@ -3044,6 +3243,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       width: '100%',
       maxHeight: '100%',
     });
+  };
+
+  const showTodo = (): void => {
+    if (state.pendingInteraction) return;
+    syncTodoSession();
+    void currentTodo.refresh();
+    closeTodoOverlay();
+    todoOverlay = tui.showOverlay(
+      new TodoOverlay({
+        locale,
+        getState: () =>
+          input.driver.queryTodo ? currentTodo.getState() : { status: 'error', items: [] },
+        viewportRows: () => terminal.rows,
+        onClose: closeTodoOverlay,
+        onChange: () => tui.requestRender(),
+      }),
+      { anchor: 'top-left', width: '100%', maxHeight: '100%' },
+    );
   };
 
   const showMcpStatus = (): void => {
@@ -3914,6 +4131,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showTranscriptViewer();
       },
     },
+    todo: {
+      description: primaryGuidance.commands.todo,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: TUI_COPY_RESOURCES.todo[locale].usage,
+          });
+          requestRender();
+          return;
+        }
+        showTodo();
+      },
+    },
     permissions: {
       description: primaryGuidance.commands.permissions,
       midTurn: 'refuse',
@@ -4380,6 +4613,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   }
 
+  syncTodoSession();
   return closedPromise;
 }
 

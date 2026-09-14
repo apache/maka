@@ -22,7 +22,7 @@ export interface AppQuitEvent {
 }
 
 export interface AppQuitCoordinator {
-  focusOrCreateWindow(): void;
+  focusOrCreateWindow(): Promise<void>;
   handleBeforeQuit(event: AppQuitEvent): void;
 }
 
@@ -42,14 +42,15 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
   let phase: AppQuitPhase = 'running';
   let windowCreationAbort = new AbortController();
 
-  const focusOrCreateWindow = (): void => {
-    if (phase !== 'running') return;
+  const focusOrCreateWindow = (): Promise<void> => {
+    if (phase !== 'running') return Promise.resolve();
     try {
-      void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
+      return Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
         deps.onWindowCreationError,
       );
     } catch (error) {
       deps.onWindowCreationError(error);
+      return Promise.resolve();
     }
   };
 

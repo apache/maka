@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SteeringLease } from '@maka/core/backend-types';
 import {
@@ -105,6 +105,8 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 export interface HostMessageSessionHeader {
   readonly isArchived: boolean;
   readonly unavailableReason?: string;
+  /** A reserved Session accepts queued messages only while its dedicated root is active. */
+  readonly activeTurnOnly?: boolean;
 }
 
 export type HostMessageRootState =
@@ -218,7 +220,9 @@ export interface HostMessageRootPort {
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<
+    { readonly turnId: string } | { readonly error: string } | { readonly deferred: true }
+  >;
   prepareMessage(input: HostMessagePreparationInput): Promise<HostMessagePreparationOutcome>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
@@ -302,12 +306,12 @@ type QueuedMutationKind = 'retract' | 'retract_entry' | 'promote' | 'update_entr
 type MessageOperationKind = QueuedMutationKind | 'submit' | 'interrupt';
 
 interface PendingQueuedMutation {
-  readonly payload: object;
+  readonly payload: { readonly sessionId: string };
   readonly result: Promise<MessageOutcome<unknown>>;
 }
 
 interface CompletedOperation {
-  readonly payload: object;
+  readonly payloadIdentity: object;
   readonly result: object;
 }
 
@@ -1088,6 +1092,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         },
         admissionLease,
       );
+      if ('deferred' in started) return;
       if ('error' in started) {
         throw new RuntimeMessageAuthorityInvariantError(
           `Durable Message recovery failed: ${started.error}`,
@@ -1217,7 +1222,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (isCurrentEpoch) {
         const receipt = await this.#readCompletedSubmit(input.sessionId, input.messageId);
         if (receipt) {
-          return samePayload(receipt.payload, payload)
+          return samePayload(receipt.payloadIdentity, completedPayloadIdentity('submit', payload))
             ? success(receipt.result)
             : failure('operation_conflict', 'Message identity has a different payload');
         }
@@ -1259,6 +1264,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
+        }
+        if (header.activeTurnOnly && rootState.kind !== 'active') {
+          return failure('operation_unavailable', 'No active Turn can accept queued messages');
         }
         if (rootState.kind === 'idle') {
           const existingState = this.#sessions.get(input.sessionId);
@@ -1697,7 +1705,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
       const receipt = await this.#readCompletedQueuedMutation(options);
       if (receipt) {
-        return samePayload(receipt.payload, options.input)
+        return samePayload(
+          receipt.payloadIdentity,
+          completedPayloadIdentity(options.operationKind, options.input),
+        )
           ? success(receipt.result)
           : failure('operation_conflict', `${options.verb} identity has a different payload`);
       }
@@ -1710,14 +1721,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     R,
   >(
     options: QueuedMutationOptions<I, R>,
-  ): Promise<{ readonly payload: I; readonly result: R } | undefined> {
+  ): Promise<{ readonly payloadIdentity: object; readonly result: R } | undefined> {
     const receipt = this.#completedOperations.get(
       queuedMutationKey(options.operationKind, options.input.sessionId, options.operationId),
     );
     if (!receipt) return undefined;
     try {
       return {
-        payload: options.spec.decodeInput(receipt.payload),
+        payloadIdentity: receipt.payloadIdentity,
         result: options.spec.decodeOutput(receipt.result),
       };
     } catch (error) {
@@ -1984,7 +1995,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (state.transition) {
       return failure('operation_conflict', 'Message queue is draining into the next Turn');
     }
-    const current = state.followup;
+    const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
+    const current = steering ? state.steering : state.followup;
     if (input.entryIds.length !== current.length) {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
@@ -1995,14 +2007,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!entry) {
         return failure('operation_conflict', 'Message queue changed since the reorder was issued');
       }
+      byId.delete(entryId);
       reordered.push(entry);
     }
     if (reordered.some((entry, index) => current[index] !== entry)) {
       await this.#admissions.reorderMessageAdmissions(
         input.sessionId,
         reordered.map((entry) => entry.messageId),
+        steering ? 'steering' : 'followup',
       );
-      state.followup = reordered;
+      if (steering) state.steering = reordered;
+      else state.followup = reordered;
       this.#mutated(state);
     }
     const result = { queueRevision: state.revision };
@@ -2019,7 +2034,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
     const completed = await this.#readCompletedInterrupt(input.sessionId, input.interruptId);
     if (completed) {
-      return samePayload(completed.payload, input)
+      return samePayload(completed.payloadIdentity, input)
         ? completed.result
         : failure('operation_conflict', 'Interrupt identity has a different payload');
     }
@@ -2235,16 +2250,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #readCompletedSubmit(
     sessionId: string,
     messageId: string,
-  ): Promise<{ payload: CanonicalSubmitPayload; result: TurnMessageSubmitResult } | undefined> {
+  ): Promise<{ payloadIdentity: object; result: TurnMessageSubmitResult } | undefined> {
     const receipt = this.#completedOperations.get(
       queuedMutationKey('submit', sessionId, messageId),
     );
     if (!receipt) return undefined;
     try {
       return {
-        payload: canonicalSubmitPayload(
-          MESSAGE_OPERATION_SPECS['turn.message.submit'].decodeInput(receipt.payload),
-        ),
+        payloadIdentity: receipt.payloadIdentity,
         result: MESSAGE_OPERATION_SPECS['turn.message.submit'].decodeOutput(receipt.result),
       };
     } catch (error) {
@@ -2257,16 +2270,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #readCompletedInterrupt(
     sessionId: string,
     interruptId: string,
-  ): Promise<
-    { payload: TurnInterruptInput; result: MessageOutcome<TurnInterruptResult> } | undefined
-  > {
+  ): Promise<{ payloadIdentity: object; result: MessageOutcome<TurnInterruptResult> } | undefined> {
     const receipt = this.#completedOperations.get(
       queuedMutationKey('interrupt', sessionId, interruptId),
     );
     if (!receipt) return undefined;
     try {
       return {
-        payload: MESSAGE_OPERATION_SPECS['turn.interrupt'].decodeInput(receipt.payload),
+        payloadIdentity: receipt.payloadIdentity,
         result: decodeCompletedInterruptOutcome(receipt.result),
       };
     } catch (error) {
@@ -2284,7 +2295,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     result: object,
   ): void {
     const key = queuedMutationKey(operation, sessionId, operationId);
-    const receipt = { payload: structuredClone(payload), result: structuredClone(result) };
+    const receipt = {
+      payloadIdentity: structuredClone(completedPayloadIdentity(operation, payload)),
+      result: structuredClone(result),
+    };
     const committed = this.#completedOperations.get(key);
     if (committed && !isDeepStrictEqual(committed, receipt)) {
       throw new RuntimeMessageAuthorityInvariantError(
@@ -2317,7 +2331,22 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  #pull(run: BoundRun): readonly SteeringLease[] {
+  async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
+    // A provider boundary must observe steering admission and queue mutations,
+    // not mistake an unfinished durable write for an empty queue.
+    for (;;) {
+      const pending = [
+        ...[...this.#pendingSubmits.values()].filter(
+          ({ payload }) =>
+            payload.sessionId === run.sessionId && payload.placement === 'current_turn',
+        ),
+        ...[...this.#pendingQueuedMutations.values()].filter(
+          ({ payload }) => payload.sessionId === run.sessionId,
+        ),
+      ];
+      if (pending.length === 0) break;
+      await Promise.all(pending.map(({ result }) => result));
+    }
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];
@@ -2839,6 +2868,20 @@ interface CanonicalSubmitPayload {
   readonly placement: MessagePlacement;
   readonly skillIds: readonly string[];
   readonly turnOrchestration?: TurnOrchestration;
+}
+
+// Epoch-long replay needs the original result and request identity, not historical message bodies.
+function completedPayloadIdentity(operation: MessageOperationKind, payload: object): object {
+  if (operation === 'submit') {
+    const { content, ...identity } = payload as CanonicalSubmitPayload;
+    return { ...identity, contentDigest: messageContentDigest(content) };
+  }
+  if (operation === 'update_entry') {
+    const { text, ...identity } = payload as QueueEntryUpdateInput;
+    // UTF-16 preserves distinct JS strings even when they contain unpaired surrogates.
+    return { ...identity, textDigest: createHash('sha256').update(text, 'utf16le').digest('hex') };
+  }
+  return payload;
 }
 
 function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitPayload {

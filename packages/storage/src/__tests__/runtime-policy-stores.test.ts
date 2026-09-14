@@ -65,7 +65,11 @@ const execFileAsync = promisify(execFile);
 describe('runtime policy stores', () => {
   test('upgrades schema v2 with the automatic Host shell default', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
-      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      const {
+        shell: _shell,
+        externalAgents: _externalAgents,
+        ...policyV2
+      } = createDefaultRuntimePolicy();
       await writeFile(
         join(root, 'runtime-policy.json'),
         `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
@@ -82,7 +86,41 @@ describe('runtime policy stores', () => {
       const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
         schemaVersion: number;
       };
-      assert.equal(persisted.schemaVersion, 3);
+      assert.equal(persisted.schemaVersion, 4);
+    });
+  });
+
+  test('migrates v3 external agent defaults and persists configuration with revision checks', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { externalAgents: _externalAgents, ...policyV3 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        JSON.stringify({ schemaVersion: 3, revision: 8, policy: policyV3 }),
+      );
+      const before = await stores.runtimePolicy.getSnapshot();
+      assert.deepEqual(before.policy.externalAgents, { antigravity: { executable: '' } });
+      const value = { antigravity: { executable: '/Applications/ACP/agy_acp_server.par' } };
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value },
+      });
+      assert.equal(committed.kind, 'committed');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      const conflict = await stores.runtimePolicy.mutate({
+        expectedRevision: 8,
+        operation: { kind: 'set_external_agents', value: before.policy.externalAgents },
+      });
+      assert.equal(conflict.kind, 'revision_conflict');
+      assert.deepEqual((await stores.runtimePolicy.getSnapshot()).policy.externalAgents, value);
+      await assert.rejects(
+        stores.runtimePolicy.mutate({
+          expectedRevision: 9,
+          operation: {
+            kind: 'set_external_agents',
+            value: { antigravity: { executable: 'relative/path' } },
+          },
+        }),
+      );
     });
   });
 
@@ -159,9 +197,9 @@ describe('runtime policy stores', () => {
         ...connectionDraft('my-relay', 'openai-compatible', 'My Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model'],
-        relayModelProfiles: declared,
+        modelOverrides: declared,
       });
-      assert.deepEqual(connection.relayModelProfiles, declared);
+      assert.deepEqual(connection.modelOverrides, declared);
 
       // Replacement is total: a new table swaps in, null clears.
       const replaced = await stores.connectionCatalog.update({
@@ -171,13 +209,13 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: { 'relay-model': { vision: false } },
+          modelOverrides: { 'relay-model': { vision: false } },
         },
       });
       assert.equal(replaced.kind, 'committed');
       if (replaced.kind !== 'committed') return;
       const afterReplace = replaced.snapshot.connections[0];
-      assert.deepEqual(afterReplace?.relayModelProfiles, { 'relay-model': { vision: false } });
+      assert.deepEqual(afterReplace?.modelOverrides, { 'relay-model': { vision: false } });
 
       const cleared = await stores.connectionCatalog.update({
         expected: connectionBasis(afterReplace!),
@@ -186,13 +224,13 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(cleared.kind, 'committed');
       if (cleared.kind !== 'committed') return;
       const afterClear = cleared.snapshot.connections[0];
-      assert.equal(afterClear?.relayModelProfiles, undefined);
+      assert.equal(afterClear?.modelOverrides, undefined);
 
       // An absent key leaves the table untouched (name-only saves stay
       // capability-blind), and an UNANNOUNCED endpoint change retires the
@@ -205,7 +243,7 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: declared,
+          modelOverrides: declared,
         },
       });
       assert.equal(retained.kind, 'committed');
@@ -221,7 +259,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(nameOnly.kind, 'committed');
       if (nameOnly.kind !== 'committed') return;
-      assert.deepEqual(nameOnly.snapshot.connections[0]?.relayModelProfiles, declared);
+      assert.deepEqual(nameOnly.snapshot.connections[0]?.modelOverrides, declared);
 
       const endpointMoved = await stores.connectionCatalog.update({
         expected: connectionBasis(nameOnly.snapshot.connections[0]!),
@@ -234,7 +272,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(endpointMoved.kind, 'committed');
       if (endpointMoved.kind !== 'committed') return;
-      assert.equal(endpointMoved.snapshot.connections[0]?.relayModelProfiles, undefined);
+      assert.equal(endpointMoved.snapshot.connections[0]?.modelOverrides, undefined);
       assert.deepEqual(endpointMoved.snapshot.connections[0]?.models, []);
 
       // …unless the same update submits a table of its own — then the table
@@ -247,17 +285,17 @@ describe('runtime policy stores', () => {
           baseUrl: 'https://third-relay.example/v1',
           enabled: true,
           enabledModelIds: ['relay-model'],
-          relayModelProfiles: declared,
+          modelOverrides: declared,
         },
       });
       assert.equal(movedWithTable.kind, 'committed');
       if (movedWithTable.kind !== 'committed') return;
-      assert.deepEqual(movedWithTable.snapshot.connections[0]?.relayModelProfiles, declared);
+      assert.deepEqual(movedWithTable.snapshot.connections[0]?.modelOverrides, declared);
       assert.deepEqual(movedWithTable.snapshot.connections[0]?.models, []);
     });
   });
 
-  test('an untouched profile table is pruned to the new enabled-model selection', async () => {
+  test('disabled models retain editable profiles through reload and re-enable', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const declared = {
         'relay-model': { vision: true as const },
@@ -267,9 +305,9 @@ describe('runtime policy stores', () => {
         ...connectionDraft('prune-relay', 'openai-compatible', 'Prune Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model', 'relay-model-2'],
-        relayModelProfiles: declared,
+        modelOverrides: declared,
       });
-      assert.deepEqual(connection.relayModelProfiles, declared);
+      assert.deepEqual(connection.modelOverrides, declared);
 
       const disabled = await stores.connectionCatalog.update({
         expected: connectionBasis(connection),
@@ -282,14 +320,8 @@ describe('runtime policy stores', () => {
       });
       assert.equal(disabled.kind, 'committed');
       if (disabled.kind !== 'committed') return;
-      // No profile instruction rode along, so the ⊆ enabledModelIds rule is
-      // the store's job: the disabled model's declaration is gone, never
-      // stranded as a stale key the settings page cannot see.
-      assert.deepEqual(disabled.snapshot.connections[0]?.relayModelProfiles, {
-        'relay-model': { vision: true },
-      });
+      assert.deepEqual(disabled.snapshot.connections[0]?.modelOverrides, declared);
 
-      // Pruning everything degrades to "no table" — never a stored `{}`.
       const allDisabled = await stores.connectionCatalog.update({
         expected: connectionBasis(disabled.snapshot.connections[0]!),
         changes: {
@@ -301,7 +333,33 @@ describe('runtime policy stores', () => {
       });
       assert.equal(allDisabled.kind, 'committed');
       if (allDisabled.kind !== 'committed') return;
-      assert.equal(allDisabled.snapshot.connections[0]?.relayModelProfiles, undefined);
+      assert.deepEqual(allDisabled.snapshot.connections[0]?.modelOverrides, declared);
+      const edited = { ...declared, 'relay-model-2': { contextWindow: 128_000, vision: false } };
+      const configured = await stores.connectionCatalog.update({
+        expected: connectionBasis(allDisabled.snapshot.connections[0]!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: [],
+          modelOverrides: edited,
+        },
+      });
+      assert.equal(configured.kind, 'committed');
+      const reloaded = await stores.connectionCatalog.getSnapshot();
+      assert.deepEqual(reloaded.connections[0]?.modelOverrides, edited);
+      const enabled = await stores.connectionCatalog.update({
+        expected: connectionBasis(reloaded.connections[0]!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model-2'],
+        },
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+      assert.deepEqual(enabled.snapshot.connections[0]?.modelOverrides, edited);
     });
   });
 
@@ -316,7 +374,7 @@ describe('runtime policy stores', () => {
         ...connectionDraft('alias-relay', 'openai-compatible', 'Alias Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['claude-haiku-4-5-20251001'],
-        relayModelProfiles: { 'claude-haiku-4-5-20251001': { vision: true } },
+        modelOverrides: { 'claude-haiku-4-5-20251001': { vision: true } },
       });
 
       const credential = await stores.credentialVault.set({
@@ -352,12 +410,12 @@ describe('runtime policy stores', () => {
         ...connectionDraft('refresh-relay', 'openai-compatible', 'Refresh Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['model-a', 'model-b'],
-        relayModelProfiles: {
+        modelOverrides: {
           'model-a': { vision: true },
           'model-b': { contextWindow: 64_000 },
         },
       });
-      assert.deepEqual(connection.relayModelProfiles, {
+      assert.deepEqual(connection.modelOverrides, {
         'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
@@ -373,8 +431,7 @@ describe('runtime policy stores', () => {
 
       // The /models refresh no longer lists model-a. One response is not
       // grounds for deleting a model the user picked (#1584), so the selection
-      // and its declaration both stand — and the subset invariant holds
-      // because neither side moved.
+      // and its declaration both stand.
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
       assert.equal(fetch.kind, 'ready');
       if (fetch.kind !== 'ready') return;
@@ -387,15 +444,11 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const after = discovered.snapshot.connections[0];
       assert.deepEqual(after?.enabledModelIds, ['model-a', 'model-b']);
-      assert.deepEqual(after?.relayModelProfiles, {
+      assert.deepEqual(after?.modelOverrides, {
         'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
 
-      // Unchecking model-a IS a decision, and the update path prunes its
-      // declaration with it. The document must also survive a canonical
-      // reload: the next mutation re-decodes persisted state, and a stranding
-      // here would have raised invalid_document instead of committing.
       const roundtrip = await stores.connectionCatalog.update({
         expected: connectionBasis(after!),
         changes: {
@@ -407,7 +460,8 @@ describe('runtime policy stores', () => {
       });
       assert.equal(roundtrip.kind, 'committed');
       if (roundtrip.kind !== 'committed') return;
-      assert.deepEqual(roundtrip.snapshot.connections[0]?.relayModelProfiles, {
+      assert.deepEqual(roundtrip.snapshot.connections[0]?.modelOverrides, {
+        'model-a': { vision: true },
         'model-b': { contextWindow: 64_000 },
       });
     });
@@ -487,7 +541,7 @@ describe('runtime policy stores', () => {
         baseUrl: ' https://Gateway.EXAMPLE:443/v1 ',
         enabled: true,
         enabledModelIds: ['gpt-5'],
-        relayModelProfiles: null,
+        modelOverrides: null,
       };
       await assert.rejects(
         () =>
@@ -1576,14 +1630,15 @@ describe('runtime policy stores', () => {
       );
 
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
-      await writeFile(
-        join(root, 'model-facts.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          overrides: { 'openai:gpt-5': { apiProtocol: 'openai-responses' } },
-        }),
-        'utf8',
-      );
+      await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: connection.enabled,
+          enabledModelIds: connection.enabledModelIds,
+          modelOverrides: { 'gpt-5': { apiProtocol: 'openai-responses' } },
+        },
+      });
       const testTicket = await stores.operations.beginConnectionTest(
         connection.connectionId,
         'gpt-5',
@@ -1627,15 +1682,7 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [
-        { id: 'gpt-5.1' },
-        { id: 'gpt-5.2' },
-        {
-          id: 'gpt-5',
-          apiProtocol: 'openai-responses',
-          factOverriddenFields: ['apiProtocol'],
-        },
-      ]);
+      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
       // Discovery records what the provider reported while retaining the
       // selected fact-backed model for selectors and execution.
       assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
@@ -1798,7 +1845,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: true,
           enabledModelIds: ['gpt-5', 'llama3.3'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(widened.kind, 'committed');
@@ -1821,7 +1868,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: true,
           enabledModelIds: ['llama3.3'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(narrowed.kind, 'committed');
@@ -1856,7 +1903,7 @@ describe('runtime policy stores', () => {
           name: connection.name,
           enabled: false,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(disabled.kind, 'committed');
@@ -1911,7 +1958,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: [],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(emptied.kind, 'committed');
@@ -2111,7 +2158,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updated.kind, 'committed');
@@ -2842,7 +2889,7 @@ describe('runtime policy stores', () => {
           baseUrl: 'https://gateway.example/v1',
           enabled: true,
           enabledModelIds: connection.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(endpointUpdate.kind, 'committed');
@@ -2870,7 +2917,7 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(modelSelectionUpdate.kind, 'committed');
@@ -3660,7 +3707,7 @@ describe('runtime policy stores', () => {
           name: 'Current revision',
           enabled: true,
           enabledModelIds: ['gpt-5'],
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updatedResult.kind, 'committed');
@@ -4309,6 +4356,115 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('interactive OAuth create commits the requested Connection name and slug', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+      assert.deepEqual(admitted.identity, {
+        connectionId: admitted.identity.connectionId,
+        slug: 'codex-work',
+        providerType: 'openai-codex',
+      });
+      assert.equal(admitted.connection.name, 'Work Codex');
+
+      const completed = await stores.operations.completeInteractiveOAuthLogin(
+        admitted.ticket,
+        'oauth-custom-secret',
+      );
+      assert.equal(completed.kind, 'committed');
+      const saved = (await stores.connectionCatalog.getSnapshot()).connections[0];
+      assert.equal(saved?.connectionId, admitted.identity.connectionId);
+      assert.equal(saved?.slug, 'codex-work');
+      assert.equal(saved?.name, 'Work Codex');
+      assert.deepEqual(
+        await stores.operations.queryInteractiveOAuthLogin('oauth-custom-identity'),
+        {
+          kind: 'authenticated',
+          target,
+          connection: admitted.identity,
+        },
+      );
+
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-custom-identity-collision',
+          target: { ...target, name: 'Other Codex' },
+        }),
+        { kind: 'slug_taken' },
+      );
+    });
+  });
+
+  test('interactive OAuth custom identity is limited to OpenAI Codex', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      await assert.rejects(
+        stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-xai-custom-identity',
+          target: {
+            kind: 'create',
+            providerType: 'xai-oauth',
+            slug: 'xai-work',
+          } as never,
+        }),
+        isStoreError('invalid_connection_input'),
+      );
+    });
+  });
+
+  test('interactive OAuth create reports a slug collision that wins the commit race', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      };
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-custom-identity-race',
+        target,
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+
+      const concurrent = await createConnection(
+        stores,
+        0,
+        connectionDraft('codex-work', 'openai', 'Concurrent Connection'),
+      );
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          admitted.ticket,
+          'oauth-custom-secret',
+        ),
+        { kind: 'slug_taken' },
+      );
+      assert.deepEqual(
+        (await stores.connectionCatalog.getSnapshot()).connections.map(
+          ({ connectionId, slug }) => ({ connectionId, slug }),
+        ),
+        [{ connectionId: concurrent.connectionId, slug: 'codex-work' }],
+      );
+      assert.equal(
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: admitted.identity.connectionId,
+          kind: 'oauth_token',
+        }),
+        null,
+      );
+    });
+  });
+
   test('interactive OAuth existing login re-enables only its frozen entity', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const original = await createConnection(stores, 0, {
@@ -4569,7 +4725,7 @@ describe('runtime policy stores', () => {
           name: 'Claude renamed',
           enabled: current.enabled,
           enabledModelIds: current.enabledModelIds,
-          relayModelProfiles: null,
+          modelOverrides: null,
         },
       });
       assert.equal(updated.kind, 'committed');

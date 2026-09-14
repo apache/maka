@@ -430,7 +430,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
   await firstPresentationPoll;
   assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' }), {
     ok: false,
-    reason: 'unknown',
+    reason: 'login_in_progress',
     message: 'Another OAuth login is already in progress',
   });
   assert.equal(starts, 1);
@@ -697,6 +697,50 @@ test('projects the selected Host answer for whether a provider may enrol', async
   }
 });
 
+test('get-auth-url maps only specific Host failures to typed reasons', async () => {
+  const cases = [
+    {
+      label: 'generic Host conflict',
+      thrown: new RuntimeHostOperationError(
+        'oauth.login.start',
+        'operation_conflict',
+        'OAuth Connection capacity is exhausted',
+      ),
+      reason: 'unknown',
+    },
+    {
+      label: 'gated Host',
+      thrown: new RuntimeHostOperationError(
+        'oauth.login.start',
+        'operation_unavailable',
+        'Enrollment is disabled for this install',
+      ),
+      reason: 'experimental_disabled',
+    },
+  ];
+  for (const { label, thrown, reason } of cases) {
+    const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+      clientOverrides: {
+        startOAuthLogin: async () => {
+          throw thrown;
+        },
+      },
+      presentation: new RuntimeHostOAuthPresentation(async () => undefined),
+      emitConnectionListChanged: () => undefined,
+    });
+    assert.deepEqual(
+      await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' }),
+      {
+        ok: false,
+        reason,
+        message: thrown.message,
+      },
+      label,
+    );
+    assertNoUnexpectedClientCalls();
+  }
+});
+
 function createFailClosedOAuthClient(overrides: Partial<OAuthClient>): {
   readonly client: OAuthClient;
   assertNoUnexpectedClientCalls(): void;
@@ -776,3 +820,43 @@ async function invoke(
   if (!handler) throw new Error(`Missing IPC handler: ${channel}`);
   return handler({} as IpcMainInvokeEvent, ...args);
 }
+
+test('get-auth-url carries a browser-open rejection through presentation to the IPC result', async () => {
+  const connectionId = '00000000-0000-4000-8000-000000000016';
+  const presentation = new RuntimeHostOAuthPresentation(async () => {
+    throw new Error('EACCES: xdg-open is not executable');
+  });
+  let startedAttemptId = '';
+  let cancelledAttemptId = '';
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides: {
+      startOAuthLogin: async (attemptId) => {
+        startedAttemptId = attemptId;
+        void presentation
+          .openExternal(
+            'https://example.test/auth',
+            'state-1',
+            new AbortController().signal,
+          )
+          .catch(() => undefined);
+        return oauthProjection(attemptId, connectionId, 'awaiting_authorization');
+      },
+      cancelOAuthLogin: async (attemptId) => {
+        cancelledAttemptId = attemptId;
+        return oauthProjection(attemptId, connectionId, 'cancelled');
+      },
+    },
+    presentation,
+    emitConnectionListChanged: () => undefined,
+  });
+
+  const result = await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'presentation_failed',
+    message: 'Desktop could not open the system browser',
+  });
+  assert.equal(cancelledAttemptId, startedAttemptId);
+  assertNoUnexpectedClientCalls();
+});

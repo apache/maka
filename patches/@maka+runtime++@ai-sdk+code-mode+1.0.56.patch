@@ -1,0 +1,74 @@
+diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/types.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/types.ts
+index b317e9d..5beb1c2 100644
+--- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/types.ts
++++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/types.ts
+@@ -160,6 +160,8 @@
+  * Execution limits applied to each sandbox invocation.
+  */
+ export interface CodeModeExecutionPolicy {
++  /** Whether timeoutMs counts total elapsed time or synchronous VM execution. */
++  timeoutMode?: 'wall' | 'execution';
+   /** @defaultValue `30_000` */
+   timeoutMs?: number;
+   /** @defaultValue `64 * 1024 * 1024` */
+diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
+index 95435bd..fb7ba60 100644
+--- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
++++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/src/run-code-mode.ts
+@@ -159,6 +159,7 @@
+ }
+ 
+ interface ResolvedExecutionPolicy {
++  timeoutMode: 'wall' | 'execution';
+   timeoutMs: number;
+   memoryLimitBytes: number;
+   maxStackSizeBytes: number;
+@@ -176,6 +177,7 @@
+ ): ResolvedExecutionPolicy {
+   return {
+     timeoutMs: policy.timeoutMs ?? DEFAULT_TIMEOUT_MS,
++    timeoutMode: policy.timeoutMode ?? 'wall',
+     memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
+     maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
+     maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
+@@ -363,6 +365,7 @@
+ ): RunLimits {
+   return {
+     timeoutMs: policy.timeoutMs,
++    timeoutMode: policy.timeoutMode,
+     memoryLimitBytes: policy.memoryLimitBytes,
+     maxStackSizeBytes: policy.maxStackSizeBytes,
+     maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
+index 9cafdbb..3c924f1 100644
+--- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
++++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/index.d.ts
+@@ -117,6 +117,8 @@
+  * Execution limits applied to each sandbox invocation.
+  */
+ interface CodeModeExecutionPolicy {
++    /** Whether timeoutMs counts total elapsed time or synchronous VM execution. */
++    timeoutMode?: 'wall' | 'execution';
+     /** @defaultValue `30_000` */
+     timeoutMs?: number;
+     /** @defaultValue `64 * 1024 * 1024` */
+diff --git a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
+index 257b976..8095276 100644
+--- a/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
++++ b/node_modules/@maka/runtime/node_modules/@ai-sdk/code-mode/dist/run-code-mode.js
+@@ -117,6 +117,7 @@
+ function resolveExecutionPolicy(policy = {}) {
+   return {
+     timeoutMs: policy.timeoutMs ?? DEFAULT_TIMEOUT_MS,
++    timeoutMode: policy.timeoutMode ?? "wall",
+     memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
+     maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
+     maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
+@@ -260,6 +261,7 @@
+ function toRunLimits(policy, source, userSource) {
+   return {
+     timeoutMs: policy.timeoutMs,
++    timeoutMode: policy.timeoutMode,
+     memoryLimitBytes: policy.memoryLimitBytes,
+     maxStackSizeBytes: policy.maxStackSizeBytes,
+     maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),

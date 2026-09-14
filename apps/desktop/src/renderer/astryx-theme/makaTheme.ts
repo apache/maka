@@ -32,7 +32,7 @@
 //   npm run astryx:theme
 import { defineTheme } from '@astryxdesign/core/theme';
 import { neutralTheme, neutralIconRegistry } from '@astryxdesign/theme-neutral';
-import { TYPE_SCALE_BASE_PX } from './type-scale.js';
+import { TYPE_SCALE_BASE_PX } from '../platform/desktop/document-appearance.js';
 
 export const makaTheme = defineTheme({
   name: 'maka',

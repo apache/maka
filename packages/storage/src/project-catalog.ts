@@ -861,6 +861,12 @@ export async function resolveProjectLocation(input: {
   path: string;
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
+  // Regular files are not valid projects. Without this check, a file inside a
+  // Git worktree reaches `git -C <file> rev-parse ...`, whose numeric failure
+  // is not treated as an invalid path by the Host coordinator and drains it.
+  if (!(await stat(canonicalPath)).isDirectory()) {
+    throw new TypeError(`Project path is not a directory: ${canonicalPath}`);
+  }
   if (!(await hasEnclosingGitEntry(canonicalPath))) {
     return {
       canonicalPath,

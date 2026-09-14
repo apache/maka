@@ -213,7 +213,7 @@ test('shared comparison drives every diff gate on refreshed merges, pushes and d
           'npm',
           'run',
           'check:renderer-architecture',
-          ...(expectedBase ? ['--', '--base', expectedBase] : []),
+          ...(expectedBase ? ['--', '--base', expectedBase, '--strict-base'] : []),
         ],
       ],
     ];
@@ -913,8 +913,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 91/u);
-  assert.match(recovery, /# pass 91/u);
+  assert.match(recovery, /# tests 93/u);
+  assert.match(recovery, /# pass 93/u);
   assert.match(recovery, /# skipped 0/u);
 });
 
@@ -960,6 +960,16 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
     'python3 harbor/test_egress_filter_live.py',
   );
   assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
+});
+
+test('core CI rebuilds the DeepSeek Harness tree before accepting a new fingerprint', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.match(workflow, /name: Verify DeepSeek Harness toolchain fingerprint/u);
+  assert.match(workflow, /if: steps\.plan\.outputs\.deepseek_harness_toolchain == 'true'/u);
+  assert.match(workflow, /prepare-deepseek-harness-toolchain\.mjs --out/u);
+  assert.match(workflow, /TOOLCHAIN_IDENTITIES\["deepseek-harness"\]\.fingerprint/u);
+  assert.match(workflow, /cd "\$toolchain_root" && sha256sum --check --quiet checksums\.sha256/u);
 });
 
 test('everything that runs before dependency setup imports only node builtins', () => {

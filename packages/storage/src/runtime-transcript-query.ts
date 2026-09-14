@@ -46,11 +46,10 @@ export const TERMINAL_RUNTIME_EVENT_SQL = `(
  * RuntimeEvent becomes is decided by the read model alone, so nothing here
  * classifies an event or decides whether it produces a row.
  */
-export interface RuntimeTranscriptInvocation {
+export interface RuntimeTranscriptInvocationHeader {
   readonly invocation: RuntimeInvocationRecord;
   readonly firstOrdinal: number;
   readonly lastOrdinal: number;
-  readonly events: readonly { readonly ordinal: number; readonly event: RuntimeEvent }[];
 }
 
 /** An invocation start, with the prompt event a landmark is labelled by. */
@@ -69,14 +68,20 @@ export interface RuntimeTranscriptInvocationRequest {
   /** Refused rather than truncated: half a Turn projects to a wrong transcript. */
   readonly maxEvents: number;
   readonly maxBytes: number;
+  readonly maxRecordBytes: number;
 }
 
 export interface RuntimeTranscriptQueries {
   readTranscriptHighWater(sessionId: string): Promise<number | null>;
-  readTranscriptInvocations(
+  readTranscriptInvocations<T>(
     sessionId: string,
     request: RuntimeTranscriptInvocationRequest,
-  ): Promise<RuntimeTranscriptInvocation[]>;
+    /** Consume `events` and return synchronously while the read transaction is open. */
+    project: (
+      turn: RuntimeTranscriptInvocationHeader,
+      events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
+    ) => T,
+  ): Promise<T[]>;
   readTranscriptLandmarks(
     sessionId: string,
     throughOrdinal: number,
@@ -165,12 +170,19 @@ export class RuntimeTranscriptQuery {
     return row?.last ?? null;
   }
 
-  invocations(
+  invocations<T>(
     sessionId: string,
     request: RuntimeTranscriptInvocationRequest,
-  ): RuntimeTranscriptInvocation[] {
+    project: (
+      turn: RuntimeTranscriptInvocationHeader,
+      events: Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }>,
+    ) => T,
+  ): T[] {
     assertOrdinal(request.throughOrdinal);
     assertOrdinal(request.position);
+    assertReadLimit(request.maxEvents, 'event count');
+    assertReadLimit(request.maxBytes, 'byte');
+    assertReadLimit(request.maxRecordBytes, 'record byte');
     if (request.direction !== 'older' && request.direction !== 'newer') {
       throw new Error('Invalid transcript direction');
     }
@@ -192,12 +204,16 @@ export class RuntimeTranscriptQuery {
             throughOrdinal: request.throughOrdinal,
             limit: request.limit,
           }).sort((a, b) => a.first - b.first);
-    return rows.map((row) => ({
-      invocation: this.invocation(sessionId, row.invocation_id),
-      firstOrdinal: row.first,
-      lastOrdinal: row.last,
-      events: this.events(row.invocation_id, request),
-    }));
+    return rows.map((row) =>
+      project(
+        {
+          invocation: this.invocation(sessionId, row.invocation_id),
+          firstOrdinal: row.first,
+          lastOrdinal: row.last,
+        },
+        this.events(row.invocation_id, request),
+      ),
+    );
   }
 
   landmarks(sessionId: string, throughOrdinal: number, limit: number): RuntimeTranscriptLandmark[] {
@@ -333,36 +349,50 @@ export class RuntimeTranscriptQuery {
       }) as InvocationRow[];
   }
 
-  private events(
+  private *events(
     invocationId: string,
-    limits: { maxEvents: number; maxBytes: number },
-  ): RuntimeTranscriptInvocation['events'] {
-    // Walked row by row: the limits cap what one Turn may pull into memory, so
-    // a check after `.all()` has already paid the cost it was meant to refuse.
+    limits: { maxEvents: number; maxBytes: number; maxRecordBytes: number },
+  ): Iterable<{ readonly ordinal: number; readonly event: RuntimeEvent }> {
+    // Walked row by row so cumulative limits apply to raw IO without retaining
+    // the Turn. SQLite withholds an oversized payload before it crosses into JS.
     const cursor = this.db
       .prepare(`
-      SELECT o.ordinal, e.event_id, e.session_id, e.invocation_id, e.run_id, e.turn_id, e.payload_json
+      SELECT o.ordinal, e.event_id, e.session_id, e.invocation_id, e.run_id, e.turn_id,
+        length(CAST(e.payload_json AS BLOB)) AS stored_bytes,
+        CASE WHEN length(CAST(e.payload_json AS BLOB)) <= ? THEN e.payload_json END AS payload_json
       FROM runtime_events e JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
       WHERE e.invocation_id = ? ORDER BY e.event_seq
     `)
-      .iterate(invocationId) as Iterable<StoredEventRow & { ordinal: number }>;
-    const events: Array<RuntimeTranscriptInvocation['events'][number]> = [];
+      .iterate(limits.maxRecordBytes, invocationId) as Iterable<
+      Omit<StoredEventRow, 'payload_json'> & {
+        ordinal: number;
+        stored_bytes: number;
+        payload_json: string | null;
+      }
+    >;
+    let count = 0;
     let bytes = 0;
     for (const row of cursor) {
-      if (events.length === limits.maxEvents) {
+      if (count === limits.maxEvents) {
         throw new RuntimeTranscriptOversizedTurnError(
           `Turn ${invocationId} holds more RuntimeEvents than a transcript page may read`,
         );
       }
-      bytes += Buffer.byteLength(row.payload_json);
+      const payload = row.payload_json;
+      if (payload === null) {
+        throw new RuntimeTranscriptOversizedTurnError(
+          `Turn ${invocationId} holds a RuntimeEvent larger than a transcript page may read`,
+        );
+      }
+      bytes += row.stored_bytes;
       if (bytes > limits.maxBytes) {
         throw new RuntimeTranscriptOversizedTurnError(
           `Turn ${invocationId} holds more RuntimeEvent bytes than a transcript page may read`,
         );
       }
-      events.push({ ordinal: row.ordinal, event: decodeStoredEvent(row) });
+      count += 1;
+      yield { ordinal: row.ordinal, event: decodeStoredEvent({ ...row, payload_json: payload }) };
     }
-    return events;
   }
 
   private event(id: string): RuntimeEvent {
@@ -402,4 +432,10 @@ function decodeStoredEvent(row: StoredEventRow): RuntimeEvent {
 function assertOrdinal(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new Error('Invalid transcript event ordinal');
+}
+
+function assertReadLimit(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`Invalid transcript ${name} limit`);
+  }
 }
