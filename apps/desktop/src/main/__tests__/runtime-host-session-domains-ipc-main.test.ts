@@ -19,6 +19,9 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import { TerminalCloseIntents } from '../terminal-close-intents.js';
+import type { TerminalCloseChange, TerminalRecovery } from '../../shared/runtime-host-identity.js';
 import type { IpcMain } from 'electron';
 import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
 import { type DeepResearchRun } from '@maka/core/deep-research-run';
@@ -571,6 +574,49 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
   ]);
 });
 
+test('keeps a failed Close across connection replacement and acknowledges Stop without a post-read', async () => {
+  const changes: TerminalCloseChange[] = [];
+  const closes = new TerminalCloseIntents((change) => changes.push(change));
+  const firstStop = deferred<Awaited<ReturnType<DomainClient['stopRuntimeResource']>>>();
+  const identity = { sessionId: 'session-1', ref: 'terminal' };
+  let attempts = 0;
+  const first = ipcHarness();
+  const old = registerDomainsIpc({
+    terminalCloses: closes, emitModeChanged() {},
+    client: domainClient({ stopRuntimeResource: () => { attempts += 1; return firstStop.promise; } }),
+  }, first);
+  const stopping = first.invoke('shell-runs:stop', identity);
+  const rejected = assert.rejects(stopping, /disconnected/);
+  await old.close();
+
+  const second = ipcHarness();
+  registerDomainsIpc({
+    terminalCloses: closes, emitModeChanged() {},
+    client: domainClient({
+      listRuntimeResources: async () => [],
+      getRuntimeResource: async () => { throw new Error('must not reread after Stop'); },
+      stopRuntimeResource: async () => { attempts += 1; return { resource: shellRunUpdate().result as never }; },
+    }),
+  }, second);
+  const recovering = await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery;
+  assert.deepEqual(recovering.closes, [{ ...identity, status: 'pending' }]);
+  firstStop.reject(new Error('disconnected after old view closed'));
+  await rejected;
+  const unknown = await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery;
+  assert.deepEqual(unknown.closes, [{ ...identity, status: 'unknown' }]);
+  await second.invoke('shell-runs:stop', identity);
+  assert.equal(attempts, 2);
+  assert.deepEqual(changes.map((change) => change.status), ['pending', 'unknown', 'pending', 'closed']);
+  assert.deepEqual((await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery).closes, []);
+  const retiringStop = deferred<void>();
+  const lateFailure = assert.rejects(closes.stop(identity, () => retiringStop.promise), /late/);
+  closes.retireSession(identity.sessionId);
+  retiringStop.reject(new Error('late response after successful owner retirement'));
+  await lateFailure;
+  assert.deepEqual((await second.invoke('shell-runs:recover', identity.sessionId) as TerminalRecovery).closes, []);
+  assert.equal(changes.at(-1)?.status, 'closed');
+});
+
 test('adapts interactive terminal ownership to one Host controller lease', async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
   const update = shellRunUpdate({
@@ -636,7 +682,6 @@ test('adapts interactive terminal ownership to one Host controller lease', async
       sessionObserver: {
         observe: async (sessionId, observerId) => {
           calls.push({ operation: 'observe', input: { sessionId, observerId } });
-          return [];
         },
         unobserve: async (observerId) => {
           calls.push({ operation: 'unobserve', input: { observerId } });
@@ -765,7 +810,6 @@ test('restores terminal observation after the observer drops its registration', 
         observe: async () => {
           observeCalls += 1;
           observationActive = true;
-          return [];
         },
         unobserve: async () => {
           observationActive = false;
@@ -1389,15 +1433,16 @@ function reconciledIpcHarness() {
 }
 
 function registerDomainsIpc(
-  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'> &
-    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'>>,
+  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver' | 'terminalCloses'> &
+    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver' | 'terminalCloses'>>,
   ipcMain: ReconnectableReadIpcMain,
 ) {
   return registerRuntimeHostSessionDomainsIpc(
     {
       ...deps,
+      terminalCloses: deps.terminalCloses ?? new TerminalCloseIntents(),
       sessionObserver: deps.sessionObserver ?? {
-        async observe() { return []; },
+        async observe() {},
         async unobserve() {},
       },
     },
@@ -1447,7 +1492,6 @@ test('plan control channels rethrow failures outside the expected plan-control s
     (error: unknown) => error === boom,
   );
 });
-
 test('plan control channels return the Host error code across the IPC boundary', async () => {
   const cases = [
     {
@@ -1455,6 +1499,12 @@ test('plan control channels return the Host error code across the IPC boundary',
       args: ['session-1', 'proposal-1'],
       operation: 'plan.control',
       code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:abandon',
+      args: ['session-1', 'proposal-1'],
+      operation: 'plan.control',
+      code: 'operation_conflict',
     },
     {
       channel: 'plan-mode:approve',
@@ -1500,22 +1550,4 @@ test('plan control channels return the Host error code across the IPC boundary',
     );
     assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
   }
-});
-
-test('the plan proposal exit channel rejects instead of returning an envelope', async () => {
-  const ipc = ipcHarness();
-  const changed: string[] = [];
-  const cause = new RuntimeHostOperationError('plan.control', 'operation_conflict', 'Host refused the plan control');
-  registerDomainsIpc({
-    client: domainClient({
-      getPlanState: async () => emptyPlanSessionState('session-1'),
-      controlPlan: async () => {
-        throw cause;
-      },
-    }),
-    emitModeChanged: (sessionId) => changed.push(sessionId),
-    newId: () => 'fixed-id',
-  }, ipc);
-  await assert.rejects(() => ipc.invoke('plan-mode:abandon', 'session-1', 'proposal-1'), (error) => error === cause);
-  assert.deepEqual(changed, []);
 });

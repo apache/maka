@@ -41,7 +41,6 @@ import type {
 } from '@maka/core/events';
 import type {
   AssistantMessage,
-  AssistantStepContentKind,
   AssistantThinkingPart,
   RuntimeSystemNoteKind,
   SessionHeader,
@@ -112,7 +111,6 @@ import {
   decodePlaintextResponsesReasoningState,
   responsesReasoningItemId,
 } from './responses-reasoning-state.js';
-import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { finitePositive } from './context-budget-helpers.js';
 import type {
   AutomaticMemoryCompactionDecision,
@@ -123,11 +121,7 @@ import {
   contextDiagnosticsCompactionOf,
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
-import {
-  AiSdkCompaction,
-  hasActiveToolResultPruneDiagnosticPatch,
-  hasBlockingReplayDiagnostics,
-} from './ai-sdk-compaction.js';
+import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -153,7 +147,7 @@ import {
 } from './request-shape.js';
 import { toolAvailabilityHash } from './tool-availability.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
-import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
+import { AiSdkMessageProjection, hasFinalizedReasoning } from './ai-sdk-message-projection.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityPlan } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
@@ -163,7 +157,7 @@ import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
   mergeContextBudgetDiagnostic,
-  mergeContextBudgetDiagnosticPatches,
+  addToolResultPruneStats,
   minimalContextBudgetDiagnostic,
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
@@ -424,44 +418,31 @@ function projectToolModePlan(
   plan: ToolAvailabilityPlan,
   toolMode: ToolMode,
   execTool: MakaTool,
+  nested: ReadonlyMap<string, MakaTool>,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
-  const withExec = (names: readonly string[]): string[] =>
-    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
-  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
-  const visible = [
-    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
-    execTool,
-  ].sort((a, b) => a.name.localeCompare(b.name));
+  const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
+  const projectedExec = {
+    ...execTool,
+    description: [
+      execTool.description,
+      'This is the only callable tool. Call the following tools from inside exec.',
+      'After tool_search, return its result and use the refreshed catalog in the next exec call.',
+      JSON.stringify(catalog),
+    ].join('\n'),
+  };
   return {
     ...plan,
-    providerTools: [...visible, ...invalid],
-    activeTools: withExec(plan.activeTools),
+    providerTools: [
+      projectedExec,
+      ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
+    ],
+    activeTools: [execTool.name],
     ...(plan.projectActiveTools
-      ? {
-          projectActiveTools: (options) => ({
-            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
-          }),
-        }
+      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
       : {}),
-    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
-    diagnostics: (activeTools, visibleToolSchemaChars) => {
-      const baseActive = activeTools.filter((name) => name !== execTool.name);
-      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
-      const diagnostic = plan.diagnostics(baseActive, baseChars);
-      if (!diagnostic) return undefined;
-      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
-      return {
-        ...diagnostic,
-        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
-        fullToolCount:
-          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
-        visibleToolSchemaChars,
-        fullToolSchemaChars:
-          (diagnostic.fullToolSchemaChars ??
-            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
-      };
-    },
+    currentRepairToolNames: () => [execTool.name],
+    diagnostics: () => undefined,
   };
 }
 
@@ -591,13 +572,6 @@ function joinPromptFragments(fragments: readonly (string | undefined)[]): string
 const MAX_WAITING_CODE_MODE_CELLS = 1;
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
-const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
-const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
-// A mid-stream cut after partial thinking seals one transcript fragment per
-// retry. A gateway that systematically kills long thinking streams (the
-// 2026-08-28 incident shape) would otherwise spend the full attempt budget
-// accumulating fragments before failing anyway, so fail fast after one.
-const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -846,7 +820,9 @@ export class AiSdkTurn {
       : { disposition: 'policy_denied', dispatch: false };
   }
 
-  private createCodeModeExecTool(eventSink: DurableSessionEventSink): MakaTool<{ code: string }> {
+  private createCodeModeExecTool(
+    eventSink: AsyncEventQueue<SessionEvent>,
+  ): MakaTool<{ code: string }> {
     return {
       name: 'exec',
       description: [
@@ -906,10 +882,6 @@ export class AiSdkTurn {
     let stepTextPartStartOffset = 0;
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
-    let stepContentOrder: AssistantStepContentKind[] = [];
-    const recordStepContent = (kind: AssistantStepContentKind): void => {
-      if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
-    };
     // Flush the current step's AssistantMessage (text + thinking) and the paired
     // terminal thinking/text events, then clear the per-step accumulators.
     // Persist when the step produced text OR reasoning — a thinking-only step
@@ -925,17 +897,38 @@ export class AiSdkTurn {
       stepTextPartStartOffset = 0;
       stepThinkingParts = [];
       stepThinkingPartsById = new Map();
-      stepContentOrder = [];
     };
-    const flushStep = async (): Promise<void> => {
+    const flushStep = async (interrupted = false): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
       if (stepText.length === 0 && !hasThinking) {
         resetStep();
         return;
       }
-      const stepId = currentStepMessageId;
-      if (hasThinking) {
-        for (const part of stepThinkingParts) {
+      // A provider may finalize one reasoning item before the next item fails.
+      // Keep completed and interrupted parts in separate transcript rows so
+      // missing-ledger recovery preserves the same model visibility.
+      const fragments: { thinking: AssistantThinkingPart[]; text: string; interrupted: boolean }[] =
+        [];
+      for (const part of stepThinkingParts) {
+        const partInterrupted = interrupted && !hasFinalizedReasoning(part);
+        let fragment = fragments.at(-1);
+        if (!fragment || fragment.interrupted !== partInterrupted) {
+          fragment = { thinking: [], text: '', interrupted: partInterrupted };
+          fragments.push(fragment);
+        }
+        fragment.thinking.push(part);
+      }
+      if (stepText.length > 0) {
+        let fragment = fragments.at(-1);
+        if (!fragment || fragment.interrupted !== interrupted) {
+          fragment = { thinking: [], text: '', interrupted };
+          fragments.push(fragment);
+        }
+        fragment.text = stepText;
+      }
+      for (const [index, fragment] of fragments.entries()) {
+        const stepId = index === 0 ? currentStepMessageId : this.deps.newId();
+        for (const part of fragment.thinking) {
           queue.push({
             type: 'thinking_complete',
             id: this.deps.newId(),
@@ -943,6 +936,7 @@ export class AiSdkTurn {
             ts: this.deps.now(),
             messageId: stepId,
             text: part.text,
+            ...(fragment.interrupted ? { interrupted: true } : {}),
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
             // No sanitiser here, unlike the tool call below: these options are
             // not the provider's object. `translateChunk` rebuilds reasoning
@@ -955,18 +949,19 @@ export class AiSdkTurn {
               : {}),
           } satisfies ThinkingCompleteEvent);
         }
+        queue.push({
+          type: 'text_complete',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          messageId: stepId,
+          text: fragment.text,
+          ...(fragment.interrupted ? { interrupted: true } : {}),
+          ...(index === fragments.length - 1 && stepTextProviderOptions !== undefined
+            ? { providerOptions: stepTextProviderOptions }
+            : {}),
+        } satisfies TextCompleteEvent);
       }
-      queue.push({
-        type: 'text_complete',
-        id: this.deps.newId(),
-        turnId,
-        ts: this.deps.now(),
-        messageId: stepId,
-        text: stepText,
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-      } satisfies TextCompleteEvent);
       this.finalAssistantText = stepText.length > 0 ? stepText : undefined;
       resetStep();
     };
@@ -1117,7 +1112,7 @@ export class AiSdkTurn {
             ])
           : new Set<string>();
     const requestedToolMode: unknown =
-      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
+      input.toolMode ?? this.deps.backend.header.toolMode ?? DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
@@ -1127,10 +1122,17 @@ export class AiSdkTurn {
       if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
         throw new Error('Tool name "exec" is reserved for Code Mode.');
       }
+      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
+      const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
       const plan = projectToolModePlan(
-        snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools),
+        basePlan,
         toolMode,
         codeModeExecTool,
+        toolRuntime.hasSandboxBoundaryDenial()
+          ? new Map(
+              [...nestedTools].filter(([name]) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME),
+            )
+          : nestedTools,
       );
       const modelTools: ModelToolSet = {};
       for (const tool of plan.providerTools) {
@@ -1139,11 +1141,9 @@ export class AiSdkTurn {
           : { kind: 'function', description: tool.description, inputSchema: tool.parameters };
       }
       toolRuntime.setGating(plan.gating);
-      return { plan, providerTools: plan.providerTools, modelTools };
+      return { plan, providerTools: plan.providerTools, modelTools, nestedTools };
     };
-    let { plan, providerTools, modelTools } = snapshotStepTools();
-    let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
-    let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
+    let { plan, providerTools, modelTools, nestedTools } = snapshotStepTools();
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
@@ -1308,6 +1308,14 @@ export class AiSdkTurn {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
+          const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
+          if (pruned.stats) {
+            if (pruned.stats.prunedToolResults > 0) pruneAppliedAtStep = runtimeSteps;
+            contextBudgetForTelemetry = addToolResultPruneStats(
+              contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
+              pruned.stats,
+            );
+          }
           const projectionCheckpoint = midTurnState?.projectionCheckpoint;
           const rawProjectionEvents = projectionCheckpoint
             ? [
@@ -1333,6 +1341,7 @@ export class AiSdkTurn {
             const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
             const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
+              pruned.projectionSnapshot,
             );
             if (
               pinnedEffectiveDigest === undefined ||
@@ -1355,8 +1364,10 @@ export class AiSdkTurn {
           // folded through the same reducer before it becomes messages. Without
           // this, a result archived at step N is rebuilt in full at step N+1 and
           // the ledger's account of what the model sees stops being true.
-          const foldedReplayEvents =
-            await this.deps.compaction.foldEffectiveModelHistory(replayEvents);
+          const foldedReplayEvents = await this.deps.compaction.foldEffectiveModelHistory(
+            replayEvents,
+            pruned.projectionSnapshot,
+          );
           const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
@@ -1404,8 +1415,8 @@ export class AiSdkTurn {
         });
 
         const onMidTurnDiagnosticPatch = (patch: Partial<ContextBudgetDiagnostic>): void => {
-          midTurnCompactDiagnosticPatch = mergeContextBudgetDiagnosticPatches(
-            midTurnCompactDiagnosticPatch,
+          contextBudgetForTelemetry = mergeContextBudgetDiagnostic(
+            contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
             patch,
           );
         };
@@ -1425,26 +1436,11 @@ export class AiSdkTurn {
             : undefined,
           turnAbortController.signal,
         );
-        // When mid-turn capacity compaction is active, the prune must also cover
-        // the newest completed step; see collectPrunableCompletedStepToolCallIds.
-        const activeToolResultPruneIncludesNewestStep = midTurnState !== undefined;
-        const activeToolResultPruneHook = this.deps.compaction.buildActiveToolResultPruneProjection(
-          turnId,
-          activeToolResultPruneIncludesNewestStep,
-          (patch) => {
-            pruneAppliedAtStep = runtimeSteps;
-            activeToolResultPruneDiagnosticPatch = mergeActiveToolResultPruneDiagnosticPatches(
-              activeToolResultPruneDiagnosticPatch,
-              patch,
-            );
-          },
-        );
         const projectCurrentToolAvailability: RequestProjectionStage = (options) =>
           plan.projectActiveTools?.(options);
         const shapedProjection = composeRequestProjection(
           projectCurrentToolAvailability,
           midTurnCapacityHook,
-          activeToolResultPruneHook,
         );
         // Hooks shape; nothing measures the final payload. Whether it fits is
         // the provider's answer (#4559).
@@ -1452,17 +1448,12 @@ export class AiSdkTurn {
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
-        // The compaction module runs at most once per send. This tracks the
-        // reactive entry; the proactive one sets the same flag on the mid-turn
-        // state, and each consults the other, so a send that already folded
-        // reports the oversized message instead of folding again (#4559).
-        let overflowRetryUsed = false;
         let result: ModelStreamResult;
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
-          ({ plan, providerTools, modelTools } = snapshotStepTools());
+          ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
           resolvedSystemPrompt = await this.resolveSystemPrompt();
           systemPrompt = joinPromptFragments([
             resolvedSystemPrompt.text,
@@ -1514,16 +1505,23 @@ export class AiSdkTurn {
                 ? []
                 : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
           });
+          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
+            ({ text }) => ({ role: 'user', content: text }),
+          );
+          const contextualRequestMessages =
+            dynamicContextMessages.length === 0
+              ? requestMessages
+              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: requestMessages,
+                messages: contextualRequestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? requestMessages;
+          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
@@ -1541,43 +1539,28 @@ export class AiSdkTurn {
               : undefined;
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
-          let providerAttempt = 1;
-          let idleWatchdogRetryCount = 0;
-          let incompleteStreamRetryCount = 0;
-          let sealedThinkingRetryCount = 0;
+          let providerAttempt = 0;
           const returnedToolCalls: ToolCallPart[] = [];
-          let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
+            providerAttempt += 1;
+            // Local calls are only admitted after a successful provider outcome.
+            // A new physical request must not inherit the failed one's intents.
+            returnedToolCalls.length = 0;
             providerRequestAbortController = new AbortController();
             watchdogTimeoutState.current = null;
             startWatchdog();
             // Monotonic facts for this physical request. The step accumulators
             // are cleared after flushStep(), so they cannot decide whether a
             // later stream failure is safe to retry.
-            let attemptSawText = false;
-            let attemptSawThinking = false;
+            let attemptSawVisibleContent = false;
             let attemptSawToolActivity = false;
-            let attemptSawContinuationMetadata = false;
-            let attemptReachedStepBoundary = false;
+            let attemptSawToolInput = false;
+            let attemptSawReplayBarrier = false;
             const attemptHasNoObservableOutput = () =>
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata &&
-              !attemptReachedStepBoundary;
-            // Thinking is the only output that can be sealed into its own
-            // message before a retry: flushStep() closes the fragment under
-            // the current message id and the retry streams into a fresh one,
-            // so the user never sees spliced or duplicated content. Text,
-            // tool activity, continuation metadata, and step boundaries stay
-            // non-recoverable for the reasons each of them is tracked.
-            const attemptCanRecoverWithSealedThinking = () =>
-              !attemptSawText &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata &&
-              !attemptReachedStepBoundary;
+              !attemptSawVisibleContent && !attemptSawToolActivity && !attemptSawReplayBarrier;
+            const attemptCanReplay = () => !attemptSawToolActivity && !attemptSawReplayBarrier;
             this.memorySourceMessages = [...attemptMessages];
             this.memorySourceEventMessagePositions =
               this.deps.messageProjection.memoryEventMessagePositions(attemptMessages);
@@ -1589,13 +1572,9 @@ export class AiSdkTurn {
             // no longer sees it as a direct tool, but a nested retry must still
             // reach ToolRuntime's denial latch instead of becoming an endlessly
             // variable unknown-tool error inside `exec`.
-            const codeModeActiveTools =
-              toolRuntime.hasSandboxBoundaryDenial() && activeToolsForRequest.includes('exec')
-                ? [...activeToolsForRequest, REQUEST_SANDBOX_BOUNDARY_TOOL_NAME]
-                : activeToolsForRequest;
             this.codeModeTools =
-              toolMode === 'code_mode'
-                ? nestableToolSnapshot(providerTools, codeModeActiveTools)
+              toolMode === 'code_mode' && activeToolsForRequest.includes('exec')
+                ? nestedTools
                 : undefined;
             const requestWatchdog = watchdogState.current;
             // Read here, beside the messages it describes: `attemptMessages` is
@@ -1646,7 +1625,7 @@ export class AiSdkTurn {
                 (event.kind === 'finish' || event.kind === 'step-finish') &&
                 isIncompleteProviderFinishReason(event.finishReason);
               if ((event.kind === 'finish' || event.kind === 'step-finish') && !incompleteFinish) {
-                attemptReachedStepBoundary = true;
+                attemptSawReplayBarrier = true;
               }
               if (event.kind === 'step-finish') {
                 // AI SDK can synthesize `finish-step(other)` when the provider
@@ -1826,14 +1805,14 @@ export class AiSdkTurn {
               }
               if (event.kind === 'text-start') {
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
+                  attemptSawReplayBarrier = true;
                   await flushStep();
                   currentStepMessageId = this.deps.newId();
                 }
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
-                if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
-                if (event.text.length > 0) attemptSawText = true;
+                if (event.text.length > 0) attemptSawVisibleContent = true;
                 queue.push({
                   type: 'text_delta',
                   id: this.deps.newId(),
@@ -1844,7 +1823,7 @@ export class AiSdkTurn {
                 } satisfies TextDeltaEvent);
               } else if (event.kind === 'text-end') {
                 if (event.providerOptions !== undefined) {
-                  attemptSawContinuationMetadata = true;
+                  attemptSawReplayBarrier = true;
                   stepTextProviderOptions = mergeTextProviderOptions(
                     stepTextProviderOptions,
                     stripUndefinedDeep(event.providerOptions) as NonNullable<
@@ -1859,7 +1838,7 @@ export class AiSdkTurn {
                 }
               } else if (event.kind === 'thinking-start') {
                 if (event.providerOptions !== undefined) {
-                  attemptSawContinuationMetadata = true;
+                  attemptSawReplayBarrier = true;
                 }
                 const part: AssistantThinkingPart = {
                   text: '',
@@ -1872,11 +1851,10 @@ export class AiSdkTurn {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
-                if (event.text.length > 0) recordStepContent('thinking');
-                if (event.text.length > 0) attemptSawThinking = true;
+                if (event.text.length > 0) attemptSawVisibleContent = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
-                    attemptSawContinuationMetadata = true;
+                    attemptSawReplayBarrier = true;
                   }
                 }
                 const partId =
@@ -1939,7 +1917,7 @@ export class AiSdkTurn {
                   text: event.text,
                 } satisfies ThinkingDeltaEvent);
               } else if (event.kind === 'thinking-signature') {
-                attemptSawContinuationMetadata = true;
+                attemptSawReplayBarrier = true;
                 let part = event.reasoningPartId
                   ? stepThinkingPartsById.get(event.reasoningPartId)
                   : stepThinkingParts.at(-1);
@@ -1951,16 +1929,15 @@ export class AiSdkTurn {
                   }
                 }
                 part.signature = event.signature;
-              } else if (event.kind === 'provider-tool-input') {
+              } else if (event.kind === 'tool-input') {
+                attemptSawToolInput = true;
                 // The provider has started its own tool. Even without a
                 // final tool-call/result event, retrying can repeat external
                 // work that the Runtime cannot observe or reconcile.
-                attemptSawToolActivity = true;
+                if (event.providerExecuted) attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
-                attemptSawToolActivity = true;
-                recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
-                  providerToolActivityCount += 1;
+                  attemptSawToolActivity = true;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
                   queue.push({
                     type: 'tool_start',
@@ -1985,7 +1962,6 @@ export class AiSdkTurn {
                 }
               } else if (event.kind === 'provider-tool-result') {
                 attemptSawToolActivity = true;
-                providerToolActivityCount += 1;
                 const providerOutput = stripUndefinedDeep(event.output);
                 queue.push({
                   type: 'tool_result',
@@ -2028,12 +2004,6 @@ export class AiSdkTurn {
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
-            const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal &&
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
@@ -2043,6 +2013,18 @@ export class AiSdkTurn {
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.deps.modelAdapter.normalizeFailure(attemptFailure)
                   : providerOutcome.failure;
+              // An output-free context rejection did not sample a response.
+              // Preserve metering for completed steps across compaction recovery.
+              if (
+                !providerOutcome.usage &&
+                !(
+                  failure.kind === 'context_overflow' &&
+                  attemptHasNoObservableOutput() &&
+                  !attemptSawToolInput &&
+                  returnedToolCalls.length === 0
+                )
+              )
+                sawUnusableStepUsage = true;
               if (this.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
                 terminalProviderErrorReason =
@@ -2056,11 +2038,11 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
-                stepBudgetRemains && attemptHasNoObservableOutput()
+                stepBudgetRemains &&
+                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
+                attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
                       error: attemptFailure,
-                      retryAlreadyUsed:
-                        overflowRetryUsed || (midTurnState?.compactionAttemptedThisSend ?? false),
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
@@ -2081,22 +2063,7 @@ export class AiSdkTurn {
                     })
                   : undefined;
               if (recovered) {
-                overflowRetryUsed = true;
-                // Recovery rebuilds the request from the durable ledger, whose
-                // tool results intentionally retain their full bodies. Re-enter
-                // the active-result projection before dispatch so an archived
-                // result cannot reappear in provider context on the retry.
-                const recoveredProjection = activeToolResultPruneHook
-                  ? await activeToolResultPruneHook({
-                      completedSteps: completedProviderSteps,
-                      stepNumber: runtimeSteps,
-                      model,
-                      messages: recovered.messages,
-                      activeTools: activeToolsForRequest,
-                      resolveDispatch,
-                    })
-                  : undefined;
-                attemptMessages = recoveredProjection?.messages ?? recovered.messages;
+                attemptMessages = recovered.messages;
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
@@ -2138,37 +2105,10 @@ export class AiSdkTurn {
                 contextOverflowAfterCompactionNoteWritten = true;
                 await this.recordSystemNote('context_overflow_after_compaction', turnId);
               }
-              const idleWatchdogRecovery =
-                settledWatchdogTimeout?.phase === 'idle' &&
-                idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
-                attemptCanRecoverWithSealedThinking();
-              const incompleteStreamRecovery =
-                incompleteStreamTerminal &&
-                incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
-                incompleteStreamHasNoObservableOutput;
-              // Same seal-and-retry contract as the watchdog path, entered when
-              // the failure arrives as a retryable provider/network error
-              // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
-              // every watchdog-shaped outcome on its existing path, and
-              // `!attemptHasNoObservableOutput()` keeps no-output retries on
-              // the plain budget so this one is spent only on sealed fragments.
-              const sealedThinkingRecovery =
-                !idleWatchdogRecovery &&
-                failure.retryable &&
-                sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
-                attemptCanRecoverWithSealedThinking() &&
-                !attemptHasNoObservableOutput();
               // The stopping gate also supplies the durable reason. An absent
               // decision means this attempt is allowed to retry.
               let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
-              if (
-                !(
-                  attemptHasNoObservableOutput() ||
-                  idleWatchdogRecovery ||
-                  incompleteStreamRecovery ||
-                  sealedThinkingRecovery
-                )
-              ) {
+              if (!attemptCanReplay()) {
                 retry = {
                   decision: 'declined',
                   because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
@@ -2179,33 +2119,22 @@ export class AiSdkTurn {
                 retry = { decision: 'exhausted', attempts: providerAttempt };
               } else if (failure.kind === 'context_overflow') {
                 retry = { decision: 'declined', because: 'policy' };
-              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
-                retry =
-                  incompleteStreamTerminal &&
-                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
-                    ? { decision: 'exhausted', attempts: providerAttempt }
-                    : { decision: 'declined', because: 'policy' };
+              } else if (
+                !(failure.retryable || settledWatchdogTimeout || incompleteStreamTerminal)
+              ) {
+                retry = { decision: 'declined', because: 'policy' };
               }
               if (!retry) {
-                if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
-                if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
-                if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
-                if (
-                  (idleWatchdogRecovery || sealedThinkingRecovery) &&
-                  stepThinkingParts.length > 0
-                ) {
-                  await flushStep();
-                  currentStepMessageId = this.deps.newId();
-                }
+                // Preserve the failed fragment for the transcript, but exclude
+                // it from model history when a later tool step reloads the ledger.
+                await flushStep(true);
+                currentStepMessageId = this.deps.newId();
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
-                const maxAttempts =
-                  idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
-                    ? nextAttempt
-                    : MAX_PROVIDER_ATTEMPTS_PER_STEP;
+                const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
@@ -2220,14 +2149,13 @@ export class AiSdkTurn {
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.deps.providerRetrySleep(delayMs, turnAbortController.signal);
-                providerAttempt = nextAttempt;
                 queue.push({
                   type: 'provider_retry',
                   id: this.deps.newId(),
                   turnId,
                   ts: this.deps.now(),
                   phase: 'started',
-                  attempt: providerAttempt,
+                  attempt: nextAttempt,
                   maxAttempts,
                   reason,
                 } satisfies ProviderRetryEvent);
@@ -2335,14 +2263,11 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.map((outcome) => {
-              // A rejected settlement was handled above, so preserving the
-              // original array shape also preserves tool-call identity by index.
+            settlementOutcomes.forEach((outcome, index) => {
+              // All settlements completed and rejection was checked above;
+              // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
-              return outcome.value;
-            });
-            for (let index = 0; index < settlements.length; index += 1) {
-              const settlement = settlements[index]!;
+              const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2354,7 +2279,10 @@ export class AiSdkTurn {
               ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
-            }
+            });
+            // Continuation reads durable events, not raw results. Do not retain
+            // an entire completed batch across the next provider request.
+            settlementOutcomes.length = 0;
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
@@ -2472,11 +2400,7 @@ export class AiSdkTurn {
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
-            const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
-              contextBudgetForTelemetry,
-              activeToolResultPruneDiagnosticPatch,
-              midTurnCompactDiagnosticPatch,
-            );
+            const contextBudgetForUsage = contextBudgetForTelemetry;
             // Persisted alongside the live event so transcript rebuilds from
             // stored messages keep the TUI ctx segment instead of degrading to
             // `?/<window>` (#4019). Computed once; both writers share it.
@@ -2603,7 +2527,7 @@ export class AiSdkTurn {
         // `finish-step`; this keeps their and this step's streamed-out output on
         // BOTH exits — user stop and provider error / watchdog timeout — so the
         // transcript keeps what the user actually saw.
-        await flushStep().catch(() => {});
+        await flushStep(!this.aborted).catch(() => {});
         if (this.aborted) {
           queue.push({
             type: 'abort',
@@ -2643,11 +2567,6 @@ export class AiSdkTurn {
       } finally {
         watchdogState.current?.stop();
         if (this.watchdog === watchdogState.current) this.watchdog = null;
-        contextBudgetForTelemetry = contextBudgetWithRequestProjectionDiagnostics(
-          contextBudgetForTelemetry,
-          activeToolResultPruneDiagnosticPatch,
-          midTurnCompactDiagnosticPatch,
-        );
         // `tokenUsage` still backfills from the completed steps when the send
         // ended without a final `usage`: the terminal outcome and the
         // `token_usage` SessionEvent below both read it. An unusable sample in
@@ -2703,7 +2622,7 @@ export class AiSdkTurn {
   }
 
   private async executeCodeModeCell(
-    eventSink: DurableSessionEventSink,
+    eventSink: AsyncEventQueue<SessionEvent>,
     code: string,
     context: MakaToolContext,
   ): Promise<unknown> {
@@ -2727,15 +2646,9 @@ export class AiSdkTurn {
       },
       pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
     };
-    // A permit is held across the cell's complete lifecycle, not just its
-    // sandbox run: `executeCodeCell` settles only once the cell's host
-    // operations have drained, so releasing on settlement covers the drain.
-    // The sandbox worker cap cannot serve this purpose — on cancellation
-    // `runCodeMode` releases its worker and rejects at once, by design, while
-    // host operations started by the cell may still be running with durable
-    // side effects. Only the Runtime waits for those, so only the Runtime can
-    // bound them; releasing when the worker is released would let repeated
-    // cancellation accumulate host work without bound.
+    // Admission covers the whole cell, including host waits. executeCodeCell
+    // waits for every started host call
+    // on both success and cancellation, so settlement is the release boundary.
     //
     // One cell may wait; the next is turned away rather than queued, which is
     // what the Code Mode adapter did before this moved to the side that owns
@@ -2758,6 +2671,8 @@ export class AiSdkTurn {
         })),
         isFatalToolError: isRuntimeCommitBoundaryError,
         callTool: async (name, input, signal) => {
+          if (this.loopStopRequested)
+            throw new Error('The turn has yielded; no further tools may run.');
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
@@ -2765,6 +2680,7 @@ export class AiSdkTurn {
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.deps.newId()}`,
+            stepId: `${context.toolCallId}:nested`,
             input: parsedInput,
             abortSignal: signal,
             eventSink: nestedEventSink,
@@ -2778,6 +2694,14 @@ export class AiSdkTurn {
           }
           if (nestedOutputLimitExceeded) {
             throw new Error('Code Mode nested output byte limit exceeded');
+          }
+          if (isPlanToolResult(settlement.result))
+            this.handlePlanToolResult(settlement.result, eventSink);
+          if (
+            name === YIELD_AGENT_GRAPH_TOOL_NAME &&
+            isAgentGraphYieldToolResult(settlement.result)
+          ) {
+            this.handleAgentGraphYieldToolResult(settlement.result);
           }
           return settlement.result;
         },
@@ -2888,6 +2812,7 @@ export class AiSdkTurn {
     const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
     let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
       budgeted?.events ?? rawPriorRuntimeContext,
+      preparedContextBudget.projectionSnapshot,
     );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
@@ -3077,7 +3002,7 @@ export class AiSdkTurn {
     const abortSignal = this.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
-    const leases = pull();
+    const leases = await pull();
     if (leases.length === 0) return;
     // Binary settlement: every pulled lease settles exactly once, decided
     // ONLY by the persistence fact — durably consumed ⇒ ack + injection set;
@@ -3201,19 +3126,6 @@ class ContinuationReplayEmptyError extends Error {
   }
 }
 
-function mergeActiveToolResultPruneDiagnosticPatches(
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): ActiveToolResultPruneDiagnosticPatch {
-  return {
-    ...sumOptionalCounts('activePrunedToolResults', left, right),
-    ...sumOptionalCounts('activeSupersededToolResults', left, right),
-    ...sumOptionalCounts('activeDuplicateToolResults', left, right),
-    ...sumOptionalCounts('activeArchiveFailures', left, right),
-    ...sumOptionalCounts('activeEstimatedTokensSaved', left, right),
-  };
-}
-
 function mergeNormalizedUsage(
   current: NormalizedAiSdkUsage | undefined,
   next: NormalizedAiSdkUsage,
@@ -3236,26 +3148,6 @@ function mergeNormalizedUsage(
     ...(next.rawFinishReason !== undefined ? { rawFinishReason: next.rawFinishReason } : {}),
     cachedInputTokens: cacheHitInputTokens,
   };
-}
-
-function sumOptionalCounts<K extends keyof ActiveToolResultPruneDiagnosticPatch>(
-  key: K,
-  left: ActiveToolResultPruneDiagnosticPatch,
-  right: ActiveToolResultPruneDiagnosticPatch,
-): Pick<ActiveToolResultPruneDiagnosticPatch, K> | Record<string, never> {
-  const total = (left[key] ?? 0) + (right[key] ?? 0);
-  return total > 0 ? ({ [key]: total } as Pick<ActiveToolResultPruneDiagnosticPatch, K>) : {};
-}
-
-function contextBudgetWithRequestProjectionDiagnostics(
-  base: ContextBudgetDiagnostic | undefined,
-  patch: ActiveToolResultPruneDiagnosticPatch,
-  compactionPatch: Partial<ContextBudgetDiagnostic> | undefined,
-): ContextBudgetDiagnostic | undefined {
-  const prunePatch = hasActiveToolResultPruneDiagnosticPatch(patch) ? patch : undefined;
-  const mergedPatch = mergeContextBudgetDiagnosticPatches(prunePatch, compactionPatch);
-  if (!mergedPatch) return base;
-  return mergeContextBudgetDiagnostic(base ?? minimalContextBudgetDiagnostic(), mergedPatch);
 }
 
 function projectMemoryConversationPrefix(

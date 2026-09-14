@@ -19,6 +19,7 @@
 
 import type { RuntimeEvent } from './runtime-event.js';
 import type { AgentRunEvent } from './agent-run.js';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from './durable-tool-result-projection.js';
 
 /** Complete, bounded evidence for one target, never a partial transition history. */
 export type ToolResultArchiveEvidence =
@@ -40,4 +41,6 @@ export interface ToolResultArchiveEvidenceReader {
 }
 
 export const TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_TRANSITIONS = 64;
-export const TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024;
+// Include event identity and transition overhead around the stored projection.
+export const TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES =
+  DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES + 128 * 1024;

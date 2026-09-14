@@ -24,7 +24,7 @@ import type { WorkHubTasksInput } from '../shared/workhub-tool-schema.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 
 interface WorkHubRuntimeDeps {
-  client(scope: DesktopTargetScope): Pick<DesktopRuntimeHostClient, 'queryTurn' | 'stopTurn' | 'listWorkHubCoordinationCandidates' | 'actWorkHubCoordinationFromTurn'>;
+  client(scope: DesktopTargetScope): Pick<DesktopRuntimeHostClient, 'queryTurn' | 'stopTurn' | 'listWorkHubCoordinationCandidates' | 'actWorkHubCoordinationFromTurn' | 'selectAndDelegateWorkHubTarget'>;
   isCurrent(scope: DesktopTargetScope): boolean;
   createContext(scope: DesktopTargetScope): Promise<{ workspace: WorkspaceTarget; defaults: WorkHubCreateDefaults }>;
   changed(scope: DesktopTargetScope, reason: 'created' | 'status-change', sessionId: string): void;
@@ -59,6 +59,16 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
       requireCurrent(scope);
       const client = deps.client(scope);
       if (input.operation === 'candidates') return client.listWorkHubCoordinationCandidates();
+      if (input.operation === 'select_and_delegate') {
+        const outcome = await client.selectAndDelegateWorkHubTarget({ turnId, actionId,
+          candidateSetId: input.candidateSetId, candidateRefs: input.candidateRefs, delegationText: input.text });
+        if (outcome.kind === 'cancelled') return outcome;
+        const result = outcome.result;
+        if ('targetSessionId' in result) deps.changed(scope, 'status-change', result.targetSessionId);
+        return { ...result, actionId, ...('targetSessionId' in result ? {
+          targetSessionKey: desktopSessionKey({ hostId: scope.hostId, sessionId: result.targetSessionId }),
+        } : {}) };
+      }
       let proposal: WorkHubCoordinationProposal;
       switch (input.operation) {
         case 'delegate_existing': proposal = { disposition: 'delegate_existing', candidateRef: input.candidateRef }; break;

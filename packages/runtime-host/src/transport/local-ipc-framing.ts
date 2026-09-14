@@ -42,7 +42,10 @@ export class LocalIpcProtocolFrameDecoder {
           'Runtime Host message exceeds the byte limit',
         );
       }
-      if (segment.byteLength > 0) this.#pending = Buffer.concat([this.#pending, segment]);
+      if (segment.byteLength > 0) {
+        this.#pending =
+          this.#pending.byteLength === 0 ? segment : Buffer.concat([this.#pending, segment]);
+      }
       if (newline === -1) break;
       frames.push(this.#decodePending());
       this.#pending = Buffer.alloc(0);

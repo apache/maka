@@ -363,7 +363,7 @@ function projectOperatorOutput(
       : undefined;
   const tokensPerSecond =
     outputTokens !== undefined && sampleDurationMs !== undefined && sampleDurationMs > 0
-      ? roundTokensPerSecond((outputTokens * 1_000) / sampleDurationMs)
+      ? Math.round((outputTokens * 10_000) / sampleDurationMs) / 10
       : undefined;
   return {
     operatorId: stream.operator.operatorId,
@@ -388,10 +388,6 @@ function boundOutputPreview(text: string): { text: string; truncated: boolean } 
   }
   const visible = codePoints.slice(-AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS);
   return { text: visible.join(''), truncated: true };
-}
-
-function roundTokensPerSecond(value: number): number {
-  return Math.round(value * 10) / 10;
 }
 
 export function projectAgentGraphRecords(input: ProjectAgentGraphRecordsInput): {

@@ -337,8 +337,17 @@ export class AgentRun {
         acceptedInput.header.orchestrationMode,
         acceptedInput.userInput.turnOrchestration,
       );
+    if (
+      acceptedInput.userInput.toolMode !== undefined &&
+      !isToolMode(acceptedInput.userInput.toolMode)
+    ) {
+      throw new Error(`Invalid tool mode: ${String(acceptedInput.userInput.toolMode)}`);
+    }
     const requestedToolMode =
-      acceptedInput.effectiveToolMode ?? acceptedInput.userInput.toolMode ?? DEFAULT_TOOL_MODE;
+      acceptedInput.effectiveToolMode ??
+      acceptedInput.header.toolMode ??
+      acceptedInput.userInput.toolMode ??
+      DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }

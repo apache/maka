@@ -18,3 +18,9 @@
  */
 
 export { useWorkHubController } from './controller/use-workhub-controller.js';
+
+export { WorkHubConversation, WorkHubDelegationStatus } from './ui/workhub-conversation.js';
+
+export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
+export { workspaceNameFromCwd } from './model/workspace-name.js';
+export { allocateWorkHubHues } from './model/identity-colors.js';

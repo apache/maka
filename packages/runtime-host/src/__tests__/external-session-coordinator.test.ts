@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import { EXTERNAL_SESSION_PAGE_MAX_ITEMS } from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -240,6 +243,33 @@ test('stops catalog pages before the encoded result limit', async () => {
   );
   assert.equal(fixture.lookupCalls.length, 1);
   assert.equal(fixture.lookupCalls[0]?.sourceSessionIds.length, 16);
+  const pages = [outcome.result];
+  let cursor: string | null = outcome.result.nextCursor;
+  while (cursor !== null) {
+    const next = await fixture.coordinator.handlers['external-session.catalog.query'](
+      { adapterId: 'codex', cursor },
+      context,
+    );
+    assert.ok(next.ok && next.result.sessions.length > 0);
+    pages.push(next.result);
+    assert.ok(pages.length <= 20);
+    cursor = next.result.nextCursor;
+  }
+  const items = pages.flatMap((page) => page.sessions);
+  assert.deepEqual(
+    items.map((item) => item.id),
+    Array.from({ length: 20 }, (_, index) => `source-${index}`),
+  );
+  assertMaximalJsonPages(pages, items, {
+    maxBytes: EXTERNAL_SESSION_RESULT_MAX_BYTES,
+    maxItems: EXTERNAL_SESSION_PAGE_MAX_ITEMS,
+    items: (page) => page.sessions,
+    candidate: (page, sessions, end) => ({
+      ...page,
+      sessions,
+      nextCursor: end < items.length ? String(end) : null,
+    }),
+  });
 });
 
 test('imports through the generic importer and treats repeats as independent copies', async () => {

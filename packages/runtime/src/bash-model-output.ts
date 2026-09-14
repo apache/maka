@@ -38,5 +38,12 @@ export function projectBashToolResultForModel(output: unknown): unknown {
 }
 
 export function bashToolResultToModelOutput(output: unknown): ToolResultOutput {
-  return toolResultOutput(projectBashToolResultForModel(output), false);
+  const isError =
+    output !== null &&
+    typeof output === 'object' &&
+    'kind' in output &&
+    output.kind === 'terminal' &&
+    'status' in output &&
+    output.status !== 'completed';
+  return toolResultOutput(projectBashToolResultForModel(output), isError);
 }

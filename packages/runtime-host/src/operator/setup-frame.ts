@@ -47,6 +47,28 @@ const frameBase = {
   schemaVersion: z.literal(1),
   sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 } as const;
+const environmentBindingFields = {
+  version: boundedString(128),
+  serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
+  deploymentId: z.string().uuid(),
+  operator: z.unknown().transform((value, context) => {
+    try {
+      const command = decodeRuntimeHostOperatorCommand(value);
+      if (command.kind !== 'node') {
+        throw new Error('Runtime Host setup operator must be a Node command');
+      }
+      return command;
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : 'Runtime Host operator is invalid',
+      });
+      return z.NEVER;
+    }
+  }),
+  rootPath: boundedString(4 * 1024).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
+  rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+} as const;
 const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
   z
     .object({
@@ -59,26 +81,7 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
     .object({
       ...frameBase,
       kind: z.literal('complete'),
-      version: boundedString(128),
-      serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
-      deploymentId: z.string().uuid(),
-      operator: z.unknown().transform((value, context) => {
-        try {
-          const command = decodeRuntimeHostOperatorCommand(value);
-          if (command.kind !== 'node') {
-            throw new Error('Runtime Host setup operator must be a Node command');
-          }
-          return command;
-        } catch (error) {
-          context.addIssue({
-            code: 'custom',
-            message: error instanceof Error ? error.message : 'Runtime Host operator is invalid',
-          });
-          return z.NEVER;
-        }
-      }),
-      rootPath: boundedString(4 * 1024).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
-      rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+      ...environmentBindingFields,
       endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(
         (value) => parseRuntimeHostSetupEndpoint(value) !== undefined,
       ),
@@ -92,6 +95,13 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
         })
         .strict()
         .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...frameBase,
+      kind: z.literal('existing_environment'),
+      ...environmentBindingFields,
     })
     .strict(),
   z

@@ -482,6 +482,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
           const block = (e) => {
             const target = e.target instanceof Element ? e.target : e.target?.parentElement;
             if (target?.closest('[data-maka-file-drop-target="true"]')) return;
+            if (target?.closest('[data-maka-queue-drop-target="true"]')
+              && e.dataTransfer?.types.includes('application/x-maka-queue-entry')) return;
             e.preventDefault();
             e.stopPropagation();
           };

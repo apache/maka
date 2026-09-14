@@ -908,7 +908,7 @@ function advanceClientOperatorOutput(
       outputTokens: event.output,
       sampleDurationMs,
       ...(sampleDurationMs > 0
-        ? { tokensPerSecond: roundClientTokensPerSecond((event.output * 1_000) / sampleDurationMs) }
+        ? { tokensPerSecond: Math.round((event.output * 10_000) / sampleDurationMs) / 10 }
         : {}),
     };
   }
@@ -938,10 +938,6 @@ function boundClientOutputPreview(text: string): { text: string; truncated: bool
   }
   const visible = codePoints.slice(-MAX_OUTPUT_PREVIEW_CODE_POINTS);
   return { text: visible.join(''), truncated: true };
-}
-
-function roundClientTokensPerSecond(value: number): number {
-  return Math.round(value * 10) / 10;
 }
 
 function operatorStatus(

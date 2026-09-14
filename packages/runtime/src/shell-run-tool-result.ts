@@ -67,7 +67,7 @@ export function terminalContent(record: ShellRunRecord): TerminalToolResult {
     status: terminalResultStatus(record.status),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
-    output: projectShellOutputForModel(record.output),
+    output: record.output,
     ...(sandboxDenialForRecord(record) ? { sandboxDenial: sandboxDenialForRecord(record) } : {}),
   };
 }
@@ -265,15 +265,21 @@ function takeTailText(text: string, budget: number): { text: string; truncated: 
 }
 
 function sliceUtf8Tail(text: string, budget: number): string {
-  const characters = Array.from(text);
-  let result = '';
+  const characters: string[] = [];
   let bytes = 0;
-  for (let index = characters.length - 1; index >= 0; index -= 1) {
-    const character = characters[index];
+  for (let end = text.length; end > 0; ) {
+    let start = end - 1;
+    const last = text.charCodeAt(start);
+    if (last >= 0xdc00 && last <= 0xdfff && start > 0) {
+      const previous = text.charCodeAt(start - 1);
+      if (previous >= 0xd800 && previous <= 0xdbff) start -= 1;
+    }
+    const character = text.slice(start, end);
     const size = Buffer.byteLength(character, 'utf8');
     if (bytes + size > budget) break;
-    result = character + result;
+    characters.push(character);
     bytes += size;
+    end = start;
   }
-  return result;
+  return characters.reverse().join('');
 }
