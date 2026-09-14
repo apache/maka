@@ -34,7 +34,9 @@ import {
 } from './session.js';
 
 export interface AttachWebGatewayOptions {
+  /** Read per request so the launcher can fill this in when the GUI appears. */
   webAccessPath: string;
+  /** Disk token for the loopback hop; empty until the GUI writes the token file. */
   bridgeToken: string;
   bridgePort: number;
   secureCookies: boolean;
@@ -199,9 +201,13 @@ function handleBridgeUpgrade(
     rejectUpgrade(socket, 401, 'Unauthorized');
     return;
   }
-  const origin = req.headers.origin;
-  if (origin && !isAllowedWebOrigin(origin)) {
+  const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+  if (!origin || !isAllowedWebOrigin(origin)) {
     rejectUpgrade(socket, 403, 'Forbidden');
+    return;
+  }
+  if (!options.bridgeToken) {
+    rejectUpgrade(socket, 503, 'Service Unavailable');
     return;
   }
   wss.handleUpgrade(req, socket, head, (client) => {

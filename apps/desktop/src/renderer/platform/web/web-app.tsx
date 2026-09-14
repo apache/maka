@@ -99,10 +99,10 @@ export function WebApp() {
         </form>
         <Result result={result} />
         <p style={styles.hint}>
-          No bridge token in this URL, so this is the standalone picker. For
-          the full Maka app in this browser, keep the GUI running and open the
-          page via <code>npm run maka-web</code> (it attaches the token
-          automatically). The CLI works too: <code>npm run maka-cli</code>.
+          This is the standalone picker. For the full Maka app, sign in at{' '}
+          <code>/login</code> with your passphrase and authenticator while{' '}
+          <code>maka-gui</code> is running. The bridge token never appears in
+          the URL. The CLI works too: <code>npm run maka-cli</code>.
         </p>
       </div>
     </div>

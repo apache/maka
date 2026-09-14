@@ -21,12 +21,10 @@
  * Web-mode (Chrome/Brave via `maka-web`) detection + typed directory picker.
  *
  * In Electron `window.maka` is injected by the preload; in a plain browser
- * it is absent. `isWebMode()` is that single check plus the `?webmode=1`
- * override the launcher appends. Web mode keeps the same UX the user asked
- * for — type/paste a server-local path — validated against the tiny local
- * `maka-web` API (see `apps/desktop/scripts/maka-web-api.mjs`), then handed
- * to the normal `projects:addByPath` IPC when running inside Electron, or
- * reported back to the opener when running in a browser.
+ * it is absent. `isWebMode()` is that check plus an optional `?webmode=1`
+ * override. Web mode keeps the typed directory picker, validated against
+ * the local `maka-web` API (`apps/desktop/scripts/maka-web-api.mjs`). The
+ * full client authenticates with a session cookie, not a URL token.
  */
 
 export function isWebMode(): boolean {

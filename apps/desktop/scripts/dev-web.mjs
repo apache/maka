@@ -20,20 +20,14 @@
 /**
  * `maka-web` launcher: open the Maka renderer in system Chrome/Brave.
  *
- * Shares the vite dev server with `maka-gui` when it is already running
- * (both at the same time is supported): probes :5173 first and only starts
- * a second vite instance when nothing answers. Also starts the tiny local
- * `maka-web` API (path validation for the typed directory picker) and opens
- * the system browser — never Electron — to the renderer URL.
+ * Binds 127.0.0.1 only. Other devices reach it through Tailscale Serve HTTPS.
+ * The session cookie is Secure (http://localhost is a Chromium secure context).
+ * The GUI disk token never appears in the printed URL.
  *
  * Usage:
  *   node scripts/dev-web.mjs [--project /path/to/dir] [--no-open]
  *                            [--vite-url http://localhost:5173] [--api-port 5174]
- *                            [--host 127.0.0.1] [--port 5173]
- *
- * Remote: print `http://localhost:5173/login` and
- * `tailscale serve --bg http://127.0.0.1:5173`. Tailscale terminates HTTPS;
- * Maka stays on loopback. Do not put the bridge token in the URL.
+ *                            [--port 5173]
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -72,32 +66,28 @@ async function probe(url, timeoutMs = 1200) {
   }
 }
 
-/**
- * Read the GUI-written bridge token file (see main/web-bridge/server.ts).
- * Polls briefly: the typical order is GUI first, but `maka-web` started a few
- * seconds early should still catch it. Returns null when no GUI is around —
- * the browser then lands on the picker tier instead of failing.
- */
-async function waitForBridgeFile() {
+function isLoopbackHost(host) {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+function bridgeFilePath() {
   const override = process.env.MAKA_WEB_BRIDGE_FILE?.trim();
-  const file = override || join(tmpdir(), 'maka-web-bridge.json');
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    try {
-      const parsed = JSON.parse(await readFile(file, 'utf8'));
-      if (parsed?.wsUrl && parsed?.token) {
-        return {
-          wsUrl: parsed.wsUrl,
-          token: parsed.token,
-          file,
-          webAccessPath: typeof parsed.webAccessPath === 'string' ? parsed.webAccessPath : '',
-        };
-      }
-    } catch {
-      // Not written yet (or unreadable) — keep polling until the deadline.
-    }
-    if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+  return override || join(tmpdir(), 'maka-web-bridge.json');
+}
+
+async function readBridgeFile() {
+  try {
+    const file = bridgeFilePath();
+    const parsed = JSON.parse(await readFile(file, 'utf8'));
+    if (!parsed?.wsUrl || !parsed?.token) return null;
+    return {
+      wsUrl: parsed.wsUrl,
+      token: parsed.token,
+      file,
+      webAccessPath: typeof parsed.webAccessPath === 'string' ? parsed.webAccessPath : '',
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -133,10 +123,10 @@ if (argv.includes('--help') || argv.includes('-h')) {
 Usage:
   node scripts/dev-web.mjs [--project /path/to/dir] [--no-open]
                            [--vite-url http://localhost:5173] [--api-port 5174]
-                           [--host 127.0.0.1] [--port 5173]
+                           [--port 5173]
 
-Then open http://localhost:5173/login (prefer localhost so Chromium treats
-it as a secure context). Other devices: Tailscale Serve HTTPS:
+Binds 127.0.0.1 only (no 0.0.0.0). Open http://localhost:5173/login.
+Other devices: Tailscale Serve HTTPS:
 
   tailscale serve --bg http://127.0.0.1:5173
 
@@ -152,9 +142,15 @@ const apiPort = Number(argValue(argv, 'api-port', String(DEFAULT_WEB_API_PORT)))
 const explicitViteUrl = argValue(argv, 'vite-url', undefined);
 const initialProject = argValue(argv, 'project', undefined);
 const shouldOpen = !argv.includes('--no-open');
-const viteHost = argValue(argv, 'host', '127.0.0.1');
+const requestedHost = argValue(argv, 'host', '127.0.0.1');
 const vitePort = Number(argValue(argv, 'port', '5173')) || 5173;
-const isRemoteBind = viteHost !== 'localhost' && viteHost !== '127.0.0.1' && viteHost !== '::1';
+if (requestedHost && !isLoopbackHost(requestedHost)) {
+  console.error(
+    `[web] refusing --host ${requestedHost}; Maka binds 127.0.0.1 only. Put Tailscale Serve in front:\n  tailscale serve --bg http://127.0.0.1:${vitePort}`,
+  );
+  process.exit(1);
+}
+const viteHost = '127.0.0.1';
 
 // 1. Local web API (typed directory picker backend).
 const api = createWebApiServer({ port: apiPort });
@@ -167,9 +163,105 @@ try {
 }
 log('web', `directory API listening on http://127.0.0.1:${apiPort} (/api/health)`);
 
+// Live options: attach immediately so / and /bridge are gated before any
+// request is served. Fill token/path when the GUI writes the token file.
+const gatewayOptions = {
+  webAccessPath: '',
+  bridgeToken: '',
+  bridgePort: 53217,
+  secureCookies: true,
+};
+let lastBridgeToken = '';
+
+function applyBridge(bridge) {
+  if (!bridge) return;
+  gatewayOptions.webAccessPath = bridge.webAccessPath || gatewayOptions.webAccessPath;
+  gatewayOptions.bridgeToken = bridge.token;
+  try {
+    const wsUrl = new URL(bridge.wsUrl);
+    gatewayOptions.bridgePort = Number(wsUrl.port) || 53217;
+  } catch {
+    gatewayOptions.bridgePort = 53217;
+  }
+  if (bridge.token !== lastBridgeToken) {
+    lastBridgeToken = bridge.token;
+    log('web', `full client: /bridge proxied with disk token from ${bridge.file}`);
+  }
+}
+
+function failClosed(httpServer) {
+  const existingRequest = httpServer.listeners('request').slice();
+  httpServer.removeAllListeners('request');
+  httpServer.on('request', (req, res) => {
+    let path = '/';
+    try {
+      path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    } catch {
+      path = '/';
+    }
+    if (
+      path === '/login' ||
+      path.startsWith('/@vite') ||
+      path.startsWith('/@id') ||
+      path.startsWith('/@fs') ||
+      path.startsWith('/node_modules') ||
+      path.startsWith('/.vite')
+    ) {
+      for (const listener of existingRequest) listener.call(httpServer, req, res);
+      return;
+    }
+    res.writeHead(303, { Location: '/login' });
+    res.end();
+  });
+  const existingUpgrade = httpServer.listeners('upgrade').slice();
+  httpServer.removeAllListeners('upgrade');
+  httpServer.on('upgrade', (req, socket, head) => {
+    let path = '/';
+    try {
+      path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    } catch {
+      path = '/';
+    }
+    if (path === '/bridge') {
+      try {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      } catch {
+        // Socket already gone.
+      }
+      socket.destroy();
+      return;
+    }
+    for (const listener of existingUpgrade) listener.call(httpServer, req, socket, head);
+  });
+}
+
+let gatewayAttached = false;
+async function attachGateway(httpServer) {
+  if (gatewayAttached) return;
+  try {
+    const { attachWebGateway } = await import('../dist/main/web-gateway/attach.js');
+    attachWebGateway(httpServer, gatewayOptions);
+    gatewayAttached = true;
+    log('web', 'gateway attached (Secure session cookie; bridge token stays on disk)');
+  } catch (error) {
+    const detail = error?.message ?? error;
+    log('web', `gateway module missing (${detail}); start maka-gui once so dist/main exists`);
+    failClosed(httpServer);
+    gatewayAttached = true;
+  }
+}
+
+function pollBridgeFile() {
+  const tick = async () => {
+    applyBridge(await readBridgeFile());
+    setTimeout(tick, 1000);
+  };
+  void tick();
+}
+
 // 2. Renderer: this process must own Vite so attachWebGateway can intercept
-// /login and /bridge. `--vite-url` still points at an already-running server
-// (no gateway in that case). `--host 0.0.0.0` sets allowedHosts: true.
+// /login and /bridge before the first request. `--vite-url` points at an
+// already-running server (no gateway in that case).
 let devUrl = explicitViteUrl;
 if (devUrl && !(await probe(devUrl))) {
   console.error(`[web] --vite-url ${devUrl} is not reachable; aborting.`);
@@ -178,42 +270,31 @@ if (devUrl && !(await probe(devUrl))) {
 }
 async function startOwnVite() {
   process.chdir(DESKTOP_DIR);
-  const bindDesc = `${viteHost}:${vitePort}${isRemoteBind ? ' (remote-reachable, allowedHosts: true)' : ''}`;
-  log('web', `starting vite dev server on ${bindDesc} (no Electron)...`);
+  log('web', `starting vite dev server on ${viteHost}:${vitePort} (loopback only)...`);
+  applyBridge(await readBridgeFile());
   const server = await createServer({
     server: {
       host: viteHost,
       port: vitePort,
-      ...(isRemoteBind ? { allowedHosts: true } : {}),
+      allowedHosts: ['.ts.net', 'localhost'],
     },
+    plugins: [
+      {
+        name: 'maka-web-gateway',
+        async configureServer(vite) {
+          if (vite.httpServer) await attachGateway(vite.httpServer);
+        },
+      },
+    ],
   });
   await server.listen();
+  if (server.httpServer && !gatewayAttached) await attachGateway(server.httpServer);
   server.printUrls();
   return server;
 }
 
-async function attachGateway(httpServer, bridge) {
-  try {
-    const { attachWebGateway } = await import('../dist/main/web-gateway/attach.js');
-    const wsUrl = bridge?.wsUrl ? new URL(bridge.wsUrl) : null;
-    attachWebGateway(httpServer, {
-      webAccessPath: bridge?.webAccessPath || '',
-      bridgeToken: bridge?.token || '',
-      bridgePort: Number(wsUrl?.port) || 53217,
-      secureCookies: false,
-    });
-    log('web', 'gateway attached (session cookie; bridge token stays on disk)');
-  } catch (error) {
-    const detail = error?.message ?? error;
-    log('web', `gateway not attached (${detail}); start maka-gui once so dist/main exists`);
-  }
-}
 let viteServer;
 if (!devUrl) {
-  const primary = `http://localhost:${vitePort}/`;
-  if (!isRemoteBind && (await probe(primary))) {
-    log('web', `localhost renderer already on ${primary}; starting our own so the login gateway can attach`);
-  }
   viteServer = await startOwnVite();
   devUrl = viteServer.resolvedUrls?.local?.[0]?.replace(/\/$/, '') ?? `http://localhost:${vitePort}`;
   log('web', 'warming renderer entry...');
@@ -223,21 +304,13 @@ if (!devUrl) {
   } catch {
     // Warmup is best-effort; the page still loads without it.
   }
+} else {
+  log('web', 'explicit --vite-url; gateway not attached in this process');
 }
 
+pollBridgeFile();
 const boundPort = Number(new URL(devUrl).port || vitePort) || vitePort;
 const loginUrl = `http://localhost:${boundPort}/login`;
-const bridge = await waitForBridgeFile();
-if (viteServer?.httpServer) {
-  await attachGateway(viteServer.httpServer, bridge);
-} else {
-  log('web', 'no local Vite http server (explicit --vite-url); gateway not attached in this process');
-}
-if (bridge) {
-  log('web', `full client: /bridge proxied with disk token from ${bridge.file}`);
-} else {
-  log('web', 'no GUI bridge yet — /login still works; start `npm run maka-gui` for chat.');
-}
 log('web', loginUrl);
 log('web', `tailscale serve --bg http://127.0.0.1:${boundPort}`);
 if (initialProject) log('web', `project preselect is ignored until after login (${initialProject})`);

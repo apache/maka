@@ -100,7 +100,8 @@ function sessionValue(setCookie: string): string {
 
 function upgrade(url: string, headers?: Record<string, string>): Promise<{ status: number; socket?: WebSocket }> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, { headers });
+    const origin = headers?.Origin ?? headers?.origin;
+    const ws = new WebSocket(url, { headers, origin });
     let settled = false;
     const timer = setTimeout(() => {
       ws.terminate();
@@ -204,8 +205,15 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
   noCookieBridge.socket?.terminate();
   assert.equal(noCookieBridge.status, 401);
 
+  const missingOrigin = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
+    Cookie: `maka_web_session=${session}`,
+  });
+  missingOrigin.socket?.terminate();
+  assert.equal(missingOrigin.status, 403);
+
   const proxied = await upgrade(`ws://127.0.0.1:${port}/bridge`, {
     Cookie: `maka_web_session=${session}`,
+    Origin: 'http://localhost:5173',
   });
   t.after(() => proxied.socket?.terminate());
   assert.equal(proxied.status, 101);
@@ -227,4 +235,26 @@ test('attachWebGateway: login cookie, /bridge proxy, ignore URL token', async (t
   const stolen = await call({ port, method: 'GET', path: '/?token=stolen' });
   assert.equal(stolen.status, 303);
   assert.equal(stolen.headers.location, '/login');
+});
+
+test('GET / is gated even when web-access.json is missing', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-web-gateway-empty-'));
+  const server = createServer();
+  t.after(() => {
+    server.closeAllConnections();
+    return closeServer(server);
+  });
+  attachWebGateway(server, {
+    webAccessPath: join(dir, 'missing.json'),
+    bridgeToken: '',
+    bridgePort: 1,
+    secureCookies: false,
+  });
+  const port = await listen(server);
+  const home = await call({ port, method: 'GET', path: '/' });
+  assert.equal(home.status, 303);
+  assert.equal(home.headers.location, '/login');
+  const login = await call({ port, method: 'GET', path: '/login' });
+  assert.equal(login.status, 200);
+  assert.match(login.body, /Settings → Web access/);
 });

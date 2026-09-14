@@ -40,7 +40,7 @@ export const WEB_BRIDGE_TOKEN_BYTES = 32;
 const HEARTBEAT_MS = 30_000;
 
 export interface WebBridgeInfo {
-  /** `ws://127.0.0.1:<port>` (no token — the launcher appends `?token=`). */
+  /** `ws://127.0.0.1:<port>` (no token — the gateway appends it on the loopback hop). */
   wsUrl: string;
   token: string;
   tokenFile: string;

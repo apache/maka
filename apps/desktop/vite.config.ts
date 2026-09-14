@@ -68,6 +68,9 @@ export default defineConfig({
     ],
   },
   server: {
+    // Tailscale Serve forwards `Host: *.ts.net` to loopback Vite. Allow that
+    // without binding 0.0.0.0 — Maka stays on 127.0.0.1.
+    allowedHosts: ['.ts.net', 'localhost'],
     // `maka-web` (Chrome/Brave): the local directory API (scripts/maka-web-api.mjs,
     // default 127.0.0.1:5174) is proxied same-origin so the browser page needs
     // no extra CSP origin and no CORS preflight. Applies to both `dev.mjs` and

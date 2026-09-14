@@ -23,6 +23,7 @@ import { App } from './app';
 import { applyCachedThemeBeforeMount } from './cached-theme-bootstrap';
 import './styles.css';
 import { readSystemUiLocale } from './use-system-ui-locale';
+import { isWebMode } from './platform/web/web-project.js';
 import {
   createDesktopFeatureServices,
   DesktopFeatureServicesProvider,
@@ -33,7 +34,42 @@ const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
 
 syncUiLocaleDocument(readSystemUiLocale());
 applyCachedThemeBeforeMount();
-const desktopFeatureServices = createDesktopFeatureServices();
+
+// Plain browser (Chrome/Brave via `maka-web`): no preload bridge, so the
+// desktop service factories below would throw on `window.maka` and leave the
+// index.html skeleton on screen.
+//
+// Two browser tiers:
+// - Full client: same-origin `/bridge` after passphrase+TOTP (session cookie).
+//   Opened by `npm run maka-web` while the GUI runs. The disk token never
+//   appears in the URL.
+// - Picker: full client unavailable (GUI/bridge down). Self-contained
+//   directory validator with handoff instructions; never touches the bridge.
+if (isWebMode()) {
+  void import('./platform/web/web-boot.js').then(({ bootWebBridge, webBridgeParams }) => {
+    const params = webBridgeParams();
+    if (!params) {
+      bootWebPicker();
+      return;
+    }
+    bootWebBridge(params).then(
+      () => bootDesktop(),
+      (error) => bootWebPicker(error),
+    );
+  });
+} else {
+  bootDesktop();
+}
+
+function bootWebPicker(error?: unknown) {
+  if (error) console.error('[web] full client unavailable, falling back to picker:', error);
+  void import('./platform/web/web-app.js').then(({ WebApp }) => {
+    createRoot(document.getElementById('root')!).render(<WebApp />);
+  });
+}
+
+function bootDesktop() {
+  const desktopFeatureServices = createDesktopFeatureServices();
 
 /**
  * Prefetch the onboarding snapshot BEFORE mounting React. The preload
@@ -47,7 +83,9 @@ const desktopFeatureServices = createDesktopFeatureServices();
  * can never block the renderer from mounting. On timeout/failure React
  * mounts with `null` and the classic in-app loading path takes over.
  */
-async function prefetchOnboardingSnapshot() {
+async function prefetchOnboardingSnapshot(
+  desktopFeatureServices: ReturnType<typeof createDesktopFeatureServices>,
+) {
   // WorkHub owns its session readiness and never consumes Desktop onboarding.
   if (desktopFeatureServices.workHub.surface === 'workhub') return null;
   const attempt = async () => {
@@ -66,10 +104,11 @@ async function prefetchOnboardingSnapshot() {
   return Promise.race([attempt(), timeout]);
 }
 
-void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
+void prefetchOnboardingSnapshot(desktopFeatureServices).then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
     <DesktopFeatureServicesProvider services={desktopFeatureServices}>
       <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
     </DesktopFeatureServicesProvider>,
   );
 });
+}
