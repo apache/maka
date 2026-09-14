@@ -60,6 +60,7 @@
     "@maka/runtime": "0.1.0",
     "@maka/runtime-host": "0.1.0",
     "@maka/storage": "0.1.0",
+    "@noble/hashes": "1.8.0",
     "@sigstore/bundle": "5.0.0",
     "@sigstore/tuf": "5.0.0",
     "@sigstore/verify": "4.1.2",
