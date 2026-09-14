@@ -1448,11 +1448,6 @@ export class AiSdkTurn {
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
-        // The compaction module runs at most once per send. This tracks the
-        // reactive entry; the proactive one sets the same flag on the mid-turn
-        // state, and each consults the other, so a send that already folded
-        // reports the oversized message instead of folding again (#4559).
-        let overflowRetryUsed = false;
         let result: ModelStreamResult;
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
@@ -1546,7 +1541,6 @@ export class AiSdkTurn {
           let attemptMessages = projectedMessages;
           let providerAttempt = 0;
           const returnedToolCalls: ToolCallPart[] = [];
-          let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
@@ -1560,22 +1554,13 @@ export class AiSdkTurn {
             // Monotonic facts for this physical request. The step accumulators
             // are cleared after flushStep(), so they cannot decide whether a
             // later stream failure is safe to retry.
-            let attemptSawText = false;
-            let attemptSawThinking = false;
+            let attemptSawVisibleContent = false;
             let attemptSawToolActivity = false;
             let attemptSawToolInput = false;
-            let attemptSawContinuationMetadata = false;
-            let attemptReachedStepBoundary = false;
+            let attemptSawReplayBarrier = false;
             const attemptHasNoObservableOutput = () =>
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata &&
-              !attemptReachedStepBoundary;
-            const attemptCanReplay = () =>
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata &&
-              !attemptReachedStepBoundary;
+              !attemptSawVisibleContent && !attemptSawToolActivity && !attemptSawReplayBarrier;
+            const attemptCanReplay = () => !attemptSawToolActivity && !attemptSawReplayBarrier;
             this.memorySourceMessages = [...attemptMessages];
             this.memorySourceEventMessagePositions =
               this.deps.messageProjection.memoryEventMessagePositions(attemptMessages);
@@ -1640,7 +1625,7 @@ export class AiSdkTurn {
                 (event.kind === 'finish' || event.kind === 'step-finish') &&
                 isIncompleteProviderFinishReason(event.finishReason);
               if ((event.kind === 'finish' || event.kind === 'step-finish') && !incompleteFinish) {
-                attemptReachedStepBoundary = true;
+                attemptSawReplayBarrier = true;
               }
               if (event.kind === 'step-finish') {
                 // AI SDK can synthesize `finish-step(other)` when the provider
@@ -1820,14 +1805,14 @@ export class AiSdkTurn {
               }
               if (event.kind === 'text-start') {
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
-                  attemptSawContinuationMetadata = true;
+                  attemptSawReplayBarrier = true;
                   await flushStep();
                   currentStepMessageId = this.deps.newId();
                 }
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
                 stepText += event.text;
-                if (event.text.length > 0) attemptSawText = true;
+                if (event.text.length > 0) attemptSawVisibleContent = true;
                 queue.push({
                   type: 'text_delta',
                   id: this.deps.newId(),
@@ -1838,7 +1823,7 @@ export class AiSdkTurn {
                 } satisfies TextDeltaEvent);
               } else if (event.kind === 'text-end') {
                 if (event.providerOptions !== undefined) {
-                  attemptSawContinuationMetadata = true;
+                  attemptSawReplayBarrier = true;
                   stepTextProviderOptions = mergeTextProviderOptions(
                     stepTextProviderOptions,
                     stripUndefinedDeep(event.providerOptions) as NonNullable<
@@ -1853,7 +1838,7 @@ export class AiSdkTurn {
                 }
               } else if (event.kind === 'thinking-start') {
                 if (event.providerOptions !== undefined) {
-                  attemptSawContinuationMetadata = true;
+                  attemptSawReplayBarrier = true;
                 }
                 const part: AssistantThinkingPart = {
                   text: '',
@@ -1866,10 +1851,10 @@ export class AiSdkTurn {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
-                if (event.text.length > 0) attemptSawThinking = true;
+                if (event.text.length > 0) attemptSawVisibleContent = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
-                    attemptSawContinuationMetadata = true;
+                    attemptSawReplayBarrier = true;
                   }
                 }
                 const partId =
@@ -1932,7 +1917,7 @@ export class AiSdkTurn {
                   text: event.text,
                 } satisfies ThinkingDeltaEvent);
               } else if (event.kind === 'thinking-signature') {
-                attemptSawContinuationMetadata = true;
+                attemptSawReplayBarrier = true;
                 let part = event.reasoningPartId
                   ? stepThinkingPartsById.get(event.reasoningPartId)
                   : stepThinkingParts.at(-1);
@@ -1953,7 +1938,6 @@ export class AiSdkTurn {
               } else if (event.kind === 'tool-call') {
                 if (event.toolCall.providerExecuted) {
                   attemptSawToolActivity = true;
-                  providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
                   queue.push({
                     type: 'tool_start',
@@ -1978,7 +1962,6 @@ export class AiSdkTurn {
                 }
               } else if (event.kind === 'provider-tool-result') {
                 attemptSawToolActivity = true;
-                providerToolActivityCount += 1;
                 const providerOutput = stripUndefinedDeep(event.output);
                 queue.push({
                   type: 'tool_result',
@@ -2060,8 +2043,6 @@ export class AiSdkTurn {
                 attemptHasNoObservableOutput()
                   ? await this.deps.compaction.recoverFromOverflowError({
                       error: attemptFailure,
-                      retryAlreadyUsed:
-                        overflowRetryUsed || (midTurnState?.compactionAttemptedThisSend ?? false),
                       midTurnState,
                       turnId,
                       stepNumber: runtimeSteps,
@@ -2082,7 +2063,6 @@ export class AiSdkTurn {
                     })
                   : undefined;
               if (recovered) {
-                overflowRetryUsed = true;
                 attemptMessages = recovered.messages;
                 continue;
               }

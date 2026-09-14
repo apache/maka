@@ -1208,7 +1208,6 @@ export class AiSdkCompaction {
    */
   public async recoverFromOverflowError(input: {
     error: unknown;
-    retryAlreadyUsed: boolean;
     midTurnState: MidTurnCapacityCompactState | undefined;
     turnId: string;
     stepNumber: number;
@@ -1222,7 +1221,9 @@ export class AiSdkCompaction {
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
-    if (input.retryAlreadyUsed || !state) return undefined;
+    if (!state || state.compactionAttemptedThisSend || state.omittedImageToolResults.size > 0) {
+      return undefined;
+    }
     if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
