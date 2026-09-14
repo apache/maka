@@ -95,7 +95,7 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
-  reportError(title: string, description: string, sessionId: string): void;
+  reportError(sessionId: string, title: string, description?: string): void;
 }
 
 export interface WorkbarController {
@@ -176,9 +176,9 @@ export function useWorkbarController(
         if (activeSessionIdRef.current !== sessionId) return;
         const copy = getShellCopy(locale).chatActions;
         input.reportError(
+          sessionId,
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, locale),
-          sessionId,
         );
       }
     },
@@ -350,13 +350,13 @@ export function useWorkbarController(
                 return;
               }
               input.reportError(
+                ownerSessionId,
                 terminalCopy.startFailed,
                 localizedShellErrorMessage(
                   error,
                   terminalCopy.startFailed,
                   locale,
                 ),
-                ownerSessionId,
               );
             });
           return;

@@ -36,7 +36,7 @@ export function createAppShellE2eFixtureActions(options: {
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
-    rightCollapsed: boolean;
+    getRightCollapsed(): boolean;
     toggleRight(): void;
     openTool(
       kind: SessionWorkbarTabKind,
@@ -117,10 +117,7 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (
-      state.workbarCollapsed !== undefined &&
-      state.workbarCollapsed !== workbar.rightCollapsed
-    ) {
+    if (state.workbarCollapsed === !workbar.getRightCollapsed()) {
       workbar.toggleRight();
     }
     if (
