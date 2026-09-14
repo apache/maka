@@ -29,11 +29,12 @@ export function useTranscriptKnownSpace(
   sessionId: string | undefined,
   ids: readonly string[],
   enabled: boolean,
+  estimates: ReadonlyMap<string, number>,
 ) {
   const previous = useRef<{
     sessionId: string | undefined;
     ids: readonly string[];
-    heights: Map<string, number>;
+    heights: Map<string, { height: number; measured: boolean }>;
     gap: number;
   }>({ sessionId, ids: [], heights: new Map(), gap: 0 });
   const old = previous.current;
@@ -42,12 +43,18 @@ export function useTranscriptKnownSpace(
     ? old.ids.flatMap((id, index) => mounted.has(id) ? [index] : []) : [];
   const prefix = overlaps.length ? old.ids.slice(0, overlaps[0]) : [];
   const suffix = overlaps.length ? old.ids.slice(overlaps.at(-1)! + 1) : [];
-  // Placeholders and range spacers read the same observer-owned border boxes.
+  // Placeholders and range spacers read the same size ledger. Observed border
+  // boxes replace provisional estimates and remain authoritative thereafter.
   // Spacing belongs to the list, so it is never baked into a measured height.
-  const heights = overlaps.length ? old.heights : new Map<string, number>();
+  const heights = overlaps.length ? old.heights : new Map<string, { height: number; measured: boolean }>();
   const estimate = 320;
+  for (const id of ids) {
+    const size = heights.get(id);
+    const height = estimates.get(id) ?? estimate;
+    if (!size?.measured && size?.height !== height) heights.set(id, { height, measured: false });
+  }
   const gap = overlaps.length ? old.gap : 0;
-  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (heights.get(id) ?? estimate) + gap, 0);
+  const sum = (values: readonly string[]) => values.reduce((total, id) => total + (heights.get(id)?.height ?? estimate) + gap, 0);
   const before = sum(prefix);
   const after = sum(suffix);
 
@@ -65,7 +72,7 @@ export function useTranscriptKnownSpace(
     before, after,
     beforeHeight: Math.max(0, before - gap),
     afterHeight: Math.max(0, after - gap),
-    height: (id: string) => Math.max(1, heights.get(id) ?? estimate),
-    measure: (id: string, height: number) => heights.set(id, height),
+    height: (id: string) => Math.max(1, heights.get(id)?.height ?? estimate),
+    measure: (id: string, height: number) => { heights.set(id, { height, measured: true }); },
   };
 }

@@ -47,6 +47,7 @@ import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import { useTranscriptKnownSpace } from './use-transcript-known-space.js';
+import { useTranscriptHeightEstimates } from './transcript-height-estimate.js';
 import { VirtualTranscriptTurn } from './virtual-transcript-turn.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
@@ -544,8 +545,9 @@ export function ChatView(props: {
     inlineTransientMessagesByTurn.set(turn.turnId, messages);
     inlineTransientMessageIds.add(message.id);
   }
+  const estimatedHeights = useTranscriptHeightEstimates(scrollRef, turns, Boolean(props.onRetainWindow));
   const knownSpace = useTranscriptKnownSpace(scrollRef, props.activeSession?.id,
-    turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow));
+    turns.map((turn) => turn.turnId), Boolean(props.onRetainWindow), estimatedHeights);
   const virtualized = Boolean(props.onRetainWindow) && typeof IntersectionObserver !== 'undefined';
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
