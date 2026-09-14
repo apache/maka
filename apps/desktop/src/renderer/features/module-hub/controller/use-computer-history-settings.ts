@@ -166,7 +166,6 @@ export function useComputerHistorySettings() {
     status, model, modelLabel, modelAvailable, modelSaveError, loading, pending, statusError, modelError, actionError, refresh, selectModel,
     update: (patch: Partial<ComputerHistorySettings>, key: string) =>
       run(key, () => service.updateSettings(patch)),
-    requestPermissions: () => run('permissions', () => service.requestPermissions()),
     clear: (scope: ComputerHistoryClearScope) => run('clear', () => service.clear(scope)),
   };
 }

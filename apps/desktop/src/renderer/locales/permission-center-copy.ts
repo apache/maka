@@ -64,6 +64,21 @@ export type PermissionCenterCopy = {
   osSection: string;
   osSectionHelp: string;
   osListAria: string;
+  scopeAria: string;
+  allPermissions: string;
+  historyPermissions: string;
+  historyRequired: string;
+  historyHelp: string;
+  otherPermissions: string;
+  otherPermissionsHelp: string;
+  localDevice: string;
+  historyConsumer: string;
+  desktopConsumer: string;
+  historyReady: string;
+  historyWaiting(count: number): string;
+  openedSettings: string;
+  requestChecked: string;
+  capabilitiesUnavailable: string;
   capabilitiesSection: string;
   capabilitiesHelp: string;
   capabilityListAria: string;
@@ -110,8 +125,9 @@ const PERMISSION_CENTER_COPY = {
       paused: { label: '已暂停', detail: '功能开关被显式关闭，但配置仍保留。', tone: 'neutral' },
     },
     osPermissions: {
-      accessibility: { label: '辅助功能', purpose: 'Computer Use 需要它来读取窗口焦点 / 模拟键盘鼠标。', impact: 'Computer Use · 自动化键鼠操作' },
-      screen_recording: { label: '屏幕录制', purpose: 'Computer Use 需要它来读取窗口内容；未来屏幕活动录制也会使用。', impact: 'Computer Use · 截屏上下文' },
+      accessibility: { label: '辅助功能', purpose: '读取应用窗口和可访问界面内容，也用于电脑操作的键鼠控制。', impact: '电脑历史 · Computer Use' },
+      input_monitoring: { label: '输入监控', purpose: '识别键盘与鼠标活动。是否保存文本由电脑历史的内容开关决定。', impact: '电脑历史' },
+      screen_recording: { label: '屏幕录制', purpose: '用于电脑操作的截图。电脑历史不需要此权限。', impact: 'Computer Use · 截屏上下文' },
       notifications: { label: '通知', purpose: '权限申请、回顾完成等系统通知需要它。', impact: '权限申请提醒 · 每日回顾完成通知' },
       automation: { label: '自动化（Apple Events）', purpose: 'Computer Use 控制其他 App 需要逐 target 授权。', impact: 'Computer Use · 跨 App 自动化' },
     },
@@ -133,6 +149,14 @@ const PERMISSION_CENTER_COPY = {
     title: '权限与能力', subtitle: '查看 Maka 需要的系统权限和当前授权状态，直接从这里前往「系统设置 → 隐私与安全性」完成授权或撤销，不必自己翻菜单。',
     lastRead: '最近读取：', detectAgain: '重新检测', summaryAria: '按授权状态筛选系统权限', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}权限，共 ${count} 项`, granted: '已授权', pending: '等待授权', denied: '已拒绝', other: '未知 / 不支持',
     osSection: '系统权限', osSectionHelp: 'Maka 读到的 OS 级权限状态。点击右侧按钮可以直接前往「系统设置 → 隐私与安全性」对应分区。', osListAria: '系统权限列表',
+    scopeAria: '权限范围', allPermissions: '全部权限', historyPermissions: '电脑历史',
+    historyRequired: '电脑历史所需权限', historyHelp: '仅辅助功能和输入监控为电脑历史必需。',
+    otherPermissions: '其他权限', otherPermissionsHelp: '这些权限不影响电脑历史的记录和摘要。',
+    localDevice: '这台 Mac', historyConsumer: '电脑历史采集', desktopConsumer: 'Maka 桌面',
+    historyReady: '电脑历史所需权限已就绪', historyWaiting: (count) => `电脑历史 · ${count} 项权限待处理`,
+    openedSettings: '已打开系统设置。完成授权后返回 Maka，授权状态会重新检测。',
+    requestChecked: '权限操作已完成，正在重新检测授权状态。',
+    capabilitiesUnavailable: '当前 Host 的功能状态暂不可用，本机系统权限仍可管理。',
     capabilitiesSection: '功能能力', capabilitiesHelp: '每个能力的就绪状态由「功能开关 · 配置 · 系统权限 · 运行态探测」共同决定。',
     capabilityListAria: '功能能力列表',
     footnote: 'Maka 不会自动授予 Accessibility、Automation 或 Screen Recording。高风险自动化能力必须保持逐项审批、可审计、可撤销。这里只读取系统权限与功能能力的当前快照，授权变更仍需在「系统设置 → 隐私与安全性」完成。',
@@ -167,8 +191,9 @@ const PERMISSION_CENTER_COPY = {
       paused: { label: '已暫停', detail: '功能開關被顯式關閉，但設定仍保留。', tone: 'neutral' },
     },
     osPermissions: {
-      accessibility: { label: '輔助功能', purpose: 'Computer Use 需要它來讀取視窗焦點 / 模擬鍵盤滑鼠。', impact: 'Computer Use · 自動化鍵鼠操作' },
-      screen_recording: { label: '螢幕錄製', purpose: 'Computer Use 需要它來讀取視窗內容；未來螢幕活動錄製也會使用。', impact: 'Computer Use · 截圖上下文' },
+      accessibility: { label: '輔助功能', purpose: '讀取應用程式視窗與可存取介面內容，也用於電腦操作的鍵鼠控制。', impact: '電腦歷史 · Computer Use' },
+      input_monitoring: { label: '輸入監控', purpose: '辨識鍵盤與滑鼠活動。是否儲存文字由電腦歷史的內容開關決定。', impact: '電腦歷史' },
+      screen_recording: { label: '螢幕錄製', purpose: '用於電腦操作的截圖。電腦歷史不需要此權限。', impact: 'Computer Use · 截圖上下文' },
       notifications: { label: '通知', purpose: '權限申請、回顧完成等系統通知需要它。', impact: '權限申請提醒 · 每日回顧完成通知' },
       automation: { label: '自動化（Apple Events）', purpose: 'Computer Use 控制其他 App 需要逐 target 授權。', impact: 'Computer Use · 跨 App 自動化' },
     },
@@ -190,6 +215,14 @@ const PERMISSION_CENTER_COPY = {
     title: '權限與能力', subtitle: '檢視 Maka 需要的系統權限和目前授權狀態，直接從這裡前往「系統設定 → 隱私與安全性」完成授權或撤銷，不必自己翻選單。',
     lastRead: '最近讀取：', detectAgain: '重新檢測', summaryAria: '按授權狀態篩選系統權限', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}權限，共 ${count} 項`, granted: '已授權', pending: '等待授權', denied: '已拒絕', other: '未知 / 不支援',
     osSection: '系統權限', osSectionHelp: 'Maka 讀到的 OS 級權限狀態。點選右側按鈕可以直接前往「系統設定 → 隱私與安全性」對應分割槽。', osListAria: '系統權限列表',
+    scopeAria: '權限範圍', allPermissions: '全部權限', historyPermissions: '電腦歷史',
+    historyRequired: '電腦歷史所需權限', historyHelp: '僅輔助功能與輸入監控為電腦歷史必需。',
+    otherPermissions: '其他權限', otherPermissionsHelp: '這些權限不影響電腦歷史的記錄和摘要。',
+    localDevice: '這台 Mac', historyConsumer: '電腦歷史擷取', desktopConsumer: 'Maka 桌面',
+    historyReady: '電腦歷史所需權限已就緒', historyWaiting: (count) => `電腦歷史 · ${count} 項權限待處理`,
+    openedSettings: '已開啟系統設定。完成授權後返回 Maka，授權狀態會重新檢測。',
+    requestChecked: '權限操作已完成，正在重新檢測授權狀態。',
+    capabilitiesUnavailable: '目前 Host 的功能狀態暫不可用，本機系統權限仍可管理。',
     capabilitiesSection: '功能能力', capabilitiesHelp: '每個能力的就緒狀態由「功能開關 · 設定 · 系統權限 · 執行態探測」共同決定。',
     capabilityListAria: '功能能力列表',
     footnote: 'Maka 不會自動授予 Accessibility、Automation 或 Screen Recording。高風險自動化能力必須保持逐項審批、可審計、可撤銷。這裡只讀取系統權限與功能能力的目前快照，授權變更仍需在「系統設定 → 隱私與安全性」完成。',
@@ -224,8 +257,9 @@ const PERMISSION_CENTER_COPY = {
       paused: { label: 'Paused', detail: 'The feature was explicitly disabled while its configuration remains saved.', tone: 'neutral' },
     },
     osPermissions: {
-      accessibility: { label: 'Accessibility', purpose: 'Computer Use needs it to read window focus and simulate keyboard or mouse input.', impact: 'Computer Use · automated keyboard and mouse input' },
-      screen_recording: { label: 'Screen Recording', purpose: 'Computer Use needs it to read window contents; future screen activity recording will use it too.', impact: 'Computer Use · screenshot context' },
+      accessibility: { label: 'Accessibility', purpose: 'Read application windows and accessible content, and control keyboard and mouse input.', impact: 'Computer History · Computer Use' },
+      input_monitoring: { label: 'Input Monitoring', purpose: 'Detect keyboard and mouse activity. Computer History content settings control whether text is stored.', impact: 'Computer History' },
+      screen_recording: { label: 'Screen Recording', purpose: 'Capture screenshots for Computer Use. Computer History does not require this permission.', impact: 'Computer Use · screenshot context' },
       notifications: { label: 'Notifications', purpose: 'System alerts use it for permission requests and completed reviews.', impact: 'Permission alerts · Daily Review completion' },
       automation: { label: 'Automation (Apple Events)', purpose: 'Computer Use needs per-target authorization to control other apps.', impact: 'Computer Use · cross-app automation' },
     },
@@ -247,6 +281,14 @@ const PERMISSION_CENTER_COPY = {
     title: 'Permissions and capabilities', subtitle: 'Review the system permissions Maka needs and their current state. Open the matching Privacy & Security section directly to grant or revoke access.',
     lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Filter system permissions by authorization status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all permissions` : `Show only ${label.toLowerCase()} permissions, ${count}`, granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
     osSection: 'System permissions', osSectionHelp: 'OS-level permission states reported to Maka. Use the action on the right to open the matching Privacy & Security section in System Settings.', osListAria: 'System permission list',
+    scopeAria: 'Permission scope', allPermissions: 'All permissions', historyPermissions: 'Computer History',
+    historyRequired: 'Required for Computer History', historyHelp: 'Only Accessibility and Input Monitoring are required.',
+    otherPermissions: 'Other permissions', otherPermissionsHelp: 'These do not affect Computer History recording or summaries.',
+    localDevice: 'This Mac', historyConsumer: 'Computer History collector', desktopConsumer: 'Maka Desktop',
+    historyReady: 'Computer History permissions are ready', historyWaiting: (count) => `Computer History: ${count} permissions need attention`,
+    openedSettings: 'System Settings is open. Return to Maka after granting access to check the permission state.',
+    requestChecked: 'Permission action completed. Checking the current authorization state.',
+    capabilitiesUnavailable: 'Capabilities for the selected Host are unavailable. Local system permissions can still be managed.',
     capabilitiesSection: 'Feature capabilities', capabilitiesHelp: 'Each readiness state combines the feature toggle, configuration, system permissions, and runtime probe.',
     capabilityListAria: 'Feature capability list',
     footnote: 'Maka never grants Accessibility, Automation, or Screen Recording automatically. High-risk automation must remain individually approved, auditable, and revocable. This page only reads the current snapshot; permission changes still happen in System Settings under Privacy & Security.',

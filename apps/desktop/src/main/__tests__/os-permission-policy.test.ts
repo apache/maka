@@ -79,6 +79,14 @@ describe('OS permission platform policy', () => {
       platform: 'darwin',
     }), 'open_settings');
     assert.equal(planPermissionRequest({
+      id: 'input_monitoring',
+      platform: 'darwin',
+    }), 'open_settings');
+    assert.equal(planPermissionRequest({
+      id: 'input_monitoring',
+      platform: 'linux',
+    }), 'unsupported_platform');
+    assert.equal(planPermissionRequest({
       id: 'screen_recording',
       platform: 'linux',
     }), 'unsupported_platform');

@@ -17,10 +17,18 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
-import { settingsActionErrorMessage as formatError } from '../application/contracts/settings-presentation/settings-error-copy.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
+import { type UiLocale } from '@maka/core/ui-locale';
+import { redactSecrets } from '@maka/ui';
 
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale): string {
-  return formatError(error, locale, getSettingsSharedCopy(locale).unknownError);
+export function settingsActionErrorMessage(error: unknown, locale: UiLocale, unknownError: string): string {
+  const raw = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : '';
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  if (classified) return classified;
+  if (raw) console.error('[settings] operation failed:', redactSecrets(raw));
+  return unknownError;
 }

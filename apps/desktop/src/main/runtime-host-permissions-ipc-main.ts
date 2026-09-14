@@ -28,6 +28,8 @@ import { type AppSettings } from '@maka/core/settings';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import type { UsageLogRow } from "@maka/core/usage-stats/types";
 import type { BotRegistry } from '@maka/runtime/bots';
+import type { PermissionSnapshot } from '@maka/core/capabilities';
+import type { ComputerHistoryPermissionStatus } from './computer-history-main.js';
 import {
   buildCapabilitySnapshotCollection,
   buildPermissionSnapshot,
@@ -52,14 +54,17 @@ interface RuntimeHostPermissionsIpcDeps {
   readonly botRegistry: BotRegistry;
   readonly getComputerUseCapabilityInput: () => ComputerUseCapabilityInput;
   readonly getComputerHistoryStatus: () => ReturnType<import('./computer-history-main.js').ComputerHistoryService['status']>;
+  readonly getPermissions: (now?: number) => Promise<PermissionSnapshot>;
 }
 
-export function registerRuntimeHostPermissionsIpc(
-  deps: RuntimeHostPermissionsIpcDeps,
-): void {
-  const permissions = (now = Date.now()) =>
-    permissionSnapshotE2eFixture(now) ?? buildPermissionSnapshot(now);
-
+/** Registered once with Desktop IPC, never in a reconnecting Host scope. */
+export function registerLocalPermissionsIpc(deps: {
+  ipcMain: Pick<ReconnectableReadIpcMain, 'handle'>;
+  getComputerHistoryPermissions: () => Promise<ComputerHistoryPermissionStatus>;
+}): (now?: number) => Promise<PermissionSnapshot> {
+  const permissions = async (now = Date.now()) =>
+    permissionSnapshotE2eFixture(now) ??
+    buildPermissionSnapshot(now, process.platform, await deps.getComputerHistoryPermissions());
   deps.ipcMain.handle("permissions:getSnapshot", () => permissions());
   deps.ipcMain.handle(
     "permissions:openSystemSettings",
@@ -69,8 +74,14 @@ export function registerRuntimeHostPermissionsIpc(
     "permissions:requestAccess",
     (_event, permissionId: unknown) => requestPermissionAccess(permissionId),
   );
+  return permissions;
+}
+
+export function registerRuntimeHostPermissionsIpc(
+  deps: RuntimeHostPermissionsIpcDeps,
+): void {
   handleReconnectableRead(deps.ipcMain, "capabilities:getSnapshot", async () => {
-    const snapshot = permissions();
+    const snapshot = await deps.getPermissions();
     return buildCapabilitySnapshotCollection({
       settings: await deps.getSettings(),
       permissions: snapshot,
@@ -82,11 +93,11 @@ export function registerRuntimeHostPermissionsIpc(
   });
   handleReconnectableRead(deps.ipcMain, "health:getSnapshot", async () => {
     const now = Date.now();
-    const permissionSnapshot = permissions(now);
-    const [settings, connections, computerHistory] = await Promise.all([
+    const [settings, connections, computerHistory, permissionSnapshot] = await Promise.all([
       deps.getSettings(),
       deps.listConnections(),
       deps.getComputerHistoryStatus(),
+      deps.getPermissions(now),
     ]);
     const capabilities = buildCapabilitySnapshotCollection({
       settings,

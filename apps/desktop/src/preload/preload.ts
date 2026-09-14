@@ -3070,17 +3070,17 @@ const makaBridge = {
     },
   },
   permissions: {
-    getSnapshot(host?: DesktopRuntimeHostRef): Promise<PermissionSnapshot> {
-      return invokeSelectedRuntimeHost(host, 'permissions:getSnapshot');
+    getSnapshot(): Promise<PermissionSnapshot> {
+      return ipcRenderer.invoke('permissions:getSnapshot');
     },
-    openSystemSettings(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'permissions:openSystemSettings', permId);
+    openSystemSettings(permId: string): Promise<PermissionActionResult> {
+      return ipcRenderer.invoke('permissions:openSystemSettings', permId);
     },
-    requestAccess(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'permissions:requestAccess', permId);
+    requestAccess(permId: string): Promise<PermissionActionResult> {
+      return ipcRenderer.invoke('permissions:requestAccess', permId);
     },
-    startDragOnboarding(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionOverlayStartResult> {
-      return invokeSelectedRuntimeHost(host, 'permissions:startDragOnboarding', permId);
+    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult> {
+      return ipcRenderer.invoke('permissions:startDragOnboarding', permId);
     },
   },
   capabilities: {
@@ -3558,9 +3558,6 @@ const makaBridge = {
     },
     updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings> {
       return ipcRenderer.invoke('computer-history:update-settings', patch);
-    },
-    requestPermissions(): Promise<ComputerHistoryStatus> {
-      return ipcRenderer.invoke('computer-history:permissions');
     },
     pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus> {
       return ipcRenderer.invoke('computer-history:pause', duration);

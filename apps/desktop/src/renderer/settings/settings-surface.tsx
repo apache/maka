@@ -23,6 +23,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from 'react';
 import {
@@ -818,6 +819,22 @@ function SettingsSurfaceContent(
       label: entry.profile.name,
       disabled: entry.readiness !== 'ready' || !entry.hostId,
     }));
+  const runtimeHostSelector = showsRuntimeHost && runtimeHostOptions.length > 1 ? (
+    <div className="settingsRuntimeHostSelector">
+      <Selector
+        label={copy.runtimeHost}
+        isLabelHidden
+        value={selectedProfileId ?? runtimeHosts?.defaultProfileId ?? 'local'}
+        options={runtimeHostOptions}
+        isDisabled={!runtimeHosts}
+        width="100%"
+        onChange={(profileId) => {
+          selectedProfileChangedByUserRef.current = true;
+          commitSelectedRuntimeHostProfile(profileId);
+        }}
+      />
+    </div>
+  ) : null;
 
   async function retryRuntimeHostContent(): Promise<void> {
     let diagnosticTarget: { profileId: string } | undefined;
@@ -933,7 +950,8 @@ function SettingsSurfaceContent(
                 <LayoutHeader padding={6}>
                   {navigation.canReturnToHistory ? (
                     <Button
-                      data-computer-history-model-back
+                      data-computer-history-model-back={section === 'models' ? '' : undefined}
+                      data-computer-history-permissions-back={section === 'permissions' ? '' : undefined}
                       className="settingsHistoryModelBack"
                       variant="ghost"
                       size="sm"
@@ -949,22 +967,7 @@ function SettingsSurfaceContent(
                         <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
                       )}
                     </div>
-                    {showsRuntimeHost && runtimeHostOptions.length > 1 ? (
-                      <div className="settingsRuntimeHostSelector">
-                        <Selector
-                          label={copy.runtimeHost}
-                          isLabelHidden
-                          value={selectedProfileId ?? runtimeHosts?.defaultProfileId ?? 'local'}
-                          options={runtimeHostOptions}
-                          isDisabled={!runtimeHosts}
-                          width="100%"
-                          onChange={(profileId) => {
-                            selectedProfileChangedByUserRef.current = true;
-                            commitSelectedRuntimeHostProfile(profileId);
-                          }}
-                        />
-                      </div>
-                    ) : null}
+                    {section !== 'permissions' ? runtimeHostSelector : null}
                   </div>
                 </LayoutHeader>
               )}
@@ -1015,9 +1018,10 @@ function SettingsSurfaceContent(
                         />
                       ) : null}
                       <RuntimeHostSettingsTarget
-                        key={selectedRuntimeHost
-                          ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
-                          : 'client'}
+                        key={section === 'permissions' ? 'local-permissions'
+                          : selectedRuntimeHost
+                            ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
+                            : 'client'}
                         host={selectedRuntimeHost}
                         generation={selectedProfileId
                           ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
@@ -1056,6 +1060,10 @@ function SettingsSurfaceContent(
                             onThemePaletteChange={props.onThemePaletteChange}
                             onOpenComputerHistory={props.onOpenComputerHistory}
                             onConfigureComputerHistoryModel={configureComputerHistoryModel}
+                            onOpenComputerHistoryPermissions={navigation.openHistoryPermissions}
+                            historyPermissionsContext={section === 'permissions' && navigation.canReturnToHistory}
+                            capabilitiesAction={runtimeHostSelector}
+                            capabilitiesLabel={selectedRuntimeHostEntry?.profile.name}
                             onOpenKeyboardHelp={props.onOpenKeyboardHelp}
                             onOpenSession={props.onOpenSession}
                             archivedTasks={props.archivedTasks}
@@ -1118,6 +1126,10 @@ function SettingsPageBody(props: {
   onThemePaletteChange(palette: ThemePalette): void;
   onOpenComputerHistory?(): void;
   onConfigureComputerHistoryModel(): void;
+  onOpenComputerHistoryPermissions(): void;
+  historyPermissionsContext: boolean;
+  capabilitiesAction?: ReactNode;
+  capabilitiesLabel?: string;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
@@ -1251,7 +1263,14 @@ function SettingsPageBody(props: {
         />
       );
     case 'permissions':
-      return <PermissionCenterPage />;
+      return (
+        <PermissionCenterPage
+          key={props.historyPermissionsContext ? 'history' : 'all'}
+          historyContext={props.historyPermissionsContext}
+          capabilitiesAction={props.capabilitiesAction}
+          capabilitiesLabel={props.capabilitiesLabel}
+        />
+      );
     case 'health':
       return <HealthCenterPage />;
     case 'memory':
@@ -1270,6 +1289,7 @@ function SettingsPageBody(props: {
       return (
         <ComputerHistorySettingsPage
           onConfigureModel={props.onConfigureComputerHistoryModel}
+          onOpenPermissions={props.onOpenComputerHistoryPermissions}
           onOpenHistory={props.onOpenComputerHistory}
         />
       );

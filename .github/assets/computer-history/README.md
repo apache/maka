@@ -273,3 +273,96 @@ output. No private history, native capture, real model request or credentials
 were used for these images. Real Electron checks are separate and remain
 private. The installed GitHub CLI lacks native attachments; these images
 reuse this feature branch's existing asset convention.
+
+## Conversation Draft Markdown
+
+Captured on September 14, 2026 (Asia/Shanghai). This fixes a data projection
+that flattened summary Markdown before it reached the existing review dialog.
+
+| Image | Viewport | State |
+| --- | --- | --- |
+| `skill-draft-before.png` | 1240 x 820 | Selected synthetic summary, previous single-line draft body |
+| `skill-draft-after.png` | 1240 x 820 | Same summary and dialog, preserved Markdown line breaks |
+
+Both images render the unchanged production `ComputerHistoryPage` and draft
+review dialog. The harness executes the exact AST-extracted `summaryEntry`
+and `observedText` functions from `d0b2ac23` and the updated source against the
+same invented summary. Only `contextMarkdown` varies between captures.
+Other renderer data, selection, light theme, `zh-CN`, Asia/Shanghai, DPR 1,
+100% zoom, fixed clock `2026-09-14T01:00:00Z`, and zero dialog/textbox scroll
+are identical. The dialog geometry matches, with no page overflow.
+
+The paired text values contain six and sixteen lines respectively. The
+synthetic harness verifies heading and code-fence boundaries, exact draft
+handoff, and cancel-without-handoff. The review field remains an editable
+Markdown source textbox; the reader behind it uses rendered Markdown.
+
+Ignored capture sources and verification are under
+`docs/local/computer-history-production-qa/skill-live/synthetic-draft*`.
+The PNGs are direct Playwright captures without retouching or compositing.
+No private history, real model request, credentials, native capture or
+permission changes were used. Separate real-conversation checks remain
+private. These images reuse the existing authorized feature-branch convention.
+
+## Unified History Permissions
+
+Captured on September 14, 2026 (Asia/Shanghai), after the user selected
+alternative B: History settings shows an aggregate permission state and a
+link; OS grant actions and rechecks live in the existing Permission Center.
+The public selection contains five matched pairs and two contextual views.
+
+| Before | After | Viewport and state |
+| --- | --- | --- |
+| [History](permission-before-history-zh-CN-1240-light.png) | [History](permission-after-history-zh-CN-1240-light.png) | 1240 x 820, zh-CN, light |
+| [Permission Center](permission-before-center-zh-CN-1240-light.png) | [Permission Center](permission-after-center-zh-CN-1240-light.png) | 1240 x 820, zh-CN, light, All scope |
+| [History](permission-before-history-zh-CN-390-light.png) | [History](permission-after-history-zh-CN-390-light.png) | 390 x 844, zh-CN, light |
+| [Permission Center](permission-before-center-zh-CN-390-light.png) | [Permission Center](permission-after-center-zh-CN-390-light.png) | 390 x 844, zh-CN, light, All scope |
+| [Permission Center](permission-before-center-en-390-dark.png) | [Permission Center](permission-after-center-en-390-dark.png) | 390 x 844, English, dark, All scope |
+
+The [desktop History context](permission-after-history-context-zh-CN-1240-light.png)
+and [narrow History context](permission-after-history-context-zh-CN-390-light.png)
+are reached through History's actual permission link. They show the contextual
+return control, focused missing Input Monitoring row, two required permissions,
+and a separate section for the other three permissions. They are supplemental
+interaction evidence, not before/after pairs.
+
+Both revisions mount production `SettingsModal`, History settings,
+Permission Center, Desktop adapters and shared UI providers against the same
+synthetic bridge. Matched conditions are DPR 1, 100% zoom, Asia/Shanghai,
+fixed clock `2026-09-14T00:30:00Z`, recording enabled, Accessibility granted,
+Input Monitoring missing, Screen Recording denied, and notification/automation
+state unknown. Text capture and both summary consent switches remain off.
+QA Remote, QA Provider and qa-model are invented fixture values.
+
+The baseline source was frozen at `2026-09-14T02:34:43.229Z`. Its Permission
+Center component and copy were verified byte-for-byte against `d0b2ac23`;
+the remaining dependencies are identified by snapshot time, not attributed to
+that revision. The old center has four IDs and no consumer projection; the
+after fixture adds the canonical Input Monitoring ID with `canRequest: false`
+and explicit recorder-consumer states. This preserves the same underlying
+permission conditions while representing each revision's protocol.
+
+The final after build was captured from source at
+`2026-09-14T03:08:43.704Z`. It uses the extracted permissions feature through
+the compatible settings entry, puts all grant buttons below descriptions,
+and separates local OS permissions from the selected Host's capabilities.
+Currentness checks found no changes in 463 consumed production files or 625
+Storybook source files after their respective runs.
+
+Validation passed 20/20 production interaction tests and 40 after captures,
+plus all 83 actual settings stories / 85 theme renders with their `play`
+functions and AX checks. Coverage includes three locales, both viewports and
+themes, contextual return focus/scroll, five canonical rows, four unchanged
+consent switches, no navigation writes, grant readback, action/read failures,
+helper/Electron disagreement, and local permissions with absent/offline Hosts.
+Narrow permission descriptions measured 230px against a 150px minimum.
+No unexpected browser errors, missing assets or external requests occurred.
+
+All 24 before and 40 after images remain in the ignored
+`docs/local/computer-history-production-qa/permission-production/matrix/`.
+Rerunnable harnesses, reports and full provenance use the
+`permission-production*` prefix in that QA directory. These 12 public PNGs
+are unchanged Playwright output, visually inspected and byte-matched to the
+matrix. No private history, credentials, real model calls, native capture or
+OS permission changes were used. Synthetic checks do not establish real
+macOS TCC authorization; live Desktop validation is separate.

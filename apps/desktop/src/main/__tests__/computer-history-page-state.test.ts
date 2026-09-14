@@ -184,7 +184,7 @@ for (const page of ['settings', 'history'] as const) {
       },
     });
     const content = page === 'settings'
-      ? createElement(ComputerHistorySettingsPage, { onConfigureModel() {} })
+      ? createElement(ComputerHistorySettingsPage, { onConfigureModel() {}, onOpenPermissions() {} })
       : createElement(ComputerHistoryPage, { onCreateDraft() {}, onOpenSettings() {}, isObscured: false });
     await act(async () => h.root.render(createElement(LocaleProvider, {
       locale: 'en',
@@ -636,7 +636,7 @@ test('switching 10min, 6h and day preserves the selected Source DOM and reader s
     },
   });
   for (const operation of [
-    'updateSettings', 'retrySummary', 'getAnalysisModel', 'setAnalysisModel', 'requestPermissions',
+    'updateSettings', 'retrySummary', 'getAnalysisModel', 'setAnalysisModel',
     'pause', 'resume', 'clear', 'deleteEntry', 'revealSummary',
   ] as const) {
     t.mock.method(services.computerHistory, operation, async () => {

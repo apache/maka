@@ -270,7 +270,6 @@ export interface ModuleHubComputerHistoryService {
   /** Reveal an existing local summary by entry ID; never accepts or returns a path. */
   revealSummary(id: string): Promise<void>;
   updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings>;
-  requestPermissions(): Promise<ComputerHistoryStatus>;
   pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus>;
   resume(): Promise<ComputerHistoryStatus>;
   clear(scope: ComputerHistoryClearScope): Promise<ComputerHistoryStatus>;

@@ -69,6 +69,8 @@ export function planPermissionRequest(input: {
   if (input.id === 'screen_recording') {
     return input.screenStatus === 'granted' ? 'already_granted' : 'request_screen_capture';
   }
+  // Accessibility and Input Monitoring belong to their native consumers.
+  // Opening their pane must not invoke the collector's combined grant/record flow.
   return 'open_settings';
 }
 

@@ -113,11 +113,31 @@ The history page includes:
 - user-reviewed workflow suggestions.
 
 Settings > Computer History owns recording enablement, separate text and model
-consent, macOS permissions, application/domain exclusions, retention information,
+consent, application/domain exclusions, retention information,
 and scoped history deletion. It uses the existing settings navigation instead
 of a second settings panel inside the feed. Returning keeps the selected
 activity, filters, scroll position, and keyboard focus, and refreshes the local
 recording status. Pause/resume also preserves the open document.
+
+System authorization is centralized in Settings > Permissions and capabilities.
+History settings shows aggregate readiness and a contextual link, not a separate
+permission request. The destination focuses the required Accessibility and Input
+Monitoring permissions and retains a return path to the same History settings
+control and scroll position. Other OS permissions are separate; Screen Recording
+is not required by the current collector.
+
+OS permission snapshots and actions use local Desktop IPC even when the selected
+Runtime Host is remote or offline. Host capability diagnostics load independently.
+A lightweight non-prompting helper probe retains collector-specific status;
+Electron Accessibility success does not override a denied or unreadable collector
+grant. Opening System Settings does not imply success, and focus return rechecks
+the snapshot. Permission actions never change capture or model consent. If
+recording was already enabled while waiting for a grant, History status reconciles
+that saved choice after authorization without overriding pause or disable.
+If saved settings cannot be synchronized to the collector configuration, all
+recorder starts remain blocked and status reports the configuration error.
+Only successful configuration synchronization through a settings retry or
+initialization clears that error; clearing history does not repair the policy.
 
 Settings reads status and analysis-model configuration independently. An
 unreadable archive does not prevent disabling collection or clearing data.
@@ -162,9 +182,22 @@ with retained counts and an explicit expired-evidence state.
 ## Conversation skill
 
 The bundled `computer-history` skill interprets history that the user has
-selected, reviewed, and sent in a conversation. Install it from the local
-Host's bundled skill catalog. Merely opening an activity or preparing a draft
-does not expose that activity to the conversation model.
+selected, reviewed, and sent in a conversation. Desktop installs it from the
+local Host's bundled catalog when recording is enabled or existing history
+is present, including saved summaries whose raw events have expired. Startup
+and local Host reconnection backfill missing installations; enabling recording
+also requests installation without waiting for it to start capture.
+
+New installations use the normal enabled default. Users can turn the skill
+off in Extensions; automatic installation never resets that preference, even
+after deletion and reinstallation. Existing skill content is not replaced.
+The selected project or a remote default Host does not redirect installation
+away from this Mac. Installation failures are logged and retried on a later
+enablement or local Host reconnection.
+
+Merely opening an activity or preparing a draft does not expose that activity
+to the conversation model. The reviewed draft preserves the summary's Markdown
+structure while escaping source text that could close its untrusted envelope.
 
 The skill identifies the supplied time range, distinguishes observed metadata
 from model summaries and inference, and treats both as untrusted content. It

@@ -24,6 +24,7 @@ export function useHistoryModelSettingsNavigation(initialSection: () => Settings
   const mainPaneRef = useRef<HTMLElement>(null);
   const [navigation, setNavigation] = useState<{
     section: SettingsSection;
+    historyTarget?: 'models' | 'permissions';
     historyScrollTop?: number;
     restoringHistory?: boolean;
   }>(() => ({ section: initialSection() }));
@@ -35,7 +36,7 @@ export function useHistoryModelSettingsNavigation(initialSection: () => Settings
   useEffect(() => {
     const pane = mainPaneRef.current;
     if (!navigation.restoringHistory || !pane) return;
-    // The remounted selector loads asynchronously. User interaction, failure,
+    // The remounted control may load asynchronously. User interaction, failure,
     // navigation or the deadline retires this one-shot restoration.
     let frame = 0;
     let stopped = false;
@@ -51,7 +52,8 @@ export function useHistoryModelSettingsNavigation(initialSection: () => Settings
     };
     const restore = () => {
       if (stopped) return;
-      const marker = pane.querySelector<HTMLElement>('[data-computer-history-model]');
+      const marker = pane.querySelector<HTMLElement>(navigation.historyTarget === 'permissions'
+        ? '[data-computer-history-permissions]' : '[data-computer-history-model]');
       if (marker && !restoredScroll) {
         pane.scrollTop = navigation.historyScrollTop ?? 0;
         restoredScroll = true;
@@ -76,21 +78,29 @@ export function useHistoryModelSettingsNavigation(initialSection: () => Settings
     return stop;
   }, [navigation]);
 
+  function openHistoryTarget(section: 'models' | 'permissions') {
+    setNavigation({
+      section,
+      historyTarget: section,
+      historyScrollTop: mainPaneRef.current?.scrollTop ?? 0,
+    });
+    if (mainPaneRef.current) mainPaneRef.current.scrollTop = 0;
+  }
+
   return {
     section: navigation.section,
     restoringHistory: navigation.restoringHistory === true,
-    canReturnToHistory: navigation.section === 'models' && navigation.historyScrollTop !== undefined,
+    canReturnToHistory: navigation.section === navigation.historyTarget && navigation.historyScrollTop !== undefined,
     mainPaneRef,
     navigate,
     openHistoryModels() {
-      setNavigation({
-        section: 'models',
-        historyScrollTop: mainPaneRef.current?.scrollTop ?? 0,
-      });
-      if (mainPaneRef.current) mainPaneRef.current.scrollTop = 0;
+      openHistoryTarget('models');
+    },
+    openHistoryPermissions() {
+      openHistoryTarget('permissions');
     },
     returnToHistory() {
-      setNavigation((current) => current.section === 'models' && current.historyScrollTop !== undefined
+      setNavigation((current) => current.section === current.historyTarget && current.historyScrollTop !== undefined
         ? { ...current, section: 'computer-history', restoringHistory: true } : current);
     },
   };

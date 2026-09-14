@@ -245,7 +245,7 @@ describe('createDesktopModuleHubServices', () => {
     await services.computerHistory.detail('entry');
     await services.computerHistory.revealSummary('10min-1789273200000');
     await services.computerHistory.updateSettings({ enabled: false });
-    await services.computerHistory.requestPermissions();
+    assert.equal('requestPermissions' in services.computerHistory, false, 'OS actions belong to Permission Center');
     await services.computerHistory.pause('1h');
     await services.computerHistory.resume();
     await services.computerHistory.deleteEntry('entry');
@@ -256,7 +256,6 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'history.detail', args: ['entry'] },
       { name: 'history.revealSummary', args: ['10min-1789273200000'] },
       { name: 'history.updateSettings', args: [{ enabled: false }] },
-      { name: 'history.requestPermissions', args: [] },
       { name: 'history.pause', args: ['1h'] },
       { name: 'history.resume', args: [] },
       { name: 'history.deleteEntry', args: ['entry'] },

@@ -99,3 +99,9 @@
 .settingsCapabilityMetadata > dl {
   align-items: baseline;
 }
+
+.settingsPermissionCenter [data-permission-id]:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  background: oklch(from var(--foreground) l c h / 0.035);
+}

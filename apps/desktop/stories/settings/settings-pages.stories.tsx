@@ -568,7 +568,15 @@ const permissionSnapshot: PermissionSnapshot = {
   checkedAt: NOW - 30_000,
   platform: STORY_PLATFORM,
   permissions: {
-    accessibility: makeOsPermission({ id: 'accessibility', status: 'granted' }),
+    accessibility: {
+      ...makeOsPermission({ id: 'accessibility', status: 'granted' }),
+      consumers: { activity_recorder: { status: 'granted' } },
+    },
+    input_monitoring: {
+      ...makeOsPermission({ id: 'input_monitoring', status: 'not_determined', canRequest: false }),
+      source: 'platform',
+      consumers: { activity_recorder: { status: 'not_determined' } },
+    },
     screen_recording: makeOsPermission({
       id: 'screen_recording',
       status: 'not_determined',
@@ -3195,7 +3203,8 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
     await userEvent.click(grantedFilter);
     await waitFor(() => {
       expect(grantedFilter).toHaveAttribute('aria-pressed', 'false');
-      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(4);
+      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(5);
+      expect(canvasElement.querySelector('[data-permission-id="input_monitoring"]')).toBeInTheDocument();
     });
 
     // Scoped through `data-readiness` — the capability rows' own attribute — so

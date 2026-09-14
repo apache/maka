@@ -1526,16 +1526,17 @@ export interface MakaBridge {
     ): Promise<import('@maka/core/task-submission-readiness').TaskSubmissionReadinessSnapshot>;
   };
   permissions: {
-    getSnapshot(host?: DesktopRuntimeHostRef): Promise<PermissionSnapshot>;
-    openSystemSettings(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult>;
-    requestAccess(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult>;
+    /** This Desktop's OS permissions, independent of selected or connected Hosts. */
+    getSnapshot(): Promise<PermissionSnapshot>;
+    openSystemSettings(permId: string): Promise<PermissionActionResult>;
+    requestAccess(permId: string): Promise<PermissionActionResult>;
     /**
      * macOS drag-to-grant onboarding: opens the right Privacy pane and
      * floats a card the user can drag the app bundle out of. Only
      * `accessibility` and `screen_recording` — the two permissions with
      * no programmatic consent dialog.
      */
-    startDragOnboarding(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionOverlayStartResult>;
+    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult>;
   };
   capabilities: {
     getSnapshot(host?: DesktopRuntimeHostRef): Promise<CapabilitySnapshotCollection>;
@@ -1739,7 +1740,6 @@ export interface MakaBridge {
     /** Retries consented analysis. Model failures are reported in the returned summary status. */
     retrySummary(): Promise<ComputerHistoryStatus>;
     updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings>;
-    requestPermissions(): Promise<ComputerHistoryStatus>;
     pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus>;
     resume(): Promise<ComputerHistoryStatus>;
     clear(scope: ComputerHistoryClearScope): Promise<ComputerHistoryStatus>;

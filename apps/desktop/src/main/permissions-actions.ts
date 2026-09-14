@@ -66,6 +66,7 @@ export type PermissionActionResult =
  */
 const MACOS_DEEP_LINKS: Record<OsPermissionId, string | null> = {
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  input_monitoring: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent',
   screen_recording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   notifications: 'x-apple.systempreferences:com.apple.preference.notifications',
@@ -88,6 +89,7 @@ export async function openSystemPermissionPane(input: unknown): Promise<Permissi
   if (!url) return { ok: false, reason: 'unsupported_permission' };
   try {
     await shell.openExternal(url);
+    // Completion acknowledges opening the pane, never an OS grant.
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: 'open_settings_failed', message: errorMessage(err) };

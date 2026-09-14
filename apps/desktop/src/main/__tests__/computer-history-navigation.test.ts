@@ -38,6 +38,8 @@ afterEach(cleanupFakeDom);
 test('Computer History is a client-scoped Activity settings destination in every locale', () => {
   assert.ok(SETTINGS_SECTIONS.includes('computer-history'));
   assert.equal(settingsSectionScope('computer-history'), 'client');
+  assert.equal(settingsSectionScope('permissions'), 'mixed', 'local OS access must not be gated on a Runtime Host');
+  assert.equal(settingsSectionScope('models'), 'runtime-host');
   for (const [locale, label] of [
     ['en', 'Computer history'],
     ['zh-CN', '电脑历史'],
@@ -146,6 +148,16 @@ function navigationHarness(t: TestContext, requestedSection: SettingsSection = '
       await act(async () => pane.append(wrapper));
       return { selector, focuses };
     },
+    async permissions() {
+      const wrapper = paneDocument.createElement('span');
+      wrapper.setAttribute('data-computer-history-permissions', '');
+      const button = paneDocument.createElement('button');
+      const focuses: FocusOptions[] = [];
+      button.focus = (options) => { focuses.push(options ?? {}); };
+      wrapper.append(button);
+      await act(async () => pane.append(wrapper));
+      return { button, focuses };
+    },
   };
 }
 
@@ -200,6 +212,59 @@ test('ordinary navigation, including the current section, retires the history re
   assert.equal(h.current().canReturnToHistory, false);
   await act(async () => h.current().returnToHistory());
   assert.equal(h.current().section, 'models', 'expired return cannot resurrect history');
+});
+
+test('contextual permissions return restores its opener and scroll independently of model loading', async (t) => {
+  const h = navigationHarness(t);
+  await h.render();
+  const model = await h.model(true);
+  await act(async () => h.current().openHistoryPermissions());
+  assert.equal(h.current().section, 'permissions');
+  assert.equal(h.current().canReturnToHistory, true);
+  assert.equal(h.pane.scrollTop, 0);
+  await act(async () => h.current().returnToHistory());
+  assert.equal(h.current().restoringHistory, true);
+  await h.frames();
+  const permissions = await h.permissions();
+  await h.frames();
+  assert.deepEqual(permissions.focuses, [{ preventScroll: true }]);
+  assert.deepEqual(model.focuses, []);
+  assert.equal(h.pane.scrollTop, 280);
+  h.pane.scrollTop = 160;
+  await act(async () => h.current().openHistoryPermissions());
+  await act(async () => h.current().returnToHistory());
+  await h.frames();
+  assert.equal(permissions.focuses.length, 2);
+  assert.equal(h.pane.scrollTop, 160);
+  await act(async () => h.current().openHistoryModels());
+  await act(async () => h.current().returnToHistory());
+  await act(async () => model.selector.removeAttribute('disabled'));
+  await h.frames();
+  assert.equal(model.focuses.length, 1, 'later model visits still restore the model selector');
+  assert.equal(permissions.focuses.length, 2);
+});
+
+test('ordinary permissions navigation clears focused permission context and cross-section return intent', async (t) => {
+  const h = navigationHarness(t, 'permissions');
+  await h.render();
+  assert.equal(h.current().canReturnToHistory, false);
+  await act(async () => h.current().navigate('computer-history'));
+  await act(async () => h.current().openHistoryPermissions());
+  await act(async () => h.current().navigate('permissions'));
+  assert.equal(h.current().canReturnToHistory, false, 'same-section sidebar click retires context');
+  await act(async () => h.current().returnToHistory());
+  assert.equal(h.current().section, 'permissions');
+  await act(async () => h.current().navigate('computer-history'));
+  await act(async () => h.current().openHistoryModels());
+  await act(async () => h.current().navigate('permissions'));
+  assert.equal(h.current().canReturnToHistory, false, 'model context cannot leak into ordinary permissions');
+  await act(async () => h.current().navigate('computer-history'));
+  await act(async () => h.current().openHistoryPermissions());
+  await act(async () => h.current().returnToHistory());
+  h.pane.ownerDocument.dispatchEvent(new h.pane.ownerDocument.defaultView!.Event('keydown', { bubbles: true }));
+  const permissions = await h.permissions();
+  await h.frames();
+  assert.deepEqual(permissions.focuses, [], 'keyboard navigation retires pending restoration');
 });
 
 test('abandoned or unmounted history return cannot focus a late selector', async (t) => {

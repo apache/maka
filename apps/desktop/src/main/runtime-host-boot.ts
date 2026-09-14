@@ -194,6 +194,7 @@ import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import { ComputerHistorySkillInstaller } from "./computer-history-skill.js";
 import type {
   DesktopRuntimeHostCandidateControls,
   DesktopRuntimeHostTargetPolicy,
@@ -244,7 +245,7 @@ import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-
 import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
-import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
+import { registerLocalPermissionsIpc, registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
@@ -546,6 +547,7 @@ const computerHistoryService = new ComputerHistoryService({
   home: join(userDataDir, "computer-history"),
   resolveLocale: () => desktopLocale.resolve(),
   showItemInFolder: (path) => shell.showItemInFolder(path),
+  onEnabled: () => { void computerHistorySkillInstaller.refresh(); },
   helperPath: app.isPackaged
     ? join(process.resourcesPath, "bin", "open-history")
     : join(app.getAppPath(), "resources", "bin", "open-history"),
@@ -564,6 +566,12 @@ const computerHistoryService = new ComputerHistoryService({
     signal.throwIfAborted();
     return result;
   },
+});
+const computerHistorySkillInstaller = new ComputerHistorySkillInstaller({
+  workspaceRoot: startupLocalStorageRoot.canonicalPath,
+  isNeeded: async () =>
+    (await computerHistoryService.settings()).enabled || await computerHistoryService.hasHistory(),
+  onError: (error) => console.error('[Computer History] Skill installation failed', error),
 });
 await computerHistoryService.initialize().catch((error: unknown) => {
   // The service retains the failure in status; history cannot block Desktop boot.
@@ -617,6 +625,11 @@ const releaseDesktopInteractionSession = (sessionId: string): void => {
 const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: () => desktopLocale.resolve(),
 });
+const getLocalPermissions = registerLocalPermissionsIpc({
+  ipcMain,
+  getComputerHistoryPermissions: () => computerHistoryService.permissionStatus(),
+});
+registerPermissionOverlayIpc({ controller: permissionOverlay, ipcMain });
 onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
   native.computerUsePip.destroyAll();
@@ -1298,6 +1311,10 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
   {
     handoffSurface: createDesktopHostHandoffSurface(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
+      computerHistorySkillInstaller.hostChanged(
+        state.target.profile.id,
+        state.readiness === 'ready' ? state.candidate.client : undefined,
+      );
       const localTarget = localSessionTarget(state);
       if (localTarget) {
         sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
@@ -1736,10 +1753,7 @@ function registerHostClientIpc(
       };
     },
     getComputerHistoryStatus: () => computerHistoryService.status(),
-  });
-  registerPermissionOverlayIpc({
-    controller: permissionOverlay,
-    ipcMain: scopedIpc,
+    getPermissions: getLocalPermissions,
   });
   registerRuntimeHostSkillsIpc({
     ipcMain: scopedIpc,

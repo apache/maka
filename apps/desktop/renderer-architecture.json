@@ -2813,40 +2813,13 @@
           "window.maka.permissions.requestAccess": 1,
           "window.maka.permissions.startDragOnboarding": 1
         },
-        "environmentCapabilities": {
-          "document.addEventListener": 1,
-          "document.removeEventListener": 1,
-          "document.visibilityState": 1,
-          "window.addEventListener": 1,
-          "window.removeEventListener": 1
-        },
-        "hookCalls": {
-          "useActionGuard": 1,
-          "useEffect": 3,
-          "useMountedRef": 1,
-          "useRuntimeHostSettingsErrorReporter": 1,
-          "useRuntimeHostSettingsTarget": 1,
-          "useState": 7,
-          "useUiLocale": 1
-        },
+        "environmentCapabilities": {},
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../locales/capability-reason-copy": 1,
-          "../locales/permission-center-copy": 1,
-          "../locales/settings-bot-copy": 1,
-          "./runtime-host-settings-target.js": 1,
-          "./settings-error-copy": 1,
-          "./settings-section": 1,
-          "./settings-skeleton": 1,
-          "./settings-status-summary-filter": 1,
-          "./use-action-guard": 1,
-          "@astryxdesign/core": 1,
-          "@maka/core/capabilities": 1,
-          "@maka/ui": 2,
-          "@maka/ui/icons": 1,
-          "react": 1
+          "../features/permissions/index.js": 1
         }
       },
       "src/renderer/settings/personalization-settings-section.tsx": {
@@ -3357,9 +3330,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../locales/settings-shared-copy.js": 1,
-          "@maka/core/redaction": 1,
-          "@maka/ui": 1
+          "../application/contracts/settings-presentation/settings-error-copy.js": 1,
+          "../locales/settings-shared-copy.js": 1
         }
       },
       "src/renderer/settings/settings-expandable-row.tsx": {
@@ -3487,9 +3459,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../application/contracts/settings-presentation/settings-skeleton.js": 2,
           "../locales/settings-shared-copy.js": 1,
-          "./settings-section.js": 1,
-          "@astryxdesign/core": 1,
           "@maka/ui": 1
         }
       },
@@ -3519,7 +3490,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "@astryxdesign/core": 1
+          "../application/contracts/settings-presentation/settings-status-summary-filter.js": 1
         }
       },
       "src/renderer/settings/settings-surface.tsx": {

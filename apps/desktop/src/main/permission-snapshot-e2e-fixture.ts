@@ -74,7 +74,14 @@ export function permissionSnapshotE2eFixture(now: number): PermissionSnapshot | 
     checkedAt: now,
     platform: 'darwin',
     permissions: {
-      accessibility: fixtureOsPermission({ id: 'accessibility', status: 'granted', now }),
+      accessibility: {
+        ...fixtureOsPermission({ id: 'accessibility', status: 'granted', now }),
+        consumers: { activity_recorder: { status: 'granted' } },
+      },
+      input_monitoring: {
+        ...fixtureOsPermission({ id: 'input_monitoring', status: 'denied', now }),
+        consumers: { activity_recorder: { status: 'denied' } },
+      },
       screen_recording: fixtureOsPermission({
         id: 'screen_recording',
         status: 'not_determined',

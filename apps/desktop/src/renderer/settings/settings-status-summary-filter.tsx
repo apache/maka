@@ -17,44 +17,4 @@
  * under the License.
  */
 
-import { Button } from '@astryxdesign/core';
-
-type SummaryTone = 'success' | 'warning' | 'destructive' | 'neutral';
-
-export type SettingsStatusSummaryOption<Value extends string> = {
-  value: Value;
-  label: string;
-  count: number;
-  tone: SummaryTone;
-};
-
-export function SettingsStatusSummaryFilter<Value extends string>(props: {
-  value: Value | null;
-  options: readonly SettingsStatusSummaryOption<Value>[];
-  label: string;
-  optionLabel(option: SettingsStatusSummaryOption<Value>, selected: boolean): string;
-  onChange(value: Value | null): void;
-}) {
-  return (
-    <div className="settingsHealthSummaryLine settingsStatusSummaryFilters" role="group" aria-label={props.label}>
-      {props.options.map((option) => {
-        const selected = props.value === option.value;
-        return (
-          <Button
-            key={option.value}
-            className="settingsStatusSummaryFilter"
-            variant="ghost"
-            size="sm"
-            data-tone={option.count > 0 ? option.tone : 'neutral'}
-            aria-pressed={selected}
-            label={props.optionLabel(option, selected)}
-            isDisabled={option.count === 0}
-            onClick={() => props.onChange(selected ? null : option.value)}
-          >
-            {option.label} {option.count}
-          </Button>
-        );
-      })}
-    </div>
-  );
-}
+export * from '../application/contracts/settings-presentation/settings-status-summary-filter.js';

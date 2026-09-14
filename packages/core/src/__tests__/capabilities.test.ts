@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   deriveCapabilityReadiness,
+  COMPUTER_HISTORY_PERMISSION_IDS,
+  OS_PERMISSION_IDS,
   runtimeProbeFromBotReadiness,
   type CapabilityFeatureSignal,
   type CapabilityRuntimeProbeSignal,
@@ -32,6 +34,26 @@ const presentConfig = { state: 'present', source: 'settings' } as const;
 const noRuntime: CapabilityRuntimeProbeSignal = { state: 'not_run', source: 'runtime_probe' };
 
 describe('permission and capability snapshot contracts', () => {
+  test('collector requires Accessibility and Input Monitoring, never screen capture', () => {
+    assert.ok(COMPUTER_HISTORY_PERMISSION_IDS.every((id) => OS_PERMISSION_IDS.includes(id)));
+    const osPermissions = COMPUTER_HISTORY_PERMISSION_IDS.map((id) =>
+      requiredPermission(id, id === 'input_monitoring' ? 'denied' : 'granted'),
+    );
+    assert.equal(
+      deriveCapabilityReadiness({
+        feature: enabledFeature,
+        configuration: presentConfig,
+        osPermissions,
+        runtimeProbe: noRuntime,
+      }),
+      'denied',
+    );
+    assert.equal(
+      osPermissions.some((permission) => permission.id === 'screen_recording'),
+      false,
+    );
+  });
+
   test('disabled feature is paused, not permission denied', () => {
     assert.strictEqual(
       deriveCapabilityReadiness({

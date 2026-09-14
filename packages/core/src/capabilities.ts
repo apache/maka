@@ -21,11 +21,14 @@ import type { BotProvider, BotReadinessState } from './bot-chat-settings.js';
 
 export const OS_PERMISSION_IDS = [
   'accessibility',
+  'input_monitoring',
   'screen_recording',
   'notifications',
   'automation',
 ] as const;
 export type OsPermissionId = (typeof OS_PERMISSION_IDS)[number];
+
+export const COMPUTER_HISTORY_PERMISSION_IDS = ['accessibility', 'input_monitoring'] as const;
 
 /**
  * The macOS permissions granted by dragging the app bundle onto the
@@ -152,6 +155,10 @@ export interface OsPermissionSnapshot {
   reason?: string;
   canOpenSettings: boolean;
   canRequest: boolean;
+  /** A helper's OS grant can differ from Electron's responsible application. */
+  consumers?: {
+    activity_recorder?: { status: OsPermissionState; reason?: string };
+  };
 }
 
 export interface PermissionSnapshot {

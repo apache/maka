@@ -23,7 +23,7 @@ import { Selector } from '@astryxdesign/core/Selector';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import type { ComputerHistoryClearScope } from '@maka/core/computer-history';
 import { Button, HStack, IconButton, Switch, Text, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { ArrowRight, Globe, Plus, RefreshCcw, ShieldCheck, Trash2, X } from '@maka/ui/icons';
+import { ArrowRight, Globe, Plus, RefreshCcw, Trash2, X } from '@maka/ui/icons';
 import { SettingsField, SettingsPage, SettingsRow, SettingsSection } from '../../../application/contracts/settings-presentation/index.js';
 import { useComputerHistoryApplications } from '../controller/use-computer-history-applications.js';
 import { useComputerHistorySettings, useRecentHistoryApplications } from '../controller/use-computer-history-settings.js';
@@ -35,8 +35,9 @@ type SourceType = 'applications' | 'websites';
 type ConsentKey = 'enabled' | 'captureText' | 'summariesEnabled' | 'summaryTextEnabled';
 const DEFAULT_MODEL = '__maka_history_default_model__';
 
-export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }: {
+export function ComputerHistorySettingsPage({ onConfigureModel, onOpenPermissions, onOpenHistory }: {
   onConfigureModel: () => void;
+  onOpenPermissions: () => void;
   onOpenHistory?: () => void;
 }) {
   const locale = useUiLocale();
@@ -60,6 +61,14 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
   const busy = pending !== null;
   const unavailable = status && (!status.platformSupported ? copy.unsupported : !status.helperAvailable ? copy.unavailable : null);
   const disabled = busy || !status || Boolean(controller.statusError);
+  const permissionsFailed = Boolean(controller.statusError || status?.state === 'error');
+  const permissionsKnown = Boolean(status && !permissionsFailed && !unavailable);
+  const permissionsReady = Boolean(permissionsKnown && status?.accessibilityGranted && status?.inputMonitoringGranted);
+  const permissionStatus = permissionsFailed ? copy.permissionsUnknown
+    : !status ? copy.loading
+    : unavailable || (permissionsReady ? copy.permissionsReady
+      : !status.accessibilityGranted && !status.inputMonitoringGranted ? copy.permissionsMissingBoth
+      : !status.accessibilityGranted ? copy.permissionsMissingAccessibility : copy.permissionsMissingInput);
   const hasModel = controller.modelAvailable;
   const model = controller.model;
   const effectiveModel = model?.models.find((option) => option.key === controller.modelLabel);
@@ -160,12 +169,19 @@ export function ComputerHistorySettingsPage({ onConfigureModel, onOpenHistory }:
       {feedback ? <Text role="status" type="supporting">{feedback}</Text> : null}
       <SettingsSection title={copy.recordingGroup} description={unavailable || undefined}>
         {consent('enabled', copy.recording, copy.recordingHelp)}
-        <SettingsRow label={copy.accessibility} end={status ? status.accessibilityGranted ? copy.granted : copy.required : '—'} />
-        <SettingsRow label={copy.inputMonitoring} end={status ? status.inputMonitoringGranted ? copy.granted : copy.required : '—'} />
-        {status && (!status.accessibilityGranted || !status.inputMonitoringGranted) ? <SettingsRow
-          label={copy.permissionHelp}
-          end={<Button label={copy.request} icon={<ShieldCheck size={16} aria-hidden />} variant="secondary" size="sm" isDisabled={busy || Boolean(unavailable)} isLoading={pending === 'permissions'} onClick={() => void confirm(controller.requestPermissions, copy.requestDone)} />}
-        /> : null}
+        <SettingsRow
+          label={copy.permissions}
+          description={permissionStatus}
+          end={<span data-computer-history-permissions>
+            <Button
+              label={permissionsKnown && !permissionsReady ? copy.openPermissions : copy.managePermissions}
+              icon={<ArrowRight size={16} aria-hidden />}
+              variant="ghost"
+              size="sm"
+              onClick={onOpenPermissions}
+            />
+          </span>}
+        />
       </SettingsSection>
       <SettingsSection title={copy.contentGroup}>
         {consent('captureText', copy.text, copy.textHelp)}

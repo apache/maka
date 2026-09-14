@@ -52,6 +52,7 @@ import { createDesktopModuleHubServices, type DesktopModuleHubBridge } from '../
 import { createUiLocaleUpdateGate } from '../src/renderer/settings/ui-locale-update-gate';
 import { withScopedMakaBridge } from './maka-bridge';
 import { useSettingsModal } from '../src/renderer/use-settings-modal';
+import { OS_PERMISSION_IDS, type PermissionSnapshot } from '@maka/core/capabilities';
 
 const noop = () => undefined;
 const subscription = () => noop;
@@ -74,6 +75,12 @@ const analysisConnection: ProjectedLlmConnection = {
 };
 let analysisConfig: DailyReviewConfig = { ...DEFAULT_DAILY_REVIEW_CONFIG };
 let analysisConnections: ProjectedLlmConnection[] = [analysisConnection];
+let historyPermissionsGranted = true;
+let onPermissionAction: () => void = noop;
+const permissionAction = async () => {
+  onPermissionAction();
+  return { ok: true as const };
+};
 const readAnalysisConfig = fn(async (_host: { profileId: string; hostId: string }) => structuredClone(analysisConfig));
 const writeAnalysisConfig = fn(async (patch: Partial<DailyReviewConfig>, _host: { profileId: string; hostId: string }) => {
   analysisConfig = { ...analysisConfig, ...patch };
@@ -93,6 +100,21 @@ const settingsBridge = {
     subscribeEvents: subscription, hasSecret: async () => true, getRequestHeaders: async () => [],
   },
   dailyReview: { getConfig: readAnalysisConfig, setConfig: writeAnalysisConfig },
+  permissions: {
+    getSnapshot: async (): Promise<PermissionSnapshot> => ({
+      checkedAt: Date.now(), platform: 'darwin',
+      permissions: Object.fromEntries(OS_PERMISSION_IDS.map((id) => {
+        const historyRequired = id === 'accessibility' || id === 'input_monitoring';
+        const status = historyRequired && !historyPermissionsGranted ? 'not_determined' : 'granted';
+        return [id, {
+          id, status, source: 'platform', checkedAt: Date.now(), canOpenSettings: true, canRequest: true,
+          ...(historyRequired ? { consumers: { activity_recorder: { status } } } : {}),
+        }];
+      })) as PermissionSnapshot['permissions'],
+    }),
+    requestAccess: permissionAction, openSystemSettings: permissionAction, startDragOnboarding: permissionAction,
+  },
+  capabilities: { getSnapshot: async () => ({ checkedAt: Date.now(), capabilities: [] }) },
 };
 
 const meta = {
@@ -103,6 +125,8 @@ const meta = {
     localStorage.removeItem('maka-computer-history-granularity-v1');
     analysisConfig = { ...DEFAULT_DAILY_REVIEW_CONFIG };
     analysisConnections = args.scenario === 'missing-model' ? [] : [analysisConnection];
+    historyPermissionsGranted = args.scenario !== 'missing-model';
+    onPermissionAction = args.onPermissionRequest;
     readAnalysisConfig.mockClear();
     writeAnalysisConfig.mockClear();
   },
@@ -460,10 +484,6 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
       if (patch.enabled !== undefined) status = { ...status, state: patch.enabled ? 'running' : 'stopped' };
       return structuredClone(status.settings);
     },
-    requestPermissions: async () => {
-      probes.onPermissionRequest();
-      return structuredClone(status);
-    },
     pause: async () => {
       status = { ...status, state: 'paused' };
       return structuredClone(status);
@@ -582,7 +602,7 @@ async function openHistorySettings(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole('button', { name: /电脑历史设置|電腦歷史設定|Computer history settings/ }));
   const settings = await canvas.findByRole('region', { name: '电脑历史' });
-  await waitFor(() => expect(within(settings).getByRole('button', { name: '刷新状态' })).toBeEnabled());
+  await waitFor(() => expect(within(settings).getByRole('button', { name: '刷新历史记录' })).toBeEnabled());
   await waitFor(() => expect(settings).not.toHaveTextContent('正在读取状态'));
   return within(settings);
 }
@@ -908,14 +928,24 @@ export const PermissionsWithoutModel: Story = {
     const summaries = content.getByRole('switch', { name: /允许模型生成摘要|允許模型產生摘要|Allow model summaries/ });
     expect(summaries).toHaveAttribute('aria-disabled', 'true');
     for (const control of content.getAllByRole('switch')) expect(control).not.toBeChecked();
-    await userEvent.click(content.getByRole('button', { name: '申请 macOS 权限' }));
-    await content.findByText(/已完成权限申请/);
-    await userEvent.click(content.getByRole('button', { name: '刷新状态' }));
-    await userEvent.click(content.getByRole('button', { name: '打开历史' }));
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
+    pane.scrollTop = 40;
+    const position = pane.scrollTop;
+    await userEvent.click(content.getByRole('button', { name: '前往授权' }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-maka-assistant-target="settings.permissions"]')).toHaveAttribute('aria-current', 'page'));
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '电脑历史' })).toHaveAttribute('aria-selected', 'true'));
+    await userEvent.click(canvas.getByRole('button', { name: '返回电脑历史设置' }));
+    const returned = within(await canvas.findByRole('region', { name: '电脑历史' }));
+    await waitFor(() => {
+      expect(returned.getByRole('button', { name: '前往授权' })).toHaveFocus();
+      expect(pane.scrollTop).toBe(position);
+    });
+    await userEvent.click(returned.getByRole('button', { name: '刷新历史记录' }));
+    await userEvent.click(returned.getByRole('button', { name: '打开历史' }));
     await canvas.findByRole('button', { name: /检查电脑历史的独立页面布局/ });
     const reopened = await openHistorySettings(canvasElement);
     for (const control of reopened.getAllByRole('switch')) expect(control).not.toBeChecked();
-    expect(args.onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(args.onPermissionRequest).not.toHaveBeenCalled();
     expect(args.onSettingsWrite).not.toHaveBeenCalled();
   },
 };
@@ -954,6 +984,15 @@ export const Settings: Story = {
     const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane')!;
     pane.scrollTop = 80;
     const settingsPosition = pane.scrollTop;
+    await userEvent.click(settings.getByRole('button', { name: '管理权限' }));
+    await waitFor(() => expect(canvas.getByRole('tab', { name: '电脑历史' })).toHaveAttribute('aria-selected', 'true'));
+    await userEvent.click(canvas.getByRole('button', { name: '返回电脑历史设置' }));
+    settings = within(await canvas.findByRole('region', { name: '电脑历史' }));
+    await waitFor(() => {
+      expect(settings.getByRole('button', { name: '管理权限' })).toHaveFocus();
+      expect(pane.scrollTop).toBe(settingsPosition);
+    });
+    expect(args.onPermissionRequest).not.toHaveBeenCalled();
     await userEvent.click(settings.getByRole('button', { name: '管理连接' }));
     await waitFor(() => expect(canvasElement.querySelector('[data-maka-assistant-target="settings.models"]')).toHaveAttribute('aria-current', 'page'));
     await waitFor(() => expect(readAnalysisConfig).toHaveBeenCalledWith({ profileId: 'local', hostId: 'synthetic-local-host' }));

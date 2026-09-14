@@ -65,9 +65,12 @@ function harness(t: TestContext, overrides: Partial<ModuleHubServices['computerH
     settings: { enabled: false, captureText: false, summariesEnabled: true, summaryTextEnabled: false, blockedApplications: [], blockedDomains: [] },
   };
   const patches: Partial<ComputerHistorySettings>[] = [];
+  const navigation = { permissions: 0, models: 0, grants: 0 };
   const services = createFakeModuleHubServices({
     computerHistory: {
       ...createFakeModuleHubServices().computerHistory,
+      // Keep a trap for the retired API so UI regressions cannot silently grant.
+      ...{ requestPermissions: async () => { navigation.grants++; return status; } },
       status: async () => structuredClone(status),
       getAnalysisModel: async () => createFakeComputerHistoryAnalysisModel({
         modelKey: 'coproxy::gpt-6-astra',
@@ -83,14 +86,17 @@ function harness(t: TestContext, overrides: Partial<ModuleHubServices['computerH
     },
   });
   return {
-    document, patches,
+    document, patches, navigation,
     setStatus: (patch: Partial<ComputerHistoryStatus>) => { status = { ...status, ...patch }; },
     state: () => status,
     render: () => act(async () => root.render(createElement(LocaleProvider, {
       locale,
       children: createElement(AstryxLocaleProvider, {
         children: createElement(ToastProvider, {
-          children: createElement(ModuleHubServicesProvider, { services }, createElement(ComputerHistorySettingsPage, { onConfigureModel() {} })),
+          children: createElement(ModuleHubServicesProvider, { services }, createElement(ComputerHistorySettingsPage, {
+            onConfigureModel() { navigation.models++; },
+            onOpenPermissions() { navigation.permissions++; },
+          })),
         }),
       }),
     }))),
@@ -100,6 +106,11 @@ function harness(t: TestContext, overrides: Partial<ModuleHubServices['computerH
       const input = document.getElementById(node.getAttribute('for')!) as HTMLInputElement;
       assert.equal(input?.getAttribute('role'), 'switch');
       return input;
+    },
+    async click(label: string) {
+      const button = [...document.querySelectorAll('button')].find((element) => element.textContent === label || element.getAttribute('aria-label') === label);
+      assert.ok(button, `Missing button: ${label}`);
+      await act(async () => button.click());
     },
     async change(input: HTMLInputElement, checked: boolean) {
       // Linkedom does not synthesize React checkbox change tracking.
@@ -163,4 +174,62 @@ test('missing or failed model prevents enabling but still permits revoking conse
   await h.change(h.control('Use recorded text in summaries'), false);
   assert.deepEqual(h.patches, [{ summariesEnabled: false }, { summaryTextEnabled: false }]);
   assert.equal(h.control('Include text content').checked, true);
+});
+
+test('all four History switches and navigation are independent of OS permission actions', async (t) => {
+  const h = harness(t);
+  h.setStatus({
+    state: 'needs_permission', accessibilityGranted: false, inputMonitoringGranted: false,
+    settings: { ...h.state().settings, summariesEnabled: false },
+  });
+  await h.render();
+  assert.equal(h.document.querySelectorAll('[data-computer-history-permissions]').length, 1);
+  assert.ok(h.document.body.textContent?.includes('Accessibility and Input Monitoring are required.'));
+  assert.equal(h.document.querySelectorAll('[role="switch"]').length, 4);
+  await h.click('Go to permissions');
+  await h.click('Manage connections');
+  assert.deepEqual(h.navigation, { permissions: 1, models: 1, grants: 0 });
+  assert.deepEqual(h.patches, []);
+  for (const [label, key] of [
+    ['Record activity on this Mac', 'enabled'],
+    ['Include text content', 'captureText'],
+    ['Allow model summaries', 'summariesEnabled'],
+    ['Use recorded text in summaries', 'summaryTextEnabled'],
+  ] as const) {
+    await h.change(h.control(label), true);
+    assert.deepEqual(h.patches.at(-1), { [key]: true });
+  }
+  assert.equal(h.patches.length, 4);
+  assert.equal(h.navigation.grants, 0);
+  await h.click('Refresh history');
+  assert.equal(h.navigation.grants, 0);
+  assert.equal(h.patches.length, 4);
+  assert.doesNotMatch(h.document.body.textContent ?? '', /Request macOS permissions|Recheck/);
+});
+
+test('readiness refresh preserves feature-off consent and does not turn unknown status into denial', async (t) => {
+  let failing = false;
+  const h = harness(t, { status: async () => {
+    if (failing) throw new Error('Synthetic status read failed');
+    return structuredClone(h.state());
+  } });
+  h.setStatus({ inputMonitoringGranted: false });
+  await h.render();
+  assert.ok(h.document.body.textContent?.includes('Input Monitoring is required.'));
+  h.setStatus({ inputMonitoringGranted: true });
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  assert.ok(h.document.body.textContent?.includes('Accessibility and Input Monitoring are ready.'));
+  assert.equal(h.control('Record activity on this Mac').checked, false);
+  assert.ok(h.document.body.textContent?.includes('This Mac · Off'));
+  await h.click('Manage permissions');
+  h.setStatus({ state: 'error', accessibilityGranted: false, inputMonitoringGranted: false });
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  assert.ok(h.document.body.textContent?.includes('Permission status is unknown.'), 'probe failure is not a missing grant');
+  failing = true;
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  assert.ok(h.document.body.textContent?.includes('Permission status is unknown.'));
+  assert.ok(!h.document.body.textContent?.includes('Accessibility and Input Monitoring are ready.'));
+  await h.click('Manage permissions');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.navigation, { permissions: 2, models: 0, grants: 0 });
 });

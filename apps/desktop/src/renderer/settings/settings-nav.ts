@@ -122,7 +122,7 @@ const SETTINGS_SECTION_SCOPES: Record<
   'daily-review': 'runtime-host',
   'computer-history': 'client',
   data: 'mixed',
-  permissions: 'runtime-host',
+  permissions: 'mixed',
   health: 'runtime-host',
   about: 'client',
 };

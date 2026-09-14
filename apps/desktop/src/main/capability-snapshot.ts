@@ -20,6 +20,7 @@
 import { Notification, systemPreferences } from 'electron';
 import { BOT_PROVIDERS, type BotProvider } from '@maka/core/bot-chat-settings';
 import {
+  COMPUTER_HISTORY_PERMISSION_IDS,
   deriveCapabilityReadiness,
   runtimeProbeFromBotReadiness,
   type CapabilityActionApprovalSignal,
@@ -38,6 +39,7 @@ import {
 import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
 import type { ComputerHistoryStatus } from '@maka/core/computer-history';
+import type { ComputerHistoryPermissionStatus } from './computer-history-main.js';
 import type { BotStatus } from '@maka/runtime/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
@@ -46,14 +48,40 @@ import {
   supportsMediaPermissionProbe,
 } from './os-permission-policy.js';
 
-const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'automation'];
+const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'input_monitoring', 'screen_recording', 'automation'];
 
-export function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): PermissionSnapshot {
+export function buildPermissionSnapshot(
+  now = Date.now(),
+  platform: NodeJS.Platform = process.platform,
+  collector?: ComputerHistoryPermissionStatus,
+): PermissionSnapshot {
+  const historyPermissions: ComputerHistoryPermissionStatus = collector ?? {
+    accessibility: platform === 'darwin' ? 'unknown' : 'unsupported',
+    inputMonitoring: platform === 'darwin' ? 'unknown' : 'unsupported',
+    reason: platform === 'darwin' ? 'permission_probe_failed' : 'macos_tcc_only',
+  };
   return {
     checkedAt: now,
     platform,
     permissions: {
-      accessibility: accessibilitySnapshot(now, platform),
+      accessibility: {
+        ...accessibilitySnapshot(now, platform),
+        consumers: { activity_recorder: {
+          status: historyPermissions.accessibility, reason: historyPermissions.reason,
+        } },
+      },
+      input_monitoring: {
+        id: 'input_monitoring',
+        status: historyPermissions.inputMonitoring,
+        source: 'platform',
+        checkedAt: now,
+        reason: historyPermissions.reason,
+        canOpenSettings: platform === 'darwin',
+        canRequest: false,
+        consumers: { activity_recorder: {
+          status: historyPermissions.inputMonitoring, reason: historyPermissions.reason,
+        } },
+      },
       screen_recording: mediaPermissionSnapshot('screen_recording', 'screen', now, platform),
       notifications: notificationSnapshot(now, platform),
       automation: automationSnapshot(now, platform),
@@ -119,14 +147,11 @@ function activityRecorderCapability(
       source: enabled ? 'settings' : 'runtime',
       reason: supported && !enabled ? 'disabled' : undefined,
     },
-    requiredPermissions: [
-      {
-        id: 'accessibility',
-        required: true,
-        status: history?.accessibilityGranted ? 'granted' : permissions.accessibility.status,
-      },
-      { id: 'screen_recording', required: false, status: permissions.screen_recording.status },
-    ],
+    requiredPermissions: COMPUTER_HISTORY_PERMISSION_IDS.map((id) => ({
+      id,
+      required: true,
+      status: permissions[id].consumers?.activity_recorder?.status ?? 'unknown',
+    })),
     actionApproval: { state: 'not_required', source: 'not_applicable' },
     memoryAcceptance: { state: 'disabled', source: 'memory_contract' },
     runtimeProbe: {

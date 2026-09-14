@@ -17,10 +17,5 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
-import { settingsActionErrorMessage as formatError } from '../application/contracts/settings-presentation/settings-error-copy.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
-
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale): string {
-  return formatError(error, locale, getSettingsSharedCopy(locale).unknownError);
-}
+export { PermissionCenterPage, type PermissionCenterPageProps } from './permission-center-page.js';
+export type { PermissionCenterServices } from './ports.js';
