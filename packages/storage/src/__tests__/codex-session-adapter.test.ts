@@ -425,6 +425,24 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('filesystem fallback pages in traversal order without rebuilding a full rollout list', async () => {
+    await withCodexHome(async (codexHome) => {
+      for (const id of ['codex-page-a', 'codex-page-b', 'codex-page-c']) {
+        await seedMinimalRollout(codexHome, id, false, '/workspace/root', id);
+      }
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      assert.deepEqual(
+        (await adapter.listSessions({ offset: 0, limit: 2 })).map(({ id }) => id),
+        ['codex-page-c', 'codex-page-b'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ offset: 2, limit: 2 })).map(({ id }) => id),
+        ['codex-page-a'],
+      );
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');

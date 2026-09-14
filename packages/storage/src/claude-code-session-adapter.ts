@@ -45,7 +45,6 @@ import {
 import {
   ExternalSessionLimitError,
   externalSessionMatchesQuery,
-  pageExternalSessionSummaries,
 } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
@@ -146,23 +145,28 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
     const summaries: ExternalSessionSummary[] = [];
     const live = new Set<string>();
-    for (const file of await this.#transcriptFiles()) {
-      live.add(file.path);
+    const offset = query?.offset ?? 0;
+    const limit = query?.limit ?? Number.MAX_SAFE_INTEGER;
+    let matched = 0;
+    const files = await this.#transcriptFiles();
+    for (const file of files) live.add(file.path);
+    for (const file of files) {
       const summary = await this.#summaryOf(file.path, file.sessionId);
       if (!summary) continue;
       // The shared matcher, not a local cwd comparison: filtering happens here
       // rather than after paging, and every source has to answer a query the
       // same way or the catalog lies about which one dropped the term.
       if (!externalSessionMatchesQuery(summary, query)) continue;
+      if (matched++ < offset) continue;
       summaries.push(summary);
+      if (summaries.length === limit) break;
     }
     // A transcript the source no longer lists must not keep its entry alive,
     // or a long-lived Host grows one per deleted session.
     for (const path of this.#summaries.keys()) {
       if (!live.has(path)) this.#summaries.delete(path);
     }
-    summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return pageExternalSessionSummaries(summaries, query);
+    return summaries;
   }
 
   /**
@@ -216,7 +220,9 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     return join(this.#home, 'projects');
   }
 
-  async #transcriptFiles(): Promise<ReadonlyArray<{ path: string; sessionId: string }>> {
+  async #transcriptFiles(): Promise<
+    ReadonlyArray<{ path: string; sessionId: string; mtimeMs: number }>
+  > {
     const root = this.#projectsRoot();
     let projects: string[];
     try {
@@ -267,7 +273,9 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
         }
       }
     }
-    return [...bySessionId.values()].map(({ path, sessionId }) => ({ path, sessionId }));
+    return [...bySessionId.values()].sort(
+      (left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path),
+    );
   }
 }
 

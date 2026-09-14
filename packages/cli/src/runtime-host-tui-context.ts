@@ -266,12 +266,16 @@ export async function createRuntimeHostTuiContext(
       externalSessions: {
         listSources: async () =>
           (await connection.request('external-session.source.query', {})).adapterIds,
-        listSessions: ({ adapterId, scope, cursor }) =>
-          connection.request('external-session.catalog.query', {
+        listSessions: ({ adapterId, scope, cursor }) => {
+          const currentWorkspace = driver.getWorkspaceTarget();
+          return connection.request('external-session.catalog.query', {
             adapterId,
-            ...(scope === 'current_workspace' && workspace ? { workspace } : {}),
+            ...(scope === 'current_workspace' && currentWorkspace
+              ? { workspace: currentWorkspace }
+              : {}),
             ...(cursor ? { cursor } : {}),
-          }),
+          });
+        },
         importSession: (request) => connection.request('external-session.import', request),
       },
       ...(mcp ? { mcp } : {}),

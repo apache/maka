@@ -2969,6 +2969,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!input.externalSessions) return undefined;
     let cursor: string | undefined;
     const seenCursors = new Set<string>();
+    const candidates = new Set<string>();
     do {
       const page = await input.externalSessions.listSessions({
         adapterId,
@@ -2976,13 +2977,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         ...(cursor ? { cursor } : {}),
       });
       const source = page.sessions.find((session) => session.id === sourceSessionId);
-      const imported = source?.importState.importedSessionIds.find((id) => !previousIds.has(id));
-      if (imported) return imported;
-      if (page.nextCursor === null || seenCursors.has(page.nextCursor)) return undefined;
+      for (const id of source?.importState.importedSessionIds ?? []) {
+        if (!previousIds.has(id)) candidates.add(id);
+      }
+      if (page.nextCursor === null || seenCursors.has(page.nextCursor)) break;
       seenCursors.add(page.nextCursor);
       cursor = page.nextCursor;
     } while (cursor);
-    return undefined;
+    return candidates.size === 1 ? [...candidates][0] : undefined;
   };
 
   const importExternalSession = async (
