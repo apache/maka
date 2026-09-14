@@ -749,6 +749,7 @@ test('new user evidence replaces the pending continuation in one authority commi
     await host.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }

@@ -2896,8 +2896,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire test root');
 
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -3333,6 +3334,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     closeChildContinuity?.();
     continuity.close();
   } finally {
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }

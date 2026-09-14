@@ -101,7 +101,9 @@ test('SSH activation accepts a strict final frame that drains after process exit
   ]);
 });
 
-test('POSIX operator commands apply environment before exec', async (t) => {
+test('POSIX operator commands apply environment before exec', {
+  skip: process.platform === 'win32' ? 'Requires POSIX Node and /bin/sh' : false,
+}, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-ssh-operator-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const modulePath = join(directory, 'operator.mjs');

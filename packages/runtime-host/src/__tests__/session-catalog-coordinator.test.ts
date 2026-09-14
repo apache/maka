@@ -1342,7 +1342,7 @@ test('creation persists a canonical cwd while fingerprints retain exact target i
   const target = join(root, 'target');
   const link = join(root, 'link');
   await mkdir(target);
-  await symlink(target, link, 'dir');
+  await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
   try {
     const requests: Parameters<CatalogStores['createStableSession']>[0][] = [];
     const fixture = createFixture({
@@ -1522,7 +1522,7 @@ test('Host-path relocation canonicalizes once and commits through Runtime author
   const target = join(root, 'target');
   const link = join(root, 'link');
   await mkdir(target);
-  await symlink(target, link, 'dir');
+  await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
   try {
     const fixture = createFixture();
     const expectedRevision = fixture.revision();
