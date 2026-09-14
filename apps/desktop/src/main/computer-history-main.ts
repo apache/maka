@@ -548,10 +548,6 @@ export class ComputerHistoryService {
       .sort((a, b) => eventTime(a) - eventTime(b) || a.sourceKey.localeCompare(b.sourceKey));
     const summaries = (await this.#summaries?.list() ?? [])
       .filter((summary) => Date.parse(summary.end) >= cutoff);
-    const rollups = summaries.filter((summary) => summary.level === '6h');
-    const visible = summaries.filter((summary) =>
-      summary.level === '6h' || !rollups.some((rollup) => covers(rollup, summary)),
-    );
     // Group before filtering so date filters and display caps cannot change activity identity.
     const rawEntries = groupTimeline(events)
       .filter((group) => eventTime(group.at(-1)!) >= cutoff)
@@ -560,15 +556,16 @@ export class ComputerHistoryService {
         entry: timelineEntry(group),
         events: group,
       })).filter(({ entry }) =>
-        !visible.some((summary) => covers(summary, entry)),
+        !summaries.some((summary) => covers(summary, entry)),
       );
     return [
-      ...visible.map((summary) => {
+      ...summaries.map((summary) => {
         const entry = summaryEntry(summary);
         return {
           entry,
           summary,
-          events: inventory.events.filter((event) => inInterval(eventTime(event), entry)),
+          // Canonical summary detail loads evidence on demand in #resolveEntry.
+          events: [],
         };
       }),
       ...rawEntries,
@@ -1127,6 +1124,8 @@ function summaryEntry(summary: StoredComputerHistorySummary): ComputerHistoryTim
     eventCount: summary.eventCount,
     suppressedEventCount: 0,
     summaryLevel: summary.level,
+    ...(summary.level === '6h' ? { summaryChildren: summary.sourceIds } : {}),
+    ...(summary.documentRevision ? { documentRevision: summary.documentRevision } : {}),
     summaryText: content.body
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '')
       .replaceAll('<', '&lt;')

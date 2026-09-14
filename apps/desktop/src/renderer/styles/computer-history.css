@@ -55,6 +55,10 @@
 .computer-history-title > span { font: var(--maka-text-supporting); color: var(--muted-foreground); }
 .computer-history-status { gap: 7px; flex-wrap: wrap; margin-right: 8px; font: var(--maka-text-supporting); color: var(--muted-foreground); }
 .computer-history-header-actions { gap: 5px; flex-shrink: 0; flex-wrap: wrap; }
+.computer-history-viewbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; padding: 0 28px 14px; flex-shrink: 0; }
+.computer-history-viewbar > span,
+.computer-history-freshness { color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-freshness { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
 .computer-history-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 28px 14px; border-bottom: 1px solid var(--border); }
 .computer-history-search { flex: 1; min-width: 180px; }
 .computer-history-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 28px; background: var(--color-error-muted); color: var(--foreground); overflow-wrap: anywhere; font: var(--maka-text-supporting); }
@@ -72,7 +76,8 @@
 .computer-history-row-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 0 12px 26px 4px; }
 .computer-history-list .computer-history-row[aria-current="true"] { background: var(--surface-base); box-shadow: none; }
 .computer-history-list .computer-history-row[aria-current="true"] .computer-history-row-rail i { background: var(--accent-solid); }
-.computer-history-row-time { padding-top: 3px; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.computer-history-row-time { display: flex; flex-direction: column; gap: 4px; padding-top: 3px; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.computer-history-row-time > span { font-size: 11px; }
 .computer-history-row-rail { position: relative; }
 .computer-history-row-rail::after { content: ""; position: absolute; width: 1px; top: 10px; bottom: -10px; left: 6px; background: var(--border); }
 .computer-history-row:last-child .computer-history-row-rail::after { bottom: 24px; }
@@ -85,6 +90,31 @@
 .computer-history-apps { gap: 10px; flex-wrap: wrap; font: var(--maka-text-supporting); color: var(--muted-foreground); }
 .computer-history-apps > span { gap: 5px; max-width: 100%; overflow-wrap: anywhere; }
 .computer-history-apps svg { flex-shrink: 0; }
+.computer-history-group-header { display: flex; align-items: start; gap: 4px; padding: 16px 0 12px; }
+.computer-history-group-header > button:first-child { flex-shrink: 0; margin-top: 3px; }
+.computer-history-group-open { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; padding: 6px 8px 10px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; overflow-wrap: anywhere; }
+.computer-history-group-open:hover,
+.computer-history-group-open[aria-current="true"] { background: var(--surface-base); }
+.computer-history-group-open:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+.computer-history-group-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; width: 100%; font: var(--maka-text-supporting); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.computer-history-group-meta > span + span { white-space: nowrap; }
+.computer-history-pending { display: flex; align-items: center; gap: 6px; font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-children { margin-inline-start: 16px; padding-inline-start: 12px; border-inline-start: 1px solid var(--border-soft); }
+.computer-history-children:empty { display: none; }
+.computer-history-children .computer-history-row-content,
+.computer-history-page[data-detail-open="true"] .computer-history-children .computer-history-row-content { grid-template-columns: 48px 12px minmax(0, 1fr); }
+.computer-history-children .computer-history-row-title { font: var(--maka-text-body); font-weight: 600; }
+.computer-history-collection-kind { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.computer-history-day-document-section { padding-block: 24px; border-bottom: 1px solid var(--border); }
+.computer-history-day-document-section:first-child { padding-top: 8px; }
+.computer-history-day-document-section:last-child { border-bottom: 0; }
+.computer-history-day-document-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted-foreground); font: var(--maka-text-supporting); font-variant-numeric: tabular-nums; }
+.computer-history-day-document-title { margin-block: 12px 8px; }
+.computer-history-day-document-title > button { width: 100%; height: auto; justify-content: start; padding: 0; text-align: start; white-space: normal; overflow-wrap: anywhere; font: var(--maka-text-heading-3); }
+.computer-history-day-document-description { margin: 0; font: var(--maka-text-body); color: var(--muted-foreground); line-height: 1.7; }
+.computer-history-day-document-loading { display: flex; flex-direction: column; gap: 12px; padding-block: 16px; color: var(--muted-foreground); font: var(--maka-text-supporting); }
+.computer-history-day-document-error { display: flex; align-items: center; gap: 10px; padding-block: 12px; font: var(--maka-text-supporting); }
+.computer-history-day-document-error > span { flex: 1; overflow-wrap: anywhere; }
 .computer-history-list-skeleton { min-height: 105px; display: flex; flex-direction: column; gap: 12px; padding: 17px 18px; border-bottom: 1px solid var(--border-soft); }
 .computer-history-detail { min-width: 0; min-height: 0; overflow: auto; scrollbar-width: thin; }
 .computer-history-detail:focus { outline: none; }
@@ -151,6 +181,7 @@
 @container (max-width: 900px) {
   .computer-history-page[data-detail-open="true"] .computer-history-workspace { grid-template-columns: 280px minmax(0, 1fr); }
   .computer-history-header { padding: 20px 20px 16px; }
+  .computer-history-viewbar { padding-inline: 20px; }
   .computer-history-filters { padding: 0 20px 16px; gap: 10px; }
   .computer-history-detail-content { padding: 24px; }
   .computer-history-search { max-width: none; }
@@ -164,6 +195,9 @@
   .computer-history-status { margin: 0 4px 0 0; gap: 4px; }
   .computer-history-status > span:last-child { display: none; }
   .computer-history-header-actions { gap: 2px; }
+  .computer-history-viewbar { padding: 0 16px 12px; gap: 8px; }
+  .computer-history-viewbar > span { display: none; }
+  .computer-history-freshness { font-size: 11px; }
   .computer-history-filters { padding: 0 16px 12px; gap: 8px; }
   .computer-history-search { flex-basis: 100%; }
   .computer-history-workspace,
@@ -175,6 +209,7 @@
   .computer-history-page[data-detail-open="true"] .computer-history-detail { display: block; }
   .computer-history-mobile-back { display: inline-flex; }
   .computer-history-reader-toolbar { flex-wrap: wrap; padding: 6px 8px; }
+  .computer-history-reader-toolbar:has(.computer-history-collection-kind) .computer-history-collection-kind { display: none; }
   .computer-history-row-content { grid-template-columns: 43px 16px minmax(0, 1fr); }
   .computer-history-detail-content { padding: 18px 20px 28px; }
   .computer-history-footer { padding: 8px 16px; gap: 4px 14px; }

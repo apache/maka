@@ -184,6 +184,21 @@ export function createDesktopModuleHubServices(
         bridge.dailyReview.saveMarkdownToFile(input),
     },
     computerHistory: {
+      getViewGranularity: () => {
+        try {
+          const value = localStorage.getItem('maka-computer-history-granularity-v1');
+          return value === '10min' || value === 'day' ? value : '6h';
+        } catch {
+          return '6h';
+        }
+      },
+      setViewGranularity: (value) => {
+        try {
+          localStorage.setItem('maka-computer-history-granularity-v1', value);
+        } catch {
+          // Browsing stays usable when client preference storage is unavailable.
+        }
+      },
       status: () => bridge.computerHistory.status(),
       timeline: (days) => bridge.computerHistory.timeline(days),
       applications: (bundleIds) => bridge.computerHistory.applications(bundleIds),

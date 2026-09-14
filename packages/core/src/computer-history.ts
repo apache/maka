@@ -66,6 +66,10 @@ export interface ComputerHistoryTimelineEntry {
   readonly suppressedEventCount: number;
   readonly contextMarkdown: string;
   readonly summaryLevel?: ComputerHistorySummaryLevel;
+  /** Canonical 10min input IDs for a saved 6h summary, including children outside the timeline filter. Omitted for other entries and older callers. */
+  readonly summaryChildren?: readonly string[];
+  /** Opaque main-owned saved-document version covering full body and provenance. Compare for equality only; a rewrite may change it even with identical content. */
+  readonly documentRevision?: string;
   /** Bounded model-written observation data, never instructions or verified facts. */
   readonly summaryText?: string;
   readonly suggestion?: ComputerHistorySuggestion;

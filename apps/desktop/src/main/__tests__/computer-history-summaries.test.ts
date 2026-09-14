@@ -110,6 +110,7 @@ test('closed UTC windows use allowlisted evidence and survive restart without re
   assert.deepEqual(Object.keys(stored[0]!).sort(), [
     'applications',
     'content',
+    'documentRevision',
     'end',
     'eventCount',
     'generation',
@@ -123,6 +124,8 @@ test('closed UTC windows use allowlisted evidence and survive restart without re
   assert.equal(JSON.parse(markdown.split('\n')[1]!).id, stored[0]!.id);
   assert.ok(markdown.endsWith(`${CONTENT.body}\n`));
   assert.doesNotMatch(markdown, /secret/);
+  assert.doesNotMatch(markdown, /documentRevision/);
+  assert.doesNotMatch(JSON.stringify(inputs), /documentRevision/);
 
   const restarted = new ComputerHistorySummaries({
     home,
@@ -1170,12 +1173,15 @@ test('nongeneration legacy summaries remain usable with interval coverage after 
   const original = (await summaries.list())[0]!;
   const { generation: _generation, ...legacy } = original;
   await writeFile(join(home, 'summaries', `${legacy.id}.md`), serializeComputerHistorySummary(legacy));
+  const savedLegacy = (await summaries.get(legacy.id))!;
+  assert.notEqual(savedLegacy.documentRevision, original.documentRevision);
+  assert.deepEqual(savedLegacy, { ...legacy, documentRevision: savedLegacy.documentRevision });
   now = BASE + 72 * 60 * MINUTE;
   await summaries.run([]);
   const rollup = (await summaries.get(`6h-${BASE}`))!;
   assert.deepEqual(rollup.generation!.rawEvidenceRanges, [[BASE, BASE + TEN_MINUTES]]);
   await summaries.clearInterval(BASE - MINUTE, BASE - MINUTE);
-  assert.deepEqual(await summaries.list(), [legacy, rollup]);
+  assert.deepEqual(await summaries.list(), [savedLegacy, rollup]);
   await rm(join(home, 'summaries', `${legacy.id}.md`));
   await summaries.clearInterval(BASE + MINUTE, BASE + MINUTE);
   assert.deepEqual(await summaries.list(), []);

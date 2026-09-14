@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ComputerHistoryApplication, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
-import { filterHistoryEntries } from '../../renderer/features/module-hub/testing.js';
+import { filterHistoryEntries, intersectHistoryDays } from '../../renderer/features/module-hub/testing.js';
 
 function entry(id: string, start: string, overrides: Partial<ComputerHistoryTimelineEntry> = {}): ComputerHistoryTimelineEntry {
   return {
@@ -68,7 +68,9 @@ test('known application names, descriptions and summaries intersect with date an
   });
   const entries = [
     activity,
-    { ...activity, id: 'wrong-day', start: new Date(2026, 8, 12, 12).toISOString() },
+    entry('wrong-day', new Date(2026, 8, 12, 12).toISOString(), {
+      description: activity.description, summaryText: activity.summaryText,
+    }),
     { ...activity, id: 'wrong-source', applications: ['com.example.Browser'] },
   ];
   const applications = new Map<string, ComputerHistoryApplication>([
@@ -78,4 +80,88 @@ test('known application names, descriptions and summaries intersect with date an
     assert.deepEqual(ids(filterHistoryEntries(entries, '2026-09-13', query, 'com.example.Editor', applications)), ['match']);
   }
   assert.deepEqual(filterHistoryEntries(entries, '2026-09-13', 'not observed', 'com.example.Editor', applications), []);
+});
+
+test('date filtering uses half-open overlap, including containing intervals and midnight point events', () => {
+  const at = (day: number, hour = 0) => new Date(2026, 8, day, hour).toISOString();
+  const entries = [
+    entry('ends-at-start', at(12, 23), { end: at(13) }),
+    entry('crosses-start', at(12, 23), { end: at(13, 1) }),
+    entry('contains-day', at(12), { end: at(15) }),
+    entry('ends-at-end', at(13, 23), { end: at(14) }),
+    entry('crosses-end', at(13, 23), { end: at(14, 1) }),
+    entry('starts-at-end', at(14), { end: at(14, 1) }),
+    entry('point-at-start', at(13)),
+    entry('point-at-end', at(14)),
+    entry('invalid', 'invalid'),
+    entry('backwards', at(13, 12), { end: at(12) }),
+  ];
+  assert.deepEqual(ids(filterHistoryEntries(entries, '2026-09-13', '', '')), [
+    'crosses-end', 'ends-at-end', 'point-at-start', 'crosses-start', 'contains-day',
+  ]);
+});
+
+test('local day intersection handles an exclusive end, point, invalid and backwards ranges', () => {
+  const start = new Date(2026, 8, 12, 23).toISOString();
+  const midnight = new Date(2026, 8, 14).toISOString();
+  assert.deepEqual(intersectHistoryDays({ start, end: midnight }), ['2026-09-12', '2026-09-13']);
+  assert.deepEqual(intersectHistoryDays({ start: midnight, end: midnight }), ['2026-09-14']);
+  assert.deepEqual(intersectHistoryDays({ start: 'invalid', end: midnight }), []);
+  assert.deepEqual(intersectHistoryDays({ start, end: 'invalid' }), []);
+  assert.deepEqual(intersectHistoryDays({ start: midnight, end: start }), []);
+});
+
+function inTimezone(zone: string, run: () => void): void {
+  const previous = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+test('UTC+8 cross-midnight rollup matches both local dates while source and search still intersect', () => {
+  inTimezone('Asia/Shanghai', () => {
+    const rollup = entry('rollup', '2026-09-13T12:00:00Z', {
+      end: '2026-09-13T18:00:00Z', summaryLevel: '6h', summaryText: 'Reviewed retention',
+    });
+    assert.deepEqual(intersectHistoryDays(rollup), ['2026-09-13', '2026-09-14']);
+    for (const day of ['2026-09-13', '2026-09-14']) {
+      assert.deepEqual(filterHistoryEntries([rollup], day, 'retention', 'com.example.Editor'), [rollup]);
+      assert.deepEqual(filterHistoryEntries([rollup], day, 'missing', 'com.example.Editor'), []);
+      assert.deepEqual(filterHistoryEntries([rollup], day, 'retention', 'com.example.Browser'), []);
+    }
+    assert.deepEqual(filterHistoryEntries([rollup], '2026-09-15', '', ''), []);
+  });
+});
+
+test('local date stepping follows both DST transitions without losing or inventing dates', () => {
+  inTimezone('America/New_York', () => {
+    for (const [start, end, expected] of [
+      ['2026-03-07T23:30:00-05:00', '2026-03-10T00:00:00-04:00', ['2026-03-07', '2026-03-08', '2026-03-09']],
+      ['2026-10-31T23:30:00-04:00', '2026-11-03T00:00:00-05:00', ['2026-10-31', '2026-11-01', '2026-11-02']],
+    ] as const) {
+      const activity = entry('dst', start, { end });
+      assert.deepEqual(intersectHistoryDays(activity), expected);
+      for (const day of expected) {
+        assert.deepEqual(filterHistoryEntries([activity], day, '', ''), [activity]);
+      }
+    }
+    assert.deepEqual(intersectHistoryDays({
+      start: '2026-11-01T01:30:00-04:00', end: '2026-11-01T01:30:00-05:00',
+    }), ['2026-11-01']);
+  });
+});
+
+test('date stepping resets midnight after a zone skips its midnight hour', () => {
+  inTimezone('America/Sao_Paulo', () => {
+    assert.deepEqual(intersectHistoryDays({
+      start: '2018-11-03T23:30:00-03:00', end: '2018-11-05T00:30:00-02:00',
+    }), ['2018-11-03', '2018-11-04', '2018-11-05']);
+    assert.deepEqual(intersectHistoryDays({
+      start: '2018-11-03T23:30:00-03:00', end: '2018-11-05T00:00:00-02:00',
+    }), ['2018-11-03', '2018-11-04']);
+  });
 });

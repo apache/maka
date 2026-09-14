@@ -259,6 +259,9 @@ export interface ComputerHistoryAnalysisModel {
 
 /** Local desktop history only; no selected/default remote Host routing. */
 export interface ModuleHubComputerHistoryService {
+  /** Client-local browsing preference; never changes recording or model generation. */
+  getViewGranularity(): '10min' | '6h' | 'day';
+  setViewGranularity(value: '10min' | '6h' | 'day'): void;
   status(): Promise<ComputerHistoryStatus>;
   timeline(days?: number): Promise<ComputerHistoryTimeline>;
   /** Local application metadata for at most 32 bundle identifiers per request. */

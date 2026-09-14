@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
-import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rm, stat, utimes, watch, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, open, readFile, readdir, rename, rm, stat, utimes, watch, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1309,6 +1309,74 @@ test('summary detail preserves the stored Markdown document through raw expiry a
   assert.equal(await readFile(join(segment, 'events.jsonl'), 'utf8'), '');
 });
 
+for (const level of ['10min', '6h'] as const) {
+  test(`${level} document revisions cover hidden body tails and provenance across preserved-mtime edits and restart`, async (t) => {
+    const generateSummary = t.mock.fn(async () => ({ ...SUMMARY, body: `${'x'.repeat(12_500)}TAIL_A` }));
+    const options = { now: () => Date.parse('2026-08-15T13:00:00.000Z'), generateSummary };
+    const { service, home, segment } = await fixture(t, options);
+    await seedClosedInterval(segment);
+    assert.ok((await service.timeline()).entries.every((entry) => !('documentRevision' in entry)));
+    await service.updateSettings({ summariesEnabled: true });
+    await service.summarize();
+    const initial = (await service.timeline()).entries.find(({ summaryLevel }) => summaryLevel === level)!;
+    const path = join(home, 'summaries', `${initial.id}.md`);
+    const fixedTime = new Date('2026-08-15T13:00:00.000Z');
+    await utimes(path, fixedTime, fixedTime);
+    let current = (await service.detail(initial.id))!;
+    assert.ok(current.entry.documentRevision);
+    assert.ok(current.entry.documentRevision.length < 200);
+    assert.deepEqual((await service.timeline()).entries.find(({ id }) => id === initial.id), current.entry);
+    const calls = generateSummary.mock.callCount();
+    let saved = await readFile(path, 'utf8');
+
+    for (const change of ['body tail', 'provenance', 'atomic replacement'] as const) {
+      const before = current;
+      const info = await stat(path);
+      if (change === 'provenance') {
+        const [opening, header, ...body] = saved.split('\n');
+        const metadata = JSON.parse(header!);
+        const revision = metadata.generation.sourceRevision as string;
+        metadata.generation.sourceRevision = (revision[0] === 'a' ? 'b' : 'a') + revision.slice(1);
+        saved = [opening, JSON.stringify(metadata), ...body].join('\n');
+      } else {
+        saved = saved.replace(change === 'body tail' ? 'TAIL_A' : 'TAIL_B', change === 'body tail' ? 'TAIL_B' : 'TAIL_C');
+      }
+      if (change === 'atomic replacement') {
+        const replacement = join(home, 'replacement.md');
+        await writeFile(replacement, saved);
+        await utimes(replacement, fixedTime, fixedTime);
+        await rename(replacement, path);
+      } else {
+        await writeFile(path, saved);
+        await utimes(path, fixedTime, fixedTime);
+      }
+      assert.equal((await stat(path)).size, info.size);
+      assert.equal((await stat(path)).mtimeMs, info.mtimeMs);
+      const projected = (await service.timeline()).entries.find(({ id }) => id === initial.id)!;
+      current = (await service.detail(initial.id))!;
+      assert.notEqual(projected.documentRevision, before.entry.documentRevision, change);
+      assert.deepEqual(current.entry, projected);
+      assert.deepEqual(projected, { ...before.entry, documentRevision: projected.documentRevision },
+        'bounded timeline metadata is unchanged apart from the document revision');
+      assert.equal(current.document!.markdown, saved);
+      assert.notEqual(current.document!.markdown, before.document!.markdown);
+      if (change === 'provenance') assert.equal(current.document!.body, before.document!.body);
+      assert.doesNotMatch(projected.documentRevision!, /TAIL_|events\.jsonl/);
+      assert.ok(!projected.documentRevision!.includes(home));
+      assert.deepEqual((await service.timeline()).entries.find(({ id }) => id === initial.id), projected);
+    }
+    await service.dispose();
+    const reopened = new ComputerHistoryService({ home, helperPath: 'missing', platform: 'linux', ...options });
+    t.after(() => reopened.dispose());
+    assert.deepEqual((await reopened.timeline()).entries.find(({ id }) => id === initial.id), current.entry);
+    assert.deepEqual((await reopened.detail(initial.id))!.document, current.document);
+    assert.equal(generateSummary.mock.callCount(), calls, 'revision reads never invoke the model');
+    await reopened.deleteEntry(initial.id);
+    assert.equal(await reopened.detail(initial.id), null);
+    assert.ok(!(await reopened.timeline()).entries.some(({ id }) => id === initial.id));
+  });
+}
+
 test('summary detail bounds complete documents and resolves archived IDs beyond the timeline horizon', async (t) => {
   let now = NOW;
   const body = '# Notes\n\n' + 'x'.repeat(48 * 1024 - '# Notes\n\n'.length);
@@ -1526,11 +1594,178 @@ test('entry deletion re-reads the final collector flush and removes only the sel
   assert.equal(collector.calls.filter((command) => command === 'record').length, 2);
 });
 
-test('deleting a rollup removes its raw evidence and children without resurrecting them on retry', async (t) => {
-  const { service, segment } = await fixture(t, {
+test('timeline retains saved children with canonical rollup linkage and suppresses covered raw entries', async (t) => {
+  let now = Date.parse('2026-08-15T12:00:01.000Z');
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { service, home, segment } = await fixture(t, {
+    now: () => now,
+    generateSummary: async (input) => { inputs.push(input); return SUMMARY; },
+  });
+  await seedClosedInterval(segment, [
+    event('2026-08-15T10:11:00.000Z', 'mouse.click'),
+    event('2026-08-15T12:00:00.000Z', 'mouse.click', 'Next interval'),
+  ]);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  assert.equal(inputs.length, 3);
+  const timeline = await service.timeline();
+  const parent = timeline.entries.find(({ summaryLevel }) => summaryLevel === '6h')!;
+  const children = timeline.entries.filter(({ summaryLevel }) => summaryLevel === '10min');
+  const raw = timeline.entries.filter(({ summaryLevel }) => !summaryLevel);
+  assert.ok(parent);
+  assert.equal(children.length, 2);
+  assert.equal(raw.length, 1, 'covered raw entries remain hidden even with both summary levels visible');
+  assert.equal(raw[0]!.start, parent.end, 'the exclusive rollup boundary remains visible');
+  const saved = await readFile(join(home, 'summaries', `${parent.id}.md`), 'utf8');
+  const stored = JSON.parse(saved.split('\n')[1]!);
+  assert.deepEqual(parent.summaryChildren, stored.sourceIds);
+  assert.deepEqual(parent.summaryChildren, children.map(({ id }) => id).reverse());
+  assert.ok([...children, ...raw].every((entry) => !('summaryChildren' in entry)));
+  for (const entry of [parent, ...children]) {
+    const detail = (await service.detail(entry.id))!;
+    assert.deepEqual(detail.entry, entry);
+    assert.equal(detail.document!.markdown, await readFile(join(home, 'summaries', `${entry.id}.md`), 'utf8'));
+  }
+  assert.equal((await service.detail(parent.id))!.eventTotal, 3);
+  assert.doesNotMatch(JSON.stringify(timeline), /events\.jsonl|test-segment|secret text|event-[a-f0-9]{64}/);
+  assert.ok(!JSON.stringify(timeline).includes(home));
+
+  now = Date.parse('2026-08-16T10:15:00.000Z');
+  const filtered = (await service.timeline(1)).entries;
+  assert.deepEqual(filtered.find(({ id }) => id === parent.id), parent);
+  assert.equal(filtered.filter(({ summaryLevel }) => summaryLevel === '10min').length, 1);
+  assert.ok(!filtered.some(({ id }) => id === parent.summaryChildren![0]));
+  assert.ok(await service.detail(parent.summaryChildren![0]!));
+  assert.equal(inputs.length, 3, 'timeline and detail reads never generate summaries');
+});
+
+test('preserved rich rollups link only saved children after text revocation and a late metadata-only child', async (t) => {
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const { service, home, segment } = await fixture(t, {
+    now: () => Date.parse('2026-08-15T13:00:00.000Z'),
+    generateSummary: async (input) => {
+      inputs.push(input);
+      return { ...SUMMARY, body: JSON.stringify(input).includes('RICH_ARCHIVE_CANARY') ? 'RICH_ARCHIVE_CANARY' : SUMMARY.body };
+    },
+  });
+  await writeFile(join(segment, 'events.jsonl'), JSON.stringify({
+    timestamp: '2026-08-15T10:01:00.000Z', kind: 'ui.changed',
+    sourceId: '250ed63d-f651-440c-85c7-9b9fb72b553a',
+    contentState: 'available', contentDomains: [],
+    app: { name: 'Fixture', bundleIdentifier: 'org.example.fixture' },
+    window: { title: 'Task' },
+    ax: { mode: 'fullTree', text: 'RICH_ARCHIVE_CANARY' },
+  }) + '\n');
+  await service.updateSettings({ summariesEnabled: true, summaryTextEnabled: true });
+  await service.summarize();
+  const before = (await service.timeline()).entries;
+  const parent = before.find(({ summaryLevel }) => summaryLevel === '6h')!;
+  const child = before.find(({ summaryLevel }) => summaryLevel === '10min')!;
+  assert.deepEqual(parent.summaryChildren, [child.id]);
+  const path = join(home, 'summaries', `${parent.id}.md`);
+  const saved = await readFile(path, 'utf8');
+  assert.equal(JSON.parse(saved.split('\n')[1]!).generation.includesText, true);
+
+  await service.updateSettings({ summaryTextEnabled: false });
+  await appendFile(join(segment, 'events.jsonl'), event('2026-08-15T10:11:00.000Z', 'mouse.click', 'Late source') + '\n');
+  inputs.length = 0;
+  await service.summarize();
+
+  const after = (await service.timeline()).entries;
+  const late = after.find(({ start }) => start === '2026-08-15T10:10:00.000Z')!;
+  assert.equal(after.length, 3);
+  assert.equal(late.summaryLevel, '10min');
+  assert.deepEqual(after.find(({ id }) => id === parent.id), parent);
+  assert.deepEqual(after.find(({ id }) => id === child.id), child);
+  assert.ok(!parent.summaryChildren!.includes(late.id));
+  assert.equal(await readFile(path, 'utf8'), saved);
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]!.level, '10min');
+  assert.doesNotMatch(JSON.stringify(inputs), /RICH_ARCHIVE_CANARY/);
+});
+
+test('timeline and detail reject noncanonical rollup child IDs before projecting hierarchy metadata', async (t) => {
+  const { service, home, segment } = await fixture(t, {
     now: () => Date.parse('2026-08-15T13:00:00.000Z'),
     generateSummary: async () => SUMMARY,
   });
+  await seedClosedInterval(segment);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const parent = (await service.timeline()).entries.find(({ summaryLevel }) => summaryLevel === '6h')!;
+  const path = join(home, 'summaries', `${parent.id}.md`);
+  const saved = await readFile(path, 'utf8');
+  const [opening, header, ...body] = saved.split('\n');
+  const stored = JSON.parse(header!);
+  for (const id of [
+    '../segments/test-segment/events.jsonl',
+    `event-${'a'.repeat(64)}`,
+    `10min-${Date.parse(parent.end)}`,
+  ]) {
+    await writeFile(path, [opening, JSON.stringify({ ...stored, sourceIds: [id] }), ...body].join('\n'));
+    await assert.rejects(service.timeline(), /Invalid computer history summary/);
+    await assert.rejects(service.detail(parent.id), /Invalid computer history summary/);
+  }
+  await writeFile(path, saved);
+  const restored = (await service.detail(parent.id))!.entry;
+  assert.notEqual(restored.documentRevision, parent.documentRevision);
+  assert.deepEqual(restored, { ...parent, documentRevision: restored.documentRevision });
+});
+
+test('deleting a visible child invalidates its rollup and retry rebuilds linkage without deleted evidence', async (t) => {
+  const inputs: ComputerHistorySummaryInput[] = [];
+  const options = {
+    now: () => Date.parse('2026-08-15T13:00:00.000Z'),
+    generateSummary: async (input: ComputerHistorySummaryInput) => {
+      inputs.push(input);
+      return {
+        ...SUMMARY,
+        body: input.start === '2026-08-15T10:10:00.000Z' ? 'DELETED_CHILD_CANARY' : SUMMARY.body,
+      };
+    },
+  };
+  const { service, home, segment } = await fixture(t, options);
+  await seedClosedInterval(segment, [event('2026-08-15T10:11:00.000Z', 'mouse.click', 'Deleted child source')]);
+  await service.updateSettings({ summariesEnabled: true });
+  await service.summarize();
+  const entries = (await service.timeline()).entries;
+  const parent = entries.find(({ summaryLevel }) => summaryLevel === '6h')!;
+  const selected = entries.find(({ start }) => start === '2026-08-15T10:10:00.000Z')!;
+  const surviving = entries.find(({ start }) => start === '2026-08-15T10:00:00.000Z')!;
+  assert.deepEqual(parent.summaryChildren, [surviving.id, selected.id]);
+
+  await service.deleteEntry(selected.id);
+
+  assert.equal(await service.detail(selected.id), null);
+  assert.equal(await service.detail(parent.id), null);
+  assert.deepEqual((await service.timeline()).entries, [surviving]);
+  assert.equal((await service.status()).eventCount, 2);
+  assert.doesNotMatch(await readFile(join(segment, 'events.jsonl'), 'utf8'), /Deleted child source/);
+  await service.dispose();
+  const reopened = new ComputerHistoryService({ home, helperPath: 'missing', platform: 'linux', ...options });
+  t.after(() => reopened.dispose());
+  inputs.length = 0;
+  await reopened.retrySummary();
+
+  assert.equal(await reopened.detail(selected.id), null);
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]!.level, '6h');
+  assert.deepEqual(inputs[0]!.evidence.map(({ id }) => id), [surviving.id]);
+  assert.doesNotMatch(JSON.stringify(inputs), /DELETED_CHILD_CANARY|Deleted child source/);
+  assert.ok(!JSON.stringify(inputs).includes(selected.id));
+  const rebuilt = (await reopened.timeline()).entries;
+  assert.equal(rebuilt.length, 2);
+  assert.deepEqual(rebuilt.find(({ id }) => id === parent.id)!.summaryChildren, [surviving.id]);
+  assert.deepEqual(rebuilt.find(({ id }) => id === surviving.id), surviving);
+  await assert.rejects(readFile(join(home, 'summaries', `${selected.id}.md`)), { code: 'ENOENT' });
+});
+
+test('deleting a rollup removes its raw evidence and children without resurrecting them on retry', async (t) => {
+  const options = {
+    now: () => Date.parse('2026-08-15T13:00:00.000Z'),
+    generateSummary: async () => SUMMARY,
+  };
+  const { service, home, segment } = await fixture(t, options);
   await seedClosedInterval(segment, [
     event('2026-08-15T10:11:00.000Z', 'mouse.click'),
     event('2026-08-15T12:00:00.000Z', 'mouse.click', 'Next interval'),
@@ -1539,14 +1774,27 @@ test('deleting a rollup removes its raw evidence and children without resurrecti
   await service.summarize();
   const entries = (await service.timeline()).entries;
   const selected = entries.find(({ summaryLevel }) => summaryLevel === '6h')!;
-  const adjacent = entries.find(({ summaryLevel }) => summaryLevel === '10min')!;
+  const adjacent = entries.find(({ start }) => start === selected.end)!;
+  const children = entries.filter(({ id }) => selected.summaryChildren!.includes(id));
+  assert.equal(children.length, 2);
   assert.equal((await service.detail(selected.id))!.eventTotal, 3);
 
   await service.deleteEntry(selected.id);
   await service.retrySummary();
 
-  assert.deepEqual((await service.timeline()).entries, [adjacent]);
+  const after = (await service.timeline()).entries;
+  assert.equal(after.length, 1);
+  assert.deepEqual(after[0], { ...adjacent, documentRevision: after[0]!.documentRevision });
   assert.equal((await service.status()).eventCount, 1);
+  await service.dispose();
+  const reopened = new ComputerHistoryService({ home, helperPath: 'missing', platform: 'linux', ...options });
+  t.after(() => reopened.dispose());
+  await reopened.retrySummary();
+  assert.deepEqual((await reopened.timeline()).entries, after);
+  for (const entry of [selected, ...children]) {
+    assert.equal(await reopened.detail(entry.id), null);
+    await assert.rejects(readFile(join(home, 'summaries', `${entry.id}.md`)), { code: 'ENOENT' });
+  }
 });
 
 test('explicit retry rejects disabled consent and reports failures then successful recovery', async (t) => {

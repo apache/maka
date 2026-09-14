@@ -26,7 +26,9 @@ export type { HistoryDraftHostInput } from "./controller/use-computer-history-dr
 export { ComputerHistoryPage } from "./ui/computer-history-page.js";
 export { ComputerHistoryAppIcon } from "./ui/computer-history-app-icon.js";
 export { ComputerHistoryDocument } from "./ui/computer-history-document.js";
-export { filterHistoryEntries } from "./ui/computer-history-copy.js";
+export { ComputerHistoryDayDocument } from "./ui/computer-history-day-document.js";
+export { filterHistoryEntries, intersectHistoryDays } from "./ui/computer-history-copy.js";
+export { groupHistoryEntries, type HistoryGranularity, type HistoryViewGroup } from "./ui/computer-history-view.js";
 export { ComputerHistorySettingsPage } from "./ui/computer-history-settings-page.js";
 export { useComputerHistorySettings, useRecentHistoryApplications } from "./controller/use-computer-history-settings.js";
 export { normalizeHistoryExclusion } from "./ui/computer-history-settings-copy.js";
@@ -176,6 +178,7 @@ export function createFakeModuleHubHostModel(
 export function createFakeModuleHubServices(
   overrides: Partial<ModuleHubServices> = {},
 ): ModuleHubServices {
+  let granularity: '10min' | '6h' | 'day' = '6h';
   return {
     runtimeHosts: {
       getDefault: async () => ({ profileId: "local", hostId: "local" }),
@@ -224,6 +227,8 @@ export function createFakeModuleHubServices(
         notConfigured("dailyReview.saveMarkdownToFile"),
     },
     computerHistory: {
+      getViewGranularity: () => granularity,
+      setViewGranularity: (value) => { granularity = value; },
       status: async () => notConfigured("computerHistory.status"),
       timeline: async () => notConfigured("computerHistory.timeline"),
       applications: async () => notConfigured("computerHistory.applications"),

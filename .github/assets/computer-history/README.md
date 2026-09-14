@@ -233,3 +233,43 @@ No native capture, model request, credentials, or private history were used for
 these images. They are copied unchanged from Playwright output. The GitHub CLI
 does not expose a native attachment option; these files reuse this PR's existing
 feature-branch asset convention.
+
+## History Granularity
+
+Captured on September 14, 2026 (Asia/Shanghai). The user selected alternative A:
+a persistent segmented selector below the page heading.
+
+| Images | Viewport | State |
+| --- | --- | --- |
+| `granularity-{before,after}-1240-light-reader.png` | 1240 x 820 | Matched saved-document reader |
+| `granularity-{before,after}-390-light-reader.png` | 390 x 844 | Matched narrow reader |
+| `granularity-after-1240-light-list.png` | 1240 x 820 | Six-hour overview and pending interval |
+| `granularity-after-1240-light-day.png` | 1240 x 820 | Complete saved documents for one day |
+| `granularity-after-390-dark-day.png` | 390 x 844 | Narrow dark day reader |
+| `granularity-after-1240-light-cross-midnight.png` | 1240 x 820 | Today filter with a cross-midnight rollup |
+| `granularity-after-1240-light-source.png` | 1240 x 820 | Source retained across granularity changes |
+
+Both revisions render the actual production history page against the same
+synthetic service, six invented ten-minute activities and one six-hour summary.
+The baseline page, copy and CSS are frozen from
+`5b3f30ce4c32dc350104573c60a67b48a6ed24ec`; its feed projection suppresses
+covered children as the baseline backend did. Both reader pairs select the
+08:30 activity, Preview mode, scrollTop 0, `zh-CN`, Asia/Shanghai, DPR 1,
+100% zoom and fixed clock `2026-09-14T00:40:00Z`. Capture order and fixture
+content are identical. These isolated page captures do not claim full mobile
+Desktop shell support.
+
+The final Playwright matrix passed 30 captures with no page errors, external
+requests, missing images or page/reader overflow. It covers all three views,
+independent disclosure and document opening, cross-midnight date filtering,
+Source and scroll retention, a new saved document arriving on a background
+poll, light/dark themes and three locales. The day view assembles existing
+documents; it does not request or create another model-generated daily report.
+
+The ignored rerunnable harness is
+`docs/local/computer-history-production-qa/verify-granularity-production.mjs`.
+Public captures were visually inspected and copied unchanged from Playwright
+output. No private history, native capture, real model request or credentials
+were used for these images. Real Electron checks are separate and remain
+private. The installed GitHub CLI lacks native attachments; these images
+reuse this feature branch's existing asset convention.

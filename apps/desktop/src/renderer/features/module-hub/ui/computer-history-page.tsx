@@ -26,6 +26,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { List, ListItem } from '@astryxdesign/core/List';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { Selector } from '@astryxdesign/core/Selector';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { StatusDot } from '@astryxdesign/core/StatusDot';
@@ -45,11 +46,13 @@ import { useComputerHistoryController } from '../controller/use-computer-history
 import { useComputerHistoryApplications } from '../controller/use-computer-history-applications.js';
 import { useModuleHubServices } from '../services-context.js';
 import {
-  computerHistoryCopy, filterHistoryEntries, historyAppName, historySuggestionDraft, localHistoryDay, shiftHistoryDay,
+  computerHistoryCopy, filterHistoryEntries, historyAppName, historySuggestionDraft, intersectHistoryDays, localHistoryDay, shiftHistoryDay,
 } from './computer-history-copy.js';
 import { ComputerHistoryAppIcon } from './computer-history-app-icon.js';
 import { ComputerHistoryDocument } from './computer-history-document.js';
 import { useHistorySettingsFocus } from './use-history-settings-focus.js';
+import { groupHistoryEntries, type HistoryGranularity, type HistoryViewGroup } from './computer-history-view.js';
+import { ComputerHistoryDayDocument } from './computer-history-day-document.js';
 
 export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSettings, isObscured }: {
   onCreateDraft(text: string): void;
@@ -58,16 +61,18 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
 }) {
   const locale = useUiLocale();
   const copy = computerHistoryCopy(locale);
-  const { clipboard } = useModuleHubServices();
+  const { clipboard, computerHistory } = useModuleHubServices();
   const [day, setDay] = useState('');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
+  const [granularity, setGranularity] = useState<HistoryGranularity>(() => computerHistory.getViewGranularity());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [collection, setCollection] = useState<{ start: string; kind: '6h' | 'day'; rollupIds: readonly string[] } | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [tab, setTab] = useState('evidence');
   const [expandedEvents, setExpandedEvents] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [collapsedDays, setCollapsedDays] = useState<ReadonlySet<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [deleteTarget, setDeleteTarget] = useState<ComputerHistoryTimelineEntry | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const controller = useComputerHistoryController(detailOpen ? selectedId : null);
@@ -87,23 +92,30 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   const today = localHistoryDay(new Date());
   const applications = useMemo(() =>
     [...new Set(entries.flatMap((entry) => entry.applications))].sort((a, b) => a.localeCompare(b)), [entries]);
-  const days = useMemo(() => [...new Set(entries.map((entry) => localHistoryDay(entry.start)))].sort().reverse(), [entries]);
+  const days = useMemo(() => [...new Set(entries.flatMap((entry) => intersectHistoryDays(entry)))].sort().reverse(), [entries]);
   const applicationMetadata = useComputerHistoryApplications([
     ...applications, ...(status?.settings.blockedApplications ?? []),
   ]);
   const appName = (app: string) => historyAppName(app, applicationMetadata.applications.get(app)?.name);
   const filtered = useMemo(() => filterHistoryEntries(entries, day, query, source, applicationMetadata.applications), [entries, day, query, source, applicationMetadata.applications]);
-  const selected = filtered.find((entry) => entry.id === selectedId) ?? null;
-  const groups = useMemo(() => {
-    const result = new Map<string, ComputerHistoryTimelineEntry[]>();
-    for (const entry of filtered) {
-      const key = localHistoryDay(entry.start);
-      const group = result.get(key);
-      if (group) group.push(entry);
-      else result.set(key, [entry]);
+  const selected = entries.find((entry) => entry.id === selectedId) ?? null;
+  const groups = useMemo(() => groupHistoryEntries(entries, filtered, granularity)
+    .filter((group) => !day || granularity !== 'day' || group.day === day), [entries, filtered, granularity, day]);
+  const selectedCollection = useMemo(() => {
+    if (!collection) return null;
+    const matches = groupHistoryEntries(entries, entries, collection.kind)
+      .filter((group) => group.start === collection.start);
+    if (!matches.length) return null;
+    // Keep opened fallback rollups and window identity through filter/provenance changes.
+    const documents = new Map(matches.flatMap((group) => group.entries).map((entry) => [entry.id, entry]));
+    for (const entry of entries) {
+      if (collection.rollupIds.includes(entry.id)) documents.set(entry.id, entry);
     }
-    return [...result];
-  }, [filtered]);
+    return { ...matches[0], entries: [...documents.values()]
+      .sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || a.id.localeCompare(b.id)) };
+  }, [entries, collection]);
+  const latest = useMemo(() => entries.filter((entry) => entry.summaryLevel === '10min')
+    .reduce<string | undefined>((end, entry) => !end || entry.end > end ? entry.end : end, undefined), [entries]);
   const detail = controller.detail?.entry.id === selectedId ? controller.detail : null;
   const time = (value: string, seconds = false) => new Intl.DateTimeFormat(locale, {
     hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}),
@@ -113,6 +125,11 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   }).format(new Date(`${value}T12:00:00`));
   const groupLabel = (value: string) => value === today ? copy.today
     : value === shiftHistoryDay(today, -1) ? copy.yesterday : formatDay(value);
+  const rangeLabel = (start: string, end: string) => localHistoryDay(start) === localHistoryDay(end)
+    ? `${groupLabel(localHistoryDay(start))} · ${time(start)}–${time(end)}`
+    : `${groupLabel(localHistoryDay(start))} ${time(start)}–${groupLabel(localHistoryDay(end))} ${time(end)}`;
+  const collectionLabel = (group: HistoryViewGroup) => group.kind === 'day'
+    ? `${formatDay(group.day)} · ${copy.dailyActivities}` : rangeLabel(group.start, group.end);
   const shownEvents = detail?.events.slice(0, expandedEvents ? 100 : 5) ?? [];
   const hasFilters = Boolean(query || source || day);
   const firstRun = status && !status.settings.enabled && !status.settings.summariesEnabled && status.eventCount === 0;
@@ -145,22 +162,80 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   }, [isObscured, controller.refresh, applicationMetadata.refresh, restoreSettingsFocus]);
 
   useEffect(() => {
-    if (!loading && selectedId !== null && !filtered.some((entry) => entry.id === selectedId)) {
+    if (!loading && selectedId !== null && !entries.some((entry) => entry.id === selectedId)) {
       setSelectedId(null);
       setDetailOpen(false);
     }
-  }, [filtered, selectedId, loading]);
+    if (!loading && collection && !selectedCollection) {
+      setCollection(null);
+      setDetailOpen(false);
+    }
+  }, [entries, selectedId, loading, collection, selectedCollection]);
 
   useEffect(() => {
     setExpandedEvents(false);
     setEvidenceOpen(false);
     if (detailRef.current) detailRef.current.scrollTop = 0;
-  }, [selectedId, detailOpen]);
+  }, [selectedId, collection, detailOpen]);
+
+  function changeGranularity(value: string) {
+    if (value !== '10min' && value !== '6h' && value !== 'day') return;
+    setGranularity(value);
+    computerHistory.setViewGranularity(value);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }
+
+  function chooseEntry(entry: ComputerHistoryTimelineEntry, group?: HistoryViewGroup) {
+    setCollection(null);
+    setSelectedId(entry.id);
+    setDetailOpen(true);
+    setTab('evidence');
+    if (group) setExpandedGroups((previous) => new Map(previous).set(group.id, true));
+    requestAnimationFrame(() => detailRef.current?.focus({ preventScroll: true }));
+  }
+
+  function chooseGroup(group: HistoryViewGroup) {
+    if (group.summary) {
+      chooseEntry(group.summary);
+      return;
+    }
+    if (group.kind === '10min') return;
+    setSelectedId(null);
+    setCollection({ start: group.start, kind: group.kind,
+      rollupIds: group.entries.filter((entry) => entry.summaryLevel === '6h').map((entry) => entry.id) });
+    setDetailOpen(true);
+    requestAnimationFrame(() => detailRef.current?.focus({ preventScroll: true }));
+  }
+
+  function entryRow(entry: ComputerHistoryTimelineEntry, group: HistoryViewGroup) {
+    const crossDay = localHistoryDay(group.start) !== localHistoryDay(new Date(Date.parse(group.end) - 1));
+    return <ListItem key={entry.id} isSelected={entry.id === selectedId} className="computer-history-row"
+      onClick={() => chooseEntry(entry, group)} label={<span className="computer-history-row-content">
+        <time className="computer-history-row-time" dateTime={entry.start} title={rangeLabel(entry.start, entry.end)}>
+          {crossDay ? <span>{groupLabel(localHistoryDay(entry.start))}</span> : null}
+          {time(entry.start)}<span>{time(entry.end)}</span>
+        </time>
+        <span className="computer-history-row-rail" aria-hidden><i /></span>
+        <span className="computer-history-row-body">
+          <span className="computer-history-row-title">{entry.title}</span>
+          <span className="computer-history-row-description">{entry.description}</span>
+          {entryApps(entry.applications)}
+        </span>
+      </span>} />;
+  }
+
+  function entryApps(apps: readonly string[]) {
+    return <span className="computer-history-apps">{apps.slice(0, 5).map((app) =>
+      <span key={app} title={appName(app)} aria-label={appName(app)}><ComputerHistoryAppIcon application={app} metadata={applicationMetadata.applications.get(app)} /></span>,
+    )}{apps.length > 5 ? <span>+{apps.length - 5}</span> : null}</span>;
+  }
 
   function backToList() {
     setDetailOpen(false);
     requestAnimationFrame(() => {
-      listRef.current?.querySelector<HTMLButtonElement>('[aria-current="true"] button')?.focus();
+      const target = listRef.current?.querySelector<HTMLButtonElement>('[aria-current="true"] button, button[aria-current="true"]')
+        ?? listRef.current?.querySelector<HTMLButtonElement>('button');
+      target?.focus({ preventScroll: true });
     });
   }
 
@@ -179,7 +254,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
   }
 
   return (
-    <section className="computer-history-page" aria-label={copy.title} data-detail-open={detailOpen && selected !== null}>
+    <section className="computer-history-page" aria-label={copy.title} data-detail-open={detailOpen && (selected !== null || selectedCollection !== null)}>
       <header className="computer-history-header">
         <div className="computer-history-heading">
           <div className="computer-history-title"><History size={21} aria-hidden /><Heading level={1}>{copy.title}</Heading><span>{copy.local}</span></div>
@@ -197,6 +272,18 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
           <IconButton label={copy.settings} icon={<Settings size={16} aria-hidden />} size="sm" onClick={onOpenSettings} />
         </div>
       </header>
+
+      <div className="computer-history-viewbar">
+        <span>{copy.granularity}</span>
+        <SegmentedControl label={copy.granularity} size="sm" value={granularity} onChange={changeGranularity}>
+          <SegmentedControlItem value="10min" label={copy.tenMinutes} />
+          <SegmentedControlItem value="6h" label={copy.sixHours} />
+          <SegmentedControlItem value="day" label={copy.oneDay} />
+        </SegmentedControl>
+        {latest ? <time className="computer-history-freshness" dateTime={latest} title={rangeLabel(latest, latest)}>
+          {copy.summarizedThrough} {localHistoryDay(latest) === today ? time(latest) : `${groupLabel(localHistoryDay(latest))} ${time(latest)}`}
+        </time> : null}
+      </div>
 
       {entries.length > 0 || query || source || day ? <div className="computer-history-filters">
         <div className="computer-history-search"><TextInput label={copy.search} isLabelHidden placeholder={copy.search} startIcon={<Search size={16} aria-hidden />} value={query} hasClear onChange={setQuery} /></div>
@@ -219,33 +306,44 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
         <aside className="computer-history-master" aria-label={copy.list} ref={listRef} {...roving} aria-busy={loading}>
           {loading && entries.length === 0 ? Array.from({ length: 6 }, (_, index) => (
             <div key={index} className="computer-history-list-skeleton"><Skeleton width="34%" height={12} /><Skeleton width="88%" height={16} /><Skeleton width="60%" height={12} /></div>
-          )) : groups.map(([groupDay, groupEntries]) => <section className="computer-history-day" key={groupDay}>
-            <h2 className="computer-history-list-heading"><Button variant="ghost" label={`${groupLabel(groupDay)} ${groupEntries.length} ${copy.activities}`} icon={collapsedDays.has(groupDay) ? <ChevronRight size={15} aria-hidden /> : <ChevronDown size={15} aria-hidden />} aria-expanded={!collapsedDays.has(groupDay)} aria-controls={`${panelId}-day-${groupDay}`} onClick={() => setCollapsedDays((previous) => {
-              const next = new Set(previous);
-              if (next.has(groupDay)) next.delete(groupDay);
-              else next.add(groupDay);
-              return next;
-            })}><span>{groupLabel(groupDay)}</span><span className="computer-history-day-count">{groupEntries.length} {copy.activities}</span></Button></h2>
-            <List id={`${panelId}-day-${groupDay}`} className="computer-history-list" density="spacious">
-            {collapsedDays.has(groupDay) ? null : groupEntries.map((entry) => (
-              <ListItem key={entry.id} isSelected={entry.id === selectedId} className="computer-history-row" onClick={() => {
-                  setSelectedId(entry.id);
-                  setDetailOpen(true);
-                  setTab('evidence');
-                  requestAnimationFrame(() => detailRef.current?.focus());
-                }} label={<span className="computer-history-row-content">
-                  <time className="computer-history-row-time" dateTime={entry.start} title={`${time(entry.start)}–${time(entry.end)}`}>{time(entry.start)}</time>
-                  <span className="computer-history-row-rail" aria-hidden><i /></span>
-                  <span className="computer-history-row-body">
-                  <span className="computer-history-row-title">{entry.title}</span>
-                  <span className="computer-history-row-description">{entry.description}</span>
-                  <span className="computer-history-apps">{entry.applications.slice(0, 5).map((app) => <span key={app} title={appName(app)} aria-label={appName(app)}><ComputerHistoryAppIcon application={app} metadata={applicationMetadata.applications.get(app)} /></span>)}{entry.applications.length > 5 ? <span>+{entry.applications.length - 5}</span> : null}</span>
-                  </span>
-                </span>} />
-            ))}
-            </List>
-          </section>)}
-          {!loading && filtered.length === 0 && !controller.error ? (
+          )) : groups.map((group) => {
+            const expanded = expandedGroups.get(group.id) ?? (granularity === '10min' || !group.summary && granularity === '6h');
+            const label = granularity === '10min' || granularity === 'day' ? groupLabel(group.day) : rangeLabel(group.start, group.end);
+            return <section className="computer-history-day" key={group.id}>
+              {granularity === '10min' ? <h2 className="computer-history-list-heading">
+                <Button variant="ghost" label={`${label} ${group.entries.length} ${copy.activities}`}
+                  icon={expanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />}
+                  aria-expanded={expanded} aria-controls={`${panelId}-${group.id}`}
+                  onClick={() => setExpandedGroups((previous) => new Map(previous).set(group.id, !expanded))}>
+                  <span>{label}</span><span className="computer-history-day-count">{group.entries.length} {copy.activities}</span>
+                </Button>
+              </h2> : <div className="computer-history-group-header">
+                <IconButton label={`${expanded ? copy.collapseActivities : copy.expandActivities} · ${label}`}
+                  tooltip={expanded ? copy.collapseActivities : copy.expandActivities} size="sm" variant="ghost"
+                  icon={expanded ? <ChevronDown size={16} aria-hidden /> : <ChevronRight size={16} aria-hidden />}
+                  aria-expanded={expanded} aria-controls={`${panelId}-${group.id}`} isDisabled={group.entries.length === 0}
+                  onClick={() => setExpandedGroups((previous) => new Map(previous).set(group.id, !expanded))} />
+                <button className="computer-history-group-open" type="button"
+                  aria-current={group.summary?.id === selectedId || !group.summary && collection?.kind === group.kind && collection.start === group.start ? 'true' : undefined}
+                  onClick={() => chooseGroup(group)}>
+                  <span className="computer-history-group-meta"><span>{label}</span>{group.entries.length ? <span>{group.entries.length} {copy.activities}</span> : null}</span>
+                  {group.summary ? <>
+                    <span className="computer-history-row-title">{group.summary.title}</span>
+                    <span className="computer-history-row-description">{group.summary.description}</span>
+                    {entryApps(group.summary.applications)}
+                  </> : granularity === 'day' ? <>
+                    <span className="computer-history-row-title">{collectionLabel(group)}</span>
+                    <span className="computer-history-row-description">{group.entries.slice(0, 3).map((entry) => entry.title).join(' · ')}</span>
+                    {entryApps([...new Set(group.entries.flatMap((entry) => entry.applications))])}
+                  </> : <span className="computer-history-pending"><Clock size={13} aria-hidden />{copy.overviewPending}</span>}
+                </button>
+              </div>}
+              <List id={`${panelId}-${group.id}`} className={`computer-history-list${granularity !== '10min' ? ' computer-history-children' : ''}`} density="spacious">
+                {expanded ? group.entries.map((entry) => entryRow(entry, group)) : null}
+              </List>
+            </section>;
+          })}
+          {!loading && groups.length === 0 && !controller.error ? (
             <div className="computer-history-empty"><EmptyState headingLevel={2}
               title={emptyTitle}
               description={emptyHelp}
@@ -263,7 +361,7 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                 <IconButton label={copy.closeDetail} size="sm" icon={<X size={16} aria-hidden />} onClick={backToList} /></div>
               </div>
               <div className="computer-history-detail-content">
-                <div className="computer-history-detail-meta"><Clock size={15} aria-hidden /><span>{formatDay(localHistoryDay(selected.start))} · {time(selected.start)}–{time(selected.end)}</span><span>{Math.max(1, Math.round((Date.parse(selected.end) - Date.parse(selected.start)) / 60_000))} {copy.minutes}</span></div>
+                <div className="computer-history-detail-meta"><Clock size={15} aria-hidden /><span>{rangeLabel(selected.start, selected.end)}</span><span>{Math.max(1, Math.round((Date.parse(selected.end) - Date.parse(selected.start)) / 60_000))} {copy.minutes}</span></div>
                 <Heading level={2}>{selected.title}</Heading>
                 <p className="computer-history-description">{selected.description}</p>
                 <div className="computer-history-detail-meta computer-history-detail-apps">
@@ -309,6 +407,18 @@ export function ComputerHistoryPage({ onCreateDraft, onOpenSettings: showSetting
                   <BookOpen size={17} aria-hidden /><div><Heading level={3}>{copy.suggestion} · {selected.suggestion.name}</Heading><p>{selected.suggestion.description}</p><Button label={copy.viewSuggestion} endContent={<ArrowRight size={14} aria-hidden />} variant="ghost" size="sm" isDisabled={busy} onClick={() => setDraft(historySuggestionDraft(selected, locale))} /></div>
                 </section> : null}
               </div>
+        </section> : null}
+        {detailOpen && selectedCollection ? <section className="computer-history-detail" ref={detailRef} tabIndex={-1} aria-label={collectionLabel(selectedCollection)}>
+          <div className="computer-history-reader-toolbar">
+            <Button className="computer-history-mobile-back" label={copy.back} icon={<ArrowLeft size={16} aria-hidden />} variant="ghost" size="sm" onClick={backToList} />
+            <span className="computer-history-collection-kind">{copy.savedActivities}</span>
+            <IconButton label={copy.closeDetail} size="sm" icon={<X size={16} aria-hidden />} onClick={backToList} />
+          </div>
+          <div className="computer-history-detail-content">
+            <div className="computer-history-detail-meta"><Clock size={15} aria-hidden /><span>{selectedCollection.entries.length} {copy.activities}</span></div>
+            <Heading level={2}>{collectionLabel(selectedCollection)}</Heading>
+            <ComputerHistoryDayDocument entries={selectedCollection.entries} onOpenEntry={chooseEntry} />
+          </div>
         </section> : null}
       </div>
       <footer className="computer-history-footer"><span>{copy.retained}</span><span>{copy.summariesRetained}</span>{applicationMetadata.error ? <span role="status" title={applicationMetadata.error}>{copy.iconsFailed}</span> : null}</footer>

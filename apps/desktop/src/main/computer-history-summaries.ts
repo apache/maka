@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
@@ -45,6 +45,8 @@ export interface ComputerHistorySummaryEvent {
 
 export interface StoredComputerHistorySummary {
   readonly id: string;
+  /** Read-time file version, excluded from persisted documents and model inputs. */
+  readonly documentRevision?: string;
   readonly level: ComputerHistorySummaryLevel;
   readonly start: string;
   readonly end: string;
@@ -353,8 +355,8 @@ export class ComputerHistorySummaries {
     const path = join(this.#directory, filename);
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const info = await file.stat();
-      if (!info.isFile() || info.size > MAX_FILE_BYTES) throw invalidSummary();
+      const info = await file.stat({ bigint: true });
+      if (!info.isFile() || info.size > BigInt(MAX_FILE_BYTES)) throw invalidSummary();
       const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
       let size = 0;
       while (size < buffer.length) {
@@ -365,15 +367,16 @@ export class ComputerHistorySummaries {
       if (size > MAX_FILE_BYTES) throw invalidSummary();
       const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, size));
       const summary = decodeSummary(text, filename);
+      const documentRevision = summaryFileRevision(info);
+      if (summaryFileRevision(await file.stat({ bigint: true })) !== documentRevision) throw invalidSummary();
       if (showItemInFolder) {
         if (!(await this.#directoryExists())) throw invalidSummary();
-        const current = await lstat(path);
+        const current = await lstat(path, { bigint: true });
         if (!current.isFile() || current.isSymbolicLink() ||
-            current.dev !== info.dev || current.ino !== info.ino ||
-            current.size !== info.size || current.mtimeMs !== info.mtimeMs) throw invalidSummary();
+            summaryFileRevision(current) !== documentRevision) throw invalidSummary();
         showItemInFolder(path);
       }
-      return summary;
+      return { ...summary, documentRevision };
     } finally {
       await file.close();
     }
@@ -404,6 +407,11 @@ export class ComputerHistorySummaries {
       await removeIfPresent(temporary);
     }
   }
+}
+
+function summaryFileRevision(info: BigIntStats): string {
+  // Inode identity covers atomic replacements; ctime also detects writes that restore mtime.
+  return [info.dev, info.ino, info.birthtimeNs, info.size, info.mtimeNs, info.ctimeNs].join(':');
 }
 
 /** Canonical on-disk document for a validated summary; never includes local storage paths. */

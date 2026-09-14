@@ -21,6 +21,9 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { ComputerHistoryApplication, ComputerHistoryTimelineEntry } from '@maka/core/computer-history';
 
 const EN = {
+  granularity: 'View by', tenMinutes: '10 minutes', sixHours: '6 hours', oneDay: '1 day',
+  summarizedThrough: 'Summarized through', overviewPending: 'Overview pending', savedActivities: 'Saved activities',
+  dailyActivities: 'Daily activities', expandActivities: 'Expand activities', collapseActivities: 'Collapse activities',
   title: 'Computer History', local: 'This Mac', refresh: 'Refresh history',
   settings: 'Computer history settings', allDays: 'Recent 30 days', yesterday: 'Yesterday', closeDetail: 'Close activity',
   permissionHelp: 'Recording needs macOS permissions.', repair: 'Check permissions',
@@ -80,6 +83,9 @@ const EN = {
 type Copy = typeof EN;
 
 const ZH: Copy = {
+  granularity: '查看粒度', tenMinutes: '10 分钟', sixHours: '6 小时', oneDay: '1 天',
+  summarizedThrough: '已整理至', overviewPending: '总览待生成', savedActivities: '已整理的活动',
+  dailyActivities: '全天活动', expandActivities: '展开明细', collapseActivities: '收起明细',
   title: '电脑历史', local: '此 Mac', refresh: '刷新历史',
   settings: '电脑历史设置', allDays: '最近 30 天', yesterday: '昨天', closeDetail: '关闭活动详情',
   permissionHelp: '记录需要 macOS 权限。', repair: '检查权限',
@@ -137,6 +143,9 @@ const ZH: Copy = {
 };
 
 const TW: Copy = {
+  granularity: '檢視粒度', tenMinutes: '10 分鐘', sixHours: '6 小時', oneDay: '1 天',
+  summarizedThrough: '已整理至', overviewPending: '總覽待產生', savedActivities: '已整理的活動',
+  dailyActivities: '全天活動', expandActivities: '展開明細', collapseActivities: '收起明細',
   title: '電腦歷史', local: '此 Mac', refresh: '重新整理歷史',
   settings: '電腦歷史設定', allDays: '最近 30 天', yesterday: '昨天', closeDetail: '關閉活動詳情',
   permissionHelp: '記錄需要 macOS 權限。', repair: '檢查權限',
@@ -203,6 +212,23 @@ export function localHistoryDay(value: string | Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+/** Local dates intersecting [start, end), or the containing date for a point event. */
+export function intersectHistoryDays(entry: Pick<ComputerHistoryTimelineEntry, 'start' | 'end'>): string[] {
+  const start = Date.parse(entry.start);
+  const end = Date.parse(entry.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  const days: string[] = [];
+  do {
+    days.push(localHistoryDay(cursor));
+    // Calendar stepping preserves local midnights across 23- and 25-hour days.
+    cursor.setDate(cursor.getDate() + 1);
+    cursor.setHours(0, 0, 0, 0);
+  } while (cursor.getTime() < end);
+  return days;
+}
+
 export function shiftHistoryDay(day: string, delta: number): string {
   const date = new Date(`${day}T12:00:00`);
   date.setDate(date.getDate() + delta);
@@ -219,7 +245,7 @@ export function filterHistoryEntries(
 ): readonly ComputerHistoryTimelineEntry[] {
   const term = query.trim().toLocaleLowerCase();
   return entries.filter((entry) =>
-    (!day || localHistoryDay(entry.start) === day)
+    (!day || intersectHistoryDays(entry).includes(day))
     && (!source || entry.applications.includes(source))
     && (!term || [entry.title, entry.description, entry.summaryText, ...entry.applications.flatMap((id) => [id, applications.get(id)?.name])].join('\n').toLocaleLowerCase().includes(term)),
   ).sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || a.id.localeCompare(b.id));

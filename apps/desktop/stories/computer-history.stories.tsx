@@ -100,6 +100,7 @@ const meta = {
   component: HistorySurface,
   decorators: [withScopedMakaBridge(settingsBridge)],
   beforeEach: ({ args }) => {
+    localStorage.removeItem('maka-computer-history-granularity-v1');
     analysisConfig = { ...DEFAULT_DAILY_REVIEW_CONFIG };
     analysisConnections = args.scenario === 'missing-model' ? [] : [analysisConnection];
     readAnalysisConfig.mockClear();
@@ -109,6 +110,7 @@ const meta = {
   args: {
     scenario: 'populated', withSidebar: false, onCreateDraft: fn(),
     onSettingsWrite: fn(), onPermissionRequest: fn(), onDetailRead: fn(), onTimelineRead: fn(),
+    onSummaryRetry: fn(),
   },
 } satisfies Meta;
 
@@ -212,6 +214,56 @@ function fixturePendingEntries(): ComputerHistoryTimelineEntry[] {
   }));
 }
 
+const GRANULARITY_ACTIVITIES = [
+  { day: -1, time: '23:40', title: '核对午夜前的摘要来源', description: '阅读摘要索引，检查保存的来源与时间边界。', body: '索引记录了三个来源片段；第二个片段包含切换窗口的时间，仍需与采集记录逐项核对。' },
+  { day: -1, time: '23:50', title: '整理午夜前的验证记录', description: '整理截至午夜的检查记录和待办。', body: '记录恰好结束于 00:00。尚未运行完整回归，待办中保留了日期筛选和滚动位置两项检查。' },
+  { day: 0, time: '00:10', title: '复查午夜后的阅读位置', description: '回到浏览器检查切换视图后的阅读位置。', body: '浏览器停留在文档的观察依据段落。切换粒度后应保留这段正文与当前阅读位置。' },
+  { day: 0, time: '01:10', title: '整理跨日筛选的复查结论', description: '对照两天的记录，整理跨午夜筛选的复查项。', body: '01:10 的文档属于午夜之后的本地日期，同时保留在昨晚 20:00 开始的六小时总览中。' },
+  { day: 0, time: '08:10', title: '检查早间构建日志', description: '打开早间构建日志，尚未保存六小时总览。', body: '日志中看到资源复制和类型检查阶段；没有找到最终退出码，不能判断整个构建已经成功。' },
+  { day: 0, time: '08:20', title: '记录早间回归待办', description: '补充早间回归待办，等待后续总览。', body: '待办包含浅色页面、侧边栏和全天文档的检查。尚未观察到执行或完成通知。' },
+] as const;
+const GRANULARITY_OVERVIEW = '复查电脑历史的跨日阅读与来源';
+const GRANULARITY_OVERVIEW_BODY = '本总览引用午夜前后四份已保存的十分钟摘要。早间的两份文档尚未纳入总览；这里没有推断回归已通过。';
+const GRANULARITY_RAW_TITLE = 'Chrome · 早间未整理的窗口片段';
+
+function granularityEntries(): ComputerHistoryTimelineEntry[] {
+  // Shanghai midnight falls inside the UTC-aligned 12:00-18:00 window (20:00-02:00).
+  const shanghaiTime = (dayOffset: number, time: string) => {
+    const date = new Date();
+    date.setDate(date.getDate() + dayOffset);
+    const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return new Date(`${day}T${time}:00+08:00`).toISOString();
+  };
+  const leaves: ComputerHistoryTimelineEntry[] = GRANULARITY_ACTIVITIES.map((activity, index) => {
+    const start = shanghaiTime(activity.day, activity.time);
+    return {
+      id: `10min-${Date.parse(start)}`, start,
+      end: new Date(Date.parse(start) + 600_000).toISOString(),
+      title: activity.title, description: activity.description,
+      applications: index < 2 ? ['com.microsoft.VSCode'] : ['com.google.Chrome', 'com.apple.Terminal'],
+      eventCount: 6, suppressedEventCount: 0, summaryLevel: '10min',
+      contextMarkdown: `<computer-history-context trust="untrusted-observed-ui">\n${activity.title}\n${activity.description}\n</computer-history-context>`,
+    };
+  });
+  const start = shanghaiTime(-1, '20:00');
+  const parent: ComputerHistoryTimelineEntry = {
+    id: `6h-${Date.parse(start)}`, start, end: shanghaiTime(0, '02:00'),
+    title: GRANULARITY_OVERVIEW,
+    description: '汇集午夜前后的来源核对、阅读位置与日期筛选检查，保留各段记录中的未决项。',
+    summaryLevel: '6h', summaryChildren: leaves.slice(0, 4).map((entry) => entry.id),
+    applications: ['com.microsoft.VSCode', 'com.google.Chrome', 'com.apple.Terminal'],
+    eventCount: 24, suppressedEventCount: 0,
+    contextMarkdown: `<computer-history-context trust="untrusted-observed-ui">\n${GRANULARITY_OVERVIEW}\n${GRANULARITY_OVERVIEW_BODY}\n</computer-history-context>`,
+  };
+  const raw: ComputerHistoryTimelineEntry = {
+    id: 'granularity-raw', start: shanghaiTime(0, '08:31'), end: shanghaiTime(0, '08:32'),
+    title: GRANULARITY_RAW_TITLE, description: '尚未生成摘要的窗口切换记录。',
+    applications: ['com.google.Chrome'], eventCount: 2, suppressedEventCount: 0,
+    contextMarkdown: '<computer-history-context trust="untrusted-observed-ui">尚未生成摘要的窗口切换记录。</computer-history-context>',
+  };
+  return [raw, ...leaves.toReversed(), parent];
+}
+
 const STATUS: ComputerHistoryStatus = {
   platformSupported: true,
   helperAvailable: true,
@@ -250,7 +302,13 @@ const WINDOWS: Record<string, string[]> = {
 
 function fixtureDocument(entry: ComputerHistoryTimelineEntry): ComputerHistoryDetail['document'] {
   if (!entry.summaryLevel) return undefined;
-  const body = entry.id === 'layout' ? [
+  const granularityActivity = GRANULARITY_ACTIVITIES.find((activity) => activity.title === entry.title);
+  const granularityBody = entry.title === GRANULARITY_OVERVIEW ? GRANULARITY_OVERVIEW_BODY : granularityActivity?.body;
+  const body = granularityBody ? [
+    '## 观察依据', '', granularityBody, '', '### 待核对', '',
+    '- 保留原始时间与应用来源。',
+    '- 未记录到完成通知的事项仍需人工确认。',
+  ].join('\n') : entry.id === 'layout' ? [
     '## 活动概览',
     '',
     '在 **VS Code** 与 **Chrome** 之间切换，围绕电脑历史独立页面检查导航、摘要排版和窄屏操作区。',
@@ -302,7 +360,7 @@ function fixtureDocument(entry: ComputerHistoryTimelineEntry): ComputerHistoryDe
   const header = {
     version: 1, id: entry.id, level: entry.summaryLevel,
     start: entry.start, end: entry.end, applications: entry.applications,
-    eventCount: entry.eventCount, sourceIds: [`synthetic-${entry.id}-segment`],
+    eventCount: entry.eventCount, sourceIds: entry.summaryChildren ?? [`synthetic-${entry.id}-segment`],
     content: { title: entry.title, description: entry.description, ...(entry.suggestion ? { suggestion: entry.suggestion } : {}) },
   };
   return { name: `${entry.summaryLevel}-${Date.parse(entry.start)}.md`, markdown: `---\n${JSON.stringify(header)}\n---\n${body}\n`, body };
@@ -327,18 +385,20 @@ function fixtureDetail(entry: ComputerHistoryTimelineEntry): ComputerHistoryDeta
   return { entry, document: fixtureDocument(entry), events, eventTotal: events.length, rawAvailable: true, truncated: false };
 }
 
-type Scenario = 'populated' | 'empty' | 'expired' | 'corrupt' | 'detail-error' | 'cached-detail-error' | 'unsupported' | 'missing-model' | 'settings-error' | 'multi-day' | 'delete-error' | 'mixed-pending' | 'pending-summaries' | 'pending-summaries-idle' | 'summaries-disabled' | 'summary-failed';
+type Scenario = 'populated' | 'empty' | 'expired' | 'corrupt' | 'detail-error' | 'cached-detail-error' | 'unsupported' | 'missing-model' | 'settings-error' | 'multi-day' | 'granularity' | 'delete-error' | 'mixed-pending' | 'pending-summaries' | 'pending-summaries-idle' | 'summaries-disabled' | 'summary-failed';
 
 type HistoryProbes = {
   onSettingsWrite(patch: Partial<ComputerHistorySettings>): void;
   onPermissionRequest(): void;
   onDetailRead(id: string): void;
   onTimelineRead(): void;
+  onSummaryRetry(): void;
 };
 
 function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?: readonly ComputerHistoryApplication[]): ModuleHubComputerHistoryService {
   const analysis = createDesktopModuleHubServices(settingsBridge as unknown as DesktopModuleHubBridge).computerHistory;
   let entries = scenario === 'empty' || scenario === 'unsupported' ? [] : [...fixtureEntries()];
+  if (scenario === 'granularity') entries = granularityEntries();
   if (scenario === 'multi-day') entries.push(...entries.slice(-2).map((entry) => ({
     ...entry, id: `${entry.id}-yesterday`,
     start: new Date(Date.parse(entry.start) - 86_400_000).toISOString(),
@@ -371,6 +431,8 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
     status = { ...status, state: 'unsupported', eventCount: 0, platformSupported: false, helperAvailable: false, settings: { ...status.settings, enabled: false } };
   }
   return {
+    getViewGranularity: analysis.getViewGranularity,
+    setViewGranularity: analysis.setViewGranularity,
     status: async () => structuredClone(status),
     applications: async (bundleIds) => bundleIds.map((bundleIdentifier) =>
       applications?.find((application) => application.bundleIdentifier === bundleIdentifier)
@@ -428,6 +490,7 @@ function fixtureService(scenario: Scenario, probes: HistoryProbes, applications?
       return structuredClone(status);
     },
     retrySummary: async () => {
+      probes.onSummaryRetry();
       detailError = false;
       if (scenario === 'summary-failed') status = { ...status, summaryState: 'idle', summaryError: undefined };
       return structuredClone(status);
@@ -454,10 +517,10 @@ function HistorySurface({ scenario, onCreateDraft, withSidebar = false, applicat
   withSidebar?: boolean;
   applications?: readonly ComputerHistoryApplication[];
 } & HistoryProbes) {
-  const { onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead } = probes;
+  const { onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry } = probes;
   const services = useMemo(() => createFakeModuleHubServices({ computerHistory: fixtureService(scenario, {
-    onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead,
-  }, applications) }), [scenario, applications, onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead]);
+    onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry,
+  }, applications) }), [scenario, applications, onSettingsWrite, onPermissionRequest, onDetailRead, onTimelineRead, onSummaryRetry]);
   const [collapsed, setCollapsed] = useState(false);
   const { settingsOpen, settingsRequest, openComputerHistorySettings, closeSettingsModal } = useSettingsModal();
   const [localeGate] = useState(createUiLocaleUpdateGate);
@@ -558,6 +621,7 @@ function syntaxTokens(root: Element): string[] {
 export const Populated: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('radio', { name: '10 分钟' }));
     await canvas.findByRole('button', { name: /检查电脑历史的独立页面布局/ });
     expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(6);
     expect(canvasElement.querySelector('.computer-history-detail')).toBeNull();
@@ -624,8 +688,8 @@ export const DocumentSource: Story = {
     const source = within(document).getByRole('radio', { name: /源码|原始碼|Source/ });
     await userEvent.click(source);
     expect(source).toBeChecked();
-    await waitFor(() => expect(document.querySelector('code')).toHaveTextContent('"version":1'));
-    expect(document.querySelector('code')).toHaveTextContent('```ts');
+    await waitFor(() => expect(document.querySelector('pre code')).toHaveTextContent('"version":1'));
+    expect(document.querySelector('pre code')).toHaveTextContent('```ts');
     await waitFor(() => expect(syntaxTokens(document).length).toBeGreaterThan(5));
   },
 };
@@ -645,6 +709,125 @@ export const RecordedEvents: Story = {
 // Real path: global sidebar -> Computer History, keeping task history visible in the rail.
 export const GlobalSidebar: Story = {
   args: { withSidebar: true },
+};
+
+// Real path: saved UTC-aligned overviews -> original documents -> local calendar-day reading.
+export const Granularity: Story = {
+  args: { scenario: 'granularity', withSidebar: true },
+  play: async ({ canvasElement, args, step }) => {
+    const canvas = within(canvasElement);
+    const body = within(canvasElement.ownerDocument.body);
+    const list = within(await canvas.findByRole('complementary', { name: '活动列表' }));
+    const modes = within(canvas.getByRole('radiogroup', { name: '查看粒度' }));
+    const entries = granularityEntries();
+    const parent = entries.find((entry) => entry.summaryLevel === '6h')!;
+    const leaf = entries.find((entry) => entry.title === GRANULARITY_ACTIVITIES[3].title)!;
+    const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(at('12:00')));
+    const yesterday = new Date(at('12:00'));
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayLabel = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(yesterday);
+
+    await step('Default six-hour overview and pending interval', async () => {
+      await list.findByRole('button', { name: new RegExp(GRANULARITY_OVERVIEW) });
+      expect(modes.getByRole('radio', { name: '6 小时' })).toBeChecked();
+      expect(list.getByRole('button', { name: /今天 · 08:00–14:00.*总览待生成/ })).toHaveTextContent('2 段活动');
+      expect(list.getAllByRole('listitem')).toHaveLength(2);
+      expect(list.getByRole('button', { name: new RegExp(GRANULARITY_ACTIVITIES[4].title) })).toBeVisible();
+      expect(list.queryByRole('button', { name: new RegExp(leaf.title) })).toBeNull();
+      expect(canvas.queryByText(GRANULARITY_RAW_TITLE)).toBeNull();
+      expect(args.onDetailRead).not.toHaveBeenCalled();
+
+      const expand = list.getByRole('button', { name: '展开明细 · 昨天 20:00–今天 02:00' });
+      expect(expand).toHaveAttribute('aria-expanded', 'false');
+      await userEvent.click(expand);
+      expect(list.getByRole('button', { name: '收起明细 · 昨天 20:00–今天 02:00' })).toHaveAttribute('aria-expanded', 'true');
+      expect(list.getAllByRole('listitem')).toHaveLength(6);
+      expect(list.getByRole('button', { name: new RegExp(leaf.title) })).toHaveTextContent('今天');
+      expect(list.getByRole('button', { name: new RegExp(GRANULARITY_ACTIVITIES[0].title) })).toHaveTextContent('昨天');
+      await userEvent.click(list.getByRole('button', { name: new RegExp(GRANULARITY_OVERVIEW) }));
+      const reader = await canvas.findByRole('region', { name: GRANULARITY_OVERVIEW });
+      const document = await within(reader).findByRole('region', { name: '摘要文档' });
+      await waitFor(() => expect(document).toHaveTextContent(GRANULARITY_OVERVIEW_BODY));
+      expect(reader).toHaveTextContent('昨天 20:00–今天 02:00');
+      expect(args.onDetailRead).toHaveBeenLastCalledWith(parent.id);
+    });
+
+    await step('Changing granularity preserves the open document and its source mode', async () => {
+      const reader = canvas.getByRole('region', { name: GRANULARITY_OVERVIEW });
+      const document = within(reader).getByRole('region', { name: '摘要文档' });
+      await userEvent.click(within(document).getByRole('radio', { name: '源码' }));
+      const reads = args.onDetailRead.mock.calls.length;
+      for (const [label, value] of [['10 分钟', '10min'], ['1 天', 'day'], ['6 小时', '6h']]) {
+        await userEvent.click(modes.getByRole('radio', { name: label }));
+        expect(modes.getByRole('radio', { name: label })).toBeChecked();
+        expect(localStorage.getItem('maka-computer-history-granularity-v1')).toBe(value);
+        expect(canvas.getByRole('region', { name: GRANULARITY_OVERVIEW })).toBe(reader);
+        expect(within(reader).getByRole('region', { name: '摘要文档' })).toBe(document);
+        expect(within(document).getByRole('radio', { name: '源码' })).toBeChecked();
+        expect(args.onDetailRead).toHaveBeenCalledTimes(reads);
+        expect(canvas.queryByText(GRANULARITY_RAW_TITLE)).toBeNull();
+      }
+      await userEvent.click(list.getByRole('button', { name: new RegExp(leaf.title) }));
+      const leafReader = await canvas.findByRole('region', { name: leaf.title });
+      await waitFor(() => expect(within(leafReader).getByRole('region', { name: '摘要文档' })).toHaveTextContent(GRANULARITY_ACTIVITIES[3].body));
+      expect(args.onDetailRead).toHaveBeenLastCalledWith(leaf.id);
+      await userEvent.click(modes.getByRole('radio', { name: '10 分钟' }));
+      expect(canvas.getByRole('region', { name: leaf.title })).toBe(leafReader);
+      expect(list.getByRole('button', { name: '今天 4 段活动' })).toHaveAttribute('aria-expanded', 'true');
+      expect(list.getByRole('button', { name: '昨天 2 段活动' })).toHaveAttribute('aria-expanded', 'true');
+      expect(list.queryByRole('button', { name: new RegExp(GRANULARITY_OVERVIEW) })).toBeNull();
+    });
+
+    await step('Local days show complete saved documents and open the original leaf', async () => {
+      await userEvent.click(modes.getByRole('radio', { name: '1 天' }));
+      await userEvent.click(list.getByRole('button', { name: new RegExp(`${today} · 全天活动`) }));
+      const reader = await canvas.findByRole('region', { name: `${today} · 全天活动` });
+      await waitFor(() => expect(within(reader).getAllByRole('region', { name: '摘要文档' })).toHaveLength(4));
+      for (const activity of GRANULARITY_ACTIVITIES.slice(2)) {
+        const section = within(reader).getByRole('region', { name: activity.title });
+        await waitFor(() => expect(within(section).getByRole('region', { name: '摘要文档' })).toHaveTextContent(activity.body));
+      }
+      expect(within(reader).queryByRole('region', { name: GRANULARITY_ACTIVITIES[1].title })).toBeNull();
+      expect(reader).not.toHaveTextContent(GRANULARITY_OVERVIEW_BODY);
+      expect(reader).not.toHaveTextContent(GRANULARITY_RAW_TITLE);
+      const documents = within(reader).getAllByRole('region', { name: '摘要文档' });
+      const reads = args.onDetailRead.mock.calls.length;
+      await userEvent.click(modes.getByRole('radio', { name: '6 小时' }));
+      expect(canvas.getByRole('region', { name: `${today} · 全天活动` })).toBe(reader);
+      expect(within(reader).getAllByRole('region', { name: '摘要文档' })).toEqual(documents);
+      expect(args.onDetailRead).toHaveBeenCalledTimes(reads);
+      await userEvent.click(within(reader).getByRole('button', { name: leaf.title }));
+      await waitFor(() => expect(within(canvas.getByRole('region', { name: leaf.title })).getByRole('region', { name: '摘要文档' })).toHaveTextContent(GRANULARITY_ACTIVITIES[3].body));
+      expect(args.onDetailRead).toHaveBeenLastCalledWith(leaf.id);
+      await userEvent.click(modes.getByRole('radio', { name: '1 天' }));
+      await userEvent.click(list.getByRole('button', { name: new RegExp(`${yesterdayLabel} · 全天活动`) }));
+      const previousReader = await canvas.findByRole('region', { name: `${yesterdayLabel} · 全天活动` });
+      await waitFor(() => expect(within(previousReader).getAllByRole('region', { name: '摘要文档' })).toHaveLength(2));
+      for (const activity of GRANULARITY_ACTIVITIES.slice(0, 2)) {
+        await waitFor(() => expect(within(previousReader).getByRole('region', { name: activity.title })).toHaveTextContent(activity.body));
+      }
+      expect(within(previousReader).queryByRole('region', { name: leaf.title })).toBeNull();
+    });
+
+    await step('Filtering the new date retains the cross-midnight overview', async () => {
+      await userEvent.click(modes.getByRole('radio', { name: '6 小时' }));
+      await userEvent.click(canvas.getByRole('button', { name: '关闭活动详情' }));
+      await userEvent.click(canvas.getByRole('combobox', { name: '活动日期' }));
+      await userEvent.click(await body.findByRole('option', { name: today }));
+      const overview = list.getByRole('button', { name: new RegExp(GRANULARITY_OVERVIEW) });
+      expect(overview).toHaveTextContent('昨天 20:00–今天 02:00');
+      expect(overview).toHaveTextContent('2 段活动');
+      expect(list.getByRole('button', { name: new RegExp(leaf.title) })).toBeVisible();
+      expect(list.queryByRole('button', { name: new RegExp(GRANULARITY_ACTIVITIES[1].title) })).toBeNull();
+      await userEvent.click(overview);
+      await waitFor(() => expect(within(canvas.getByRole('region', { name: GRANULARITY_OVERVIEW })).getByRole('region', { name: '摘要文档' })).toHaveTextContent(GRANULARITY_OVERVIEW_BODY));
+      expect(args.onSummaryRetry).not.toHaveBeenCalled();
+      expect(args.onSettingsWrite).not.toHaveBeenCalled();
+      expect(args.onPermissionRequest).not.toHaveBeenCalled();
+      expect(args.onCreateDraft).not.toHaveBeenCalled();
+      expect(writeAnalysisConfig).not.toHaveBeenCalled();
+    });
+  },
 };
 
 // Real path: sidebar -> Computer History with saved summaries and two newer unsummarized fragments.
@@ -801,6 +984,7 @@ export const MultipleDays: Story = {
   args: { scenario: 'multi-day' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('radio', { name: '10 分钟' }));
     const yesterday = await canvas.findByRole('button', { name: /昨天 2 段活动/ });
     expect(canvasElement.querySelectorAll('.computer-history-day')).toHaveLength(2);
     expect(canvasElement.querySelectorAll('.computer-history-row')).toHaveLength(8);

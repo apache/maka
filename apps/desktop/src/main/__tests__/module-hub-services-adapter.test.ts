@@ -18,7 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import type { ComputerHistoryApplication } from '@maka/core/computer-history';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
@@ -51,6 +51,15 @@ function methodRecorder(calls: Call[], prefix: string) {
             },
     },
   );
+}
+
+function mockLocalStorage(t: TestContext, descriptor: PropertyDescriptor) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, ...descriptor });
 }
 
 const LOCAL_ANALYSIS_HOST = { profileId: 'local-profile', hostId: 'local-host' };
@@ -130,6 +139,59 @@ function analysisFixture() {
 }
 
 describe('createDesktopModuleHubServices', () => {
+  it('persists history view granularity across adapter recreation without bridge, model, or settings calls', (t) => {
+    const key = 'maka-computer-history-granularity-v1';
+    const values = new Map<string, string>();
+    mockLocalStorage(t, {
+      value: {
+        getItem: (name: string) => values.get(name) ?? null,
+        setItem: (name: string, value: string) => { values.set(name, value); },
+      },
+    });
+    const calls: Call[] = [];
+    const bridge = new Proxy({} as DesktopModuleHubBridge, {
+      get: (_target, domain) => methodRecorder(calls, String(domain)),
+    });
+    const history = createDesktopModuleHubServices(bridge).computerHistory;
+
+    assert.equal(history.getViewGranularity(), '6h');
+    assert.equal(values.size, 0, 'reading the default does not write a preference');
+    for (const unknown of ['week', '"day"']) {
+      values.set(key, unknown);
+      assert.equal(history.getViewGranularity(), '6h');
+      assert.equal(values.get(key), unknown, 'reading an unknown value does not overwrite it');
+    }
+    for (const granularity of ['10min', 'day', '6h'] as const) {
+      history.setViewGranularity(granularity);
+      assert.deepEqual([...values], [[key, granularity]]);
+      assert.equal(history.getViewGranularity(), granularity);
+      assert.equal(createDesktopModuleHubServices(bridge).computerHistory.getViewGranularity(), granularity);
+    }
+    assert.deepEqual(calls, []);
+  });
+
+  for (const failure of ['missing', 'access denied', 'operations denied'] as const) {
+    it(`keeps history view defaults usable when browser storage is ${failure}`, (t) => {
+      const unavailable = () => { throw new Error('Browser storage unavailable'); };
+      mockLocalStorage(t, failure === 'access denied' ? { get: unavailable } : {
+        value: failure === 'missing' ? undefined : { getItem: unavailable, setItem: unavailable },
+      });
+      const calls: Call[] = [];
+      const bridge = new Proxy({} as DesktopModuleHubBridge, {
+        get: (_target, domain) => methodRecorder(calls, String(domain)),
+      });
+      const history = createDesktopModuleHubServices(bridge).computerHistory;
+
+      assert.equal(history.getViewGranularity(), '6h');
+      for (const granularity of ['10min', 'day'] as const) {
+        assert.doesNotThrow(() => history.setViewGranularity(granularity));
+        assert.equal(history.getViewGranularity(), '6h');
+        assert.equal(createDesktopModuleHubServices(bridge).computerHistory.getViewGranularity(), '6h');
+      }
+      assert.deepEqual(calls, []);
+    });
+  }
+
   it('forwards application metadata batches locally without changing native names or missing icons', async () => {
     const bundleIds = Object.freeze(['com.example.editor', 'com.example.uninstalled']);
     const applications: readonly ComputerHistoryApplication[] = Object.freeze([

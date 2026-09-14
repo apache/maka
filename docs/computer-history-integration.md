@@ -49,7 +49,37 @@ The selected navigation direction is a global left-sidebar entry opening an
 independent Computer History page. It is not scoped to the active task or the
 selected remote Host. It replaces the former Workbar integration.
 
-The page opens as a full-width chronological summary feed grouped by local date.
+The page opens as a full-width summary feed with a persistent
+10 minutes / 6 hours / 1 day selector below its heading. Six hours is the
+initial view; subsequent visits reuse this client's preference. Changing it
+does not invoke analysis or alter capture frequency, consent, or model settings.
+
+The ten-minute view lists saved leaf summaries. The six-hour view shows saved
+rollups with an independent child disclosure; a pending interval shows its
+already summarized activities until the rollup is ready. Main returns both
+levels and canonical child IDs, so a parent never removes access to its original
+documents. Leaves absent from a parent's provenance remain separately visible.
+Summary windows remain UTC-aligned; range labels show both local dates when
+they cross midnight. Date filters use half-open interval overlap and offer every
+intersected local date, including daylight-saving transitions.
+
+The one-day view collects saved activities by local calendar date. It is not
+another generated daily summary. Opening a day reads each existing document with
+bounded concurrency, individual failure/retry states, and the same safe
+Markdown/source/copy/reveal controls. A matching rollup remains available on
+dates without matching children, including searches matching only its content.
+A document visible on multiple dates remains the same saved document, not a
+rewritten or split artifact.
+
+Granularity and filter changes retain the open document, source mode and
+scroll position; an explicit new selection changes the reader. Background
+refresh updates the list and open collection without invoking model settings.
+An open six-hour collection keeps the whole interval as rollup provenance
+changes; the list still distinguishes referenced and unreferenced activities.
+Opened fallback rollups remain readable when new children arrive or filters
+change. Main supplies a read-time saved-file revision so changes beyond the
+bounded timeline preview refresh the full document without repeatedly reading
+unchanged files. That revision is neither persisted nor sent to the model.
 Raw app/window fragments do not appear as feed rows or contribute to its counts,
 search, date options, or application filters. Before the first summary, the page
 distinguishes waiting, active generation, paused/stopped recording, disabled analysis,

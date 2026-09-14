@@ -36,10 +36,12 @@ const OBSERVED_MARKDOWN_COMPONENTS: Partial<MarkdownComponents> = {
 
 type DocumentAction = 'filename' | 'markdown' | 'reveal';
 
-export function ComputerHistoryDocument({ document, onCopy, onReveal }: {
+export function ComputerHistoryDocument({ document, onCopy, onReveal, headingLevel = 3 }: {
   document: NonNullable<ComputerHistoryDetail['document']>;
   onCopy(text: string): Promise<void>;
   onReveal(): Promise<void>;
+  /** Minimum rendered body heading level; saved Markdown remains unchanged. */
+  headingLevel?: HeadingLevel;
 }) {
   const copy = computerHistoryCopy(useUiLocale());
   const [mode, setMode] = useState('rendered');
@@ -55,11 +57,11 @@ export function ComputerHistoryDocument({ document, onCopy, onReveal }: {
       // Fit saved document headings below the activity title without rewriting Markdown.
       heading: ({ level, children, id }) => <Heading
         className="computer-history-document-heading"
-        level={Math.min(6, 3 + Math.max(0, level - firstLevel)) as HeadingLevel}
+        level={Math.min(6, headingLevel + Math.max(0, level - firstLevel)) as HeadingLevel}
         id={id}
       >{children}</Heading>,
     } satisfies Partial<MarkdownComponents>;
-  }, [document.body]);
+  }, [document.body, headingLevel]);
 
   async function run(action: DocumentAction) {
     if (pendingRef.current) return;
