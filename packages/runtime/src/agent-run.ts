@@ -29,6 +29,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { isRuntimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
 import { RunHandoffGate, type RunHandoffRequest } from './run-handoff-gate.js';
 import { preserveHandoffOpening } from './runtime-resume.js';
+import { runtimeInvocationRouteForHeader } from './runtime-invocation-route.js';
 import type {
   RequestCompositionSnapshot,
   RequestCompositionSnapshotInput,
@@ -273,7 +274,6 @@ export class AgentRun {
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
-  private sawCompletion = false;
   private finalStatus: { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined;
   private turnFailed = false;
   private finalized = false;
@@ -1164,7 +1164,6 @@ export class AgentRun {
       (ev.type === 'complete' || ev.type === 'abort') && !this.turnFailed;
     const turnStatus = terminalSessionEvent ? turnStatusFromEvent(ev) : undefined;
     if (terminalSessionEvent) {
-      this.sawCompletion = true;
       if (ev.type === 'abort' && !this.abortSource) this.abortSource = ev.reason;
       if (ev.type === 'complete' && ev.stopReason === 'user_stop' && !this.abortSource)
         this.abortSource = 'user_stop';
@@ -1444,22 +1443,7 @@ export class AgentRun {
     const opening: RuntimeEventInvocationOpenedContent = {
       kind: 'invocation_opened',
       protocol: 'invocation_opened_v1',
-      route:
-        this.header.llmConnectionId === undefined
-          ? {
-              provenance: 'unknown',
-              backendKind: this.header.backend,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-            }
-          : {
-              provenance: 'runtime',
-              backendKind: this.header.backend,
-              llmConnectionId: this.header.llmConnectionId,
-              llmConnectionSlug: this.header.llmConnectionSlug,
-              modelId: this.header.model,
-              ...(providerStateIdentity ? { providerStateIdentity } : {}),
-            },
+      route: runtimeInvocationRouteForHeader(this.header, providerStateIdentity),
       configuration: {
         cwd: this.header.cwd,
         permissionMode: this.header.permissionMode,

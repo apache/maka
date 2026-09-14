@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, Ban, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -693,14 +693,17 @@ export const TurnView = memo(function TurnView(props: {
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
-                #1307: runs of reasoning + tools between answer texts render
-                through the derived fold as collapsed Processing blocks. */}
+                Intermediate text, reasoning and tools share a disclosure;
+                the final reply and inserted user instructions stay outside. */}
               {segment.items.map((item, index) =>
                 item.kind === 'processing' ? (
                   <ProcessingBlock
                     key={`processing-${item.id}`}
                     activityObserved={props.activityObserved}
                     entries={item.children}
+                    running={!!props.liveStreaming || turn.status === 'running'}
+                    durationMs={ownsTurnChrome ? turn.durationMs : undefined}
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
                       props.onSwitchToBypassAndRetry
@@ -1156,10 +1159,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
 type AssistantAnswerPhase = 'historical' | 'streaming' | 'settled';
 
 type AssistantAnswerBubbleProps =
-  | { text: string; phase: 'historical' }
+  | { text: string; phase: 'historical'; interrupted?: true }
   | {
       text: string;
       phase: 'streaming' | 'settled';
+      interrupted?: true;
       /** Text already streamed before this mount, so a remount does not replay it. */
       settledText?: string;
       truncated?: boolean;
@@ -1194,10 +1198,13 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   }, [props.phase, onSettled]);
 
   return (
+    <>
+    {(!props.interrupted || props.text.length > 0) && (
     <ChatMessageBubble
       variant="ghost"
       data-maka-transcript-boundary=""
       data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
+      data-response-interrupted={props.interrupted ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1244,6 +1251,13 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
         </Tooltip>
       )}
     </ChatMessageBubble>
+    )}
+    {props.interrupted && (
+      <ChatSystemMessage variant="divider">
+        {copy.providerRetryReason.stream_truncated}
+      </ChatSystemMessage>
+    )}
+    </>
   );
 });
 
@@ -1284,10 +1298,11 @@ function TurnTimelineEntry(props: {
     );
   }
   // Same component either way — a type swap here would remount the answer.
-  if (item.live !== true) return <AssistantAnswerBubble text={item.text} phase="historical" />;
+  if (item.live !== true) return <AssistantAnswerBubble text={item.text} interrupted={item.interrupted} phase="historical" />;
   return (
     <AssistantAnswerBubble
       text={item.text}
+      interrupted={item.interrupted}
       phase={item.complete === true ? 'settled' : 'streaming'}
       settledText={props.initialLiveContent?.get(`text:${item.messageId}`)}
       truncated={item.truncated === true}
@@ -1299,27 +1314,64 @@ function TurnTimelineEntry(props: {
 function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
+  running: boolean;
+  durationMs?: number;
+  onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
-  const { entries } = props;
+  const copy = getConversationCopy(useUiLocale()).messages;
+  // null follows the lifecycle: open while running, collapsed on completion.
+  // Explicit reader choices survive appended events and the live→stored swap.
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const needsAttention = props.entries.some((entry) => entry.kind === 'tools'
+    && entry.items.some((tool) => tool.status === 'errored' || tool.status === 'interrupted'));
+  // Reveal a new failure even if the reader collapsed the running process.
+  // They can close it again; its attention label remains visible. Permission
+  // requests and turn recovery banners are owned outside the timeline.
+  useEffect(() => {
+    if (needsAttention) setManualOpen(null);
+  }, [needsAttention]);
+  const open = manualOpen ?? (props.running || needsAttention);
+  const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
+    ? Math.floor(Math.max(0, props.durationMs) / 1000)
+    : undefined;
+  const label = needsAttention ? copy.processNeedsAttention
+    : props.running ? copy.processing
+    : seconds === undefined ? copy.processDetails
+    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
-    <div
+    <details
       className="maka-processing-sequence"
       data-maka-transcript-boundary=""
+      open={open}
     >
-      {entries.map((entry, index) => (
-        <TurnTimelineEntry
-          key={timelineEntryKey(entry, index)}
-          activityObserved={props.activityObserved}
-          item={entry}
-          onOpenLinkedSession={props.onOpenLinkedSession}
-          onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-          initialLiveContent={props.initialLiveContent}
-        />
-      ))}
-    </div>
+      <summary
+        className="maka-processing-summary"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.preventDefault();
+          setManualOpen(!open);
+        }}
+      >
+        <span>{label}</span>
+        <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />
+      </summary>
+      <div className="maka-processing-content">
+        {props.entries.map((entry, index) => (
+          <TurnTimelineEntry
+            key={timelineEntryKey(entry, index)}
+            activityObserved={open && props.activityObserved !== false}
+            item={entry}
+            onStreamingSettled={props.onStreamingSettled}
+            onOpenLinkedSession={props.onOpenLinkedSession}
+            onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+            initialLiveContent={props.initialLiveContent}
+          />
+        ))}
+      </div>
+    </details>
   );
 }
 

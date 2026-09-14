@@ -23,6 +23,7 @@ import { isTerminalShellRunStatus } from '@maka/core/shell-run';
 import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
 import type { WorkbarServices } from '../../features/workbar';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
+import { expectSessionUpdate } from './create-session-settings-services.js';
 
 export type DesktopWorkbarBridge = Pick<
   MakaBridge,
@@ -35,7 +36,8 @@ export type DesktopWorkbarBridge = Pick<
   | 'sessions'
   | 'shellRuns'
   | 'transcripts'
->;
+> &
+  Partial<Pick<MakaBridge, 'workBoard'>>;
 
 export interface DesktopWorkbarServiceDependencies {
   readSettledMessages: typeof readSettledMessagesFrom;
@@ -151,6 +153,13 @@ export function createDesktopWorkbarServices(
         bridge.inspector.subscribeUsageChanges(sessionId, handler),
     },
     attachments: bridge.attachments,
+    ...(bridge.workBoard
+      ? {
+          workBoard: {
+            linkSession: (id, link) => bridge.workBoard!.linkSession(id, link),
+          },
+        }
+      : {}),
     sideChat: {
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
@@ -186,8 +195,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
       reorderQueueEntries: (sessionId, entryIds) =>
         bridge.sessions.reorderQueueEntries(sessionId, entryIds),
-      setPermissionMode: (sessionId, mode) =>
-        bridge.sessions.setPermissionMode(sessionId, mode),
+      setPermissionMode: async (sessionId, mode) =>
+        expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>

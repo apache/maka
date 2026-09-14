@@ -156,7 +156,6 @@ export function testToolResultArchive(
 ): ToolResultArchiveCapability {
   return createToolResultArchiveCapability({
     archiveToolResult: async () => undefined,
-    readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
     readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
     ...services,
   });

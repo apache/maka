@@ -155,6 +155,13 @@
   .workHubLiveWelcome p { color: var(--muted-foreground); }
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
+  .workHubComposerContent { position: relative; }
+  /* Top-layer content still needs room inside the native window. Measuring
+     this leading space grows the bottom-anchored window upward, without
+     changing the composer's layout or its controls' screen positions. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .workHubComposerSurface:has(.maka-model-wheel-anchor[data-open='true'])::before {
+    content: ''; display: block; height: 136px;
+  }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
   .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }
@@ -257,16 +264,12 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 
 /* Each message carries Work identity on its sender's edge. */
 .workhub-surface .maka-user-message {
-  border-inline-end: 3px solid transparent;
+  border-inline-end: 4px solid transparent;
   padding-inline-end: 12px;
 }
 
-.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-user-message {
-  border-inline-end-color: var(--maka-turn-accent);
-}
-
 .workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-assistant-answer {
-  border-inline-start: 3px solid var(--maka-turn-accent);
+  border-inline-start: 4px solid transparent;
   padding-inline-start: 12px;
 }
 
@@ -308,11 +311,18 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 
 
 
-/* A real button makes the narrow identity stripe keyboard accessible. */
+/* The button owns the rounded stripe; transparent message borders reserve its
+   gutter. Hover expands only the paint, so the conversation never shifts. */
 .workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
-.workhub-surface .workhub-message-rail { position: absolute; inset-block: 0; width: 12px; min-width: 0; height: auto; border: 0; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
-.maka-user-message > .workhub-message-rail { inset-inline-end: -3px; }
-.maka-assistant-answer .workhub-message-rail { inset-inline-start: -3px; }
-.workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; border-radius: 3px; }
+.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
+.workhub-message-rail::before { content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; border-radius: 999px; background: var(--maka-turn-accent); transform-origin: left center; transition: transform 150ms ease-out, background-color 150ms ease-out; pointer-events: none; }
+.maka-user-message .workhub-message-rail { inset-inline-end: -4px; }
+.maka-user-message .workhub-message-rail::before { inset-inline-start: auto; inset-inline-end: 0; transform-origin: right center; }
+.maka-assistant-answer .workhub-message-rail { inset-inline-start: -4px; }
+.workhub-message-rail:is(:hover, :focus-visible, [data-work-highlighted='true'])::before { transform: scaleX(1.5); }
+.workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .workhub-surface .workhub-message-rail, .workhub-message-rail::before { transition: none; }
+}
 .workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
 .workhub-conversation-filter > span { overflow-wrap: anywhere; }

@@ -25,15 +25,17 @@ export type ChildFdInput =
   | { fd: number; data: Uint8Array }
   | { fd: number; sourceFd: number; releaseSource?: () => void };
 
+export const MAX_CHILD_FD = 64;
+
 export function buildSpawnStdio(
   fdInputs: readonly ChildFdInput[] | undefined,
   stdin: 'ignore' | 'pipe' = 'ignore',
 ): Array<'ignore' | 'pipe' | number> {
   const stdio: Array<'ignore' | 'pipe' | number> = [stdin, 'pipe', 'pipe'];
   for (const input of fdInputs ?? []) {
-    if (!Number.isInteger(input.fd) || input.fd < 3 || input.fd > 64) {
+    if (!Number.isInteger(input.fd) || input.fd < 3 || input.fd > MAX_CHILD_FD) {
       throw new Error(
-        `Child fd input must use an integer fd between 3 and 64; received ${input.fd}`,
+        `Child fd input must use an integer fd between 3 and ${MAX_CHILD_FD}; received ${input.fd}`,
       );
     }
     if ('sourceFd' in input && (!Number.isInteger(input.sourceFd) || input.sourceFd < 0)) {

@@ -368,6 +368,9 @@ export class AcpSessionRegistry {
       throw requestErrorFromRuntimeHost(error, 'subscription.open');
     } finally {
       context.signal.removeEventListener('abort', onAbort);
+      // A terminal subscription event can precede the Stop response. Retain this
+      // prompt so close/dispose cannot release its connection while Stop is in flight.
+      await active.stopTask?.catch(() => undefined);
       active.finished = true;
       this.#wake(active);
       this.#removeActivePrompt(active);

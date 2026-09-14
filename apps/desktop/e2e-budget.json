@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "expected-failure-feedback.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
+    },
     "new-task-reload.spec.ts": {
       "tests": 2,
       "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
@@ -75,7 +79,7 @@
     },
     "workhub-layout.spec.ts": {
       "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility and pointer dragging verifies model-wheel scrolling and release snapping; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the compact native window grows to contain the model overlay without moving composer controls on screen, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,

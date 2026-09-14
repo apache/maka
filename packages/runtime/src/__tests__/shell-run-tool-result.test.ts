@@ -33,7 +33,20 @@ import {
   terminalContent,
 } from '../shell-run-tool-result.js';
 
-describe('PTY model output projection', () => {
+describe('shell result projection', () => {
+  test('foreground terminal results retain executor output for durable Read recovery', () => {
+    const record = failedShellRun();
+    record.output = {
+      mode: 'pipes',
+      stdout: `FRONT\n${'x'.repeat(100_000)}\nTAIL`,
+      stderr: 'ERROR',
+      stdoutTruncated: true,
+      stderrTruncated: false,
+      redacted: false,
+    };
+    assert.deepEqual(terminalContent(record).output, record.output);
+  });
+
   test('shares one UTF-8 budget in screen, alternate, then latest scrollback priority', () => {
     const output = ptyOutput({
       screen: 'SCREEN',

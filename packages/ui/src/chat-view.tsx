@@ -45,6 +45,7 @@ import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
+import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
@@ -551,6 +552,13 @@ export function ChatView(props: {
     inlineTransientMessagesByTurn.set(turn.turnId, messages);
     inlineTransientMessageIds.add(message.id);
   }
+  // The tail slot renders what no Turn took inline; a durable local copy the
+  // transcript already shows as a Turn's own user row must not render again.
+  const tailTransientMessages = selectTailTransientMessages(
+    transientMessages,
+    inlineTransientMessageIds,
+    turns,
+  );
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -638,10 +646,17 @@ export function ChatView(props: {
                   ))}
                 </>
               ) : null}
-              {transientMessages.map((message) => (
-                <TransientUserMessage key={message.id} message={message}
-                  status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
-              ))}
+              {/* Tail rows have no Turn ancestor, so the reading measure that
+                  `.maka-turn` owns would not reach them: without the wrapper
+                  the bubble stretches across the full window width. */}
+              {transientMessages.length > 0 && (
+                <section className="maka-turn">
+                  {transientMessages.map((message) => (
+                    <TransientUserMessage key={message.id} message={message}
+                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
+                  ))}
+                </section>
+              )}
               {/* The optimistic message supplies the clock while the session is created. */}
               {runningStatus && (
                 <section className="maka-turn" data-live-streaming="true">
@@ -821,15 +836,21 @@ export function ChatView(props: {
                   </div>
                 );
               })}
-              {transientMessages.filter(
-                (message) => !inlineTransientMessageIds.has(message.id),
-              ).map((message) => (
-                <TransientUserMessage
-                  key={message.id}
-                  message={message}
-                  status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
-                />
-              ))}
+              {/* A local copy the transcript already shows as the tail Turn's
+                  own user row must not render again below the running status;
+                  the inline slot drops it, so the tail slot drops it too.
+                  Same reading-measure reasoning as the optimistic path above. */}
+              {tailTransientMessages.length > 0 && (
+                <section className="maka-turn">
+                  {tailTransientMessages.map((message) => (
+                    <TransientUserMessage
+                      key={message.id}
+                      message={message}
+                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
+                    />
+                  ))}
+                </section>
+              )}
               {/* A send arm already names its Turn, but the transcript may not
                   contain it yet. Keep feedback below the pending prompt until
                   that same TurnView can take over. */}

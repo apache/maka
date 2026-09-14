@@ -32,9 +32,8 @@ export {
   serializeToolResultForArchive,
 } from './tool-result-archive.js';
 export type {
-  StaleToolResultPrunePolicy,
-  StaleToolResultArchiveCandidate,
-  ToolResultArchiveReader,
+  ToolResultPrunePolicy,
+  ToolResultArchiveCandidate,
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadFailureReason,
   ToolResultArchiveReadResult,
@@ -45,8 +44,7 @@ export type {
   HistoryCompactionPolicy,
   HistoryCompactionReplayResult,
 } from './history-compaction.js';
-import type { StaleToolResultPrunePolicy } from './tool-result-archive.js';
-import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
+import type { ToolResultPrunePolicy } from './tool-result-archive.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
   isHistoryCompactContentEvent,
@@ -65,19 +63,11 @@ import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 export interface ContextBudgetPolicy {
   name?: string;
   /**
-   * Chars-per-token conversion for the CONTENT policies below (how large one
-   * Tool Result may be before it is archived) and for diagnostics. It takes
-   * part in no context-fit decision: whether a request fits is the provider's
-   * answer (#4559). Defaults to 4.
+   * Diagnostic token estimates only. The tool-result size cap is fixed;
+   * whether a whole request fits remains the provider's decision.
    */
   charsPerToken?: number;
-  /** Optional replay-only pruning for stale oversized tool results before whole-turn compaction. */
-  staleToolResultPrune?: StaleToolResultPrunePolicy;
-  /**
-   * Optional current-turn, provider-visible tool-result pruning before the next
-   * AI SDK step. Defaults off and does not mutate persisted session messages.
-   */
-  activeToolResultPrune?: ActiveToolResultPrunePolicy;
+  toolResultPrune?: ToolResultPrunePolicy;
   /** Latest checkpoint projection and automatic capacity settings. */
   historyCompact?: HistoryCompactionPolicy;
 }
@@ -102,7 +92,7 @@ export function applyRuntimeEventContextBudget(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
 ): BudgetedRuntimeContext | undefined {
-  const prunePolicy = policy?.staleToolResultPrune;
+  const prunePolicy = policy?.toolResultPrune;
   const pruneEnabled = prunePolicy?.enabled === true;
   const historyCompactEnabled = policy?.historyCompact?.enabled === true;
   const enabled = pruneEnabled || historyCompactEnabled;
@@ -203,6 +193,34 @@ export function mergeContextBudgetDiagnostic(
     ...base,
     ...patch,
     ...mergeCompactionDecisionDiagnostics(base.compactionDecisions, patch.compactionDecisions),
+  };
+}
+
+/** Counts from one pruning pass, not a diagnostic snapshot to overlay repeatedly. */
+export type ToolResultPruneStats = Required<
+  Pick<
+    ContextBudgetDiagnostic,
+    | 'prunedToolResults'
+    | 'archiveWriteFailures'
+    | 'prunedToolResultEstimatedTokensBefore'
+    | 'prunedToolResultEstimatedTokensAfter'
+  >
+>;
+
+export function addToolResultPruneStats(
+  snapshot: ContextBudgetDiagnostic,
+  delta: ToolResultPruneStats,
+): ContextBudgetDiagnostic {
+  return {
+    ...snapshot,
+    prunedToolResults: (snapshot.prunedToolResults ?? 0) + delta.prunedToolResults,
+    archiveWriteFailures: (snapshot.archiveWriteFailures ?? 0) + delta.archiveWriteFailures,
+    prunedToolResultEstimatedTokensBefore:
+      (snapshot.prunedToolResultEstimatedTokensBefore ?? 0) +
+      delta.prunedToolResultEstimatedTokensBefore,
+    prunedToolResultEstimatedTokensAfter:
+      (snapshot.prunedToolResultEstimatedTokensAfter ?? 0) +
+      delta.prunedToolResultEstimatedTokensAfter,
   };
 }
 export function mergeContextBudgetDiagnosticPatches(

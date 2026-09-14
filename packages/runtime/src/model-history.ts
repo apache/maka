@@ -316,8 +316,6 @@ export interface RuntimeEventReplayDiagnostic {
   detail?: Record<string, unknown>;
 }
 
-export type RuntimeEventReplaySemanticKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
-
 export type RuntimeEventModelReplayItem =
   | {
       kind: 'text';
@@ -510,7 +508,6 @@ function replayToolIdentity(invocationId: string, toolCallId: string): string {
 export interface RuntimeEventModelReplayPlan {
   items: RuntimeEventModelReplayItem[];
   textMessages: TextModelMessage[];
-  semanticKinds: RuntimeEventReplaySemanticKind[];
   diagnostics: RuntimeEventReplayDiagnostic[];
   hasProviderNativeSemantics: boolean;
 }
@@ -963,16 +960,11 @@ export function buildRuntimeEventModelReplayPlan(
           }
         : { role: item.role, content: item.content },
     );
-  const semanticKinds = [...new Set(items.map((item) => item.kind))];
   return {
     items,
     textMessages,
-    semanticKinds,
     diagnostics,
-    hasProviderNativeSemantics:
-      semanticKinds.includes('thinking') ||
-      semanticKinds.includes('tool_call') ||
-      semanticKinds.includes('tool_result'),
+    hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
 }
 
@@ -1133,7 +1125,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
     .map((attachment) => {
       const resourceRef = formatAttachmentResourceRef(attachment.ref);
       const readArgument = resourceRef
-        ? { ref: resourceRef }
+        ? { path: resourceRef }
         : attachment.ref.kind === 'workspace_file'
           ? { path: attachment.ref.relativePath }
           : attachment.ref.kind === 'external_file'
@@ -1146,7 +1138,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
               ...(attachment.kind === 'image'
                 ? [`Markdown image source: ${JSON.stringify(resourceRef)}`]
                 : []),
-              'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
+              'This is a Session resource, not a workspace file. Use the path above; never use the display name as a path.',
             ].join('\n')
           : `Read argument: ${JSON.stringify(readArgument)}`
         : 'The attachment content is unavailable to Read.';
