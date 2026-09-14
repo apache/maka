@@ -49,6 +49,7 @@ interface ClientSettingsEffectDependencies {
 export function createClientSettingsEffects(
   dependencies: ClientSettingsEffectDependencies,
 ): ClientSettingsEffects {
+  let appliedSettingsFingerprint: string | undefined;
   let rendererFingerprint: string | undefined;
   let botFingerprint: string | undefined;
   let keepSystemAwake: boolean | undefined;
@@ -67,6 +68,7 @@ export function createClientSettingsEffects(
       const settings = await load();
       const nextRendererFingerprint = JSON.stringify(settings);
       const nextBotFingerprint = JSON.stringify(settings.botChat);
+      const settingsChanged = nextRendererFingerprint !== appliedSettingsFingerprint;
       const rendererChanged = nextRendererFingerprint !== rendererFingerprint;
       const keepAwakeChanged = settings.system.keepSystemAwake !== keepSystemAwake;
       const botChanged = nextBotFingerprint !== botFingerprint;
@@ -99,9 +101,15 @@ export function createClientSettingsEffects(
         await dependencies.applyAppIcon(nextAppIcon);
         appIcon = nextAppIcon;
       }
-      rendererFingerprint = nextRendererFingerprint;
-      if (notifyRenderer && rendererChanged) dependencies.emitExternalChanged();
-      return rendererChanged || keepAwakeChanged || botChanged || appIconChanged;
+      appliedSettingsFingerprint = nextRendererFingerprint;
+      const rendererNotified = notifyRenderer && rendererChanged;
+      // A silent refresh may apply recovered settings before the recovery
+      // callback runs. Only an actual delivery consumes the renderer change.
+      if (rendererNotified) {
+        dependencies.emitExternalChanged();
+        rendererFingerprint = nextRendererFingerprint;
+      }
+      return settingsChanged || rendererNotified || keepAwakeChanged || botChanged || appIconChanged;
     });
     tail = run.then(
       () => undefined,

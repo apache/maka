@@ -92,6 +92,7 @@ import {
   mainWindowController,
   mainWindowDelegates,
   quitCoordinator,
+  settingsRecovery,
   settingsStore,
   shellEnvReady,
   showDesktopMessageBox,
@@ -851,6 +852,7 @@ const clientSettingsEffects = createClientSettingsEffects({
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
   },
 });
+settingsRecovery.setEffects(clientSettingsEffects);
 // An OS appearance flip changes no setting, so nothing else would notice it.
 // Only the icon depends on the answer, and `refresh` re-resolves it and
 // no-ops when the resolved tile is the one already applied — which is the
