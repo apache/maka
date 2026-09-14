@@ -62,6 +62,18 @@ export function sessionCookieHeader(token: string, options: { secure: boolean })
   return parts.join('; ');
 }
 
+export function expireCookieHeader(options: { secure: boolean }): string {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'Max-Age=0',
+    'HttpOnly',
+    'SameSite=Strict',
+  ];
+  if (options.secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
 export function parseCookie(header: string | undefined): string | undefined {
   if (!header) return undefined;
   for (const part of header.split(';')) {

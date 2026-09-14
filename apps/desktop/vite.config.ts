@@ -54,12 +54,30 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [
+      // Web-only: the full-client boot (`platform/web/web-boot.ts`) executes
+      // the real preload bridge source in the browser, where `electron`
+      // resolves to a WebSocket-backed shim. The Electron renderer never
+      // imports `electron` (verified: no other importer), so this alias is
+      // inert there — it only fires inside the lazily-loaded web chunk.
+      { find: /^electron$/, replacement: resolve(REPO_ROOT, 'apps/desktop/src/renderer/platform/web/electron-shim.ts') },
       { find: '@maka/ui/icons', replacement: resolve(UI_SRC, 'icons.tsx') },
       { find: '@maka/ui/artifact-preview-registry', replacement: resolve(UI_SRC, 'artifact-preview-registry.ts') },
       { find: '@maka/ui/assistant-stream', replacement: resolve(UI_SRC, 'assistant-stream.ts') },
       { find: '@maka/ui/maka-uri', replacement: resolve(UI_SRC, 'maka-uri.ts') },
       { find: /^@maka\/ui$/, replacement: resolve(UI_SRC, 'index.ts') },
     ],
+  },
+  server: {
+    // `maka-web` (Chrome/Brave): the local directory API (scripts/maka-web-api.mjs,
+    // default 127.0.0.1:5174) is proxied same-origin so the browser page needs
+    // no extra CSP origin and no CORS preflight. Applies to both `dev.mjs` and
+    // `dev-web.mjs` servers since they share this config — GUI and web can run
+    // side by side on one renderer URL.
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:5174', changeOrigin: true },
+      // `/bridge` is owned by attachWebGateway (session cookie → disk token).
+      // Do not proxy it here or the upgrade handler never wins.
+    },
   },
   build: {
     // Renderer bundle lives in dist-renderer (sibling of dist), separate from

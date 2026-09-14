@@ -32,8 +32,8 @@ import { VirtualWebSender, virtualInvokeEvent } from './virtual-sender.js';
  * Loopback WebSocket server that tunnels Electron IPC to `maka-web`
  * browsers. Security posture mirrors the CDP bridge precedent:
  * 127.0.0.1-only, per-launch high-entropy token, strict Origin allowlist.
- * There is deliberately no CORS/cookie surface: the token travels in the
- * WebSocket URL the launcher opens, never in ambient credentials.
+ * The browser never sees the token: the web gateway attaches it only on
+ * this loopback hop. Node clients from loopback may omit Origin.
  */
 
 export const WEB_BRIDGE_TOKEN_BYTES = 32;
@@ -129,11 +129,16 @@ export function createBridgeConnection(
   };
 }
 
+function isLoopbackAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 /** Pure upgrade gate (no sockets): unit-testable without binding a port. */
 export function authorizeUpgrade(
   requestUrl: string,
   origin: string | undefined,
   token: string,
+  remoteAddress?: string,
 ): { ok: true } | { ok: false; code: number; message: string } {
   let presented: string | null;
   try {
@@ -142,6 +147,10 @@ export function authorizeUpgrade(
     return { ok: false, code: 400, message: 'Bad Request' };
   }
   if (presented !== token) return { ok: false, code: 401, message: 'Unauthorized' };
+  if (!origin) {
+    if (isLoopbackAddress(remoteAddress)) return { ok: true };
+    return { ok: false, code: 403, message: 'Forbidden' };
+  }
   if (!isAllowedOrigin(origin)) return { ok: false, code: 403, message: 'Forbidden' };
   return { ok: true };
 }
@@ -155,7 +164,12 @@ export async function startWebBridgeServer(options?: { webAccessPath: string }):
     // Gate upgrades BEFORE the handshake: wrong token or foreign origin never
     // completes, so no application bytes are exchanged with strangers.
     verifyClient: (info, done) => {
-      const verdict = authorizeUpgrade(info.req.url ?? '/', info.origin, token);
+      const verdict = authorizeUpgrade(
+        info.req.url ?? '/',
+        info.origin,
+        token,
+        info.req.socket.remoteAddress,
+      );
       if (verdict.ok) done(true);
       else done(false, verdict.code, verdict.message);
     },

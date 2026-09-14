@@ -51,6 +51,18 @@ test('authorizeUpgrade gates token, origin, and shape', () => {
     code: 403,
     message: 'Forbidden',
   });
+  assert.deepEqual(authorizeUpgrade('/?token=test-token', undefined, TOKEN, '10.0.0.8'), {
+    ok: false,
+    code: 403,
+    message: 'Forbidden',
+  });
+  assert.deepEqual(authorizeUpgrade('/?token=test-token', undefined, TOKEN, '127.0.0.1'), {
+    ok: true,
+  });
+  assert.deepEqual(authorizeUpgrade('/?token=test-token', undefined, TOKEN, '::1'), { ok: true });
+  assert.deepEqual(authorizeUpgrade('/?token=test-token', undefined, TOKEN, '::ffff:127.0.0.1'), {
+    ok: true,
+  });
   // file:// and other non-http origins never pass.
   assert.deepEqual(authorizeUpgrade('/?token=test-token', 'null', TOKEN), {
     ok: false,
