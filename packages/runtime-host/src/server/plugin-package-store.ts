@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { syncDirectory } from '@maka/storage/stable-storage';
+
 import { randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
@@ -548,15 +550,6 @@ async function syncTree(root: string, files: readonly PackageFile[]): Promise<vo
   }
   for (const directory of [...directories].sort((a, b) => b.length - a.length)) {
     await syncDirectory(directory);
-  }
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await open(directory, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 
