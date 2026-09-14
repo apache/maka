@@ -106,33 +106,67 @@ export function useParentTaskStatus(
   useEffect(() => {
     if (!sessionId) return;
     let disposed = false;
-    const unsubscribe = sideChat.subscribeEvents(
-      sessionId,
-      () => undefined,
-      undefined,
-      () => {
-        if (disposed || !mountedRef.current) return;
-        setObservation((current) => {
-          if (current?.sessionId !== sessionId) return current;
-          return applyExecution(
-            current,
-            current.execution
-              ? { ...current.execution, available: false }
-              : hostExecutionProjection(false, null),
-          );
-        });
-      },
-      (projection) => {
-        if (disposed || !mountedRef.current) return;
-        setObservation((current) => {
-          if (current?.sessionId !== sessionId) return current;
-          return applyExecution(current, projection);
-        });
-      },
-    );
+    let observationAttempt = 0;
+    let retryDelayMs = 100;
+    let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let unsubscribeSessionEvents = () => {};
+    const subscribeSessionEvents = () => {
+      if (disposed || !mountedRef.current) return;
+      const attempt = ++observationAttempt;
+      const isCurrent = () =>
+        !disposed && mountedRef.current && attempt === observationAttempt;
+      // A port can report failure before returning its unsubscribe function.
+      let unsubscribeRequested = false;
+      let unsubscribe: (() => void) | undefined;
+      const unsubscribeCurrent = () => {
+        if (unsubscribeRequested) return;
+        unsubscribeRequested = true;
+        unsubscribe?.();
+      };
+      unsubscribeSessionEvents = unsubscribeCurrent;
+      unsubscribe = sideChat.subscribeEvents(
+        sessionId,
+        () => undefined,
+        () => {
+          if (isCurrent()) retryDelayMs = 100;
+        },
+        () => {
+          if (!isCurrent()) return;
+          // Main has removed this observer. Invalidate it immediately, then
+          // create a new registration after the same bounded backoff as App Shell.
+          observationAttempt += 1;
+          setObservation((current) => {
+            if (current?.sessionId !== sessionId) return current;
+            return applyExecution(
+              current,
+              current.execution
+                ? { ...current.execution, available: false }
+                : hostExecutionProjection(false, null),
+            );
+          });
+          unsubscribeCurrent();
+          retryTimer = globalThis.setTimeout(() => {
+            retryTimer = undefined;
+            subscribeSessionEvents();
+          }, retryDelayMs);
+          retryDelayMs = Math.min(retryDelayMs * 2, 2_000);
+        },
+        (projection) => {
+          if (!isCurrent()) return;
+          setObservation((current) => {
+            if (current?.sessionId !== sessionId) return current;
+            return applyExecution(current, projection);
+          });
+        },
+      );
+      if (unsubscribeRequested) unsubscribe();
+    };
+    subscribeSessionEvents();
     return () => {
       disposed = true;
-      unsubscribe();
+      observationAttempt += 1;
+      if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
+      unsubscribeSessionEvents();
     };
   }, [mountedRef, sessionId, sideChat]);
 

@@ -78,9 +78,11 @@ type ExecutionHandler = (projection: SessionExecutionProjection | undefined) => 
 
 function parentObservation(options?: {
   listTurns?: (sessionId: string) => Promise<TurnRecord[]>;
+  onSubscribe?: (attempt: number, fail: () => void) => void;
 }) {
   const executionHandlers: ExecutionHandler[] = [];
-  let onSeedError: ((error: unknown) => void) | undefined;
+  const errorHandlers: Array<((error: unknown) => void) | undefined> = [];
+  const readyHandlers: Array<(() => void) | undefined> = [];
   const subscribed: string[] = [];
   let unsubscribed = 0;
   const listTurnsCalls: string[] = [];
@@ -97,8 +99,13 @@ function parentObservation(options?: {
       subscribeEvents: (sessionId, _handler: (event: SessionEvent) => void, onSeeded, seedError, execution) => {
         subscribed.push(sessionId);
         if (execution) executionHandlers.push(execution);
-        onSeedError = seedError;
-        onSeeded?.();
+        errorHandlers.push(seedError);
+        readyHandlers.push(onSeeded);
+        if (options?.onSubscribe) {
+          options.onSubscribe(subscribed.length, () => seedError?.(new Error('observe rejected')));
+        } else {
+          onSeeded?.();
+        }
         return () => {
           unsubscribed += 1;
         };
@@ -118,7 +125,13 @@ function parentObservation(options?: {
       executionHandlers[index]?.(projection);
     },
     fail(error: unknown = new Error('observation failed')) {
-      onSeedError?.(error);
+      errorHandlers.at(-1)?.(error);
+    },
+    failAt(index: number) {
+      errorHandlers[index]?.(new Error('late observation error'));
+    },
+    ready() {
+      readyHandlers.at(-1)?.();
     },
   };
 }
@@ -212,6 +225,117 @@ describe('useParentTaskStatus', () => {
       }));
     });
     assert.equal(lastStatus(), 'running');
+  });
+
+  it('replaces a terminally failed registration and ignores its late callbacks', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const { root } = installReactRenderer();
+    const observation = parentObservation();
+    await act(async () => renderStatus(root, observation.services, 'parent-1'));
+    await act(async () => observation.seed(hostExecutionProjection(true, completedTurn)));
+    await act(async () => observation.fail());
+    assert.equal(lastStatus(), 'unavailable');
+    assert.equal(observation.unsubscribed, 1);
+    assert.equal(observation.subscribed.length, 1, 'retry must not spin synchronously');
+    await act(async () => {
+      observation.failAt(0);
+      observation.seedAt(0, hostExecutionProjection(true, completedTurn));
+    });
+    assert.equal(lastStatus(), 'unavailable', 'failed registration is invalid immediately');
+
+    await act(async () => context.mock.timers.tick(100));
+    assert.deepEqual(observation.subscribed, ['parent-1', 'parent-1']);
+    await act(async () => observation.seedAt(1, hostExecutionProjection(true, {
+      sessionId: 'parent-1', turnId: 'recovered', runId: 'run', status: 'running',
+    })));
+    assert.equal(lastStatus(), 'running');
+    await act(async () => {
+      observation.seedAt(0, hostExecutionProjection(true, completedTurn));
+      observation.failAt(0);
+      context.mock.timers.tick(10_000);
+    });
+    assert.equal(lastStatus(), 'running');
+    assert.equal(observation.subscribed.length, 2);
+    await act(async () => root.unmount());
+    assert.equal(observation.unsubscribed, 2);
+  });
+
+  it('backs off synchronous seed failures, caps the delay and resets it after a seed', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const { root } = installReactRenderer();
+    const observation = parentObservation({
+      onSubscribe: (attempt, fail) => {
+        if (attempt <= 7) fail();
+      },
+    });
+    await act(async () => renderStatus(root, observation.services, 'parent-1'));
+    assert.equal(observation.unsubscribed, 1, 'synchronous failure still cancels registration');
+    for (const [index, delay] of [100, 200, 400, 800, 1600, 2000, 2000].entries()) {
+      await act(async () => context.mock.timers.tick(delay - 1));
+      assert.equal(observation.subscribed.length, index + 1, 'no early retry');
+      await act(async () => context.mock.timers.tick(1));
+      assert.equal(observation.subscribed.length, index + 2);
+    }
+    assert.equal(observation.unsubscribed, 7);
+    await act(async () => {
+      observation.seed(hostExecutionProjection(true, completedTurn));
+      observation.ready();
+    });
+    assert.equal(lastStatus(), 'last_turn_completed');
+    await act(async () => observation.fail());
+    await act(async () => context.mock.timers.tick(99));
+    assert.equal(observation.subscribed.length, 8);
+    await act(async () => context.mock.timers.tick(1));
+    assert.equal(observation.subscribed.length, 9);
+    await act(async () => root.unmount());
+    assert.equal(observation.unsubscribed, 9);
+  });
+
+  it('cancels pending resubscription on Session changes and unmount', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const { root } = installReactRenderer();
+    const observation = parentObservation();
+    await act(async () => renderStatus(root, observation.services, 'parent-1'));
+    await act(async () => observation.fail());
+    await act(async () => renderStatus(root, observation.services, 'parent-2'));
+    await act(async () => context.mock.timers.tick(10_000));
+    assert.deepEqual(observation.subscribed, ['parent-1', 'parent-2']);
+    await act(async () => observation.fail());
+    await act(async () => root.unmount());
+    const afterUnmount = commits.length;
+    await act(async () => {
+      observation.failAt(0);
+      observation.failAt(1);
+      context.mock.timers.tick(10_000);
+    });
+    assert.equal(observation.subscribed.length, 2);
+    assert.equal(observation.unsubscribed, 2);
+    assert.equal(commits.length, afterUnmount);
+  });
+
+  it('rereads settled history after a new registration and discards the failed one’s read', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const { root } = installReactRenderer();
+    const pending = deferred<TurnRecord[]>();
+    let reads = 0;
+    const observation = parentObservation({
+      listTurns: async () => ++reads === 1
+        ? pending.promise
+        : [{ turnId: 'recovered', status: 'failed' }],
+    });
+    await act(async () => renderStatus(root, observation.services, 'parent-1'));
+    await act(async () => observation.seed(hostExecutionProjection(true, null)));
+    await act(async () => observation.fail());
+    await act(async () => context.mock.timers.tick(100));
+    assert.equal(observation.subscribed.length, 2);
+    await act(async () => observation.seedAt(1, hostExecutionProjection(true, null)));
+    assert.equal(reads, 2);
+    assert.equal(lastStatus(), 'last_turn_failed');
+    await act(async () => {
+      pending.resolve([{ turnId: 'stale', status: 'completed' }]);
+      await pending.promise;
+    });
+    assert.equal(lastStatus(), 'last_turn_failed');
   });
 
   it('never commits the previous Session success onto a replacement Session', async () => {
