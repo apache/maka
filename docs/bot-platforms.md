@@ -43,11 +43,11 @@ The current `BotProvider` contract contains eight channels:
 
 | Channel | Normal conversation reply | Scheduled bot delivery | Progressive reply stream | Typing indicator | Ephemeral reply cleanup | Non-text message classification |
 | --- | --- | --- | --- | --- | --- | --- |
-| Telegram | Yes | Yes | Yes | Yes | Yes | Yes |
+| Telegram | Yes | Yes | Yes (private chat only) | Yes | Yes | Yes |
 | WeChat | Yes | Yes | No | No | No | Yes |
 | Discord | Yes | Yes | No | Yes | No | No |
 | DingTalk | Yes | Yes | No | No | No | No |
-| QQ | Yes | Yes | No | Yes | No | No |
+| QQ | Yes | Yes | No | Yes (guild channel only) | No | No |
 | Slack | Yes | Yes | No | No | No | No |
 | Feishu / Lark | Yes | No | No | No | No | No |
 | WeCom | Yes | No | No | No | No | No |
@@ -60,6 +60,11 @@ DingTalk, QQ, and Slack. A `No` in the optional-feature columns means that the
 shared Maka bridge does not implement that feature; it does not claim that the
 external provider could never support it.
 
+Progressive reply streaming is currently private-chat only for Telegram; group
+conversations do not receive a stream. QQ's typing indicator is limited to
+guild-channel conversations (`channel:` targets); it is not available for QQ
+groups or C2C chats.
+
 The platform count and the scheduled-delivery set are intentionally separate.
 Do not describe the repository as supporting nine platforms, and do not infer
 scheduled-task support from the existence of a bridge alone.
@@ -71,7 +76,7 @@ names differ, but the Runtime bridge reads the following values:
 
 | Channel | Required or provider-specific values | Runtime transport in Maka |
 | --- | --- | --- |
-| Telegram | Bot token; optional proxy URL | Long polling |
+| Telegram | Bot token | Long polling |
 | WeChat | Bridge URL and, for the iLink path, a bot token | Local bridge or iLink polling |
 | Discord | Bot token | Gateway |
 | DingTalk | App ID and app secret | Stream/WebSocket |
@@ -84,6 +89,12 @@ Provider setup instructions must name the provider's own console terms and
 link to its official documentation. This table only describes what the Maka
 Runtime consumes; it is not a claim that the credentials have been validated
 against a live provider.
+
+Bot HTTP requests currently use the active global network proxy resolved by
+`proxiedFetch()`. The channel-level `proxyUrl` setting is not consumed by the
+current Telegram or Discord bridges, so do not rely on it for routing. Long-
+lived WebSocket transports, including Discord Gateway, may still require a
+system-level route such as TUN.
 
 The source of truth for this matrix is the [`BotProvider` and
 `BOT_DELIVERY_PROVIDERS`](../packages/core/src/bot-chat-settings.ts) contract,
@@ -104,8 +115,9 @@ the current portal sequence. Never put the resulting secrets in this document.
 
 1. Use [BotFather](https://core.telegram.org/bots#how-do-i-create-a-bot) to
    create a bot with `/newbot` and copy its token.
-2. Put the token in Maka's `token` field. Set `proxyUrl` only when the Telegram
-   API must be reached through a proxy.
+2. Put the token in Maka's `token` field. For network routing, configure Maka's
+   active global network proxy; the channel-level `proxyUrl` field is not
+   currently consumed by this bridge.
 3. Send the bot a direct text message first. For a group smoke test, add the
    bot to a test group and account for Telegram group privacy and mention rules.
 
@@ -125,9 +137,10 @@ optional delivery enhancements; a normal text reply remains the baseline.
 
 Maka uses Discord's Gateway for inbound events and REST calls for sends. It
 does not use Discord's HTTP interactions endpoint for ordinary bot messages.
-When Discord access requires a proxy, the channel proxy setting covers Bot
-authentication only; the Gateway WebSocket still requires a system-level route
-such as TUN, followed by an app restart.
+When Discord access requires a proxy, configure Maka's active global network
+proxy for HTTP requests. The channel-level `proxyUrl` field is not consumed by
+the current Telegram or Discord bridges; the Gateway WebSocket still requires
+a system-level route such as TUN, followed by an app restart.
 
 ### Slack
 
@@ -221,9 +234,10 @@ instructions, links, and attachments do not grant it permission to read files,
 run commands, disclose data, or change Maka settings.
 
 The normal Session permission mode and its operating-system execution boundary
-remain the authority for agent actions. A bot allowlist narrows who may start a
-conversation; it is not a sandbox, an authorization system for tools, or a
-substitute for reviewing permission prompts. See the project
+remain the authority for agent actions. Where a bridge implements a bot
+allowlist, it can narrow who may start a conversation; it is not a sandbox, an
+authorization system for tools, or a substitute for reviewing permission
+prompts. See the project
 [Security Policy](../SECURITY.md) for Maka's trust model and reporting process.
 
 ### Keep platform credentials out of the renderer and out of public records
@@ -252,16 +266,20 @@ When changing a bridge or an onboarding flow:
 
 ### Restrict who can contact a bot when the deployment needs it
 
-`allowedUserIds` is an optional per-channel allowlist. When it is absent or
-empty, the bridge preserves the existing unrestricted behavior. When it is
-non-empty, a bridge silently drops messages from other platform-native user
-IDs; it does not send a rejection that could help an unauthorized sender probe
-the policy. IDs are stored as strings because some platform identifiers exceed
-JavaScript's safe integer range.
+`allowedUserIds` is not a universal per-channel allowlist. The current
+bridge-specific enforcement covers Telegram, Feishu / Lark, and WeCom.
+Discord, DingTalk, QQ, Slack, and WeChat do not currently apply a central
+Runtime filter for this field. Use the field only where the corresponding
+bridge documents enforcement; for other channels, do not treat it as a
+security boundary.
 
-Configure an allowlist for a personal, development, or otherwise restricted
-bot. For a public bot, leave it empty only when the owner intentionally accepts
-untrusted messages and has chosen an appropriate Session permission policy.
+For an enforcing bridge, an absent or empty list preserves the existing
+unrestricted behavior. A non-empty list makes the bridge silently drop
+messages from other platform-native user IDs; it does not send a rejection
+that could help an unauthorized sender probe the policy. IDs are stored as
+strings because some platform identifiers exceed JavaScript's safe integer
+range. For unsupported channels, use provider-side membership or permissions
+and a restricted development resource instead.
 
 ### Non-text messages are not model attachments
 

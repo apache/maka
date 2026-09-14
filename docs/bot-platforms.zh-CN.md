@@ -42,11 +42,11 @@ Runtime bridge。二维码和其他辅助接入流程另见
 
 | Channel | 普通对话回复 | 定时 Bot 推送 | 渐进式回复流 | 输入中提示 | 临时回复清理 | 非文本消息分类 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Telegram | 是 | 是 | 是 | 是 | 是 | 是 |
+| Telegram | 是 | 是 | 是（仅私聊） | 是 | 是 | 是 |
 | 微信 | 是 | 是 | 否 | 否 | 否 | 是 |
 | Discord | 是 | 是 | 否 | 是 | 否 | 否 |
 | 钉钉 | 是 | 是 | 否 | 否 | 否 | 否 |
-| QQ | 是 | 是 | 否 | 是 | 否 | 否 |
+| QQ | 是 | 是 | 否 | 是（仅频道） | 否 | 否 |
 | Slack | 是 | 是 | 否 | 否 | 否 | 否 |
 | 飞书 / Lark | 是 | 否 | 否 | 否 | 否 | 否 |
 | 企业微信 | 是 | 否 | 否 | 否 | 否 | 否 |
@@ -59,6 +59,9 @@ Maka 的共享 bridge 没有实现该能力，不表示外部平台永远不可�
 平台数量和定时推送集合必须分开描述。不要把仓库写成支持 9 个平台，也不要因为
 某个平台存在 bridge 就推断它支持定时任务推送。
 
+Telegram 的渐进式回复流目前仅适用于私聊，群聊不会收到回复流。QQ 的输入中提示
+目前仅限频道消息（`channel:` 目标），不适用于 QQ 群或 C2C 私聊。
+
 ## 配置概览
 
 设置对象使用一套较小的通用字段。平台 API 的叫法不同，但 Runtime bridge 会读取
@@ -66,7 +69,7 @@ Maka 的共享 bridge 没有实现该能力，不表示外部平台永远不可�
 
 | Channel | 必需或平台专用的值 | Maka 中的 Runtime 传输 |
 | --- | --- | --- |
-| Telegram | Bot token；可选代理 URL | 长轮询 |
+| Telegram | Bot token | 长轮询 |
 | 微信 | Bridge URL；iLink 路径还需要 Bot token | 本地 bridge 或 iLink 轮询 |
 | Discord | Bot token | Gateway |
 | 钉钉 | App ID 和 App Secret | Stream/WebSocket |
@@ -77,6 +80,11 @@ Maka 的共享 bridge 没有实现该能力，不表示外部平台永远不可�
 
 平台接入说明应使用平台自己的控制台术语，并链接官方文档。此表只说明 Maka
 Runtime 消费什么值，不代表这些凭据已经通过线上平台验证。
+
+当前 Bot 的 HTTP 请求使用 `proxiedFetch()` 解析出的全局活动网络代理。当前 Telegram
+和 Discord bridge 都不会读取 channel 级别的 `proxyUrl`，因此不要依赖该字段完成网络
+转发。包括 Discord Gateway 在内的长连接 WebSocket 传输，仍可能需要 TUN 这样的系统级
+路由。
 
 这张矩阵的源码依据包括 [`BotProvider` 与
 `BOT_DELIVERY_PROVIDERS`](../packages/core/src/bot-chat-settings.ts) 契约、共享的
@@ -95,8 +103,8 @@ secret 写入本文档。
 
 1. 使用 [BotFather](https://core.telegram.org/bots#how-do-i-create-a-bot) 的
    `/newbot` 创建 Bot，复制 token。
-2. 将 token 填入 Maka 的 `token`；只有 Telegram API 必须通过代理访问时才设置
-   `proxyUrl`。
+2. 将 token 填入 Maka 的 `token`。如需代理网络，请配置 Maka 的全局活动网络代理；当前
+   bridge 不会读取 channel 级别的 `proxyUrl`。
 3. 先向 Bot 发送一条私聊文本消息。测试群聊时，将 Bot 加入测试群，并注意
    Telegram 的群隐私和提及规则。
 
@@ -115,8 +123,9 @@ Telegram 是当前唯一同时实现原生渐进式回复、输入中提示和�
 
 Maka 使用 Discord Gateway 接收事件，并使用 REST 调用发送回复；普通 Bot 消息不走
    Discord HTTP interactions endpoint。
-如果 Discord 访问需要代理，channel 中的代理设置只覆盖 Bot 凭据认证；Gateway
-WebSocket 仍需要系统级路由（例如 TUN），并且需要重启 Maka。
+如果 Discord 访问需要代理，请为 HTTP 请求配置 Maka 的全局活动网络代理。当前 Telegram
+和 Discord bridge 都不会读取 channel 级别的 `proxyUrl`；Gateway WebSocket 仍需要系统级
+路由（例如 TUN），并且需要重启 Maka。
 
 ### Slack
 
@@ -194,9 +203,9 @@ Maka 使用官方 AI Bot WebSocket。凭据握手成功并不意味着企业微�
 对待网页、工具结果或粘贴的文件一样谨慎处理。消息声明的作者、指令、链接和附件
 都不能授予它读取文件、执行命令、披露数据或修改 Maka 设置的权限。
 
-普通 Session permission mode 与操作系统执行边界仍然是 Agent 行为的权威。Bot
-allowlist 只能缩小谁可以发起会话；它不是 sandbox、工具授权系统，也不能替代用户
-审查 permission prompt。完整信任模型和报告流程见项目的
+普通 Session permission mode 与操作系统执行边界仍然是 Agent 行为的权威。在 bridge
+实际实现 allowlist 的平台上，它可以缩小谁能发起会话；它不是 sandbox、工具授权系统，
+也不能替代用户审查 permission prompt。完整信任模型和报告流程见项目的
 [Security Policy](../SECURITY.md)。
 
 ### 凭据不能进入 renderer 或公开记录
@@ -220,12 +229,15 @@ poll credential 保留在 main-process session，只暴露 renderer-safe snapsho
 
 ### 需要时限制谁能联系 Bot
 
-`allowedUserIds` 是可选的按 channel allowlist。缺失或为空时保持现有的开放行为；非空
-时，bridge 会静默丢弃其他平台原生用户 ID 的消息，不发送可能帮助未授权发送者探测
-策略的拒绝消息。ID 以字符串存储，因为部分平台 ID 超过 JavaScript 安全整数范围。
+`allowedUserIds` 不是所有 channel 通用的 allowlist。当前明确实现 bridge 级别过滤的是
+Telegram、飞书 / Lark 和企业微信；Discord、钉钉、QQ、Slack 与微信当前不会对该字段
+应用统一的 Runtime 过滤。因此只能在对应 bridge 明确实现的情况下使用该字段，其他平台
+不能把它当成安全边界。
 
-个人、开发或其他受限 Bot 应配置 allowlist。公共 Bot 只有在所有者有意接受不可信消息
-并选择了合适的 Session permission policy 时，才应保持为空。
+对于实际执行过滤的 bridge，列表缺失或为空时保持现有的开放行为；列表非空时，bridge
+会静默丢弃其他平台原生用户 ID 的消息，不发送可能帮助未授权发送者探测策略的拒绝消息。
+ID 以字符串存储，因为部分平台 ID 超过 JavaScript 安全整数范围。对于不支持该字段的
+平台，应使用平台侧成员/权限控制，并限制在受限的开发资源中。
 
 ### 非文本消息不是模型附件
 
