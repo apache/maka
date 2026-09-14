@@ -10395,6 +10395,100 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('preserves a finished answer without regenerating when the provider connection stays open', async () => {
+    const timers = manualWatchdogTimer();
+    const assistants: AssistantMessage[] = [];
+    const attempts: ModelCallAttempt[] = [];
+    let calls = 0;
+    let cancelled = false;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] = [
+          { type: 'stream-start', warnings: [] },
+          { type: 'text-start', id: 'text-1' },
+          { type: 'text-delta', id: 'text-1', delta: 'Complete answer' },
+          { type: 'text-end', id: 'text-1' },
+          {
+            type: 'finish',
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 3, text: 3, reasoning: 0 },
+            },
+          },
+        ];
+        let fired = false;
+        const first = calls === 1;
+        return {
+          stream: new ReadableStream<LanguageModelV4StreamPart>({
+            start(controller) {
+              options.abortSignal?.addEventListener(
+                'abort',
+                () => {
+                  if (!cancelled) controller.error(options.abortSignal?.reason);
+                },
+                { once: true },
+              );
+            },
+            pull(controller) {
+              const chunk = chunks.shift();
+              if (chunk) controller.enqueue(chunk);
+              else if (!first) controller.close();
+              else if (!fired) {
+                fired = true;
+                // Let the real SDK consume the finish before timing out the
+                // still-open transport. A retry must not duplicate this answer.
+                setImmediate(() => {
+                  if (!cancelled) timers.fire();
+                });
+              }
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      recordModelCallAttempt: ({ attempt }) => {
+        attempts.push(attempt);
+      },
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'finish-open',
+      runId: 'run-finish-open',
+      text: 'hi',
+      context: [],
+    }))
+      events.push(event);
+    assert.equal(calls, 1);
+    assert.equal(cancelled, true, 'release the completed provider transport');
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'text_complete')?.interrupted, undefined);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(assistants.length, 1);
+    assert.equal(assistants[0]?.text, 'Complete answer');
+    assert.equal(assistants[0]?.interrupted, undefined);
+    assert.equal(events.find((event) => event.type === 'token_usage')?.total, 10);
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]?.status, 'completed');
+  });
+
   test('retries one idle watchdog timeout after preserving partial thinking', async () => {
     const timers = manualWatchdogTimer();
     const assistants: AssistantMessage[] = [];

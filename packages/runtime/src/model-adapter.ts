@@ -60,6 +60,7 @@ import { classifyError, providerModelFailure } from './provider-error-classifica
 import {
   withProviderStreamTracking,
   type ProviderRequestTracker,
+  type ProviderStreamResult,
 } from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
@@ -236,9 +237,10 @@ export class ModelAdapter {
       this.runtime,
     );
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
+    const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
       ? withProviderStreamTracking({
-          model: input.model,
+          model: terminalModel,
           wrapLanguageModel,
           tracker: input.providerRequestTracker,
           abortSignal: input.abortSignal,
@@ -249,7 +251,7 @@ export class ModelAdapter {
             ? { historyCompactBoundary: input.historyCompactBoundary }
             : {}),
         })
-      : input.model;
+      : terminalModel;
     const usesOpenAiResponsesAdapter = hasOpenAiResponsesAdapter(this.runtime);
     const providerToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_NAME ? TOOL_SEARCH_PROVIDER_NAME : name;
@@ -312,10 +314,6 @@ export class ModelAdapter {
       providerOptions,
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
-      // Preserve the final request's Maka-owned message projection without
-      // retaining the provider request body. ProviderRequestTracker owns body
-      // capture; duplicating it here can retain large base64 image payloads.
-      include: { requestMessages: true },
       // With no continuation predicate, streamText performs one provider step.
       // Continuation belongs to the Runtime above this adapter.
       abortSignal: input.abortSignal,
@@ -779,6 +777,47 @@ interface SdkStreamResult {
   response: PromiseLike<{
     id: string;
   }>;
+}
+
+/**
+ * A provider `finish` part is the LanguageModel stream's terminal semantic
+ * boundary. Expose EOF at that boundary so the SDK can flush its public
+ * finish/usage promises even when the transport keeps the connection open.
+ */
+function withProviderFinishBoundary(
+  model: unknown,
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown,
+): unknown {
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapStream: async ({
+        doStream,
+      }: {
+        doStream: () => PromiseLike<ProviderStreamResult>;
+      }): Promise<ProviderStreamResult> => {
+        const result = await doStream();
+        return {
+          ...result,
+          stream: result.stream.pipeThrough(
+            new TransformStream<unknown, unknown>({
+              transform(part, controller) {
+                controller.enqueue(part);
+                if (
+                  part !== null &&
+                  typeof part === 'object' &&
+                  !Array.isArray(part) &&
+                  (part as { type?: unknown }).type === 'finish'
+                ) {
+                  controller.terminate();
+                }
+              },
+            }),
+          ),
+        };
+      },
+    },
+  });
 }
 
 /**

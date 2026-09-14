@@ -353,16 +353,13 @@ export interface ModelFailure {
  *
  * - `text` / `thinking`: incremental assistant content deltas for the current
  *   step. The backend accumulates them per step and flushes one
- *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) at the
- *   next `step-finish`.
+ *   `AssistantMessage` (+ terminal text/thinking `SessionEvent`s) when the
+ *   request settles through `ModelStepOutcome`.
  * - `thinking-signature`: a provider-signed reasoning signature (Anthropic)
  *   delivered out-of-band from the thinking text.
- * - `step-finish`: a provider step boundary. Carries the step's normalized
- *   usage (already reduced to `NormalizedUsage`) and normalized finish
- *   reason. The backend owns step counting, the per-step `AssistantMessage`
- *   flush, and the messageId rotation.
- * - `finish`: the terminal stream boundary, carrying the normalized finish
- *   reason.
+ * The adapter consumes SDK finish boundaries internally. Terminal status,
+ * normalized usage, finish reason, and continuation belong to
+ * `ModelStepOutcome`; they are not incremental stream events.
  * - `error`: a request-level provider failure, already classified and scrubbed
  *   by the adapter. The backend uses its stable kind for overflow/transport
  *   recovery and terminal error emission.
