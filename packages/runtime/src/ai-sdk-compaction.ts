@@ -492,7 +492,9 @@ export class AiSdkCompaction {
         const route = invocation.opening.route;
         return {
           runId: invocation.runId,
-          ...(route.provenance === 'runtime' ? { connectionId: route.llmConnectionId } : {}),
+          ...(route.provenance === 'runtime' && route.backendKind !== 'plugin-executor'
+            ? { connectionId: route.llmConnectionId }
+            : {}),
           modelId: route.modelId,
         };
       })
@@ -1498,6 +1500,7 @@ function persistedRequestAnchor(
     const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening.route;
     if (
       route?.provenance !== 'runtime' ||
+      route.backendKind === 'plugin-executor' ||
       route.modelId !== modelId ||
       route.llmConnectionId !== connectionId
     ) {

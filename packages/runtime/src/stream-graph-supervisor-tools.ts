@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { isExecutorId } from '@maka/core/executor-id';
 import {
   AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK,
   AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS,
@@ -65,6 +66,8 @@ const identitySchema = z
   .max(256)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), 'Identity contains control characters');
 
+const executorIdSchema = z.string().refine(isExecutorId, 'Invalid plugin executor id');
+
 const cursorSchema = z
   .string()
   .trim()
@@ -95,6 +98,9 @@ const addWorkSchema = z.preprocess(
         .describe(
           'Runtime id of an EXISTING graph operator returned by view_agent_graph. Use only for follow-up work; set operator_id OR agent_id, never both.',
         ),
+      executor_id: executorIdSchema
+        .optional()
+        .describe('Plugin executor id for a newly created agent or preset target.'),
       instruction: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS),
       input_ids: z
         .array(identitySchema)
@@ -332,6 +338,7 @@ function cleanAddWorkInput(input: unknown): unknown {
   if (cleaned.target_kind === 'existing_operator') {
     delete cleaned.agent_id;
     delete cleaned.subagent_id;
+    delete cleaned.executor_id;
   }
   if (cleaned.replacement_mode === 'none') delete cleaned.replaces;
   return cleaned;
@@ -373,6 +380,7 @@ export interface UpdateAgentGraphToolInput {
     agent_id?: string;
     subagent_id?: string;
     operator_id?: string;
+    executor_id?: string;
     instruction: string;
     input_ids?: string[];
     selected_result_inputs?: Array<{
@@ -1101,12 +1109,21 @@ function normalizeWorkTarget(input: {
   agent_id?: string;
   subagent_id?: string;
   operator_id?: string;
+  executor_id?: string;
 }): AgentGraphWorkTarget {
   if (input.target_kind === 'new_agent') {
-    return { kind: 'agent', agentId: requireIdentity(input.agent_id, 'agent id') };
+    return {
+      kind: 'agent',
+      agentId: requireIdentity(input.agent_id, 'agent id'),
+      ...(input.executor_id ? { executorId: input.executor_id } : {}),
+    };
   }
   if (input.target_kind === 'new_preset') {
-    return { kind: 'preset', presetId: requireIdentity(input.subagent_id, 'subagent preset id') };
+    return {
+      kind: 'preset',
+      presetId: requireIdentity(input.subagent_id, 'subagent preset id'),
+      ...(input.executor_id ? { executorId: input.executor_id } : {}),
+    };
   }
   if (input.target_kind === 'existing_operator') {
     return {
@@ -1120,10 +1137,18 @@ function normalizeWorkTarget(input: {
     throw new Error('Exactly one of subagent_id, agent_id, or operator_id is required');
   }
   if (input.subagent_id) {
-    return { kind: 'preset', presetId: requireIdentity(input.subagent_id, 'subagent preset id') };
+    return {
+      kind: 'preset',
+      presetId: requireIdentity(input.subagent_id, 'subagent preset id'),
+      ...(input.executor_id ? { executorId: input.executor_id } : {}),
+    };
   }
   return input.agent_id
-    ? { kind: 'agent', agentId: requireIdentity(input.agent_id, 'agent id') }
+    ? {
+        kind: 'agent',
+        agentId: requireIdentity(input.agent_id, 'agent id'),
+        ...(input.executor_id ? { executorId: input.executor_id } : {}),
+      }
     : { kind: 'operator', operatorId: requireIdentity(input.operator_id, 'operator id') };
 }
 

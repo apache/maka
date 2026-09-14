@@ -34,6 +34,29 @@ describe('agent graph schedule contract', () => {
     assert.equal(isAgentGraphScheduleUpdateRequest(request), true);
   });
 
+  test('accepts a plugin executor only on newly created graph targets', () => {
+    const request = scheduleRequest();
+    request.addWork[0]!.target = {
+      kind: 'agent',
+      agentId: 'fact-checker',
+      executorId: 'codex.app-server',
+    };
+    assert.equal(isAgentGraphScheduleUpdateRequest(request), true);
+
+    request.addWork[0]!.target = {
+      kind: 'agent',
+      agentId: 'fact-checker',
+      executorId: 'invalid executor',
+    };
+    assert.equal(isAgentGraphScheduleUpdateRequest(request), false);
+    request.addWork[0]!.target = {
+      kind: 'operator',
+      operatorId: 'existing-operator',
+      executorId: 'codex',
+    } as never;
+    assert.equal(isAgentGraphScheduleUpdateRequest(request), false);
+  });
+
   test('rejects ambiguous, duplicate, empty, and add-plus-finish updates', () => {
     assert.equal(
       isAgentGraphScheduleUpdateRequest({

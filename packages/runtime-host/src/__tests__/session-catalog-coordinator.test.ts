@@ -747,6 +747,84 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(persistedConnectionId, 'connection-1');
 });
 
+test('plugin executor creation bypasses model resolution and persists the executor route', async () => {
+  let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
+  const externalHeader = (sessionId: string): SessionHeader => {
+    const { llmConnectionId: _connectionId, ...base } = sessionHeader(sessionId, ['user-label']);
+    return {
+      ...base,
+      backend: 'plugin-executor',
+      executorId: 'codex',
+      llmConnectionSlug: 'executor:codex',
+      model: 'codex',
+    };
+  };
+  const fixture = createFixture({
+    connection: {
+      onResolve: () => assert.fail('Plugin executor creation must not resolve a Maka model'),
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedInput = args.input;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(externalHeader(args.sessionId), 1),
+        };
+      },
+      readCatalogRecord: async (sessionId) => catalogRecord(externalHeader(sessionId), 1),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'codex',
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(persistedInput?.executorId, 'codex');
+  assert.equal(persistedInput?.llmConnectionId, undefined);
+  assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
+  assert.equal(persistedInput?.model, 'codex');
+  if (outcome.ok && !('kind' in outcome.result)) {
+    assert.equal(outcome.result.backend, 'plugin-executor');
+    assert.equal(outcome.result.executorId, 'codex');
+  }
+});
+
+test('plugin executor creation fails before persistence when the executor is unavailable', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    assertExecutorAvailable: () => {
+      throw new Error('not installed');
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        throw new Error('must not persist');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'missing',
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'operation_unavailable', message: 'Plugin executor is unavailable: missing' },
+  });
+  assert.equal(createAttempts, 0);
+});
+
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
   const modelId = 'deepseek-v4-flash';
   let createAttempts = 0;
@@ -1895,6 +1973,7 @@ function createFixture(
     readonly onProjectChanged?: () => void;
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
+    readonly assertExecutorAvailable?: (sessionId: string, executorId: string) => void;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -1984,6 +2063,9 @@ function createFixture(
     requestDrain: () => {
       drains += 1;
     },
+    ...(options.assertExecutorAvailable
+      ? { assertExecutorAvailable: options.assertExecutorAvailable }
+      : {}),
   });
   return {
     coordinator,

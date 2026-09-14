@@ -17,16 +17,8 @@
  * under the License.
  */
 
-export * from './attempt-store.js';
-export * from './cli.js';
-export * from './experiment-directory.js';
-export * from './experiment.js';
-export * from './external-subject.js';
-export * from './fleet.js';
-export * from './fleet-store.js';
-export * from './fleet-worker.js';
-export * from './harness-executor.js';
-export * from './maka-subject.js';
-export * from './result.js';
-export * from './runner.js';
-export * from './spec.js';
+export const EXECUTOR_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/u;
+
+export function isExecutorId(value: unknown): value is string {
+  return typeof value === 'string' && EXECUTOR_ID_PATTERN.test(value);
+}

@@ -17,16 +17,14 @@
  * under the License.
  */
 
-export * from './attempt-store.js';
-export * from './cli.js';
-export * from './experiment-directory.js';
-export * from './experiment.js';
-export * from './external-subject.js';
-export * from './fleet.js';
-export * from './fleet-store.js';
-export * from './fleet-worker.js';
-export * from './harness-executor.js';
-export * from './maka-subject.js';
-export * from './result.js';
-export * from './runner.js';
-export * from './spec.js';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { isExecutorId } from '../executor-id.js';
+
+test('executor ids use one bounded canonical grammar', () => {
+  assert.equal(isExecutorId('codex.app-server:v1'), true);
+  assert.equal(isExecutorId(`a${'b'.repeat(127)}`), true);
+  for (const value of ['', '1codex', 'codex/app', `a${'b'.repeat(128)}`, null]) {
+    assert.equal(isExecutorId(value), false);
+  }
+});
