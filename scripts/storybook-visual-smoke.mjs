@@ -71,6 +71,8 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-settings-pages--appearance',
   'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+  'product-workhub--standard-composer',
+  'product-workhub--progress-model-picker',
 ]);
 const FORCED_COLORS_STORY_IDS = new Set([
   'product-settings-pages--general-forced-colors-focus-ring',
@@ -183,6 +185,9 @@ export function storyUrl(baseUrl, job) {
 }
 
 export function storyViewport(storyId) {
+  // The progress card also uses viewport-relative picker sizing inside its
+  // native 360px WebContents; a narrow wrapper alone does not reproduce that.
+  if (storyId === 'product-workhub--progress-model-picker') return { width: 360, height: 900 };
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 

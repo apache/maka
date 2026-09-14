@@ -20,6 +20,7 @@
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
 import type {
   RuntimeInvocationPageInput,
@@ -71,6 +72,7 @@ import type {
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
+  ImmutableRuntimePrefixProofReadBudget,
 } from './sqlite-runtime-store.js';
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
@@ -138,13 +140,17 @@ export type {
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type {
-  RuntimeTranscriptInvocation,
+  RuntimeTranscriptInvocationHeader,
   RuntimeTranscriptLandmark,
 } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
   RuntimeTranscriptQueries &
   RuntimeContinuationAuthorityStore & {
+    readImmutableRuntimePrefixProof(
+      input: { sessionId: string; runId: string; upToEventSeq?: number },
+      budget: ImmutableRuntimePrefixProofReadBudget,
+    ): Promise<ImmutableRuntimePrefixProofV1>;
     readonly toolBoundaryProtocol: ToolBoundaryProtocol;
     commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
     commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
@@ -478,8 +484,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
       updateMessageAdmission: (admission) =>
         run(() => sessionStore.updateMessageAdmission(admission)),
-      reorderMessageAdmissions: (sessionId, messageIds) =>
-        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds)),
+      reorderMessageAdmissions: (sessionId, messageIds, disposition) =>
+        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds, disposition)),
       cancelMessageAdmissions: (sessionId, messageIds) =>
         run(() => sessionStore.cancelMessageAdmissions(sessionId, messageIds)),
       subscribeTranscriptChanges: (listener) => sessionStore.subscribeTranscriptChanges(listener),
@@ -573,6 +579,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readImmutableRuntimePrefix: (input) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
+      readImmutableRuntimePrefixProof: (input, budget) =>
+        run(() => runtimeEventStore.readImmutableRuntimePrefixProof(input, budget)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
       readRunInvocation: (sessionId, runId) =>
@@ -591,8 +599,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
       readTranscriptHighWater: (sessionId) =>
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
-      readTranscriptInvocations: (sessionId, request) =>
-        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request)),
+      readTranscriptInvocations: (sessionId, request, project) =>
+        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request, project)),
       readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
         run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),

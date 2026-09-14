@@ -77,6 +77,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   >;
 
 export interface RuntimeHostSessionDomainsIpcDeps {
+  terminalCloses: import('./terminal-close-intents.js').TerminalCloseIntents;
   client: RuntimeHostSessionDomainClient;
   emitModeChanged(sessionId: string): void;
   sessionObserver: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
@@ -106,7 +107,8 @@ export function registerRuntimeHostSessionDomainsIpc(
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? Date.now;
   const shellRuns = registerRuntimeHostShellRunsIpc(
-    { client: deps.client, newId, sessionObserver: deps.sessionObserver },
+    { client: deps.client, newId, sessionObserver: deps.sessionObserver,
+      terminalCloses: deps.terminalCloses },
     ipcMain,
   );
   const shellRunQueries = registerRuntimeHostShellRunQueriesIpc(
@@ -213,18 +215,22 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   ipcMain.handle(
     'plan-mode:abandon',
-    // The app-shell exit path is the only caller and is token-frozen, so this
-    // channel keeps its throwing shape: an envelope here would reach no reader.
-    async (_event, sessionId: unknown, proposalId: unknown): Promise<PlanSessionState> => {
+    async (_event, sessionId: unknown, proposalId: unknown): Promise<PlanControlIpcResult<PlanSessionState>> => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.client.controlPlan({
-        kind: 'abandon_proposal',
-        sessionId: normalizedSessionId,
-        proposalId: requiredId(proposalId, 'Plan proposal'),
-        operationId: newId(),
-      });
+      try {
+        await deps.client.controlPlan({
+          kind: 'abandon_proposal',
+          sessionId: normalizedSessionId,
+          proposalId: requiredId(proposalId, 'Plan proposal'),
+          operationId: newId(),
+        });
+      } catch (error) {
+        const failure = planControlIpcFailure(error);
+        if (failure) return failure;
+        throw error;
+      }
       deps.emitModeChanged(normalizedSessionId);
-      return deps.client.getPlanState(normalizedSessionId);
+      return { ok: true, value: await deps.client.getPlanState(normalizedSessionId) };
     },
   );
   ipcMain.handle(

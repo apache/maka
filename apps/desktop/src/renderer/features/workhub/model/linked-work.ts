@@ -18,27 +18,66 @@
  */
 
 
+import { workspaceNameFromCwd } from './workspace-name.js';
+
 import type { StoredMessage } from '@maka/core/session';
+
+export type WorkHubDelegationState =
+  | 'accepted'
+  | 'running'
+  | 'waiting_for_user'
+  | 'completed'
+  | 'failed'
+  | 'aborted'
+  | 'recovering';
+
+export interface WorkHubDelegationReference {
+  readonly id: string;
+  readonly targetSessionId: string;
+  readonly targetMessageId: string;
+  readonly targetTurnId: string;
+}
+
+export interface WorkHubDelegationFeedback {
+  readonly id: string;
+  readonly state: WorkHubDelegationState;
+  readonly resultPreview?: string;
+}
 
 export interface WorkHubLinkedWork {
   readonly id: string;
   readonly coordinationTurnId: string;
   readonly targetSessionId: string;
   readonly targetSessionName: string;
+  readonly workspaceName?: string;
+  readonly targetMessageId?: string;
+  readonly targetTurnId?: string;
+  readonly state?: WorkHubDelegationState;
+  readonly resultPreview?: string;
 }
 
 /** Links come from successful tool results in the same durable conversation. */
 export function workHubLinkedWork(
   messages: readonly StoredMessage[],
-  sessions: readonly { id: string; name: string }[],
+  sessions: readonly { id: string; name: string; cwd?: string }[],
   fallbackName: string,
 ): WorkHubLinkedWork[] {
-  const names = new Map(sessions.map((session) => [session.id, session.name]));
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
   return messages.flatMap((message): WorkHubLinkedWork[] => {
-    if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') return [message];
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') return [{
+      id: message.id,
+      coordinationTurnId: message.coordinationTurnId,
+      targetSessionId: message.targetSessionId,
+      targetSessionName: sessionById.get(message.targetSessionId)?.name ?? message.targetSessionName,
+      workspaceName: workspaceName(message.targetSessionId),
+      targetMessageId: message.targetMessageId,
+      targetTurnId: message.targetTurnId,
+      state: 'accepted',
+    }];
     if (message.type !== 'tool_result' || message.isError || !taskCalls.has(message.toolUseId)) return [];
     let result: unknown;
     if (message.content.kind === 'json') result = message.content.value;
@@ -53,7 +92,19 @@ export function workHubLinkedWork(
       id: message.id,
       coordinationTurnId: message.turnId,
       targetSessionId: result.targetSessionKey,
-      targetSessionName: names.get(result.targetSessionKey) ?? fallbackName,
+      targetSessionName: sessionById.get(result.targetSessionKey)?.name ?? fallbackName,
+      workspaceName: workspaceName(result.targetSessionKey),
     }];
+  });
+}
+
+export function applyWorkHubDelegationFeedback(
+  assignments: readonly WorkHubLinkedWork[],
+  feedback: readonly WorkHubDelegationFeedback[],
+): WorkHubLinkedWork[] {
+  const byId = new Map(feedback.map((item) => [item.id, item]));
+  return assignments.map((assignment) => {
+    const item = byId.get(assignment.id);
+    return item ? { ...assignment, state: item.state, resultPreview: item.resultPreview } : assignment;
   });
 }

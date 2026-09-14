@@ -22,6 +22,7 @@ import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
   ExternalSessionCatalogQueryResult,
+  ExternalSessionImportResult,
   ExternalSessionSourceQueryResult,
   SessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
@@ -48,7 +49,7 @@ type ExternalSessionClient = {
   importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
-  }): Promise<SessionCatalogProjection>;
+  }): Promise<ExternalSessionImportResult<SessionCatalogProjection>>;
 };
 
 export interface RuntimeHostExternalSessionsIpcDeps {
@@ -77,9 +78,17 @@ export function registerRuntimeHostExternalSessionsIpc(
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     try {
-      const session = await deps.client.importExternalSession(
+      const result = await deps.client.importExternalSession(
         decodeExternalSessionImportInput(input),
       );
+      if (result.kind === 'source_limit_exceeded') {
+        return {
+          ok: false,
+          reason: 'source_limit_exceeded',
+          limit: result.limit,
+        } satisfies ExternalSessionImportIpcResult;
+      }
+      const session = result.session;
       deps.emitSessionsChanged('created', session.id);
       return {
         ok: true,
@@ -122,7 +131,9 @@ export function registerRuntimeHostExternalSessionsIpc(
  */
 function classifyImportFailure(
   error: RuntimeHostOperationError,
-): Exclude<ExternalSessionImportFailureReason, 'commit_outcome_unknown'> | undefined {
+):
+  | Exclude<ExternalSessionImportFailureReason, 'commit_outcome_unknown' | 'source_limit_exceeded'>
+  | undefined {
   if (error.code === 'model_unavailable') return 'no_model';
   if (error.code === 'source_unreadable') return 'source_unreadable';
   return undefined;

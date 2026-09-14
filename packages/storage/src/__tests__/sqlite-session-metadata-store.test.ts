@@ -1207,51 +1207,60 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('persists a follow-up reorder across SQLite restart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
-    const path = join(root, 'state.sqlite');
-    try {
-      const store = createSqliteSessionMetadataStore(path);
+  for (const disposition of ['steering', 'followup'] as const) {
+    test(`persists a ${disposition} reorder across SQLite restart`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-message-reorder-'));
+      const path = join(root, 'state.sqlite');
+      const earlierBatch =
+        disposition === 'steering' ? ['in-flight-first', 'in-flight-second'] : [];
       try {
-        await store.create(fullHeader({ id: 'session-reorder' }));
-        for (const [index, messageId] of ['message-first', 'message-second'].entries()) {
-          await store.commitMessageAdmission({
-            sessionId: 'session-reorder',
-            turnId: 'turn-current',
-            runId: 'run-current',
-            messageId,
-            content: { text: messageId },
-            submittedContentDigest: messageContentDigest({ text: messageId }),
-            submittedPlacement: 'next_turn',
-            placement: 'next_turn',
-            disposition: 'followup',
-            skillInvocation: { loaded: [], failed: [], receipts: [] },
-            admittedAt: 20 + index,
-          });
+        const store = createSqliteSessionMetadataStore(path);
+        try {
+          await store.create(fullHeader({ id: 'session-reorder' }));
+          for (const [index, messageId] of [
+            ...earlierBatch,
+            'message-first',
+            'message-second',
+          ].entries()) {
+            await store.commitMessageAdmission({
+              sessionId: 'session-reorder',
+              turnId: 'turn-current',
+              runId: 'run-current',
+              messageId,
+              content: { text: messageId },
+              submittedContentDigest: messageContentDigest({ text: messageId }),
+              submittedPlacement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              placement: disposition === 'steering' ? 'current_turn' : 'next_turn',
+              disposition,
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
+              admittedAt: 20 + index,
+            });
+          }
+          await store.reorderMessageAdmissions(
+            'session-reorder',
+            ['message-second', 'message-first'],
+            disposition,
+          );
+        } finally {
+          store.close();
         }
-        await store.reorderMessageAdmissions('session-reorder', [
-          'message-second',
-          'message-first',
-        ]);
-      } finally {
-        store.close();
-      }
 
-      const reopened = createSqliteSessionMetadataStore(path);
-      try {
-        assert.deepEqual(
-          (await reopened.listMessageAdmissions('session-reorder')).map(
-            (admission) => admission.messageId,
-          ),
-          ['message-second', 'message-first'],
-        );
+        const reopened = createSqliteSessionMetadataStore(path);
+        try {
+          assert.deepEqual(
+            (await reopened.listMessageAdmissions('session-reorder')).map(
+              (admission) => admission.messageId,
+            ),
+            [...earlierBatch, 'message-second', 'message-first'],
+          );
+        } finally {
+          reopened.close();
+        }
       } finally {
-        reopened.close();
+        await rm(root, { recursive: true, force: true });
       }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 
   test('migrates v24 legacy session statuses to active exactly once', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-status-v24-'));

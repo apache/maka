@@ -89,12 +89,38 @@ export function showWindowOnceReady(win: RevealableWindow | null, mode: WindowRe
   else win.show();
 }
 
+/**
+ * Reveal without activating, whatever the mode — for a window whose reveal is
+ * deliberately quiet even in the product (WorkHub's progress card, the startup
+ * progress window). `hidden` still shows nothing.
+ */
+export function showWindowInactive(win: RevealableWindow | null, mode: WindowRevealMode): void {
+  showWindowOnceReady(win, mode === 'hidden' ? 'hidden' : 'inactive');
+}
+
 /** Focus surface for deferred focus requests (see createWindowRevealGate). */
 export interface FocusableRevealableWindow extends RevealableWindow {
   isMinimized(): boolean;
   restore(): void;
   focus(): void;
   maximize(): void;
+}
+
+/**
+ * Reveal `win` and take the foreground, as far as `mode` allows: `active`
+ * un-minimizes, shows and focuses; `inactive` answers a focus request with a
+ * reveal and nothing more; `hidden` does nothing at all.
+ */
+export function focusWindow(win: FocusableRevealableWindow | null, mode: WindowRevealMode): void {
+  if (mode === 'hidden') return;
+  if (!win || win.isDestroyed()) return;
+  if (mode === 'inactive') {
+    showWindowOnceReady(win, mode);
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 }
 
 export interface WindowRevealGate {
@@ -138,17 +164,7 @@ export function createWindowRevealGate(mode: WindowRevealMode): WindowRevealGate
   let pendingFocus = false;
   let pendingMaximize = false;
 
-  const focusNow = (win: FocusableRevealableWindow | null): void => {
-    if (mode === 'hidden') return;
-    if (!win || win.isDestroyed()) return;
-    if (mode === 'inactive') {
-      showWindowOnceReady(win, mode);
-      return;
-    }
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
-  };
+  const focusNow = (win: FocusableRevealableWindow | null): void => focusWindow(win, mode);
 
   const maximizeNow = (win: FocusableRevealableWindow | null): void => {
     if (mode === 'hidden') return;

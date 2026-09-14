@@ -82,6 +82,7 @@ export async function runRuntimeHostLocalSourceRetirement(
 
 export function launchRuntimeHostLocalSourceRetirement(input: {
   readonly sourceCliPath: string;
+  readonly sourceNodePath?: string;
   readonly rootPath: string;
   readonly expectedRootId: string;
   readonly expectedHostEpoch: string;
@@ -105,7 +106,7 @@ export function launchRuntimeHostLocalSourceRetirement(input: {
       : []),
   ];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
+    const child = spawn(input.sourceNodePath ?? process.execPath, args, {
       // fd 4 inherits the existing owner-authority lease. The source helper
       // holds it only while the authenticated retirement request is in flight.
       stdio: ['ignore', 'ignore', 'inherit', 'ignore', input.inheritableAuthorityLeaseFd],

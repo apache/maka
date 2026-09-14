@@ -465,7 +465,7 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
   }
 });
 
-test('failed on-demand candidate activation restores the known-good package authority', async (t) => {
+test('failed on-demand candidate activation retains the successor authority', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-on-demand-update-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
@@ -508,14 +508,14 @@ test('failed on-demand candidate activation restores the known-good package auth
         },
       },
     }),
-    { code: 'transition_failed' },
+    { code: 'recovery_failed' },
   );
 
-  const restored = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
-  assert.equal(restored?.state, 'active');
-  assert.equal(restored?.configRevision, 3);
-  assert.deepEqual(restored?.launch, current.launch);
-  assert.deepEqual(operatorProjection.launch, current.launch);
+  const retained = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
+  assert.equal(retained?.state, 'active');
+  assert.equal(retained?.configRevision, 2);
+  assert.deepEqual(retained?.launch, desired.launch);
+  assert.deepEqual(operatorProjection.launch, desired.launch);
 });
 
 test('revalidates product invariants after Host retirement and restores the prior lifecycle', async (t) => {
@@ -952,3 +952,82 @@ function config(
       : { trigger: 'activation' },
   };
 }
+
+test('on-demand source retirement fences identity, preserves active work, and acquires the released root', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-source-retirement-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  let owner = await tryAcquireStateRootOwner(capability);
+  assert.ok(owner);
+  t.after(async () => owner?.close());
+  let epoch = 'host-b';
+  let calls = 0;
+  let refuse = true;
+  const input = {
+    rootPath: capability.canonicalPath,
+    rootId: capability.rootId,
+    expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+    connectExisting: (async () => ({
+      kind: 'incompatible',
+      registration: {
+        rootId: capability.rootId,
+        hostEpoch: epoch,
+        pid: 42,
+        lifecycleMode: 'ephemeral',
+      },
+    })) as unknown as typeof connectExistingRuntimeHost,
+    prepareSourceRetirement: async () => {
+      calls += 1;
+      if (refuse) return 'active_work' as const;
+      await owner?.close();
+      owner = undefined;
+      return 'prepared' as const;
+    },
+  };
+  await assert.rejects(retireRuntimeHostLifecycleOwner(input), { code: 'owner_changed' });
+  assert.equal(calls, 0);
+  epoch = 'host-a';
+  assert.deepEqual(await retireRuntimeHostLifecycleOwner(input), { kind: 'active_tasks' });
+  assert.equal(await tryAcquireStateRootOwner(capability), undefined);
+  refuse = false;
+  const result = await retireRuntimeHostLifecycleOwner(input);
+  assert.equal(result.kind, 'retired');
+  if (result.kind === 'retired') await result.owner.close();
+  await assert.rejects(retireRuntimeHostLifecycleOwner(input), { code: 'owner_changed' });
+  assert.equal(calls, 2);
+});
+
+test('failed on-demand update activation retains the committed package without reactivating old code', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-update-retained-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() =>
+    rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId)), {
+      recursive: true,
+      force: true,
+    }),
+  );
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'on_demand');
+  const desired = config(capability.canonicalPath, capability.rootId, 2, 'on_demand');
+  await claimRuntimeHostManagedDeployment(capability, current);
+  await assert.rejects(
+    replaceRuntimeHostLifecycle({
+      operation: 'update',
+      current,
+      desired,
+      activateDesired: async () => {
+        throw new Error('Successor opened storage but readiness failed');
+      },
+      activatePrevious: async () => assert.fail('must not reactivate old package'),
+      deps: {
+        convergeOperator: async () => undefined,
+        verifyOperator: async () => undefined,
+        resolveProvider: () => {
+          throw new Error('on-demand has no supervisor');
+        },
+      },
+    }),
+    { code: 'recovery_failed' },
+  );
+  assert.deepEqual(await readRuntimeHostManagedDeploymentAuthorityRecord(capability), desired);
+});

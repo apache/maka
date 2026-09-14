@@ -96,7 +96,7 @@ describe('durable Tool Result projection codec', () => {
       'session-1',
     );
     const oversized = encodeDurableToolResultOutput(
-      { type: 'json', value: { body: 'x'.repeat(300_000) } },
+      { type: 'json', value: { body: 'x'.repeat(DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES) } },
       'session-1',
     );
 

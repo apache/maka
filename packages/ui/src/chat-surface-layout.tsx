@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useMemo, type ComponentProps } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import {
@@ -25,25 +25,15 @@ import {
   TranscriptScrollButton,
 } from './transcript-scroll-authority.js';
 import { cn } from './utils.js';
+import { PromptAnchorRailHostContext } from './prompt-anchor-rail.js';
 
 /**
  * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
  * seam (`patches/@astryxdesign+core+0.5.2.patch`) forwarding Astryx's own
- * published `enabled` option to `useChatStreamScroll`, and `scrollOwner`
- * decides it — a caller-supplied value would be silently overwritten.
+ * published `enabled` option to `useChatStreamScroll`. Maka always owns
+ * transcript scrolling, so callers cannot enable a competing writer.
  */
 export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'autoScroll'> & {
-  /**
-   * Who positions this transcript.
-   *
-   * `astryx` keeps the library's auto-follow, for the surfaces that render
-   * their own content rather than a `ChatView`. `host` turns Astryx's scroll
-   * layer off entirely — no listeners, no spring — and hands `scrollTop` to
-   * Maka's single authority, which is what a `ChatView` transcript needs: it
-   * knows turn identity, the Host active range and the navigation the reader
-   * asked for, none of which a generic scroll container can see.
-   */
-  scrollOwner?: 'astryx' | 'host';
   scrollToBottomLabel?: string;
   /** Loads the durable tail after the scroll authority pins to it. */
   onReturnToTail?(): Promise<void> | void;
@@ -52,8 +42,7 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
 /**
  * Maka's product seam for the Astryx chat page shell.
  *
- * Astryx owns the bottom dock and the message area. Whether it also owns
- * scrolling is `scrollOwner`'s answer, and there is never more than one owner.
+ * Astryx owns the bottom dock and the message area; Maka owns scrolling.
  *
  * The density default drops a `compact` override and lets Astryx's own default
  * (`balanced`) stand. Compact spends spacing-2 on the dock's gutters — 8px
@@ -69,13 +58,13 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
  */
 export function ChatSurfaceLayout({
   className,
+  children,
   density = 'balanced',
-  scrollOwner = 'astryx',
   scrollToBottomLabel,
   onReturnToTail,
   ...props
 }: ChatSurfaceLayoutProps) {
-  const hostOwned = scrollOwner === 'host';
+  const [railHost, setRailHost] = useState<HTMLDivElement | null>(null);
   const astryxOverrides = useMemo(
     () =>
       scrollToBottomLabel
@@ -85,19 +74,27 @@ export function ChatSurfaceLayout({
         : undefined,
     [scrollToBottomLabel],
   );
+  // Mirror Astryx ChatLayout's hasVisibleContent check to preserve the public
+  // emptyState prop: a host fragment would otherwise count as visible content.
+  const hasContent = children != null && children !== false
+    && !(Array.isArray(children) && children.length === 0);
   const layout = (
     <ChatLayout
       {...props}
-      autoScroll={!hostOwned}
+      autoScroll={false}
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
-      scrollButton={props.scrollButton === null ? null : hostOwned
-        ? <TranscriptScrollButton onActivate={onReturnToTail} />
-        : props.scrollButton}
+      scrollButton={props.scrollButton === null ? null
+        : <TranscriptScrollButton onActivate={onReturnToTail} />}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
-    />
+    >
+      {hasContent ? <>
+        <div className="maka-prompt-rail-host" ref={setRailHost} />
+        {children}
+      </> : children}
+    </ChatLayout>
   );
   const localized = astryxOverrides ? (
     <AstryxLocaleProvider overrides={astryxOverrides}>{layout}</AstryxLocaleProvider>
@@ -108,5 +105,7 @@ export function ChatSurfaceLayout({
   // and costs one object, and providing it always is what lets everything
   // below treat it as present instead of carrying a second, unreachable
   // behaviour for its absence.
-  return <TranscriptScrollAuthorityProvider>{localized}</TranscriptScrollAuthorityProvider>;
+  return <TranscriptScrollAuthorityProvider>
+    <PromptAnchorRailHostContext value={railHost}>{localized}</PromptAnchorRailHostContext>
+  </TranscriptScrollAuthorityProvider>;
 }

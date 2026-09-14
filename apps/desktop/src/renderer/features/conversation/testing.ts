@@ -19,10 +19,7 @@
 
 export {
   createTranscriptRestoreLifecycle,
-  loadTranscriptHistory,
   prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
-  type TranscriptHistoryGates,
-  type TranscriptHistoryPending,
 } from './controller/transcript-reading-position.js';

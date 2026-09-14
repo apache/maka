@@ -35,7 +35,7 @@ interface ClientSettingsEffectDependencies {
   readonly applyKeepSystemAwake: (enabled: boolean) => Promise<void>;
   readonly applyBotSettings: (settings: AppSettings['botChat']) => Promise<void>;
   readonly applyAppIcon: (icon: AppIconChoice) => Promise<void>;
-  readonly applyWorkHub: () => Promise<void>;
+  readonly applyWorkHub: (enabled: boolean) => Promise<void>;
   /**
    * What the OS currently reports, read fresh on every pass. Injected
    * rather than imported so this module stays free of electron and keeps
@@ -86,7 +86,7 @@ export function createClientSettingsEffects(
       );
       const appIconChanged = nextAppIcon !== appIcon;
       dependencies.observeLocale(settings);
-      await dependencies.applyWorkHub();
+      await dependencies.applyWorkHub(settings.workHub.enabled);
       if (keepAwakeChanged) {
         await dependencies.applyKeepSystemAwake(settings.system.keepSystemAwake);
         keepSystemAwake = settings.system.keepSystemAwake;

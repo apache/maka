@@ -34,6 +34,7 @@ import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
 import type { CuaBoundAction } from '@maka/runtime/cua-frame-state';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 
 import type { CuObservation, CuRunContext } from '@maka/runtime/computer-use-types';
 import {
@@ -417,6 +418,7 @@ function makeBackend(
     windowOriginY?: number;
     physicalInputRecentlyActive?: MakaCuBackendOptions['physicalInputRecentlyActive'];
     onTrace?: MakaCuBackendOptions['onTrace'];
+    onSessionInvalidated?: MakaCuBackendOptions['onSessionInvalidated'];
   } = {},
 ): { backend: ReturnType<typeof createMakaCuBackend>; logPath: string; imageDir: string } {
   const logPath = join(workDir, 'log-' + randomUUID() + '.ndjson');
@@ -462,6 +464,7 @@ function makeBackend(
       ? { physicalInputRecentlyActive: opts.physicalInputRecentlyActive }
       : {}),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
+    ...(opts.onSessionInvalidated ? { onSessionInvalidated: opts.onSessionInvalidated } : {}),
   });
   disposers.push(() => backend.dispose());
   return { backend, logPath, imageDir };
@@ -1107,8 +1110,15 @@ describe('maka-cu backend', () => {
     assert.equal(result.outcome.verified, true);
   });
 
-  it('ends the executor session when the host clears it', async () => {
-    const { backend, logPath } = makeBackend();
+  it('ends cleared sessions without re-notifying them and invalidates known sessions on generation loss', async () => {
+    const invalidated: string[] = [];
+    const generationReleased = deferred();
+    const { backend, logPath } = makeBackend({
+      onSessionInvalidated: ({ sessionId }) => {
+        invalidated.push(sessionId);
+        if (sessionId === 'still-known') generationReleased.resolve();
+      },
+    });
     await observeFixture(backend);
     // clearSession fires session.end without exposing the round-trip, so wait
     // on the delivered record itself instead of guessing scheduler timing.
@@ -1120,6 +1130,30 @@ describe('maka-cu backend', () => {
     );
     const records = await readRecords(logPath);
     assert.deepEqual(received(records, 'session.end')[0], { session: RUN_CONTEXT.sessionId });
+    assert.deepEqual(invalidated, [RUN_CONTEXT.sessionId]);
+    backend.clearSession(RUN_CONTEXT.sessionId);
+    backend.clearSession('never-begun');
+    assert.deepEqual(
+      invalidated,
+      [RUN_CONTEXT.sessionId],
+      'unknown cleanup must not notify observers',
+    );
+
+    // Completed work still owns a begun session even after its operation fence
+    // is released. Losing the generation must invalidate that session once.
+    await backend.observeApp!({ app: FIXTURE_APP_ID, includeScreenshot: true }, signal(), {
+      ...RUN_CONTEXT,
+      sessionId: 'still-known',
+    });
+    const pid: unknown = records.find((record) => record.kind === 'start')?.pid;
+    assert.equal(typeof pid, 'number');
+    process.kill(pid as number, 'SIGKILL');
+    await withTimeout(
+      generationReleased.promise,
+      5_000,
+      'generation loss did not invalidate the live session',
+    );
+    assert.deepEqual(invalidated, [RUN_CONTEXT.sessionId, 'still-known']);
   });
 
   it('maps apps.list onto CuAppSummary without a rendered catalogue', async () => {

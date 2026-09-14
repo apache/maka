@@ -123,7 +123,7 @@ export class WorkHubUi {
     })()`);
     if (rect.width < 1 || rect.height < 1 || rect.x < 0 || rect.y < 0)
       throw new Error("Preference control is not visible");
-    return (await wc.capturePage(rect)).toPNG().toString("base64");
+    return (await wc.capturePage(rect, { stayHidden: true })).toPNG().toString("base64");
   }
 
   async execute(

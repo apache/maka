@@ -67,6 +67,157 @@ const RUN = Object.freeze({
 });
 
 describe('HostInteractionCoordinator', () => {
+  test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'host-choice',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [
+                { value: 'opaque-a', label: 'Same name / alpha' },
+                { value: 'opaque-b', label: 'Same name / beta' },
+              ],
+            },
+          ],
+        }),
+      };
+      const first = coordinator.requestForm(input);
+      const second = coordinator.requestForm(input);
+      await published.promise;
+      const invalid = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'forged' } },
+        },
+        connection(),
+      );
+      assert.equal(invalid.ok, false);
+      assert.equal((await store.listPending(RUN)).length, 1);
+      const answered = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'opaque-b' } },
+        },
+        connection(),
+      );
+      assert.equal(answered.ok, true);
+      const result = await first;
+      assert.deepEqual(result.answer, { action: 'accept', values: { target: 'opaque-b' } });
+      assert.deepEqual(await second, result);
+      assert.deepEqual(
+        await coordinator.requestForm({
+          ...input,
+          create: async () => {
+            throw new Error('Must reuse offer');
+          },
+        }),
+        result,
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('a rejected Host form admission settles every concurrent caller without poisoning', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store, { preflightSessionSnapshot: () => false });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'oversized-host-form',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      };
+      const outcomes = await Promise.allSettled([
+        coordinator.requestForm(input),
+        coordinator.requestForm(input),
+      ]);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        ['rejected', 'rejected'],
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.equal((await store.listPending(RUN)).length, 0);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('stopping the owning Run cancels its Host-owned form and closes the durable offer', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const pending = coordinator.requestForm({
+        ...RUN,
+        requestId: 'stopped-choice',
+        create: async () => ({
+          kind: 'form',
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      });
+      await published.promise;
+      await owner.close('turn_stopped');
+      assert.deepEqual((await pending).answer, { action: 'cancel' });
+      assert.equal(
+        (await store.readInteraction('stopped-choice'))?.outcome?.outcome.kind,
+        'closure',
+      );
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];

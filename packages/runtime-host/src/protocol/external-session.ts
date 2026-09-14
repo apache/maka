@@ -18,10 +18,15 @@
  */
 
 import {
+  EXTERNAL_SESSION_LIMIT_KINDS,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
+import {
   requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
+  requireRecord,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
@@ -102,9 +107,10 @@ export interface ExternalSessionImportInput {
   readonly sourceSessionId: string;
 }
 
-export interface ExternalSessionImportResult {
-  readonly session: SessionCatalogItem;
-}
+/** A completed import command may refuse the source before any Session is written. */
+export type ExternalSessionImportResult<Session extends SessionCatalogItem = SessionCatalogItem> =
+  | { readonly kind: 'imported'; readonly session: Session }
+  | { readonly kind: 'source_limit_exceeded'; readonly limit: ExternalSessionLimit };
 
 export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.source.query': defineOperation<
@@ -232,8 +238,27 @@ export function decodeExternalSessionImportInput(value: unknown): ExternalSessio
 }
 
 export function decodeExternalSessionImportResult(value: unknown): ExternalSessionImportResult {
-  const result = requireExactRecord(value, 'external Session import result', ['session']);
-  const decoded = { session: decodeSessionCatalogItem(result.session) };
+  const result = requireRecord(value, 'external Session import result');
+  if (result.kind === 'source_limit_exceeded') {
+    requireExactRecord(result, 'external Session import limit result', ['kind', 'limit']);
+    const limit = requireExactRecord(result.limit, 'external Session import limit', [
+      'kind',
+      'max',
+    ]);
+    if (!EXTERNAL_SESSION_LIMIT_KINDS.some((kind) => kind === limit.kind)) {
+      throw invalidProtocolFrame('Invalid external Session import limit kind');
+    }
+    const max = requireCount(limit.max, 'external Session import limit maximum');
+    if (max === 0) throw invalidProtocolFrame('Invalid external Session import limit maximum');
+    return {
+      kind: 'source_limit_exceeded',
+      limit: { kind: limit.kind as ExternalSessionLimit['kind'], max },
+    };
+  }
+  if (result.kind !== 'imported')
+    throw invalidProtocolFrame('Invalid external Session import result kind');
+  requireExactRecord(result, 'external Session import result', ['kind', 'session']);
+  const decoded = { kind: 'imported' as const, session: decodeSessionCatalogItem(result.session) };
   requireEncodedByteLimit(
     decoded,
     'external Session import result',

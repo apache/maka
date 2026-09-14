@@ -45,6 +45,7 @@ import { DAILY_REVIEW_OPERATION_SPECS } from '../protocol/daily-review.js';
 import { DEEP_RESEARCH_OPERATION_SPECS } from '../protocol/deep-research.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from '../protocol/execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from '../protocol/external-session.js';
+import { SESSION_BUNDLE_OPERATION_SPECS } from '../protocol/session-bundle.js';
 import { GOAL_OPERATION_SPECS } from '../protocol/goal.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from '../protocol/hosted-execution.js';
 import { INTERACTION_OPERATION_SPECS } from '../protocol/interaction.js';
@@ -130,6 +131,7 @@ export type GoalOperationKey = keyof typeof GOAL_OPERATION_SPECS;
 export type ExecutionInspectOperationKey = keyof typeof EXECUTION_INSPECT_OPERATION_SPECS;
 export type HostedExecutionOperationKey = keyof typeof HOSTED_EXECUTION_OPERATION_SPECS;
 export type ExternalSessionOperationKey = keyof typeof EXTERNAL_SESSION_OPERATION_SPECS;
+export type SessionBundleOperationKey = keyof typeof SESSION_BUNDLE_OPERATION_SPECS;
 export type AgentGraphOperationKey = keyof typeof AGENT_GRAPH_OPERATION_SPECS;
 export type SessionContinuityOperationKey =
   | keyof typeof SESSION_CONTINUITY_OPERATION_SPECS
@@ -181,6 +183,7 @@ export type ExternalSessionOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExternalSessionOperationKey
 >;
+export type SessionBundleOperationHandlerMap = Pick<OperationHandlerMap, SessionBundleOperationKey>;
 export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
