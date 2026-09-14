@@ -77,7 +77,7 @@ export function estimateTranscriptText(text: string, profile: TranscriptHeightPr
 }
 
 function simpleText(turn: TurnViewModel): string | undefined {
-  if (!turn.user || turn.status !== 'completed' || turn.tools.length || turn.notes.length || turn.assistantThinking
+  if (!turn.user || turn.status !== 'completed' || turn.tools.length || turn.notes.length
     || turn.user.attachments?.length || turn.user.quotes?.length || turn.user.directoryReferences?.length
     || turn.user.inlineReferences?.length || turn.timeline.filter((item) => item.kind === 'user').length > 1
     || turn.timeline.some((item) => item.kind !== 'user' && item.kind !== 'text')) return undefined;
