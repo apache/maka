@@ -3003,11 +3003,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
    * `commit_outcome_unknown` means this client cannot tell what the Host
    * committed, so the only evidence left is that a copy appeared since the
    * request was dispatched. That is evidence only when nothing else could have
-   * made it: the source's published count must have grown, and exactly one id
-   * must be new with none dropped. An import another client completed in the
-   * same window leaves the count unchanged or two ids new, and both stay
-   * uncertain — opening someone else's conversation is worse than asking the
-   * user to pick the copy out of the Session list.
+   * made it: the source's published count must have grown by exactly one, and
+   * exactly one id must be new.
+   *
+   * The count is the authority on how many copies landed, and it counts every
+   * one of them. The id list is only a window of the most recent, so a source
+   * that already has a full window drops an id whenever a new one arrives —
+   * reading that slide as a second import would leave this import's own copy
+   * unopened forever. Two copies landing in the window are two, and the count
+   * says so.
    */
   const reconcileImportedExternalSession = async (
     adapterId: string,
@@ -3016,12 +3020,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   ): Promise<string | undefined> => {
     if (!before) return undefined;
     const after = await readExternalImportState(adapterId, sourceSessionId);
-    if (!after || after.importedCount <= before.importedCount) return undefined;
+    if (!after || after.importedCount !== before.importedCount + 1) return undefined;
     const added = [...after.importedSessionIds].filter((id) => !before.importedSessionIds.has(id));
-    const dropped = [...before.importedSessionIds].filter(
-      (id) => !after.importedSessionIds.has(id),
-    );
-    return added.length === 1 && dropped.length === 0 ? added[0] : undefined;
+    return added.length === 1 ? added[0] : undefined;
   };
 
   const importExternalSession = async (
@@ -3082,7 +3083,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showExternalSessionPage = async (
     adapterId: string,
-    scope: 'current_workspace' | 'all' = 'current_workspace',
+    scope: 'current_workspace' | 'all',
     loaded: readonly ExternalSessionCatalogItem[] = [],
     cursor?: string,
   ): Promise<void> => {
@@ -3166,9 +3167,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
+  /**
+   * The scope the external catalog is asked for, which is the Session list's.
+   *
+   * A profile with a Host workspace lists every Session because it has no
+   * workspace of its own to narrow by, and this picker has to answer the same
+   * question: `current_workspace` reaches the Host without a workspace when the
+   * driver has none, and the Host reads that as every workspace. Asking for a
+   * scope the profile cannot express would label one question and answer
+   * another.
+   */
+  const externalCatalogScope = (): 'current_workspace' | 'all' =>
+    sessionListScope === 'all' ? 'all' : 'current_workspace';
+
   const showExternalSourcePicker = (adapterIds: readonly string[]): void => {
     if (adapterIds.length === 1) {
-      void showExternalSessionPage(adapterIds[0]!);
+      void showExternalSessionPage(adapterIds[0]!, externalCatalogScope());
       return;
     }
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
@@ -3179,7 +3193,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         value: adapterId,
         label: externalSourceLabel(adapterId),
       })),
-      (item) => void showExternalSessionPage(item.value),
+      (item) => void showExternalSessionPage(item.value, externalCatalogScope()),
       { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 40 },
     );
   };

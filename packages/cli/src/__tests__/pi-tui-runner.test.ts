@@ -6139,6 +6139,67 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('opens the copy when a full recent-id window drops its oldest id', async () => {
+    // The published count is what says how many copies landed; the id list is
+    // only a window of the most recent eight. A source with eight copies drops
+    // one the moment a ninth arrives, and reading that slide as a second
+    // import would leave this import's own copy unopened every time.
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    let catalogReads = 0;
+    const full = ['copy-8', 'copy-7', 'copy-6', 'copy-5', 'copy-4', 'copy-3', 'copy-2', 'copy-1'];
+    const externalSessions = {
+      listSources: async () => ['opencode'],
+      listSessions: async () => {
+        catalogReads += 1;
+        const imported = catalogReads > 2;
+        return {
+          sessions: [
+            {
+              id: 'ses_external',
+              name: 'Saturated window',
+              hostCwd: '/repo',
+              importState: {
+                importedCount: imported ? 9 : 8,
+                importedSessionIds: imported ? ['copy-9', ...full.slice(0, 7)] : full,
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      importSession: async () => {
+        throw {
+          operation: 'external-session.import',
+          code: 'commit_outcome_unknown',
+        };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Import external session'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Saturated window'));
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes('copy-9'));
+    assert.equal(driver.sessionIds.includes('copy-8'), false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('loads the next Host external catalog page without replacing earlier rows', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);

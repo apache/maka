@@ -609,34 +609,37 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
-  test('a custom title beyond the head is read from the tail', async () => {
+  test('a custom title in the tail is read from the tail', async () => {
     await withClaudeHome(async (home) => {
       const sessionId = 'aaaaaaaa-0000-4000-8000-000000000034';
       await seed(home, sessionId, [
         userRecord('first prompt'),
-        { type: 'progress', padding: 'x'.repeat(5 * 1024 * 1024) },
-        { type: 'custom-title', customTitle: 'Middle title' },
-        { type: 'progress', padding: 'y'.repeat(128 * 1024) },
+        { type: 'progress', padding: 'x'.repeat(512 * 1024) },
+        { type: 'progress', padding: 'x'.repeat(512 * 1024) },
+        { type: 'progress', padding: 'x'.repeat(1024 * 1024) },
+        { type: 'custom-title', customTitle: 'Tail title' },
         assistantRecord({ text: 'done', stopReason: 'end_turn' }),
       ]);
       const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
 
-      assert.equal((await adapter.listSessions())[0]?.name, 'Middle title');
-      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Middle title');
+      assert.equal((await adapter.listSessions())[0]?.name, 'Tail title');
+      assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Tail title');
     });
   });
 
-  test('a title between the catalog windows falls back to the first prompt', async () => {
-    // The summary scan reads a bounded head and tail, so the price is exactly
-    // this: a title the source wrote into the middle of a large transcript is
-    // not seen. The row still names the session — from the first prompt the
-    // head holds — and the import, which reads the transcript whole, still
-    // names it the way the source did.
+  test('a title the summary windows do not reach falls back to the first prompt', async () => {
+    // The head reaches past its own end to finish the records that begin
+    // inside it, so a title is only missed when it sits after the first record
+    // that begins past the window *and* further from the end than the tail
+    // reaches. That is the documented price of bounding the read: the row
+    // still names the session from the head's first prompt, and the import,
+    // which reads the transcript whole, still names it the way the source did.
     await withClaudeHome(async (home) => {
       const sessionId = 'aaaaaaaa-0000-4000-8000-000000000036';
       await seed(home, sessionId, [
         userRecord('first prompt'),
-        { type: 'progress', padding: 'x'.repeat(1024 * 1024) },
+        { type: 'progress', padding: 'x'.repeat(2 * 1024 * 1024) },
+        { type: 'progress', padding: 'x'.repeat(2 * 1024 * 1024) },
         { type: 'custom-title', customTitle: 'Buried title' },
         { type: 'progress', padding: 'y'.repeat(1024 * 1024) },
         assistantRecord({ text: 'done', stopReason: 'end_turn' }),
@@ -645,6 +648,64 @@ describe('ClaudeCodeSessionAdapter', () => {
 
       assert.equal((await adapter.listSessions())[0]?.name, 'first prompt');
       assert.equal((await adapter.readSession(sessionId)).metadata.name, 'Buried title');
+    });
+  });
+
+  test('a transcript opening on one long housekeeping record keeps its prompt and start time', async () => {
+    // The window lands inside that record, so it is the record after it — the
+    // first the budget's own length would have covered — that carries the
+    // prompt and the timestamp. Stopping at the first record boundary past the
+    // window would leave the row named by its session id and dated from the
+    // tail.
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000037';
+      await seed(home, sessionId, [
+        { type: 'file-history-snapshot', padding: 'x'.repeat(400 * 1024) },
+        userRecord('THE FIRST PROMPT'),
+        { type: 'progress', padding: 'y'.repeat(1024 * 1024) },
+        {
+          ...assistantRecord({ text: 'done', stopReason: 'end_turn' }),
+          timestamp: '2026-08-01T00:00:00.000Z',
+        },
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      assert.deepEqual((await adapter.listSessions())[0], {
+        id: sessionId,
+        name: 'THE FIRST PROMPT',
+        cwd: CWD,
+        createdAt: Date.parse('2026-08-01T00:00:00.000Z'),
+        updatedAt: Date.parse('2026-08-01T00:00:00.000Z'),
+      });
+    });
+  });
+
+  test('a transcript inside the summary window reads exactly as a whole read does', async () => {
+    // Tiny records cannot outrun the byte window, and the window must not have
+    // a second bound that a transcript this size can still hit: a record count
+    // used to end the head early, which left the catalog naming a live session
+    // by its first prompt and dating it from a stale timestamp.
+    await withClaudeHome(async (home) => {
+      const sessionId = 'aaaaaaaa-0000-4000-8000-000000000038';
+      const records: Record<string, unknown>[] = [userRecord('first prompt')];
+      for (let index = 0; index < 2002; index += 1) {
+        records.push({ type: 'progress', step: index, timestamp: '2026-08-02T00:00:00.000Z' });
+      }
+      records.push({ type: 'custom-title', customTitle: 'Late title' });
+      records.push({
+        type: 'progress',
+        step: 'last',
+        timestamp: '2026-09-09T00:00:00.000Z',
+      });
+      await seed(home, sessionId, records);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      const [listed] = await adapter.listSessions();
+      assert.equal(listed?.name, 'Late title');
+      assert.equal(listed?.createdAt, Date.parse('2026-08-01T00:00:00.000Z'));
+      assert.equal(listed?.updatedAt, Date.parse('2026-09-09T00:00:00.000Z'));
+      const imported = await adapter.readSession(sessionId);
+      assert.equal(imported.metadata.name, 'Late title');
     });
   });
 
