@@ -168,6 +168,11 @@ export interface OperationalStateDatabaseLease {
   readonly database: DatabaseSync;
   readonly databasePath: string;
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
+  /**
+   * Called once the outermost open transaction commits or rolls back, which
+   * a nested `transaction` call cannot see for itself.
+   */
+  onTransactionSettled(callback: (committed: boolean) => void): void;
   backup(destinationPath: string): Promise<number>;
   close(): void;
 }
@@ -197,6 +202,7 @@ class OperationalStateDatabaseOwner {
   private references = 0;
   private closed = false;
   private transactionDepth = 0;
+  private readonly settledCallbacks: Array<(committed: boolean) => void> = [];
 
   constructor(
     readonly databasePath: string,
@@ -235,6 +241,11 @@ class OperationalStateDatabaseOwner {
       database: this.database,
       databasePath: this.databasePath,
       transaction: (mode, operation) => this.transaction(mode, operation),
+      onTransactionSettled: (callback) => {
+        if (this.transactionDepth === 0)
+          throw new Error('No operational state transaction is open');
+        this.settledCallbacks.push(callback);
+      },
       backup: (destinationPath) => this.backup(destinationPath),
       close: () => {
         if (released) return;
@@ -278,16 +289,23 @@ class OperationalStateDatabaseOwner {
     if (this.transactionDepth > 0) return operation();
     this.database.exec(mode === 'write' ? 'BEGIN IMMEDIATE' : 'BEGIN');
     this.transactionDepth += 1;
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.database.exec('COMMIT');
-      return result;
     } catch (error) {
       rollback(this.database);
-      throw error;
-    } finally {
       this.transactionDepth -= 1;
+      this.settle(false);
+      throw error;
     }
+    this.transactionDepth -= 1;
+    this.settle(true);
+    return result;
+  }
+
+  private settle(committed: boolean): void {
+    for (const callback of this.settledCallbacks.splice(0)) callback(committed);
   }
 }
 
