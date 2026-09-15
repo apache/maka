@@ -30,7 +30,7 @@ test('native thumb preserves a cold reader while admitting Host history', async 
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       locale: 'zh-CN',
-      showWindow: false,
+      showWindow: true,
     },
     async (page) => {
       await page.setViewportSize({ width: 1000, height: 700 });
