@@ -31,6 +31,7 @@ import {
   defaultLocalMemoryMarkdown,
   defaultLocalMemorySettings,
   findLocalMemoryEntryDraft,
+  findLocalMemoryEntryDraftRange,
   normalizeLocalMemorySettings,
   parseLocalMemoryMarkdown,
   rejectLocalMemoryProposalDraft,
@@ -410,5 +411,128 @@ describe('local MEMORY.md contract', () => {
     assert.equal(parsed.safeMode, true);
     assert.equal(parsed.reason, 'oversize');
     assert.equal(parsed.entries.length, 0);
+  });
+});
+
+describe('local memory fenced content', () => {
+  for (const [open, close, inner] of [
+    ['```md', '```', ''],
+    ['  ~~~markdown', '  ~~~~', '```'],
+    ['````md', '````', '```'],
+    ['~~~', '~~~', '~~~not-a-closing-fence'],
+  ]) {
+    it(`keeps headings and comment examples inside ${open} in one editable entry`, () => {
+      const content = [
+        'Use this README template:',
+        open,
+        '## Installation',
+        '<!-- maka-memory: id=example -->',
+        inner,
+        'npm install',
+        close,
+        'Keep this final instruction.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      const appended = appendApprovedLocalMemoryEntryDraft('# Maka Memory\n', {
+        id: 'mem-template',
+        source: 'user_authored',
+        title: 'README template',
+        content,
+        confirmedAt: 1,
+      });
+      assert.ok(appended.ok);
+      const following = '\n## Next entry\n<!-- maka-memory: id=mem-next -->\nNext body.\n';
+      const source = appended.draft + following;
+      assert.deepEqual(
+        parseLocalMemoryMarkdown(source).entries.map((entry) => entry.id),
+        ['mem-template', 'mem-next'],
+      );
+      assert.equal(findLocalMemoryEntryDraft(source, 'mem-template')?.content, content);
+      for (const draft of [source, source.replaceAll('\n', '\r\n')]) {
+        const range = findLocalMemoryEntryDraftRange(draft, 'mem-template');
+        assert.ok(range);
+        assert.ok(draft.slice(range.start, range.end).includes('Keep this final instruction.'));
+        assert.ok(draft.slice(range.end).startsWith('## Next entry'));
+      }
+      assert.equal(findLocalMemoryEntryDraftRange(source, 'installation'), null);
+      const archived = setLocalMemoryEntryStatusDraft(source, {
+        id: 'mem-template',
+        status: 'archived',
+        now: 2,
+      });
+      assert.ok(archived.ok);
+      assert.equal(findLocalMemoryEntryDraft(archived.draft, 'mem-template')?.content, content);
+      assert.deepEqual(
+        parseLocalMemoryMarkdown(archived.draft).activeEntries.map((entry) => entry.id),
+        ['mem-next'],
+      );
+    });
+  }
+
+  it('moves the whole fenced proposal during approval and leaves the next proposal intact', () => {
+    const content = [
+      'Use this template:',
+      '```md',
+      '## Installation',
+      'npm install',
+      '```',
+      'Tail.',
+    ].join('\n');
+    const first = appendLocalMemoryProposalDraft('# Pending\n', {
+      proposalId: 'proposal-template',
+      title: 'README template',
+      content,
+      proposedAt: 1,
+    });
+    assert.ok(first.ok);
+    const second = appendLocalMemoryProposalDraft(first.draft, {
+      proposalId: 'proposal-next',
+      title: 'Next',
+      content: 'Keep the next proposal.',
+      proposedAt: 2,
+    });
+    assert.ok(second.ok);
+    const approved = approveLocalMemoryProposalDraft('# Maka Memory\n', second.draft, {
+      proposalId: 'proposal-template',
+      entryId: 'mem-approved',
+      confirmedAt: 3,
+      approvalSurface: 'settings_review_queue',
+    });
+    assert.ok(approved.ok);
+    assert.equal(findLocalMemoryEntryDraft(approved.memoryDraft, 'mem-approved')?.content, content);
+    assert.equal(buildLocalMemoryPromptBody(approved.memoryDraft)?.includes(content), true);
+    assert.deepEqual(
+      parseLocalMemoryMarkdown(approved.pendingDraft).entries.map((entry) => entry.id),
+      ['proposal-next'],
+    );
+    assert.equal(
+      findLocalMemoryEntryDraft(approved.pendingDraft, 'proposal-next')?.content,
+      'Keep the next proposal.',
+    );
+  });
+
+  it('does not mistake a sample metadata comment for the editable entry metadata', () => {
+    const source = [
+      '## Template',
+      '```md',
+      '<!-- maka-memory: id=example -->',
+      '```',
+      'Text.',
+    ].join('\n');
+    const archived = setLocalMemoryEntryStatusDraft(source, {
+      id: 'template',
+      status: 'archived',
+      now: 2,
+    });
+    assert.ok(archived.ok);
+    assert.ok(archived.draft.includes('```md\n<!-- maka-memory: id=example -->\n```'));
+    assert.equal(parseLocalMemoryMarkdown(archived.draft).entries[0]?.status, 'archived');
+  });
+
+  it('keeps an unclosed fence through EOF without creating phantom entries', () => {
+    const source = ['## Template', '```md', '## Installation', 'npm install'].join('\n');
+    assert.equal(parseLocalMemoryMarkdown(source).entries.length, 1);
+    assert.equal(findLocalMemoryEntryDraftRange(source, 'template')?.end, source.length);
   });
 });
