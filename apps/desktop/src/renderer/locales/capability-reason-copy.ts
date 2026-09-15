@@ -50,9 +50,9 @@ const CAPABILITY_REASON_COPY = {
   },
   'zh-TW': {
     disabled: '此能力目前已關閉。',
-    platform_credentials_missing: '未設定平台憑據',
+    platform_credentials_missing: '未設定平台憑證',
     macos_tcc_only: '僅 macOS TCC 權限適用',
-    apple_events_tcc_status_unavailable: 'Electron 暫不支援讀取逐 App 的 Apple Events 授權狀態',
+    apple_events_tcc_status_unavailable: 'Electron 暫不支援讀取個別應用程式 的 Apple Events 授權狀態',
     cu_artifact_missing: '找不到通過完整性檢查的 Computer Use 執行器 artifact。',
     cu_backend_status: 'maka-cu artifact 已通過本機完整性檢查。',
     cu_backend_unavailable: 'Computer Use 後端目前無法使用。',

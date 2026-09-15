@@ -192,7 +192,7 @@ const ZH_TW = {
     connectionFailed: '無法加入分享任務',
     cancelFailed: '無法取消加入分享任務',
     mountLimit: (max: number) => `最多可保留 ${max} 個已加入的分享任務`,
-    directPathUnavailable: '尚未建立直連。請確認分享者在線，並檢查雙方的 VPN、代理或防火牆；若網路無法打洞，可使用已知 Mesh 節點的轉送。',
+    directPathUnavailable: '尚未建立直接連線。請確認分享者在線上，並檢查雙方的 VPN、代理或防火牆；若無法透過 NAT 穿透建立連線，可使用已知 Mesh 節點的轉送。',
     insecureTitle: '此連線未加密',
     insecureBody: '訪客憑證、完整任務內容和輪次請求可能被同一網路中的第三方攔截。僅在你了解並接受風險時繼續。',
     shareInsecure: '接受風險並建立',

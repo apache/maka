@@ -102,8 +102,8 @@ const COPY = {
     bot: {
       credentialsValid: (username) =>
         username
-          ? `憑證檢查已透過 · ${username}。這不代表訊息收發服務已啟動。`
-          : "憑證檢查已透過。這不代表訊息收發服務已啟動。",
+          ? `憑證檢查已通過 · ${username}。這不代表訊息收發服務已啟動。`
+          : "憑證檢查已通過。這不代表訊息收發服務已啟動。",
       tokenMissing: "請填寫 Bot Token 後再測試。",
       tokenInvalid: "Bot Token 無效，請檢查後重試。",
       appCredentialsMissing: "請填寫 App ID 和 App Secret 後再測試。",
