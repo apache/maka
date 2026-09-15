@@ -508,6 +508,41 @@ it('resolves labels far beyond any scan bound without a length cliff', () => {
   assert.doesNotMatch(markup, /maka-math-display|katex-display/);
 });
 
+it('streams an unfinished label without rescanning from its opener', () => {
+  const full = `[${'a'.repeat(128_000 - 1)}`;
+  const cache = createMarkdownMathCache();
+  const started = performance.now();
+  let incremental = '';
+  for (let end = 1024; end <= full.length; end += 1024) {
+    incremental = prepareMarkdownMath(full.slice(0, end), cache);
+  }
+  const elapsed = performance.now() - started;
+
+  assert.equal(incremental, full);
+  assert.equal(cache.safeSourceEnd, 0);
+  assert.ok(elapsed < 5_000, `unfinished label streaming took ${elapsed.toFixed(1)}ms`);
+});
+
+it('resolves a streamed label once its closer arrives', () => {
+  const head = `[${'b'.repeat(64_000)}`;
+  const cache = createMarkdownMathCache();
+  for (let end = 1024; end <= head.length; end += 1024) {
+    prepareMarkdownMath(head.slice(0, end), cache);
+  }
+  const full = `${head}](https://example.com/closed)`;
+  const incremental = prepareMarkdownMath(full, cache);
+
+  assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()));
+  assert.equal(cache.safeSourceEnd, full.length);
+
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, { text: full }),
+  }));
+
+  assert.match(markup, /<a\b[^>]*href="https:\/\/example\.com\/closed"/);
+});
+
 it('does not rescan malformed link tails quadratically', () => {
   const input = '[x]('.repeat(32_000);
   const cache = createMarkdownMathCache();
