@@ -1869,8 +1869,10 @@ export class AiSdkTurn {
                   priorInputTokens: priorInput,
                 });
               }
-              // The accepted request is the new predecessor; whatever shapes
-              // the ledger from here on describes the next one.
+              // Clear here, not at the top of the next step: the continuation
+              // lane archives its prune below, after this point, and archiving
+              // is idempotent — the next step's re-projection reports no prune,
+              // so a clear above it would lose the only record of this one.
               midTurnState?.stepShaping.clear();
               // Fail closed: reset on every step boundary so a missing final
               // step's usage does not leave a stale value from an earlier step.

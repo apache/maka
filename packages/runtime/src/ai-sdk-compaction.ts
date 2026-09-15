@@ -1225,8 +1225,6 @@ export class AiSdkCompaction {
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
     if (imageOmission.omittedParts > 0) {
-      // Dropping images is this step's one recovery: a second overflow on the
-      // same step is terminal, while a later step retries with folding.
       state.stepShaping.add('omit_images');
       for (const toolCallId of imageOmission.omittedToolCallIds) {
         const image = eligibleImages.get(toolCallId);

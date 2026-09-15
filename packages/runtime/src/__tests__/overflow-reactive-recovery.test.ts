@@ -2219,6 +2219,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
   });
 
+  test('an unfoldable overflow after an accepted fold still says the request was compacted', async () => {
+    // The fold that rescued the first overflow was accepted, so a later step's
+    // rejection is a rejection of already-compacted history — even though that
+    // step reshaped nothing of its own before being rejected (its own fold
+    // fails open). The note is about what the Turn has folded, not about what
+    // this step did.
+    let summarizerCall = 0;
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'tool', 'overflow'],
+      bigPriors: true,
+      summarize: (input) => {
+        summarizerCall += 1;
+        return summarizerCall === 1
+          ? reactiveStructuredSummary(input.source.foldedRuntimeEvents)
+          : undefined;
+      },
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(summarizerCall, 2);
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_overflow_after_compaction',
+      ),
+      true,
+    );
+  });
+
   test('a send that overflows once, folds and completes suggests nothing', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],
