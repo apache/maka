@@ -80,7 +80,12 @@ export async function runHostedExecutionWithDependencies(
     if (input.signal?.aborted) {
       return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
     }
-    const cause = initial.kind === 'failed' ? initial.reason : initial.kind;
+    const cause =
+      initial.kind === 'failed'
+        ? initial.reason === 'startup_failed'
+          ? initial.detail
+          : initial.reason
+        : initial.kind;
     return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
   }
   let connected: Extract<
@@ -127,7 +132,12 @@ export async function runHostedExecutionWithDependencies(
           if (input.signal?.aborted) {
             return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
           }
-          const cause = reconnected.kind === 'failed' ? reconnected.reason : reconnected.kind;
+          const cause =
+            reconnected.kind === 'failed'
+              ? reconnected.reason === 'startup_failed'
+                ? reconnected.detail
+                : reconnected.reason
+              : reconnected.kind;
           return indeterminate(input.execution.executionId, `Runtime Host did not start: ${cause}`);
         }
         connected = reconnected;
